@@ -2,25 +2,24 @@
 tags: [spec, system, daemon-core]
 system: 1
 status: current
-as_of: 2026-10-20 (dev 22cffd1b7)
+as_of: 2026-10-22 (dev 52d2efe4c)
 ---
 
 # System 1: daemon-core
 
 This is a **current** system spec, not a design record. It describes what the
-code at `dev` 22cffd1b7 does. Where it and the code disagree, the code is
-right and this file should be fixed. The older subsystem specs it links to, such as
+code at the assigned `origin/dev` snapshot 52d2efe4c does. Where it and the code
+disagree, the code is right and this file should be fixed. The older subsystem specs it links to, such as
 [`../orchestrator.md`](../orchestrator.md) and
 [`../command-handler.md`](../command-handler.md), carry the `aq:historical`
 banner. They are kept for the reasoning behind the design, not as a
 description of what runs today.
 
 daemon-core is system 1 of the 18 in the system inventory
-(`~/.agent-queue/vault/projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`,
-review `rev-bright-rapids`, *in review*, revision 1). The parent vision and
-system map (`2026-10-20-agent-queue-the-vision-and-the-system-map.md`, review
-`rev-smart-nexus`, *in review*, revision 1) links here. Sibling specs live in
-the same directory as `<system-slug>.md`.
+(`~/.agent-queue/vault/projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`).
+Sibling specs live in the same directory as `<system-slug>.md`. This page
+records implemented behaviour; historical proposals and task statuses are not
+statements about the running daemon.
 
 ## 1. Purpose and problem
 
@@ -34,9 +33,9 @@ daemon-core is that single owner. It is the long-running process that:
 
 - **composes** every service into one process listening on port 8081
   (`src/main.py`);
-- **owns the one write path**: every state change, from any surface, is a
-  named command executed by one `CommandHandler` and checked against a typed
-  contract;
+- **owns the command boundary**: CLI, MCP, API, Discord and playbooks dispatch
+  operational mutations through one `CommandHandler`; domain services and
+  database queries implement the underlying state changes;
 - **runs the deterministic cycle**: a scheduler loop that, without any LLM
   call, decides what to start, sweeps what has gone stale and drives the
   periodic work of every other system in a fixed order;
@@ -57,12 +56,15 @@ code, policy in playbooks".
 ### 2.1 The process and its composition root
 
 `src/main.py` is the composition root. `main()` parses arguments, and
-`run()` (`src/main.py:252`) builds the process in this order:
+`run()` (`src/main.py`) builds the process in this order:
 
-1. It scrubs inherited `AQ_*` variables so that a daemon started from inside
-   an agent session does not inherit that session's identity, then calls
-   `set_process_scope(DAEMON)` for the migration guard (§2.7).
-2. It loads `AppConfig` from `~/.agent-queue/config.yaml` (`src/config.py`).
+1. It removes inherited harness-session markers and calls
+   `set_process_scope(DAEMON)` for the migration guard (§2.7). It warns about
+   inherited `AQ_*` variables; it does not remove them. In particular,
+   `AQ_DB_SCOPE=worker` still overrides the process scope.
+2. It loads `AppConfig` from `~/.agent-queue/config.yaml` (`src/config.py`),
+   or the positional config path. `--profile` selects a configuration overlay;
+   `--validate-config` validates and exits without starting the daemon.
 3. It builds `Orchestrator(config, runtimes=None)`. The `runtimes` argument is
    the empty injection seam described in §2.9.
 4. It builds the `CommandHandler(orch, config)` and wires it into the
@@ -72,15 +74,20 @@ code, policy in playbooks".
 5. It starts the `MetricsSampler` and the messaging adapter (Discord, see
    [messaging-and-human-asks](messaging-and-human-asks.md)).
 6. `run_scheduler` waits up to 120 s for the adapter, then binds the report
-   outbox (`_bind_report_outbox`, `src/main.py:184`), which covers escalation
+   outbox (`_bind_report_outbox`, `src/main.py`), which covers escalation
    delivery, the digest and the `DeliveryScheduler`. It starts the
-   `ReviewNotifier`, optionally freezes the startup heap
-   (`_freeze_startup_heap`), and enters `_run_scheduler_cycles` (§2.3).
+   `ReviewNotifier` and the independent `WaitService.run()` task (`aq-waits`),
+   optionally freezes the startup heap (`_freeze_startup_heap`), and enters
+   `_run_scheduler_cycles` (§2.3). The report outbox is bound only when a
+   usable Discord transport/channel is available.
 7. The embedded MCP server and the HTTP API run under a supervised uvicorn
    task that restarts with backoff if it dies.
-8. `_health_checks` (`src/main.py:608`) backs `/health` and readiness. It
+8. `_health_checks` (`src/main.py`) backs `/health` and readiness. It
    reports the orchestrator, required playbooks, database, agents, tasks,
    messaging, Discord cutover, the bot rate guard and the paused flags.
+   The HTTP health path uses a cached snapshot so probes do not queue database
+   reads behind a busy scheduler; see
+   [event-loop responsiveness](../design/event-loop-responsiveness.md).
 
 On shutdown `run()` closes the adapter, cancels MCP, stops metrics and calls
 `orch.shutdown()` (§2.10). A requested restart re-executes the process with
@@ -95,11 +102,11 @@ is how `aq stop` stays stopped. Operating the daemon (`aq restart`,
 
 ### 2.2 Startup: `Orchestrator.initialize`
 
-`Orchestrator` (`src/orchestrator/core.py:191`) is one class composed from
+`Orchestrator` (`src/orchestrator/core.py`) is one class composed from
 mixins: Triage, Workspace, Execution, Monitoring, Lifecycle, GitOps,
 PRPolling, Context, Events, SyncWorkflow, Pools, LayoutStep, RouteNeeded and
-ProviderFailover. `__init__` (`core.py:230`) creates the shared `EventBus` as
-`self.bus` and the service objects. `initialize()` (`core.py:1901`) then runs
+ProviderFailover. `__init__` (`core.py`) creates the shared `EventBus` as
+`self.bus` and the service objects. `initialize()` (`core.py`) then runs
 the startup sequence. The order matters, and several steps exist because of
 an incident:
 
@@ -112,7 +119,9 @@ an incident:
    re-adopted first (`adopt_on_start`). Only then does `_recover_stale_state`
    reset BUSY agents, release locks and sentinels, and move non-container
    IN_PROGRESS tasks back to READY. Reversing these two would kill work that
-   survived a restart.
+   survived a restart. Stale-job recovery runs before workspace cleanup:
+   interrupted job snapshots and live workspace pins are preserved while their
+   owners are reconciled.
 5. Container settlement, then seeding and probing provider availability.
 6. The vault manager, task directories and vault structure, and one unified,
    tick-driven vault watcher with handlers for profiles, MCP servers,
@@ -131,37 +140,38 @@ an incident:
 
 #### The wake loop
 
-`_run_scheduler_cycles` (`src/main.py:122`) runs **one cycle at a time**,
+`_run_scheduler_cycles` (`src/main.py`) runs **one cycle at a time**,
 never two concurrently. Between cycles it waits for whichever comes first:
 
 - a **wake event**. It subscribes to `SCHEDULER_WAKE_EVENTS`
-  (`src/main.py:86`): `task.*` changes, `gate.resolved`/`gate.expired`,
+  (`src/main.py`): the listed task changes (not a wildcard subscription), `gate.resolved`/`gate.expired`,
   `provider.state_changed`/`provider.allocation_changed`,
   `pool.bounds_rescoped`, `session.started`/`exited`/`killed`/`drain_acked`
   and `config.reloaded`;
 - the **periodic backstop**, `cycle_interval_seconds` (default 5.0,
-  `src/config.py:665`).
+  `src/config.py`).
 
 Consecutive cycles are at least `min_cycle_interval_seconds` apart (default
-1.0, `config.py:666`), so a burst of events coalesces into one cycle. A
+1.0, `config.py`), so a burst of events coalesces into one cycle. A
 cycle that raised waits the full interval before the next. A cycle running
 longer than 30 s is reported with its await chain
 (`_report_long_scheduler_cycle`), which is how a stuck step gets named.
 
-A separate **pool watchdog** (`_run_pool_watchdog`, `src/main.py:106`) calls
+A separate **pool watchdog** (`_run_pool_watchdog`, `src/main.py`) calls
 `_check_pool_progress` every `POOL_WATCHDOG_INTERVAL` = 30 s
-(`src/orchestrator/pools.py:81`). It keeps pool demand observable even when
+(`src/orchestrator/pools.py`). It keeps pool demand observable even when
 an unrelated step in the cycle is blocked.
 
 #### `run_one_cycle` ordering
 
-`Orchestrator.run_one_cycle` (`core.py:3339`) is the heartbeat. **daemon-core
+`Orchestrator.run_one_cycle` (`core.py`) is the heartbeat. **daemon-core
 owns the order of its steps and their isolation. Each step's logic belongs
 to the system named in the right-hand column**, and that system's spec
 describes it.
 
-Before the phases, the cycle schedules the tracked deploy check and runs the
-`job_reconcile` command.
+Before the phases, the cycle schedules the tracked deploy check and reconciles
+jobs. Currently this calls `_cmd_job_reconcile({})` directly rather than
+`execute`; see the command-boundary gap in §5.
 
 | Phase | Steps, in order | Owning system |
 |---|---|---|
@@ -176,26 +186,46 @@ Before the phases, the cycle schedules the tracked deploy check and runs the
 | | reap finished `_running_tasks`; launch `_execute_task_safe` for each action | [sessions-and-harnesses](sessions-and-harnesses.md) |
 | | `_reconcile_pools` | [scheduling-and-claims](scheduling-and-claims.md) |
 | 3. Periodic services | ticks: timer service, morning report due, plugin cron, `vault_watcher.check`, workspace-spec watcher, escalation delivery, delivery scheduler, digest schedule | [playbooks](playbooks.md), [plugins-mcp-and-tools](plugins-mcp-and-tools.md), [configuration-and-vault](configuration-and-vault.md), [messaging-and-human-asks](messaging-and-human-asks.md) |
-| | orphan workflow recovery; hourly LLM log cleanup; retention sweeps for operational events and test selection | [playbooks](playbooks.md), [providers](providers.md), [operations-and-recovery](operations-and-recovery.md), [test-service-and-jobs](test-service-and-jobs.md) |
+| | orphan workflow recovery; hourly LLM log cleanup; retention sweeps for operational events, observation snapshots and test selection | [playbooks](playbooks.md), [providers](providers.md), [operations-and-recovery](operations-and-recovery.md), [test-service-and-jobs](test-service-and-jobs.md) |
 | | `_maintain_conversations` | [messaging-and-human-asks](messaging-and-human-asks.md) |
 | | `spec_ingest_reconcile` command as `ExecutionPrincipal.service("spec-ingest-reconcile")` | [reviews-and-knowledge](reviews-and-knowledge.md) |
 | | `_auto_archive_tasks` | [task-graph](task-graph.md) |
 | | `schedule_layout_step` (started, not awaited) | [task-graph](task-graph.md) |
-| | playbook recovery, child reconciliation, timeouts and retention; `AgentWaitReconciler` tick | [playbooks](playbooks.md), [sessions-and-harnesses](sessions-and-harnesses.md) |
-| 4. Housekeeping | `_reap_worktree_slots` (also restores disabled slots), merge-slot expiry, the daily branch sweep | [projects-workspaces-git](projects-workspaces-git.md), [integration-and-delivery](integration-and-delivery.md) |
+| | playbook recovery, child reconciliation, timeouts and retention | [playbooks](playbooks.md), [sessions-and-harnesses](sessions-and-harnesses.md) |
+| 4. Housekeeping | `_reap_worktree_slots` (also restores disabled slots), the daily background branch sweep | [projects-workspaces-git](projects-workspaces-git.md), [integration-and-delivery](integration-and-delivery.md) |
 | | `_reconcile_sessions` | [sessions-and-harnesses](sessions-and-harnesses.md) |
 | | `_deliver_messages` | [messaging-and-human-asks](messaging-and-human-asks.md) |
 | | `_revoke_expired_tokens` | daemon-core (session tokens, §2.4) |
 
-If any step raises, the outer handler logs `Scheduler cycle error` and still
-runs `_reconcile_pools` and `_reconcile_sessions` if the cycle had not
-reached them, so that a broken sweep cannot also stop agents starting or
-dying sessions being noticed. Counting `Scheduler cycle error` lines in the
-daemon log is the first thing to check when a pool stops starting work.
+Several stages catch and log their own exceptions. If an exception reaches
+the outer cycle handler, it logs `Scheduler cycle error` and attempts pool and
+session reconciliation if that cycle has not already attempted them. This
+recovers from exceptions, not from an await that never returns: there is no
+whole-cycle deadline.
+
+`_reconcile_sessions` bounds each cascade stage with
+`SESSION_STAGE_TIMEOUT` (60 seconds): transcript watching,
+agent questions, collaboration, agent waits, verified-wait recovery, agent cron
+and the session reconciler. A timed-out stage is cancelled and retried next
+cycle; subsequent stages can still run. Owner recovery is scheduled separately.
+
+#### Work beside the cycle
+
+| Work | Lifetime and recovery |
+|---|---|
+| Integration service | Starts in `initialize()` and runs its own durable maintenance loop, including Git truth reconciliation through `integration_reconcile_git_truth` under a service principal. |
+| Message delivery | Starts last in `initialize()` and delivers independently of a slow cycle. `_deliver_messages` remains a maintenance/recovery hook. |
+| Verified waits | `main.py` constructs `WaitService` and starts `aq-waits` beside the review notifier; `_reconcile_sessions` also ticks it for recovery. |
+| Pool watchdog | Runs beside the scheduler loop, checking pool progress every 30 seconds. |
+| Layout, branch sweep, deploy check | Scheduled background tasks with their own lifecycle; the cycle does not await their full work. |
+
+These tasks share the asyncio event loop. Their independence does not protect
+against synchronous blocking code. None has a guaranteed order relative to an
+unrelated cycle stage.
 
 #### `_schedule`
 
-`_schedule` (`core.py:4649`) builds a pure `SchedulerState` snapshot and
+`_schedule` (`core.py`) builds a pure `SchedulerState` snapshot and
 hands it to the scheduler (`src/scheduler.py`). Before that it excludes:
 
 - held tasks;
@@ -211,7 +241,7 @@ that this step is a pure function of a snapshot and makes no LLM call.
 
 #### Launching a task
 
-`_execute_task` (`src/orchestrator/execution.py:374`) does the following:
+`_execute_task` (`src/orchestrator/execution.py`) does the following:
 
 1. Re-checks constraints and hierarchy runnability.
 2. Assigns the task, moves it to IN_PROGRESS and emits `task.started`.
@@ -220,6 +250,8 @@ that this step is a pure function of a snapshot and makes no LLM call.
    `harness_registry.get(...)`. A missing harness is an explicit failure,
    never a fallback to some other runtime.
 
+This is the task-launch path. A pool worker's harness is already running
+before it calls `aq task claim`; claiming does not launch another harness.
 The launch does not wait for the agent. The agent finishes by running
 `aq task close`, which is an ordinary command (§2.4). Prompt assembly
 (`context.py`), session mechanics and harnesses are
@@ -229,121 +261,113 @@ the two helpers the cycle uses to put events on the bus.
 
 ### 2.4 The command handler
 
-`src/commands/handler.py` defines `CommandHandler` (`handler.py:358`),
-assembled from 61 mixins in `src/commands/*_commands.py` that between them
-define 491 `_cmd_<name>` methods. The CLI, MCP, the API, Discord, playbooks
-and the cycle itself all call `execute(name, args)` (`handler.py:934`), which
-runs this pipeline:
+`src/commands/handler.py` defines `CommandHandler`, composed from domain
+command mixins. Supported command surfaces call `execute(name, args)`. Its
+pipeline is:
 
-1. Strip the server-owned argument keys (`SERVER_OWNED_ARG_KEYS`,
-   `src/commands/principal.py:72`) so that a caller cannot claim to be
-   someone else.
-2. Save the scope and principal context variables, and restore them when the
-   command finishes, because a command can dispatch other commands.
-3. Bind the operator dispatch (`src/commands/operator_authority.py`). An
-   operator session may not act as a human at a gate or delivery decision,
-   and setup commands need `operator_execute`. That refusal is returned at
-   `handler.py:1027`.
-4. Redact secrets from the arguments that will be logged, and resolve
-   `project_id`.
-5. **Subsystem pause gate** (`handler.py:1041`): when playbooks or memory are
-   switched off in config, their commands are refused before any handler
-   runs ([`../implementation/feature-pauses.md`](../implementation/feature-pauses.md)).
-6. **Capability authorization**: `authorize_command`
-   (`src/commands/authorization.py:138`) checks the caller's principal
-   against the command's capability. Its mode is
-   `security.capability_enforcement`, default `"audit"`
-   (`src/config.py:2083`). In audit mode a would-be denial is logged and
-   the command still runs.
-7. **Routing-choice guard**: for the filing and project commands in
-   `GUARDED_COMMANDS` (`src/routing/filing.py:104`), a hand-picked profile,
-   provider, model or pin is refused the same way for every principal, and
-   inert choices are stripped
-   ([routing-and-profiles](routing-and-profiles.md)).
-8. **Operator decisions**: a command that a recorded operator decision
-   controls is refused through `src/operator_decisions.py`
-   ([supervisors-and-policy](supervisors-and-policy.md)).
-9. Dispatch to `_cmd_<name>`, falling back to a plugin command
-   ([plugins-mcp-and-tools](plugins-mcp-and-tools.md)).
-10. Emit `command.invoked` with the outcome, and log the timing, as a
-    warning above 1 s.
+1. Establish correlation context; strip `SERVER_OWNED_ARG_KEYS`. An inherited
+   principal takes precedence over a nested caller's proposed identity. Save
+   scope/principal context variables and restore them in `finally`.
+2. Bind operator dispatch authority, redact logged arguments, apply any
+   operator-session refusal and resolve `project_id`.
+3. Apply subsystem pause gates and `_wait_mutation_fence`, which refuses
+   mutations that conflict with a pending verified wait.
+4. Run capability authorization, then resource/scope authorization. These
+   are separate gates: capability audit mode does not bypass resource scope.
+5. Apply the routing-choice guard and recorded operator decisions.
+6. Dispatch to `_cmd_<name>` or a plugin command, then classify the result.
+   Unknown commands and unexpected exceptions return `success: false` with
+   `unknown_command` or `command_runtime_error` codes. `InvalidTransition`
+   becomes a structured refusal; enforced principals receive redacted errors.
+7. Restore caller context; emit `command.invoked` when command-event emission
+   is enabled, except for `session_input`. Event-emission errors are isolated.
+   Log slow commands (at least one second), including dispatch/event timings.
 
-Every command returns a dict with `success: bool`. Refusals are
-`{"success": False, "error": "...", ...}` and often carry a `code`. The
-exceptions are the three catch-all paths noted in §5.
+Commands return `{"success": bool, ...}`. Refusals contain `error` and often
+`code`; typed contracts describe specific outcomes. `execute` is not a global
+Pydantic argument validator for every handler.
 
-Execution principals (`src/commands/principal.py`) say who is acting: an
-operator, a worker session holding a scoped token, or a named service such as
-`spec-ingest-reconcile`. Worker session tokens are issued by the session token
-store at launch and revoked by `_revoke_expired_tokens` in the cycle.
+Execution principals (`src/commands/principal.py`) distinguish local callers,
+operator sessions, scoped worker sessions and named services. Session tokens
+are issued at launch and expired tokens are revoked in the cycle.
 
-### 2.5 Command contracts
+`security.capability_enforcement` defaults to `audit`, but that is not a
+blanket permission to run denied commands. Explicitly authored capability
+grants are enforced in audit mode too; audit grace applies to legacy-adapted
+or unresolved capability definitions. Operator sessions are enforced.
+`off` disables capability checks; independent scope, resource, wait and
+operator-decision gates still apply. See `src/commands/authorization.py` and
+`src/commands/resource_authorization.py` for the checks.
 
-`src/commands/contracts/` describes commands as data. `ContractRegistry`
-(`registry.py`; the shared instance is
-`CONTRACTS = ContractRegistry(autoload=True)` at `registry.py:160`) loads
-`builtin.py` and about 28 topic modules (ask, wait, message_wait, integration,
-job and others). It currently holds 214 typed contracts. A contract names the
-command's arguments, its outcomes and its result fields. The registry also
-computes a **fingerprint** for each contract. Reviewed playbook bundles record
-the fingerprints they were checked against, so changing an existing contract's
-outcomes or result fields makes those bundles stale. Prefer adding a new
-contract to widening an existing one.
+### 2.5 Command contracts and discovery
 
-The CLI and generated clients read the same contracts.
-`src/surface_schema.py` serves the offline enum catalog the CLI uses when the
-daemon is unreachable. The design of the surface is
-[`../design/aq-surface.md`](../design/aq-surface.md), and the generated
-artefacts belong to [api-and-clients](api-and-clients.md).
+`CONTRACTS = ContractRegistry(autoload=True)` in
+`src/commands/contracts/registry.py` lazily loads typed registrations from
+`builtin.py` and topic modules. The registry also generates registrations for
+admitted handler/plugin descriptors that lack a typed registration; typed
+adapters take precedence. An offline descriptor snapshot supports discovery
+without a running daemon; a configured live snapshot includes the handler's
+actual commands and plugins.
+
+Contracts describe arguments, outcomes, result fields and execution effects.
+Their fingerprints are recorded in reviewed playbook bundles; changing a
+contract can require rebuilding and reviewing those bundles. Generated
+registrations broaden discovery without claiming that every handler has an
+individually authored typed adapter. Generated invocation requires an actual
+playbook-engine invocation with ready private-value storage; discovery alone
+does not authorize direct contract execution.
+
+`src/surface_schema.py` supplies offline enum discovery. The current shared
+inventory is `src/commands/command_inventory.py`; surface design history is
+[aq-surface](../design/aq-surface.md). API/client generation belongs to
+[api-and-clients](api-and-clients.md). Generated references and clients must
+be regenerated from their sources, never edited by hand.
 
 ### 2.6 The event bus
 
-`src/event_bus.py` is a small, in-process, non-durable publish/subscribe
-bus. Its event types are declared in `src/event_schemas.py`, which has 224
-schemas.
+`src/event_bus.py` is an in-process, non-durable publish/subscribe bus;
+`src/event_schemas.py` declares event payload schemas.
 
-- `emit(event_type, payload)` stamps `event_id` and `_event_type` onto the
-  payload dict and validates it against the schema. An invalid payload
-  raises `EventValidationError` in development and logs a warning in
-  production.
-- It then awaits each direct subscriber, followed by each `"*"` wildcard
-  subscriber, **sequentially and without catching their exceptions**. A
-  handler's exception reaches the code that emitted.
-- It records `seen_event_types` for the doctor check `events.registry`, and
-  offers `wait_for` / `waiter` for code that needs to await a specific event.
+- `subscribe(event_type, handler, filter=None)` returns an idempotent
+  unsubscribe function. Filters compare top-level payload keys for equality.
+- `emit` adds an `event_id` if absent and records the attempted type in
+  `seen_event_types`, then validates the payload when validation is enabled.
+  Invalid registered payloads raise `EventValidationError` only when
+  `env == "dev"`; other environments log and continue. Unknown types are
+  observed for doctor checks but do not acquire a schema automatically.
+- After validation, `emit` stamps `_event_type`. A non-empty payload dict
+  supplied by the caller is mutated. Empty/absent payloads use a new dict.
+- Specific subscribers run before wildcard (`"*"`) subscribers, sequentially.
+  Async handlers are awaited; synchronous handlers run inline. Subscriber
+  exceptions propagate to the emitter and stop the remaining delivery.
+- `waiter` subscribes before a caller checks its condition, avoiding the
+  subscribe-after-read race. `wait_for` cleans up its subscription and returns
+  `None` on timeout. Neither persists the wait across a process restart.
 
-There are 13 subscription sites. The three wildcard subscribers are:
-
-- the playbook runtime (`src/playbooks/runtime.py:263`), which turns each
-  event into its own asyncio task under a detached commit context, so a slow
-  playbook never blocks the emitter;
-- the gate sweep (`core.py:3986`);
-- the dashboard WebSocket (`src/api/websocket.py:254`).
-
-Because the bus is not durable, an event emitted while nobody is listening is
-gone. That is why the scheduler keeps its periodic backstop, and why durable
-work (integration, message delivery, waits) keeps its own tables and
-reconcilers rather than trusting the bus.
+Subscribers include playbooks, gate handling, the dashboard WebSocket and
+scheduler wakeups. The playbook runtime schedules detached work rather than
+awaiting an entire playbook in the emitter. Durable waits, integration and
+message delivery use database records and reconcilers; they do not depend on
+retaining bus events. Operational event storage is a separate mechanism.
 
 ### 2.7 Database, schema and the migration guard
 
 PostgreSQL is the only backend. The schema is SQLAlchemy Core `Table`s in
-`src/database/tables.py`, which has 187 tables. Queries live in 81 modules
-under `src/database/queries/`. `migrations/versions/` holds a squashed
-baseline plus incremental revisions, with head `a00000000102`. The how-to is
+`src/database/tables.py`. Queries live under `src/database/queries/`.
+`migrations/versions/` holds a squashed baseline plus incremental revisions.
+Use read-only `alembic heads` to identify this checkout's head; a hard-coded
+revision here would become stale with the next schema change. The how-to is
 [`../../guides/migrations.md`](../../guides/migrations.md), and the tables
 are documented in [`../../reference/database/`](../../reference/database/README.md).
 **Each system spec names the tables it owns.** daemon-core owns the schema
 mechanism, not the meaning of individual tables.
 
 `src/database/engine.py` creates the engine (`create_postgres_engine`, with
-an `ObservedQueuePool` for pool metrics). `run_schema_setup`
-(`engine.py:412`) does the following:
-
-1. Pre-flight checks `alembic_version`.
-2. Asks the guard for a decision.
-3. Either upgrades or verifies the schema is at head.
-4. Runs startup data migrations.
+an `ObservedQueuePool` for pool metrics). `run_schema_setup` asks the migration
+guard whether to verify or migrate, then follows the corresponding schema
+path, including Alembic preflight where migration is permitted. The adapter's
+`initialize()` separately runs startup data normalisations after schema setup.
+Verification never grants permission to upgrade production.
 
 `src/database/migration_guard.py` exists because of the 2026-09-02 incident,
 in which worker sessions stamped the production database with revisions that
@@ -355,15 +379,18 @@ had not been merged. It separates two questions:
   `AQ_DB_SCOPE=worker` and a refusal sentinel in place of the database URL.
 - **What they point at** is answered by `is_production_database`.
 
-`migration_decision` returns `MIGRATE` only for the daemon or an operator
-against the production database, or for tests against their own database.
-Everyone else gets `VERIFY`. Verifying raises one of these:
+`migration_decision` returns `MIGRATE` for any non-production database.
+For production it returns `MIGRATE` only for daemon/operator scope; all other
+scopes get `VERIFY`. Verification can raise:
 
 - `SchemaBehindCode`: "schema behind code; ask the operator to upgrade";
 - `SchemaAheadCode`, subject to `SchemaAheadPolicy`;
 - `MigrationRefused`.
 
-That refusal is the guard working, not a bug to route around.
+That refusal is the guard working. The optional schema-ahead policy can
+accept a newer additive descendant only with retained migration-source proof
+and the configured distance policy. It does not stamp, downgrade or upgrade
+that database; see [migrations](../../reference/database/migrations.md).
 `src/database/additive_migrations.py` is a conservative static check that a
 release's revisions are additive. A revision it cannot prove additive (raw
 SQL, imported helpers) requires a breaking release. `schema_key.py` gives the test template databases a schema identity
@@ -371,13 +398,17 @@ for caching.
 
 ### 2.8 Models
 
-`src/models.py` holds the dataclasses and enums shared across systems,
-including `TaskStatus` (9 states), task, agent and session records. The
-transition rules between task states (`src/state_machine.py`) and what each
-state means for readiness belong to [task-graph](task-graph.md). Today the
-`TaskStatus` docstring states that transitions are not enforced in
-production. The planned hibernation work changes that for suspended work
-(§6.2).
+`src/models.py` holds shared dataclasses and enums. `TaskStatus` includes
+DEFINED, READY, ASSIGNED, IN_PROGRESS, WAITING, HIBERNATED, RESUME_PENDING,
+WAITING_INPUT, PAUSED, COMPLETED, FAILED and BLOCKED. The suspended set is
+WAITING/HIBERNATED/RESUME_PENDING; the open set excludes terminal
+COMPLETED/FAILED/BLOCKED states.
+
+`transition_task` in `src/state_machine.py` validates transitions. Invalid
+moves raise when `state_machine.enforce` is enabled or either state is
+suspended, subject to explicit guarded overrides. Legacy transitions outside
+that set warn by default (`enforce` defaults to false). State meanings and
+readiness belong to [task-graph](task-graph.md).
 
 ### 2.9 The seams that hold nothing
 
@@ -392,19 +423,20 @@ production. The planned hibernation work changes that for suspended work
 
 ### 2.10 Shutdown and restart
 
-`Orchestrator.shutdown()` (`core.py:3249`) runs in this order:
+`Orchestrator.shutdown()` (`core.py`) runs in this order:
 
-1. Cancel the deploy check and pending claim preparations.
+1. Cancel the deploy check and pending claim preparations; stop ready-owner
+   recovery.
 2. Stop message delivery.
 3. Close provider availability.
 4. Wait for pool launches, then cancel them.
 5. Wait 10 s for running task coroutines.
-6. Cancel the branch sweep.
-7. Wait 30 s for the layout step.
+6. Wait up to 30 s for the branch sweep, then cancel it if necessary.
+7. Wait up to 30 s for the layout step, then cancel it if necessary.
 8. Stop the spec watcher and the integration service.
-9. Cancel the promotion check.
+9. Cancel the promotion check and bound its cancellation wait to 5 s.
 10. Stop the record outbox and the knowledge-generation loop.
-11. Stop the vault, config and timer services.
+11. Unsubscribe delivery callbacks and stop the vault, config and timer services.
 12. Shut down the playbook manager.
 13. Close the database.
 
@@ -416,7 +448,7 @@ the restarted daemon re-adopts them (§2.2, step 4). Only `aq stop` without
 
 ### 3.1 Who owns `src/orchestrator/`
 
-The package is split by file across systems 1, 3 and 6. Every orchestrator
+The package is split by responsibility across several systems. Every orchestrator
 file has one owning spec. Files the inventory left unassigned are assigned
 here.
 
@@ -428,7 +460,7 @@ here.
 | `lifecycle.py` (re-checks BLOCKED/PAUSED work that has stopped moving; previously unassigned) | [2 task-graph](task-graph.md) |
 | `provider_failover.py` | [12 providers](providers.md) |
 
-`core.py` is 4,980 lines and holds methods for most of those systems. A
+`core.py` holds methods for most of those systems. A
 method's owner is the system whose behaviour it implements, wherever the method
 sits. daemon-core owns *where in the cycle it runs* and *how its failure
 is isolated*.
@@ -444,7 +476,7 @@ is isolated*.
 | 6 | [projects-workspaces-git](projects-workspaces-git.md) | Workspace preparation at launch, slot reaping in phase 4, async git only. |
 | 7 | [integration-and-delivery](integration-and-delivery.md) | Started in `initialize`, but runs its own reconciliation loop. The cycle runs the branch sweep and deploy check. |
 | 8 | [playbooks](playbooks.md) | The largest event subscriber. Playbooks change state only by calling commands. Gates, timers and agent cron tick in the cycle. |
-| 9 | [messaging-and-human-asks](messaging-and-human-asks.md) | The adapter and report outbox are bound in `main.py`; `_deliver_messages` and the delivery ticks run in the cycle. |
+| 9 | [messaging-and-human-asks](messaging-and-human-asks.md) | The adapter/report outbox are bound in `main.py`; session delivery runs independently, with maintenance and other delivery ticks in the cycle. |
 | 10 | [supervisors-and-policy](supervisors-and-policy.md) | Operator decisions and the operator-session limits are steps in `execute`. Supervisor tasks are excluded from `_schedule`. |
 | 11 | [reviews-and-knowledge](reviews-and-knowledge.md) | `spec_ingest_reconcile` runs in phase 3 as a service principal; the review notifier starts in `main.py`. |
 | 12 | [providers](providers.md) | `provider_availability.tick` opens phase 2. Provider state changes wake the cycle. |
@@ -457,7 +489,8 @@ is isolated*.
 
 ## 4. Design principles and invariants
 
-These hold today, and changes to daemon-core must keep them.
+These are the architectural rules. The implementation gaps in §5 qualify
+claims about complete enforcement today.
 
 1. **One write path.** Every state change goes through
    `CommandHandler.execute`, including changes made by the cycle and by
@@ -495,160 +528,46 @@ These hold today, and changes to daemon-core must keep them.
 12. **No in-process agent runtime.** Agents are external CLIs in tmux; a
     missing harness fails the launch.
 
-## 5. Known gaps
+## 5. Known gaps and limits
 
-- **Stale docstrings.** The module docstring of `src/orchestrator/core.py`
-  describes `adapter.start`/`wait`, `src/adapters/` and `_phase_verify`,
-  none of which exist. The `CommandHandler` docstring cites
-  `src/tool_registry.py`, `src/supervisor.py` and `src/discord/commands.py`,
-  which are also gone. `src/database/__init__.py` lists a `schema.py` and
-  SQLite PRAGMA handling. A reader new to the code is misled by all three.
-- **Three return paths break the `success` contract.** `execute` returns a
-  bare `{"error": ...}` with no `success` key for a failed plugin command
-  (`handler.py:1175`), an unknown command (`handler.py:1182`) and an
-  unexpected exception (`handler.py:1193`). Callers must treat a missing
-  `success` as failure. The hibernation epic maps `InvalidTransition` to a
-  proper refusal (§6.2), but not these three.
-- **The event bus is fragile.** A subscriber's exception propagates to the
-  emitter, so a buggy dashboard or gate handler can fail a command that has
-  already committed. `emit` mutates the caller's payload dict. Events are not
-  durable, so anything missed while no subscriber is listening is lost.
-- **The cycle is long and of mixed ownership.** `run_one_cycle` drives work
-  for most of the other systems from one method in a 4,980-line file. Only some steps
-  are individually isolated, and a slow step delays everything after it.
-  The integration-ownership size budget
-  (`tests/integration_ownership.py`, `tests/integration_ownership.json`)
-  charges new lines in `Orchestrator.__init__` and `run_one_cycle`. That
-  slows growth but does not split the method.
-- **Two loops, one daemon.** The integration service runs its own durable
-  reconciliation loop, the pool watchdog runs beside the cycle, and the
-  waits task will join them (§6.2). Their ordering relative to the cycle is
-  not written down anywhere except in code.
-- **`src/services/` is empty.** Services are constructed ad hoc in
-  `Orchestrator.__init__` and `main.py`, so there is no single list of what
-  the daemon runs.
-- **Authorization audits rather than enforces.**
-  `security.capability_enforcement` defaults to `"audit"`. A worker token
-  calling an operator command is logged, not refused, unless the command's
-  own scope check refuses it.
-- **Task transitions are not enforced.** `TaskStatus` transitions are
-  checked by the state machine only where callers use it (§2.8).
-- **Historical specs are not marked superseded by this one.**
-  [`../orchestrator.md`](../orchestrator.md),
-  [`../command-handler.md`](../command-handler.md),
-  [`../event-bus.md`](../event-bus.md), [`../main.md`](../main.md),
-  [`../database.md`](../database.md) and
-  [`../models-and-state-machine.md`](../models-and-state-machine.md) still
-  read as the subsystem description. Their banner should point here once the
-  system-spec set is accepted.
+- **Command-boundary bypass:** the cycle invokes `_cmd_job_reconcile` directly.
+  It therefore skips `execute`'s authorization, result classification and
+  command-event boundary. This is an implementation discrepancy to review,
+  not a second public write surface.
+- **Subscriber failure after a commit:** bus exceptions propagate. An emitter
+  may have committed its database mutation before a subscriber fails, so a
+  failed response does not necessarily mean nothing changed. Consumers must
+  use durable evidence for recovery. The bus also mutates non-empty payloads.
+- **Partial timeout coverage:** session-cascade stages are bounded, while an
+  unbounded await elsewhere can still delay the cycle. The pool watchdog and
+  independent services do not pre-empt synchronous blocking code.
+- **Legacy transition grace:** suspended-state moves are enforced, but other
+  invalid legacy transitions only warn unless state-machine enforcement is on.
+- **Stale source docstrings:** `src/orchestrator/core.py`,
+  `src/commands/handler.py` and `src/database/__init__.py` still contain obsolete
+  module/runtime or SQLite descriptions. This audit changes documentation
+  files only; source-docstring cleanup needs a separate code change.
+- **Composition is distributed:** `src/services/` remains empty apart from its
+  initializer. `Orchestrator.__init__` and `main.py` compose the actual services.
 
-## 6. Planned work
+## 6. Recent changes verified in this snapshot
 
-Tasks and reviews were re-queried on 2026-10-20 for this section. No open
-epic is about daemon-core alone. The items below change daemon-core files or
-invariants as part of another system's work.
+These commits explain material differences from the 2026-10-20 version of this
+page. They are history, not a live task queue or a promise about future work.
 
-### 6.1 Fast and smooth integration: `stark-willow-95` (IN_PROGRESS)
+| Commit | Implemented behaviour |
+|---|---|
+| `000433935` | Event-driven scheduler wakeups with minimum spacing and a periodic backstop. |
+| `195dd5435` | Shared command descriptors and generated contract registrations. |
+| `88ec58400`, `6c6b88df2` | Structured command fallback failures, capability enforcement distinctions and independent resource authorization. |
+| `094b61ab4` | Git truth reconciliation through the integration service's maintenance loop. |
+| `5c96f5b52` | Verified waits and suspended task states landed in `dev`; the waits loop and mutation fence are current behaviour. |
+| `64c3472b9`, `fe8619598` | Integration idle/busy dispatch and unified admission landed; their policy belongs to the integration and scheduling specs. |
+| `083a96593` | Recover stale jobs before workspace cleanup and bound session-cascade stages. |
 
-Design: `~/.agent-queue/vault/projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md`.
-Its review `rev-fair-lantern` is *approved* at revision 2, although the
-file's frontmatter says revision 3. The decision notes are
-`2026-10-13-fast-smooth-integration-rev2-decisions.md`,
-`2026-10-13-fast-smooth-integration-rev3-playbook-policy.md` and
-`2026-10-20-fast-smooth-integration-rev4-retrospective-decisions.md`. The
-rev4 decisions absorb the withdrawn stall retrospective (`rev-quick-pinnacle`,
-*withdrawn*). The epic branch is
-`aq/epic/fast-smooth-integration-implementation`. Integration behaviour is
-[integration-and-delivery](integration-and-delivery.md). What it changes
-here:
-
-- **`.7` (READY): replace the timed train window with idle/busy dispatch.**
-  The vision spec lists this as daemon-core's open work. The integration
-  train dispatches when work is ready and capacity is idle, instead of on a
-  timer. Its acceptance includes "a fake clock with no events changes
-  nothing", which is invariant 5 applied to integration. It depends on
-  `bold-zenith-11.7`, `.8`, `.11` and `.12`.
-- **`.19` (COMPLETED on the epic branch, not yet in `dev`): the git-truth
-  reconciler.** `initialize` builds a `GitTruthReconciler`. Every cycle runs it
-  through the command `integration_reconcile_git_truth` under
-  `ExecutionPrincipal.service("git-truth-reconciler")`, replacing the
-  earlier owner-recovery sweep entry. It adds the
-  `integration.readiness_changed` event schema. This is a new phase-3 step
-  that goes through the one write path.
-- **`.13` (READY): one admission view.** The frontier, pools, `aq task
-  explain` and the delivery guards will share one admission decision. Several
-  of `_schedule`'s exclusions (§2.3) become a single call.
-- **`.3` (READY): redrive stuck delivery once.**
-- `.11` (DEFINED: warm workspaces and compiler cache) and the DEFINED
-  `.5`, `.8`, `.9`, `.14`, `.15`, `.17`, `.18` belong to systems 6, 7 and 16.
-  `.1`, `.2`, `.6` and `.20` are completed.
-
-### 6.2 Event-driven hibernation and verified waits: `bold-zenith-11` (IN_PROGRESS)
-
-Design: `2026-10-13-event-driven-agent-hibernation-and-verified-waits.md`
-(review `rev-bold-pinnacle`, *approved*, revision 2; decisions in
-`2026-10-13-hibernation-rev2-decisions.md`). Implementation plan:
-`2026-10-13-event-driven-agent-hibernation-and-verified-waits-implementa.md`
-(review `rev-fleet-orbit`, *approved*, revision 1). Every child except `.22`
-is COMPLETED on the epic branch
-`aq/epic/event-driven-hibernation-and-verified-waits-implementation`
-(50f65ef43), which has not reached `dev`. The behaviour belongs to
-[sessions-and-harnesses](sessions-and-harnesses.md) and
-[task-graph](task-graph.md). When the branch lands it changes daemon-core in
-these ways:
-
-- **Composition root.** `main.py` sets `orch.wait_service =
-  WaitService(orch)` and starts an `aq-waits` task next to the review
-  notifier, cancelled in the same `finally`. That is another loop beside
-  the cycle (§5).
-- **Cycle.** `wait_service.tick()` runs as recovery at the
-  `AgentWaitReconciler` site in phase 3. A config reload refreshes the wait
-  source commit.
-- **Command pipeline.** `CommandHandler` gains `WaitV2CommandsMixin` and a
-  `_wait_mutation_fence` step that refuses a mutation conflicting with a
-  pending wait. `InvalidTransition` becomes
-  `{"success": False, "code": ..., "error": ...}` instead of an exception.
-- **Models.** `TaskStatus` gains WAITING, HIBERNATED and RESUME_PENDING, plus
-  `SUSPENDED_TASK_STATUSES` and `OPEN_TASK_STATUSES`. Transition validation
-  is **enforced** for suspended work, closing part of the §5 gap.
-- **Schema.** New packages `src/waits` and `src/wait_runtime`, about 372 new
-  lines in `tables.py`, and migrations `a00000000103` to `a00000000106`.
-  Sibling branches that also claim `a00000000103` must re-chain after
-  rebasing.
-- **`.22` (READY): the cutover.** It flips the defaults, refuses v1 wait
-  bodies with `wait.upgrade_required`, ships the doctor checks
-  `waits.schema` and `waits.orphans`, and adds the runbook.
-
-### 6.3 Distributed worker nodes (in review, not filed)
-
-`2026-10-06-distributed-worker-nodes.md`, review `rev-eager-quest`, *in
-review*, revision 2. If accepted, tmux execution moves out of the daemon into
-a worker service, even on a single machine. The launch path in §2.3 would
-then become a request to a node, session adoption and `_reconcile_sessions`
-would read node state, and the daemon would stop being the process that owns
-agent sessions. No tasks are filed. The related
-`2026-10-06-containerized-sandboxed-and-team-hosted-agent-queue.md`
-(`rev-steady-ember`) is *withdrawn*.
-
-### 6.4 Human-ask cutover: `calm-grove-14` (READY), `vivid-pinnacle-60`, `vivid-rapids-36`
-
-This finishes moving human questions onto the ask model
-([`../design/human-ask-cutover-status.md`](../design/human-ask-cutover-status.md)).
-daemon-core is touched only lightly, through the report and conversation
-outbox binding in `main.py` (`_bind_report_outbox`,
-`_bind_conversation_outbox`). The rest is
-[messaging-and-human-asks](messaging-and-human-asks.md).
-
-### 6.5 The system-spec set: `eager-vault-55` (this epic)
-
-The inventory (`rev-bright-rapids`) and the vision (`rev-smart-nexus`) are in
-review. This spec is one of the 18 children. When the set is accepted, the
-historical banners in §5 should point to the matching system spec.
-
-Other open work was checked and does not change daemon-core: the held
-spec-ingestion phases (`sharp-cascade-53`, `nimble-lantern-37`,
-`calm-orbit-69`), the playbook epics (`wise-orbit-24`, `agile-vault-38`,
-`clear-impact-72`) and the operational promote task.
+Distributed worker-node designs remain proposals: this checkout still launches
+CLI agents through tmux-backed harness/session machinery. Historical design
+specs do not establish that a proposal has shipped.
 
 ## 7. Further reading
 
