@@ -16,7 +16,7 @@ from src.database.tables import task_session_attempts
 from sqlalchemy import or_, select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid
 from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 from src.models import (
     SYSTEM_KIND_SCOPE,
@@ -750,9 +750,23 @@ async def _probe_workspace_checkout(
         if status:
             return None
 
-        local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
-        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        try:
+            local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
+        except GitError:
+            # A preparation that failed before checkout never created the
+            # branch here: nothing to detach. Release still needs HEAD on a
+            # refreshed origin ref, so a reset cannot drop unpushed commits.
+            if current != "HEAD" or await git._arun_unlocked(
+                ["for-each-ref", branch_ref], cwd=checkout
+            ):
+                return None
+            published = await git._arun_unlocked(
+                ["for-each-ref", "--count=1", "--contains", head, "refs/remotes/origin/"],
+                cwd=checkout,
+            )
+            return head if published else None
+        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         if not local_tip or local_tip != remote_tip:
             return None
         if head != local_tip:
