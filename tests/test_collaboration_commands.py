@@ -17,7 +17,6 @@ from src.commands import CommandHandler
 from src.commands.contracts import CONTRACTS
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR
 from src.config import AppConfig
-from src.database import Database
 from src.database.tables import messages, sessions, tasks
 from src.models import (
     Agent,
@@ -28,7 +27,6 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from tests.db_fixtures import lease_dsn
 
 NOW = time.time()
 COMMANDS = [
@@ -43,9 +41,8 @@ HELD = {"one": "p", "two": "p", "four": "p", "foreign": "q", "foreign2": "q"}
 
 
 @pytest.fixture
-async def env():
-    db = Database(lease_dsn("collaboration-commands"))
-    await db.initialize()
+async def env(reuse_database):
+    db = await reuse_database("collaboration-commands")
     await db.create_project(Project(id="p", name="P"))
     await db.create_project(Project(id="q", name="Q"))
     for task_id, project_id in HELD.items():
@@ -122,7 +119,6 @@ async def env():
     bus = SimpleNamespace(emit=AsyncMock())
     orch = SimpleNamespace(db=db, bus=bus, plugin_registry=None)
     yield SimpleNamespace(db=db, bus=bus, commands=CommandHandler(orch, config))
-    await db.close()
 
 
 def worker(task_id="one"):

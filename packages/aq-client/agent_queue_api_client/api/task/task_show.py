@@ -65,10 +65,10 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskShowRequest,
 ) -> Response[TaskShowResponse | TaskShowResponse422]:
-    """Full detail for one task in a single round trip: the task's fields, its dependency view and
+    """Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
-     Full detail for one task in a single round trip: the task's fields, its dependency view and
+     Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
     Args:
@@ -98,10 +98,10 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskShowRequest,
 ) -> TaskShowResponse | TaskShowResponse422 | None:
-    """Full detail for one task in a single round trip: the task's fields, its dependency view and
+    """Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
-     Full detail for one task in a single round trip: the task's fields, its dependency view and
+     Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
     Args:
@@ -126,10 +126,10 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskShowRequest,
 ) -> Response[TaskShowResponse | TaskShowResponse422]:
-    """Full detail for one task in a single round trip: the task's fields, its dependency view and
+    """Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
-     Full detail for one task in a single round trip: the task's fields, its dependency view and
+     Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
     Args:
@@ -157,10 +157,10 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskShowRequest,
 ) -> TaskShowResponse | TaskShowResponse422 | None:
-    """Full detail for one task in a single round trip: the task's fields, its dependency view and
+    """Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
-     Full detail for one task in a single round trip: the task's fields, its dependency view and
+     Detail for one task (bounded preview for workers): the task's fields, its dependency view and
     subtasks, its attached context rows, and its labels. Backs `aq task show|details`.
 
     Args:

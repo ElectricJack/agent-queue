@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -69,6 +71,8 @@ class TestBuildConfigSchema:
         assert props["scheduling"]["type"] == "object"
         assert props["validate_events"]["type"] == "boolean"
         assert props["env"]["type"] == "string"
+        assert "default" not in props["data_dir"]
+        assert "default" not in props["workspace_dir"]
 
     def test_nested_dataclass_resolved(self):
         schema = build_config_schema()
@@ -242,6 +246,59 @@ class TestWriteSection:
         assert "merge_ci_policy: off\n" in cfg.read_text()
 
 
+class TestUpdateSectionKeys:
+    def test_sets_and_removes_keys_leaving_the_rest_as_written(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "# top comment\n"
+            "discord:\n"
+            "  bot_token: ${MY_TOKEN}  # a reference\n"
+            "  channels:\n"
+            "    channel: aq-control\n"
+            "  guild_id: '1'\n"
+            "  conversation: {enabled: off}\n"
+        )
+        update_section_keys(
+            str(cfg),
+            "discord",
+            set_values={"channel_id": "1234567890123456789", "authorized_users": []},
+            remove=["channels", "absent"],
+        )
+
+        text = cfg.read_text()
+        assert "bot_token: ${MY_TOKEN}  # a reference\n" in text
+        assert "# top comment" in text
+        assert "conversation: {enabled: off}" in text
+        assert text.index("guild_id") < text.index("channel_id")  # appended
+        section = yaml.safe_load(text)["discord"]
+        assert "channels" not in section
+        assert section["channel_id"] == "1234567890123456789"  # stays a string
+        assert section["authorized_users"] == []
+
+    def test_creates_the_section_when_absent(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("scheduling:\n  hours: 12\n")
+        update_section_keys(str(cfg), "discord", set_values={"project_id": "p"})
+
+        assert yaml.safe_load(cfg.read_text()) == {
+            "scheduling": {"hours": 12},
+            "discord": {"project_id": "p"},
+        }
+
+    def test_refuses_a_section_that_is_not_a_mapping(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("discord: off\n")
+        with pytest.raises(ValueError):
+            update_section_keys(str(cfg), "discord", set_values={"project_id": "p"})
+        assert cfg.read_text() == "discord: off\n"
+
+
 class TestGetConfigCommand:
     """End-to-end tests for the _cmd_get_config handler via CommandHandler."""
 
@@ -276,6 +333,19 @@ class TestGetConfigCommand:
         assert result["config"]["discord"]["bot_token"] == "${MY_TOKEN}"
         assert "scheduling" in result["hot_reloadable"]
         assert "discord" in result["restart_required"]
+
+    @pytest.mark.asyncio
+    async def test_config_exposes_install_tracking_defaults_and_deployment_history(self, handler_with_config):
+        from src.install.deploy_history import record_deploy
+
+        handler, _ = handler_with_config
+        record_deploy(Path(handler.config.data_dir), "rolled_back", branch="dev", target="b" * 40,
+                      message="Previous version restored", automatic=True)
+        result = await handler.execute("get_config", {"section": "deploy"})
+        assert result["config"]["deploy"]["track_branch"] is None
+        assert result["config"]["deploy"]["poll_interval_seconds"] == 300
+        assert result["deployment_history"][-1]["outcome"] == "rolled_back"
+        assert result["deployment_history"][-1]["branch"] == "dev"
 
     @pytest.mark.asyncio
     async def test_section_filter(self, handler_with_config):

@@ -1,0 +1,217 @@
+{
+  "shared_definitions": {
+    "src/database/queries/task_queries.py::INTEGRATION_REWORK_AT_KEY": {
+      "baseline_span": [
+        95,
+        98
+      ],
+      "landing_span": [
+        94,
+        97
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TERMINAL_BLOCKED_CONTEXTS": {
+      "baseline_span": [
+        199,
+        217
+      ],
+      "landing_span": [
+        198,
+        216
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition": {
+      "baseline_span": [
+        1116,
+        1623
+      ],
+      "landing_span": [
+        1106,
+        1613
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._delete_one": {
+      "baseline_span": [
+        1925,
+        2055
+      ],
+      "landing_span": [
+        1915,
+        2045
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._delete_task_body": {
+      "baseline_span": [
+        1863,
+        1914
+      ],
+      "landing_span": [
+        1853,
+        1904
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._insert_task_row": {
+      "baseline_span": [
+        294,
+        354
+      ],
+      "landing_span": [
+        293,
+        353
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._moved_task_repo_id": {
+      "baseline_span": [
+        734,
+        760
+      ],
+      "landing_span": [
+        724,
+        750
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Captures exact integration owner identities for pause fencing."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Row-local stopped-writer and retained branch-owner fence shared by slot-reset claim recovery; classifies ordinary claim ownership, never a ref or integration lifecycle transition."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked": {
+      "baseline_span": [
+        1002,
+        1049
+      ],
+      "landing_span": [
+        992,
+        1039
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._row_to_task": {
+      "baseline_span": [
+        2490,
+        2540
+      ],
+      "landing_span": [
+        2480,
+        2530
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._task_project_move_blockers_on": {
+      "baseline_span": [
+        568,
+        599
+      ],
+      "landing_span": [
+        558,
+        589
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.delete_task": {
+      "baseline_span": [
+        1820,
+        1862
+      ],
+      "landing_span": [
+        1810,
+        1852
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.recover_orphaned_pause": {
+      "baseline_span": [
+        921,
+        989
+      ],
+      "landing_span": [
+        911,
+        979
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.resume_task": {
+      "baseline_span": [
+        871,
+        920
+      ],
+      "landing_span": [
+        861,
+        910
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
+      "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.update_task": {
+      "baseline_span": [
+        605,
+        733
+      ],
+      "landing_span": [
+        595,
+        723
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_INTEGRATION_COMPLETION_TOKEN": {
+      "baseline_span": [
+        78,
+        81
+      ],
+      "landing_span": [
+        77,
+        80
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_INTEGRATION_WAKE_TOKEN": {
+      "baseline_span": [
+        83,
+        83
+      ],
+      "landing_span": [
+        82,
+        82
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_not_manually_paused": {
+      "reason": "Row-local operator-pause fence imported by hierarchical settlement and stale-claim recovery."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, workspaces": {
+      "baseline_span": [
+        36,
+        63
+      ],
+      "landing_span": [
+        35,
+        62
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::task_repository_id": {
+      "baseline_span": [
+        109,
+        113
+      ],
+      "landing_span": [
+        108,
+        112
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -23,10 +23,13 @@ from src.database.tables import (
     job_workspace_pins,
     messages,
     workspaces,
+    wait_source_events,
 )
 from src.jobs.result import build_result
 from src.models import AgentProfile, Workspace, RepoSourceType
 from tests.test_agent_wait_queries import NOW, env as _wait_env, result_count
+from tests.test_integration_checks import REQUIRED, row
+from tests.test_integration_ci_producers import HEAD, OTHER
 from tests.test_jobs_queries import values
 
 env = _wait_env
@@ -96,6 +99,58 @@ async def test_atomic_submit_replay_keeps_one_job_pin_and_wait(setup):
         for table in (jobs, job_workspace_pins, agent_waits):
             assert await conn.scalar(select(func.count()).select_from(table)) == 1
         assert await conn.scalar(select(workspaces.c.job_pin_count)) == 1
+
+
+async def test_managed_validation_uses_two_worker_calls_and_detects_failure_on_same_tick(
+    setup, tmp_path, monkeypatch
+):
+    """Representative 10-minute validation: no model calls while it runs.
+
+    Legacy 30-second monitoring needs submit + 20 polls + a result read.
+    The durable path needs submit/wait + consume; reconciliation is daemon work.
+    """
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["job_submit", "wait_get"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Explicit legacy rollback transport coverage.
+    config.resources.jobs.enabled = True
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    scope = dict(
+        kind="session", session_id="s", session_instance_token="token", project_id="p",
+        task_id="owner",
+    )
+    worker_commands = []
+
+    async def worker_call(name, args):
+        worker_commands.append(name)
+        return await handler.execute(name, {**args, "_scope": scope})
+
+    submitted = await worker_call("job_submit", dict(
+        preset="lint", argv=["src"], wait=True, idempotency_key="validation", claim_epoch=1,
+    ))
+    assert submitted["success"], submitted
+    job, wait_id = submitted["job"], submitted["wait"]["id"]
+    started_at = submitted["wait"]["created_at"]
+    for elapsed in range(30, 600, 30):
+        await setup.db.reconcile_agent_waits(now=started_at + elapsed)
+        assert (await setup.db.get_agent_wait(wait_id))["state"] == "active"
+        assert await setup.db.get_pending_messages("task", "owner") == []
+    await finish(setup, job, ended_at=started_at + 600, exit_code=1)
+    await setup.db.reconcile_agent_waits(now=started_at + 600)
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 600)
+    consumed = await worker_call("wait_get", dict(wait_id=wait_id, consume=True, claim_epoch=1))
+    assert consumed["success"], consumed
+    assert consumed["wait"]["digest"]["outcome"] == "failed"
+    assert consumed["wait"]["digest"]["exit_code"] == 1
+    assert consumed["wait"]["resolved_at"] == started_at + 600
+    assert worker_commands == ["job_submit", "wait_get"]
+    assert len(worker_commands) == 2 < 1 + 600 // 30 + 1
+    assert await result_count(setup.db, wait_id) == 1
+    assert await setup.db.get_pending_messages("task", "owner") == []
 
 
 async def test_active_wait_rolls_back_new_job_pin_and_reservation(setup):
@@ -206,6 +261,7 @@ async def test_scoped_submit_commands_return_wait_pointer_and_preserve_replay(se
         )
     )
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # This transport checks legacy wait records below.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -246,6 +302,64 @@ async def test_scoped_submit_commands_return_wait_pointer_and_preserve_replay(se
     assert cancelled["job"]["state"] == "cancelled"
     await setup.db.reconcile_agent_waits(now=1e10)
     assert (await setup.db.get_agent_wait(first["wait"]["id"]))["digest"]["outcome"] == "cancelled"
+
+
+async def test_pool_scope_resolves_live_claim_for_submit_and_reads(setup, tmp_path):
+    """Pool scopes carry no fixed task: the session's live claim is the owner."""
+    from dataclasses import replace
+
+    names = ["job_submit", "job_get", "job_list", "job_result", "job_logs", "wait_get"]
+    await setup.db.create_profile(
+        AgentProfile(
+            id="worker-codex", name="Worker", aq_commands=names, harness_tools=[], plugin_tools=[]
+        )
+    )
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Preserve the legacy rollback scope contract.
+    config.resources.jobs.enabled = True
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    pool = dict(kind="session", session_id="s", session_instance_token="token", project_id="p")
+    args = dict(preset="lint", argv=["src"], idempotency_key="pool", wait=True, claim_epoch=1)
+    first = await handler.execute("job_submit", {**args, "_scope": pool})
+    assert first["success"], first
+    job_id = first["job"]["id"]
+    assert (await setup.db.get_job(job_id))["task_id"] == "owner"
+    replay = await handler.execute("job_submit", {**args, "_scope": pool})
+    assert replay["wait"]["id"] == first["wait"]["id"]
+    got = await handler.execute("job_get", {"job_id": job_id, "_scope": pool})
+    assert got["success"], got
+    listed = await handler.execute("job_list", {"_scope": pool})
+    assert [row["id"] for row in listed["jobs"]] == [job_id]
+    result = await handler.execute("job_result", {"job_id": job_id, "_scope": pool})
+    assert result.get("error") != "not_found", result
+    foreign = await handler.execute(
+        "job_submit", {**args, "idempotency_key": "f", "task_id": "source", "_scope": pool}
+    )
+    assert foreign["error_code"] == "jobs.out_of_scope"
+    stale = await handler.execute(
+        "job_submit", {**args, "idempotency_key": "e", "wait": False, "claim_epoch": 7,
+                       "_scope": pool}
+    )
+    assert stale["error_code"] == "jobs.stale_claim"
+    # Another worker's session, and a replaced instance of this one, see nothing.
+    await setup.db.create_session(replace(setup.session, id="s2", instance_token="t2",
+                                          task_id="source", name="p-wait-2"))
+    other = dict(pool, session_id="s2", session_instance_token="t2")
+    replaced = dict(pool, session_instance_token="old")
+    for scope in (other, replaced):
+        assert (await handler.execute("job_get", {"job_id": job_id, "_scope": scope}))[
+            "error"
+        ] == "not_found"
+        assert (await handler.execute("job_result", {"job_id": job_id, "_scope": scope}))[
+            "success"
+        ] is False
+        assert (await handler.execute("job_list", {"_scope": scope}))["jobs"] == []
+    idle = dict(pool, session_id="s3", session_instance_token="t3")
+    await setup.db.create_session(replace(setup.session, id="s3", instance_token="t3",
+                                          task_id=None, name="p-wait-3"))
+    refused = await handler.execute("job_submit", {**args, "idempotency_key": "i", "_scope": idle})
+    assert refused["error_code"] == "jobs.out_of_scope"
 
 
 def test_public_contracts_transports_and_shipped_grants():
@@ -518,6 +632,30 @@ async def test_unwaited_job_nudges_once_and_prime_reads_create_no_messages(setup
         assert await conn.scalar(select(func.count()).select_from(messages)) == 1
 
 
+async def test_job_result_read_acknowledges_only_owner_notification(setup, tmp_path):
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["job_result"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    job = await setup.db.submit_job(job_values())
+    await finish(setup, job)
+    await setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+    key = f"job:{job['id']}:terminal"
+    await setup.db.claim_message_notification(key, now=NOW + 60, retry_delay=0)
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    observed = await handler.execute("job_result", {"job_id": job["id"]})
+    assert observed["success"] and observed["result"]
+    assert (await setup.db.get_message(key)).read_at is None
+    scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p")
+    read = await handler.execute("job_result", {"job_id": job["id"], "_scope": scope})
+    assert read["success"] and read["result"] == observed["result"]
+    receipt = await setup.db.get_message(key)
+    assert receipt.read_at is not None and receipt.delivered_at is not None
+    assert await setup.db.get_pending_messages("task", "owner") == []
+
+
 @pytest.mark.parametrize("boundary", ["message", "ack"])
 async def test_job_notification_failure_and_disabled_messaging_keep_durable_result(setup, boundary):
     from src.prime.sections import build_messages_section
@@ -604,3 +742,292 @@ async def test_prime_job_summary_is_bounded_and_selects_recent_terminal_results(
     assert completed[-1] in section.body and completed[0] not in section.body
     assert len(section.body.encode()) <= 6000 + len("Managed job results:\n")
     assert await setup.db.get_pending_messages("task", "owner") == []
+
+
+async def test_long_worker_compaction_checkpoint_preserves_claim_job_wait_gate_and_next_action(
+    setup, tmp_path, monkeypatch
+):
+    import subprocess
+    from src.event_bus import EventBus
+    from src.handoffs import HANDOFF_BYTES
+    from src.sessions.context import context_guidance
+
+    for argv in (["git", "init", "-b", "worker"],
+                 ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                  "commit", "--allow-empty", "-m", "base"]):
+        subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True)
+    await setup.db.update_session("s", work_dir=str(tmp_path))
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["task_handoff", "prime"],
+        harness_tools=[], plugin_tools=[]))
+    job = await submit(setup)
+    gate_id, _ = await setup.db.create_gate(
+        "p", "human", "Human approval required", waiter_task_ids=["owner"])
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.security.capability_enforcement = "enforce"
+    bus = EventBus()
+    restarts = []
+    bus.subscribe("session.restart_requested", lambda event: restarts.append(event))
+    orch = SimpleNamespace(db=setup.db, bus=bus, plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p",
+                 task_id="owner")
+    reading = {"input_tokens": 170000, "source": "codex last request input",
+               "observed_at": NOW, "transcript_path": str(tmp_path / "raw.jsonl")}
+    context_reader = AsyncMock(return_value=reading)
+    monkeypatch.setattr("src.sessions.context.read_context", context_reader)
+    assert "threshold is reached" in context_guidance(config, setup.session, reading)
+    args = dict(
+        auto=True, claim_epoch=1, goal="Finish owner task", next_step="Read the existing job result",
+        waiting_for=job["wait"]["id"], constraints=["Keep the human approval gate"],
+        evidence=["Earlier failing test: exact error; raw /tmp/validation.log"],
+        do_not_repeat=["Do not resubmit the running validation"], _scope=scope,
+    )
+    saved = await handler.execute("task_handoff", args)
+    assert saved.get("success"), saved
+    assert not saved["restart_requested"]
+    # Simulate native PreCompact, whose empty hook saves only authoritative facts.
+    hook = await handler.execute("task_handoff", dict(auto=True, claim_epoch=1, _scope=scope))
+    assert hook.get("success"), hook
+    rows = await setup.db.get_task_contexts("owner")
+    snapshot = json.loads(next(row["content"] for row in rows if row["id"] == hook["handoff_id"]))
+    facts = snapshot["facts"]
+    assert snapshot["facts_only"] and facts["claim_epoch"] == 1 and facts["session_id"] == "s"
+    assert facts["job_ids"] == [job["id"]] and facts["wait_ids"] == [job["wait"]["id"]]
+    assert facts["open_gates"][0]["id"] == gate_id
+    assert facts["context"] == reading and facts["work_dir"] == str(tmp_path)
+    # Native compaction reduces context, then SessionStart re-primes the same owner.
+    context_reader.return_value = {**reading, "input_tokens": 25000}
+    primed = await handler.execute("prime", {"_scope": scope})
+    assert primed.get("success"), primed
+    wake = next(section["body"] for section in primed["sections"] if section["key"] == "messages")
+    assert "Read the existing job result" in wake and "Keep the human approval gate" in wake
+    assert job["id"] in wake and job["wait"]["id"] in wake and gate_id in wake
+    assert "Earlier failing test: exact error" in wake
+    assert "25000 tokens" in primed["body"]
+    assert restarts == []
+    assert (await setup.db.get_task("owner")).claim_epoch == 1
+    assert (await setup.db.get_session("s")).task_id == "owner"
+    assert (await setup.db.get_session("s")).state == "running"
+    assert (await setup.db.get_gate(gate_id))["status"] == "open"
+    assert (await setup.db.get_agent_wait(job["wait"]["id"]))["state"] == "active"
+    assert len(await setup.db.list_jobs(task_id="owner")) == 1
+    assert len(wake.encode()) < HANDOFF_BYTES + 2048
+    # A terminal result pointer also survives; wait_resumed_at is not proof of consumption.
+    await finish(setup, job)
+    await setup.db.reconcile_agent_waits(now=NOW + 60)
+    from src.handoffs import collect_facts
+
+    after = await collect_facts(setup.db, await setup.db.get_task("owner"))
+    assert after["waits"][0]["result_ref"] is not None
+    assert after["waits"][0]["state"] == "satisfied"
+    assert after["jobs"] == []
+
+
+async def test_terminal_job_source_event_matches_result_and_stale_cas_is_silent(setup):
+    job = await submit(setup)
+    terminal = await finish(setup, job)
+    assert await setup.db.transition_job(job["id"], 1, "failed") is None
+    async with setup.db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == f"job:{job['id']}",
+        ))).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["source_generation"] == 1
+    assert rows[0]["source_revision"] == str(terminal["state_version"])
+    assert rows[0]["occurred_at"] == terminal["ended_at"]
+
+
+# Verified ci_check / ci_run waits observed through the composed CheckWatcher.
+
+
+def check_scope():
+    from src.waits.conditions import Scope
+
+    return Scope("p", "task", "owner", "s", "token", 1)
+
+
+@pytest.fixture
+async def watched(setup):
+    from src.commands.wait_v2_commands import service_source_commit
+    from src.database.tables import repos, tasks
+    from src.integration.checks import ExactChecks
+    from src.waits.watchers.ci import CheckWatcher, wait_source_handlers
+
+    async with setup.db._engine.begin() as conn:
+        await conn.execute(repos.insert().values(
+            id="repo", project_id="p", url="https://example/repo",
+            checkout_base_path="/tmp/repo",
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(repo_id="repo"))
+    provider = SimpleNamespace(required=REQUIRED, observe=AsyncMock(return_value=[]))
+    git = SimpleNamespace(acommit_head_sha=AsyncMock(side_effect=lambda name, sha, **_: sha))
+    config = AppConfig()
+    config.wait_policy = SimpleNamespace(v2_enabled=True, v1_bodies="translate")
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()),
+                           plugin_registry=None, wait_v2_handlers=wait_source_handlers())
+    handler = CommandHandler(orch, config)
+    clock = SimpleNamespace(now=NOW)
+    exact = ExactChecks(setup.db, provider, clock=lambda: clock.now)
+    watcher = CheckWatcher(
+        setup.db, service_source_commit(handler, "wait-check-watcher"), git, checks=AsyncMock(return_value=exact),
+        repository=AsyncMock(return_value=SimpleNamespace(full_name="o/r")),
+        clock=lambda: clock.now,
+    )
+    return SimpleNamespace(db=setup.db, env=setup, provider=provider, git=git, config=config,
+                           handler=handler, watcher=watcher, clock=clock)
+
+
+def check_condition(kind="ci_check", sha=HEAD, **identity):
+    identity = identity or ({"check_name": "unit"} if kind == "ci_check" else {"run_id": "77"})
+    return {"kind": kind, "repository_id": "repo", "head_sha": sha, **identity}
+
+
+async def register_check(w, condition, key="check"):
+    from src.database.queries.wait_queries import register_wait
+    from src.waits.registry import build_registry
+    from tests.test_wait_queries import Policy, decide
+
+    async with w.db._engine.begin() as conn:
+        return await register_wait(
+            conn, scope=check_scope(), condition=condition, idempotency_key=key,
+            registry=build_registry(clock=lambda: w.clock.now, **w.watcher.registry_readers()),
+            policy=Policy(), decide_sleep=decide, now=w.clock.now, source_watermark=0,
+        )
+
+
+async def source_events(db, key):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == key,
+        ).order_by(wait_source_events.c.seq))).mappings().all()
+
+
+async def fresh_read(w, condition):
+    from src.waits.conditions import Condition
+
+    async with w.db._engine.connect() as conn:
+        return await w.watcher.read(conn, Condition(
+            condition["kind"], {k: v for k, v in condition.items() if k != "kind"}, None,
+            {"project_id": "p"},
+        ))
+
+
+async def test_check_wait_refuses_a_head_no_job_or_stage_knows(watched):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.source_unresolved"
+    assert "not known to a job or integration stage" in str(error.value)
+    watched.git.acommit_head_sha.assert_not_awaited()
+    watched.provider.observe.assert_not_awaited()
+    # A job on the owner's repository that names this exact SHA makes it known.
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("unit", "pending")]
+    assert (await register_check(watched, check_condition()))["success"]
+
+
+@pytest.mark.parametrize("run_url", ["https://ci/runs/1", None])
+async def test_check_result_before_registration_is_already_satisfied_with_pointer(
+    watched, run_url
+):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("unit", "failure", run_id="9", run_url=run_url)]
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.already_satisfied"
+    assert error.value.details["result_ref"] == (run_url or f"check:repo:{HEAD}:unit")
+    async with watched.db._engine.connect() as conn:
+        from src.database.tables import wait_records
+
+        assert not (await conn.execute(select(wait_records))).all()
+    # Registration reads fresh and never writes the check cache or the outbox.
+    assert not await source_events(watched.db, f"ci_check:repo:{HEAD}:unit")
+
+
+async def test_check_wait_is_satisfied_only_by_its_exact_sha(watched):
+    await submit(watched.env, input_ref=HEAD)
+    cond = check_condition()
+    watched.provider.observe.return_value = [row("unit", "pending")]
+    assert (await register_check(watched, cond))["success"]
+    # Another commit's success is recorded under that commit, never this one.
+    watched.provider.observe.return_value = [
+        row("unit", "pending"), row("unit", "success", sha=OTHER, run_url="https://ci/other"),
+    ]
+    watched.clock.now += 60
+    assert await watched.watcher.tick() == 0
+    assert [e["payload"]["conclusion"] for e in await source_events(
+        watched.db, f"ci_check:repo:{OTHER}:unit")] == ["success"]
+    assert [e["payload"]["conclusion"] for e in await source_events(
+        watched.db, f"ci_check:repo:{HEAD}:unit")] == ["pending"]
+    assert (await fresh_read(watched, cond)).observation.state == "unsatisfied"
+    # This exact SHA's result is recorded once, by the refresh, not re-published.
+    watched.provider.observe.return_value = [
+        row("unit", "success", run_id="5", run_url="https://ci/head", observed_at=20),
+    ]
+    watched.clock.now += 60
+    assert await watched.watcher.tick() == 0
+    head_events = await source_events(watched.db, f"ci_check:repo:{HEAD}:unit")
+    assert [e["payload"]["conclusion"] for e in head_events] == ["pending", "success"]
+    assert head_events[-1]["outcome_ref"] == "https://ci/head"
+    snapshot = await fresh_read(watched, cond)
+    assert snapshot.observation.state == "satisfied"
+    assert snapshot.observation.result_ref == "https://ci/head"
+
+
+async def test_check_named_but_unreported_is_not_a_verified_pending_check(watched):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("lint", "pending")]
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.source_unresolved"
+
+
+async def test_run_outcome_commits_through_service_command_and_refusal_stays_due(watched):
+    await submit(watched.env, input_ref=HEAD)
+    cond = check_condition("ci_run")
+    watched.provider.observe.return_value = [row("unit", "pending", run_id="77")]
+    assert (await register_check(watched, cond))["success"]
+    watched.provider.observe.return_value = [
+        row("unit", "success", run_id="77", run_url="https://ci/runs/77", observed_at=20),
+    ]
+    key = f"ci_run:repo:{HEAD}:77"
+    # A transport refusal must leave this exact head due for retry.
+    commit = watched.watcher.commit
+    watched.watcher.commit = AsyncMock(return_value={"success": False})
+    assert await watched.watcher.tick() == 0
+    assert not await source_events(watched.db, key)
+    assert not watched.watcher._due
+    # Rollback flags must still allow source events for existing subscriptions.
+    watched.watcher.commit = commit
+    watched.config.wait_policy.v2_enabled = False
+    assert await watched.watcher.tick() == 1
+    rows = await source_events(watched.db, key)
+    assert len(rows) == 1 and rows[0]["outcome_ref"] == "https://ci/runs/77"
+    assert rows[0]["payload"]["state"] == "satisfied"
+    assert rows[0]["payload"]["head_sha"] == HEAD
+    # Until due again, the next tick neither observes nor publishes.
+    observed = watched.provider.observe.await_count
+    assert await watched.watcher.tick() == 0
+    assert watched.provider.observe.await_count == observed
+
+
+async def test_source_commit_callback_requires_a_service_principal(watched):
+    from src.commands.principal import ExecutionPrincipal
+    from src.waits.watchers.ci import commit_source_event
+
+    event = {"source_key": f"ci_run:repo:{HEAD}:77", "generation": 0, "revision": "r",
+             "outcome_ref": "x", "payload": {}}
+    for principal in (None, SimpleNamespace(kind="session")):
+        result = await commit_source_event(event, principal=principal, scope=None,
+                                           handler=watched.handler)
+        assert result["error_code"] == "wait.out_of_scope"
+    result = await commit_source_event(event, principal=ExecutionPrincipal.service("t"),
+                                       scope=None, handler=watched.handler)
+    assert result["success"] and not result["replayed"]
+    assert len(await source_events(watched.db, event["source_key"])) == 1
