@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.knowledge.models import ContextBundle
 
 # Canonical section order (design §5.2, table order 1-10). Slots 7-8 (L1/L2
 # memory) exist from day one, rendered empty while memory is paused
@@ -46,6 +50,22 @@ SECTION_TITLES: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class PrimePreview:
+    """A losslessly pageable part of a section, separate from inline authority."""
+
+    prefix: str
+    text: str
+    suffix: str
+    field: str
+    max_bytes: int
+
+    def render(self, task_id: str, limit: int) -> str:
+        from .budgets import text_preview
+
+        return self.prefix + text_preview(self.text, limit, task_id, self.field) + self.suffix
+
+
+@dataclass(frozen=True)
 class PrimeSection:
     """One section of the prime document.
 
@@ -58,6 +78,8 @@ class PrimeSection:
     key: str  # one of SECTION_KEYS
     title: str
     body: str
+    message_ids: tuple[str, ...] = ()
+    preview: PrimePreview | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -82,6 +104,7 @@ class PrimeDocument:
     # override template body, which replaces the default assembly
     # entirely (design §5.3).
     override_markdown: str | None = field(default=None, repr=False)
+    context_bundle: ContextBundle | None = field(default=None, repr=False)
 
     def to_markdown(self) -> str:
         """Render the document to a single markdown string.

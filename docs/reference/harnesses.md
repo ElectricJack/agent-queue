@@ -79,6 +79,20 @@ aq vault reset-harness --dry-run
 | `args` | list of strings | `[]` | Operator-supplied arguments, kept in their declared position. |
 | `env` | object | `{}` | Environment entries for this harness. Merged as *explicit* values, so they survive scrubbing. |
 | `base` | string | — | Inherit from another harness. **Single level only** — a chain is rejected, so cycles are impossible by construction. |
+| `provider` | string | — | The key this harness's model is looked up under in an intelligence class's per-provider mapping. Omit it for `claude`, `codex` and `gemini`, whose provider is inferred from the id (`anthropic`, `openai`, `google`). **Any other harness must declare it**: an unrecognised id infers `""`, and the launch then resolves no model at all and says so once in the log. Inherits through `base`. |
+
+Session launches discard inherited `CLAUDE*` controls and `AQ_*` variables,
+then inject the new session's identity, credentials and resource limits.
+The spec builder explicitly supplies `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for
+Claude workers, including an override configured in the harness `env` map;
+other Claude controls in a harness `env` map are rejected. A launching shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` cannot override that compact window.
+This isolation also applies when the tmux server predates the daemon restart:
+the pane process starts with the scrubbed environment plus tmux's terminal
+metadata (`TERM`, `TMUX`, `TMUX_PANE`). Daemon startup warns about inherited
+harness controls and `AQ_*` variables by name, without logging their values.
+Restart from a clean operator environment when that warning appears; startup
+retains AQ variables so the worker database guard still prevents unsafe starts.
 
 ### Prompt delivery
 
@@ -122,6 +136,7 @@ it. The launcher emits them only when the corresponding value resolves.
 | `ready_prompt_prefix` | string | — | The composer's prompt prefix, matched against the pane capture. |
 | `process_names` | list of strings | `[]` | Which processes in the pane's subtree count as "the agent". |
 | `transcript_paths` | list of strings | `[]` | Globs for the CLI's on-disk conversation log. `{work_dir_slug}` is substituted. |
+| `input_prompts` | list of objects | `[]` | Named `pattern` signatures for interactive screens that block an unclaimed pool session; set `is_regex: true` for regular expressions. Used only for observation and reporting, never automatic input. |
 
 > **Warning.** `ready_prompt_prefix` characters are exact and are not
 > interchangeable: Claude uses `❯` (U+276F) followed by a **non-breaking**
@@ -196,6 +211,7 @@ the first poll.
 | `keys` | tmux `send-keys` arguments, sent in order, when the pattern matches. |
 | `quarantine` | When true, matching is **terminal**: the keys answer "stop" and the session is quarantined instead of continuing startup. |
 | `once` | Fire at most once per startup. |
+| `signal` | On a quarantine rule only: what the dialog says about the provider — `auth` (the CLI is not logged in) or `usage` (the account is out of usage). Provider availability counts it as strong evidence ([provider failover](../specs/provider-failover.md) D2). Omitted, a built-in name map applies: `login-required` → `auth`, `rate-limit`/`usage-limit` → `usage`. |
 
 Two rules govern the whole table:
 
@@ -266,7 +282,7 @@ upgrade.
 | Hooks | yes, via `--settings` | yes, by discovery + `--dangerously-bypass-hook-trust` | no |
 | Transcript reader | yes | yes | no |
 | Permission flag | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
-| Quarantining dialog | rate limit | login required | login required |
+| Quarantining dialog | rate limit, login required | login required | login required |
 
 Each shipped file's `## Notes` section carries the measurement behind every row
 above — which CLI version it was verified against, which byte sequence the
@@ -304,7 +320,7 @@ own shell.
 | Harness | Location | How a session is resolved |
 |---|---|---|
 | Claude | `~/.claude/projects/<slug>/<session-uuid>.jsonl`, slug derived from the working directory | direct path |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl` | reads `session_meta.payload.cwd` from each candidate's first line, newest first, capped at 200 files — then by filename once the UUID is learned |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl` | searches the UTC launch date and adjacent local-date partitions for a unique metadata cwd/launch-time match — then by exact UUID once learned |
 | Gemini | not read | pane capture is the observation path |
 
 Gemini deliberately declares no `transcript_paths`: it writes session data in a
@@ -316,6 +332,12 @@ Reads are byte-offset incremental, and the offset is mirrored durably keyed by
 that dies and is relaunched on the same workspace resolves to the same file
 under a new session id — an in-memory offset of zero would replay the entire
 file, re-emitting every past turn and charging every past token a second time.
+
+On adoption, Codex's latest complete quota record is recovered independently
+of that checkpoint and the historical replay guard. It keeps the record's
+original timestamp and recovers existing rollouts after discovery outages
+without replaying tokens or output. Local-date filenames may be a day apart
+from UTC metadata; restarting the daemon preserves the original launch time.
 
 ### What AQ derives from a transcript
 
@@ -351,11 +373,16 @@ turn and drags in system-prompt frames.
 | Drain-ack durability | survives a restart (`tmux set-environment`) | lost on restart (daemon memory) | in memory |
 | `confirm_stopped` | fresh, cache-bypassing probe | **not implemented** — cannot confirm | n/a |
 
-The shipped default is `sessions.provider: subprocess`, because it is the
+The *code* default is `sessions.provider: subprocess`, because it is the
 provider every host can construct; a default the registry cannot build would
-fail every launch. **Configured local policy:** this install sets
-`sessions.provider: tmux` in `~/.agent-queue/config.yaml`, which is what makes
-attach, peek, nudge and adoption-after-restart work here.
+fail every launch, and the tmux provider does not even import off POSIX.
+**An installed box does not run on it:** tmux is a prerequisite of `aq
+install` (`prereq.tmux`), and its `config.defaults` step writes
+`sessions.provider: tmux` into `~/.agent-queue/config.yaml` once it sees tmux
+on PATH — which is what makes attach, peek, nudge and adoption-after-restart
+work here. The step fills that gap only: a `sessions.provider` you have
+already written is kept, so choosing `subprocess` deliberately survives a
+rerun, and a host with no tmux is left alone.
 
 Consequences of running on `subprocess`, all of them by design rather than
 oversight: the stall ladder skips its nudge rungs and goes straight to restart
@@ -388,6 +415,50 @@ You do not need to restart the daemon; the vault watcher picks the file up.
 > **Note.** `harness.binaries` probes a fixed list — `git`, plus the shipped
 > harness CLIs and `gh` — rather than deriving it from the vault, so a
 > harness you add yourself will not appear in that check's output.
+
+### Two harnesses, one CLI
+
+A provider-agnostic CLI can serve two backends that fail independently.
+OpenCode is the example: `opencode` runs local models through Ollama
+(`provider: "ollama"`, models `ollama/<name>`), and `opencode-zen` runs the
+same executable against the hosted OpenCode Zen gateway
+(`provider: "opencode"`, models `opencode/<name>`). Write the second one as a
+**standalone file, not a `base:` variant**, when the backends must stay apart:
+
+* **`provider`** picks the intelligence-class slice a launch reads, so the
+  hosted model lives under its own key (`"opencode": {"model": ...}`) and the
+  local slice is never edited.
+* **Availability** is keyed `harness.base or harness.id`
+  ([provider failover](../specs/provider-failover.md) D0). A `base:` variant
+  shares its parent's row, so a gateway rate limit would hold the local lane
+  too; a standalone file gets a row of its own.
+
+The cost is a copied `## Config`; keep the shared keys of the two files in
+step by hand.
+
+Behaviour that belongs to the CLI rather than to one file follows the
+executable, not the id. OpenCode's prime addendum and AQ's read of its native
+question store apply to every harness whose `command` is named `opencode`
+([`runs_cli`](../../src/sessions/harness_registry.py)). A launcher in front of
+the CLI (`npx opencode`) is not recognised, so point `command` at the binary
+or a shim named after it.
+
+That resolution is project-scoped, because the launch is: a session is started
+from `vault/projects/<pid>/harnesses/<name>.md` when that file exists. So when
+a project shadows a harness id with a different `command`, the addendum and the
+question store follow the executable *for that project only* — every other
+project on the same id keeps the system file's behaviour.
+
+One id never moves: the CLI's own name. `runs_cli` answers on the id match
+before it consults the registry, so a project file shadowing `opencode` itself
+keeps OpenCode's addendum and store. Renaming the id is a project's only way
+to opt out.
+
+The routing policy names harnesses, so a new harness id reaches work only
+through a lane or as a general candidate. A narrow lane is the only way to keep
+it to narrow work: a harness that no narrow lane names is a general candidate
+for every class it has a rung at. The shipped policy's `narrow-hosted` lane
+names `opencode-zen`.
 
 ## Editing a shipped harness
 

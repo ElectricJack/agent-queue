@@ -4,6 +4,14 @@ tags: [spec, supervisor, llm, core]
 
 # Supervisor Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 > **Superseded.** `src/supervisor.py` and the in-process `Supervisor` class
 > described below were **deleted** in the llm-direct-path cutover
 > (2026-08-30) — there is no single in-process LLM entity anymore. MCP tools
@@ -18,14 +26,14 @@ tags: [spec, supervisor, llm, core]
 > reference for what the old in-process entity did; nothing on this page
 > describes current code.
 
-See [[design/playbooks]] for how playbook execution extends the Supervisor model (historical).
+See [design/playbooks](design/playbooks.md) for how playbook execution extends the Supervisor model (historical).
 
 ## Class: Supervisor (src/supervisor.py) — deleted, historical reference
 
 ### Constructor
 - `Supervisor(orchestrator, config, llm_logger=None)`
-- Creates a [[specs/command-handler|CommandHandler]] for tool execution
-- Creates a [[specs/reflection|ReflectionEngine]] from `config.supervisor.reflection`
+- Creates a [CommandHandler](command-handler.md) for tool execution
+- Creates a [ReflectionEngine](reflection.md) from `config.supervisor.reflection`
 
 ### Methods
 
@@ -53,7 +61,7 @@ multi-turn tool-use loop. The loop is structured around the LLM calling
 a `reply_to_user` tool to deliver its final response — if the LLM stops
 without calling it, a nudge mechanism (up to 2 nudges) prompts it to
 use the tool. If tools were used prior to `reply_to_user`, triggers a
-reflection pass. Starts with core tools only; expands via `load_tools` (see [[specs/tiered-tools]]).
+reflection pass. Starts with core tools only; expands via `load_tools` (see [specs/tiered-tools](tiered-tools.md)).
 
 When reflection returns a verdict that did not pass, the supervisor
 recursively calls `chat()` with a retry prompt (self-correction loop).
@@ -67,7 +75,7 @@ so tasks created during a chat session inherit the conversation thread.
 ### Tool Sandbox Enforcement
 
 When `tool_overrides` is supplied — typically by the
-[[design/sandboxed-playbooks|playbook runner]] threading
+[playbook runner](design/sandboxed-playbooks.md) threading
 `profile.allowed_tools` from a sandboxed playbook — the supervisor:
 
 1. Builds the LLM's function-declaration schema from the override list
@@ -85,7 +93,7 @@ When `tool_overrides` is supplied — typically by the
 This is a **runtime** defense — even a perfectly-aligned schema can be
 bypassed by a model that emits a tool block out-of-schema. The reject
 loop closes the loop. See
-[[design/sandboxed-playbooks#runtime-enforcement]] for the broader
+[design/sandboxed-playbooks](design/sandboxed-playbooks.md) for the broader
 threat model.
 
 **cancel() → None**
@@ -175,7 +183,7 @@ context windows, isolated workspaces, and comprehensive tool suites.
 ### System Prompt Architecture
 
 The system prompt (`src/prompts/supervisor_system.md`) is assembled dynamically
-by `_build_system_prompt()` using [[specs/prompt-builder|PromptBuilder]]. It combines the static prompt
+by `_build_system_prompt()` using [PromptBuilder](prompt-builder.md). It combines the static prompt
 template with runtime context injected at each conversation turn.
 
 **Tool Name Index** (`ToolRegistry.get_tool_index()`)
