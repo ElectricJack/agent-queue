@@ -30,15 +30,25 @@ class ResolvedCall:
     max_tokens: int
     extras: dict = field(default_factory=dict)  # class slice minus "model"
     caller: str = "llm"
+    #: Which credential block made this resolution: ``"llm"`` (the primary)
+    #: or ``"fallback"`` (``llm.fallback``, provider-failover D13a).
+    credential: str = "llm"
 
     @property
-    def cache_key(self) -> tuple[str, str, str, tuple]:
+    def cache_key(self) -> tuple[str, str, str, str, tuple]:
+        # ``credential`` keeps a fallback that differs from the primary only
+        # in its api_key from being served the primary's cached adapter.
         return (
+            self.credential,
             self.provider,
             self.model,
             self.base_url,
             tuple(sorted(self.extras.items())),
         )
+
+
+class NoFallbackRoute(LookupError):
+    """``llm.fallback`` cannot serve this call; the message says why."""
 
 
 def resolve_call(
@@ -83,6 +93,78 @@ def resolve_call(
         max_tokens=spec.max_tokens or config.max_tokens,
         extras=extras,
         caller=spec.caller,
+    )
+
+
+def resolve_fallback_call(
+    spec: LLMCallSpec,
+    config: LLMConfig,
+    classes: dict[str, IntelligenceClass],
+) -> ResolvedCall:
+    """Resolve *spec* against ``config.fallback`` (provider-failover D13a).
+
+    Used only while the primary credential is unavailable.  The fallback is a
+    block of its own, so resolution is :func:`resolve_call`'s order with the
+    fallback's fields in place of the primary's: the call's intelligence class
+    (else ``fallback.default_class``) resolved against the fallback provider's
+    slice, else ``fallback.model``, else the adapter default.  ``max_tokens``
+    is the only thing taken from the primary.
+
+    Two cases refuse (:class:`NoFallbackRoute`) rather than silently
+    substituting a model nobody chose:
+
+    * a class that has no slice for the fallback provider -- the primary would
+      have fallen back to ``llm.model`` here, but on another vendor that would
+      quietly swap the tier the caller asked for;
+    * an explicit ``spec.model`` for a provider other than the fallback's --
+      a model id belongs to one vendor.  On the fallback's own provider (a
+      second key for the same vendor) the model is honoured.
+    """
+    fallback = config.fallback
+    if fallback is None:
+        raise NoFallbackRoute("no llm.fallback is configured")
+    provider = normalize_llm_provider(fallback.provider)
+    model = ""
+    extras: dict = {}
+
+    if spec.model:
+        requested = normalize_llm_provider(spec.provider or config.provider)
+        if requested != provider:
+            raise NoFallbackRoute(
+                f"the call names model {spec.model!r} on provider {requested!r}; "
+                f"llm.fallback is provider {provider!r}"
+            )
+        model = spec.model
+    else:
+        class_id = spec.intelligence_class or fallback.default_class
+        if class_id:
+            cls = classes.get(class_id)
+            if cls is None:
+                logger.warning(
+                    "llm: unknown intelligence class %r — falling back to llm.fallback.model",
+                    class_id,
+                )
+            else:
+                slice_ = resolve_class(cls, provider)
+                if not slice_:
+                    raise NoFallbackRoute(
+                        f"intelligence class {class_id!r} has no slice for "
+                        f"llm.fallback provider {provider!r}"
+                    )
+                model = str(slice_.pop("model", "") or "")
+                extras = slice_
+    if not model:
+        model = fallback.model
+
+    return ResolvedCall(
+        provider=provider,
+        model=model,
+        base_url=fallback.base_url,
+        api_key=fallback.api_key,
+        max_tokens=spec.max_tokens or config.max_tokens,
+        extras=extras,
+        caller=spec.caller,
+        credential="fallback",
     )
 
 

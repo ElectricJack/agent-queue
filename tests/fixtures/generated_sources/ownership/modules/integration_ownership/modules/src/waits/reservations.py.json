@@ -1,0 +1,14 @@
+{
+  "exclusions": {
+    "src/waits/reservations.py::claim_candidate": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::consume_reservation": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/waits/reservations.py::claim_candidate": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::consume_reservation": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::enabled": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership."
+  }
+}

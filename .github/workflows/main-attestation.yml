@@ -1,0 +1,44 @@
+name: Main attestation
+# Branch audit: dev requires an integration attestation; staging and main
+# require their promotion step's attestation. An attested promotion arrives
+# already tested, so this workflow verifies it without a second CI run.
+# An unattested push runs the full suite after the fact. With
+# the two Actions variables unset the repository is not in App mode yet, and
+# nothing runs.
+on:
+  push:
+    branches: [dev, staging, main]
+permissions:
+  contents: read
+  checks: read
+jobs:
+  attestation:
+    name: Main attestation
+    runs-on: ubuntu-latest
+    outputs:
+      attested: ${{ steps.verify.outputs.attested }}
+      configured: ${{ steps.verify.outputs.configured }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: src/integration/hosted_attestation.py
+          sparse-checkout-cone-mode: false
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          SHA: ${{ github.sha }}
+          APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
+          CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          ATTESTATION_NAME: ${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}
+          STEP: ${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}
+          TARGET_REF: ${{ github.ref }}
+        run: python3 src/integration/hosted_attestation.py
+  unattested-ci:
+    needs: attestation
+    if: >-
+      needs.attestation.outputs.configured == 'true' &&
+      needs.attestation.outputs.attested != 'true'
+    uses: ./.github/workflows/tests.yml

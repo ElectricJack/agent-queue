@@ -1,4 +1,4 @@
-"""``src/cli/CLAUDE.md``'s module map must name modules that actually exist.
+"""``src/cli/AGENTS.md``'s module map must name modules that actually exist.
 
 The map is the first thing an agent reads before touching the CLI, and it
 rotted exactly the way a hand-maintained inventory does: it still listed
@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 CLI_DIR = Path(__file__).resolve().parents[1] / "src" / "cli"
-MAP_DOC = CLI_DIR / "CLAUDE.md"
+MAP_DOC = CLI_DIR / "AGENTS.md"
 
 #: Not worth a line in an orientation map.
 _EXEMPT = {"__init__.py"}
@@ -57,7 +57,7 @@ def test_the_module_map_block_is_where_we_think_it_is():
 def test_every_documented_cli_module_exists():
     missing = sorted(_documented_modules() - _real_modules())
     assert not missing, (
-        "src/cli/CLAUDE.md names modules that no longer exist: "
+        "src/cli/AGENTS.md names modules that no longer exist: "
         + ", ".join(missing)
         + " — delete the line or point it at what replaced the module."
     )
@@ -66,7 +66,7 @@ def test_every_documented_cli_module_exists():
 def test_every_cli_module_is_documented():
     undocumented = sorted(_real_modules() - _documented_modules())
     assert not undocumented, (
-        "src/cli/CLAUDE.md does not mention: "
+        "src/cli/AGENTS.md does not mention: "
         + ", ".join(undocumented)
         + " — add a one-line entry to the Architecture block."
     )
