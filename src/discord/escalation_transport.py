@@ -405,6 +405,21 @@ class DiscordEscalationTransport:
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
 
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        channel = await self._channel(channel_id)
+        try:
+            message = await channel.fetch_message(int(root_message_id))
+            if message.author.id != getattr(self._bot.user, "id", None):
+                raise TransportUnavailable("root is not owned by this bot")
+            return message.content
+        except discord.NotFound as exc:
+            raise TransportMissing("root message was deleted") from exc
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
     async def find_marker(
         self, *, channel_id: str, thread_id: str | None, marker: str
     ) -> SendOutcome | None:
