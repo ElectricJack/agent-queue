@@ -1,5 +1,12 @@
 # Mandatory Triage Playbook Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **Cancelled and superseded — do not continue these tasks.** The approved design
 > no longer introduces a universal triage gate, a triage agent, or a pool-to-push
 > migration. See

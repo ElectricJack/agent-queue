@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from sqlalchemy import Integer, insert, or_, select, text, update
+from sqlalchemy import Integer, inspect, insert, null, or_, select, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -24,11 +24,22 @@ from src.database.engine import create_postgres_engine
 from src.database.tables import (
     agent_profiles,
     agent_questions,
+    agent_waits,
     agents,
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    conversation_backfill_cursors,
+    conversation_inputs,
+    conversation_intake_gaps,
+    dashboard_state_documents,
     digest_windows,
+    doc_review_comments,
+    doc_review_dispatches,
+    doc_review_revisions,
+    doc_reviews,
+    epic_dependencies,
+    escalation_actions,
     escalation_deliveries,
     escalation_messages,
     escalations,
@@ -39,6 +50,8 @@ from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_delegate_releases,
+    integration_owner_recoveries,
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
@@ -50,7 +63,7 @@ from src.database.tables import (
     integration_episode_receipt_acceptances,
     integration_history_waiver_consumptions,
     integration_history_waivers,
-    integration_legacy_gate_applicability,
+    integration_legacy_deliveries,
     integration_legacy_suppression,
     integration_operation_artifact_pins,
     integration_outbox,
@@ -67,12 +80,22 @@ from src.database.tables import (
     integration_review_evidence,
     integration_rollout_transitions,
     integration_root_intent_members,
+    job_outbox,
+    job_workspace_pins,
+    jobs,
     layout_dirty,
     layout_jobs,
+    layout_reflow_requests,
+    layout_tidy_request_pairs,
+    layout_tidy_requests,
     merge_slots,
     message_discord_receipts,
     messages,
     metrics_samples,
+    morning_report_coverage,
+    morning_report_facts,
+    morning_reports,
+    outbound_deliveries,
     playbook_activations,
     playbook_artifacts,
     playbook_pending_events,
@@ -87,11 +110,15 @@ from src.database.tables import (
     project_layout_meta,
     project_onboarding_requests,
     projects,
+    provider_availability,
+    provider_availability_transitions,
     provider_usage_snapshots,
     rate_limits,
     repos,
     sessions,
     subagent_events,
+    supervisor_conversations,
+    supervisor_report_requests,
     system_config,
     task_assignment_routes,
     task_branch_origins,
@@ -108,8 +135,10 @@ from src.database.tables import (
     task_layouts,
     task_metadata,
     task_proposals,
+    task_reroutes,
     task_results,
     task_session_attempts,
+    task_subtasks,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -124,13 +153,175 @@ logger = logging.getLogger(__name__)
 
 # Tables in FK-safe insertion order.
 #
-# This list must cover every table in ``tables.metadata`` — a missing table is
-# silently dropped data for anyone migrating a SQLite install to PostgreSQL.
-# ``tests/test_legacy_sqlite_import.py`` asserts the two sets match so the list
-# cannot drift when a new table is added to ``tables.py``.
+# This list and _EXCLUDED_TABLES must cover every table in ``tables.metadata`` —
+# an unlisted table is silently dropped data for anyone migrating a SQLite
+# install to PostgreSQL. ``tests/test_migrate_sqlite_to_pg.py`` checks coverage.
 #
 # Circular and self-referential FKs are handled by inserting the offending
 # columns as NULL (see ``_DEFERRED_COLS``) and restoring them afterwards.
+# If a future table should not be copied, name it here with a reason so its
+# omission is explicit and reviewable.
+_EXCLUDED_TABLES: frozenset[str] = frozenset(
+    {
+        # PostgreSQL-era tables added after legacy SQLite databases stopped
+        # existing (SQLite removal 1cae290cb, 2026-09-07 predates commit
+        # fca6f0eb7, 2026-09-25): a legacy SQLite file can never contain
+        # them, so there is nothing to import and copying them would only
+        # fail on columns SQLite never had (JSON, partial unique indexes).
+        "test_selections",
+        "test_selection_observations",
+        "test_selection_promotions",
+        # Collaboration threads shipped after SQLite removal (revisions
+        # a00000000033+): a legacy SQLite file can never contain them.
+        "collaboration_threads",
+        "collaboration_members",
+        "collaboration_messages",
+        # Revisions 44-46 were added after SQLite removal. Legacy files have
+        # neither PR snapshots, object evaluation state, nor review images.
+        "pull_request_inbox_snapshot",
+        "object_loops",
+        "doc_review_attachments",
+        # Revision 47's monotonic benchmark measurements were never in SQLite.
+        "benchmark_stage_spans",
+        # Exact source-CI recovery shipped in PostgreSQL revision 48.
+        "integration_source_ci",
+        # Exact per-root operator authorizations shipped in revision 54.
+        "integration_root_authorizations",
+        # Reconciler subjects and their journal shipped in revision 57.
+        "integration_subjects",
+        "integration_subject_journal",
+        # Author-assisted close attempts shipped in PostgreSQL revision 117.
+        "integration_close_attempts",
+        # Shared operator decisions shipped in PostgreSQL revision 77.
+        "operator_decisions",
+        # Session-owned recurring prompts shipped in PostgreSQL revision 86;
+        # legacy SQLite files predate schedules and their delivery diagnostics.
+        "agent_cron",
+        # Verified waits and continuation admission shipped in PostgreSQL
+        # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
+        "admission_reservations", "continuations", "wait_bridge_progress",
+        "wait_deadlines", "wait_edges", "wait_escalations", "wait_listener_cursors",
+        "wait_measurements", "wait_priority_projection", "wait_records", "wait_source_events",
+        # Branch deletion audits (revision 88) and explicit branch retirement
+        # requests (revision 89) shipped after SQLite removal.
+        "branch_deletion_audit",
+        "branch_retirements",
+        # Human ask/decision ledgers shipped in PostgreSQL revision 91.
+        # Legacy files have neither these audit records nor their JSONB checks.
+        "human_asks", "ask_source_aliases", "ask_decision_previews",
+        "approved_document_snapshots", "ask_decisions",
+        "review_feedback_obligations", "ask_reconciliation_cases",
+        # External ask bindings, action tokens and destination modes were
+        # introduced in PostgreSQL transport revision 93, never in SQLite.
+        "human_communication_modes", "ask_external_bindings", "ask_action_tokens",
+        # Held ingestion batches and review receipts arrived in PostgreSQL
+        # revision 100; no legacy SQLite source can contain these ledgers.
+        "ingest_batches", "ingest_batch_members", "ingest_batch_receipts",
+        # Durable record/knowledge tables shipped after SQLite removal in
+        # revision 55. Legacy files have no record identities, revisions,
+        # informational links or outbox state; backfill/import is explicit.
+        "record_installation",
+        "record_scopes",
+        "records",
+        "knowledge_records",
+        "knowledge_revisions",
+        "knowledge_revision_payloads",
+        "knowledge_search",
+        "record_link_heads",
+        "record_link_versions",
+        "task_record_link_state",
+        "record_source_artifacts",
+        "record_requests",
+        "record_outbox",
+        "record_consumer_receipts",
+        "record_export_state",
+        "record_backfill_state",
+        # K05 protection state shipped in PostgreSQL revision 59. Legacy
+        # SQLite has no proposals, authority grants, shares or erasure ledger;
+        # these tables depend on the excluded record/revision domain above.
+        "knowledge_proposals",
+        "knowledge_authority_grants",
+        "knowledge_global_shares",
+        "knowledge_redactions",
+        "knowledge_redaction_targets",
+        # K06 sealed knowledge-import inventory shipped in revision 60, not
+        # in the legacy SQLite format. Its runs depend on record_scopes.
+        "record_import_runs",
+        "record_legacy_mappings",
+        "record_import_items",
+        # K08 prepared context, observed delivery and citations shipped in
+        # revision 63, not in the legacy SQLite format.
+        "knowledge_context_bundles",
+        "knowledge_context_deliveries",
+        "knowledge_citations",
+        # K12 derived provider index receipts shipped in revision 66. A legacy
+        # SQLite file predates every record revision, so it has no index state;
+        # the derived index is rebuilt by reindexing authorized records.
+        "record_index_state",
+        # K13 durable extraction jobs, receipts and budgets shipped in revision 64.
+        "knowledge_extraction_jobs",
+        "knowledge_extraction_inputs",
+        "knowledge_capture_checkpoints",
+        "knowledge_feature_budgets",
+        "knowledge_budget_reservations",
+        # K14 compatibility attempt counters shipped in PostgreSQL revision
+        # 67, after SQLite removal; legacy files have no managed-source usage.
+        "record_compatibility_usage",
+        # Per-API-call transcript usage maxima (revision 56) and replay fences (121).
+        "transcript_usage_calls", "transcript_usage_fences",
+        # Encrypted playbook private values (revision 95), protected
+        # observation snapshots (revision 97) and durable playbook state
+        # namespaces and journals (revision 98) shipped after SQLite removal;
+        # legacy files have none of them.
+        "playbook_private_values",
+        "observation_snapshots",
+        "observation_snapshot_pages",
+        "playbook_state_namespaces",
+        "playbook_state_entries",
+        "playbook_state_operations",
+        # Script input retention pins shipped in PostgreSQL revision 100.
+        "job_input_pins",
+    }
+)
+
+# Nullable columns added after the legacy source format was retired. Missing
+# provenance stays unknown; all other missing source columns still fail closed.
+_POSTGRES_ONLY_COLUMNS = {
+    "tasks": frozenset({"held_batch_id"}),
+    "archived_tasks": frozenset({"route"}),
+    "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
+    "doc_reviews": frozenset({"pending_decision_id"}),
+    "doc_review_comments": frozenset({"source_discussion_id", "responder_disposition"}),
+    "escalation_messages": frozenset({
+        "ask_id", "input_id", "source_version", "reply_to_entry_id",
+    }),
+    "escalation_actions": frozenset({
+        "ask_id", "decision_id", "operation_kind", "operation_key", "lease_owner",
+        "lease_expires_at", "retry_at", "receipt",
+    }),
+    "conversation_inputs": frozenset({
+        "ask_id", "project_id", "guild_id", "reference_message_id", "external_thread_id",
+        "source_version", "retention_entry_id",
+    }),
+    "outbound_deliveries": frozenset({
+        "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+        "mode_generation", "root_generation", "send_kind", "write_started_at", "attempt_token",
+    }),
+}
+
+# Non-null PostgreSQL-era columns whose target default supplies missing values.
+# Omit them from both the source read and target insert when absent, rather
+# than inserting NULL. Existing source identities must travel unchanged.
+_POSTGRES_DEFAULT_COLUMNS = {
+    "tasks": frozenset({"legacy_completion_id"}),
+    "archived_tasks": frozenset({"legacy_completion_id"}),
+    "doc_reviews": frozenset({"feedback_version", "decision_generation"}),
+    "escalation_messages": frozenset({"entry_kind"}),
+    "escalation_actions": frozenset({"dependency_keys", "lease_generation"}),
+    "conversation_inputs": frozenset({"routing_state", "routing_evidence", "receipt"}),
+}
+
+
 _ORDERED_TABLES = [
     # No FK dependencies
     system_config,
@@ -138,6 +329,8 @@ _ORDERED_TABLES = [
     plugins,
     rate_limits,
     provider_usage_snapshots,
+    provider_availability,
+    provider_availability_transitions,
     events,
     project_onboarding_requests,
     workspace_kinds,
@@ -148,6 +341,21 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    conversation_backfill_cursors,
+    conversation_intake_gaps,
+    # No FK to tasks: checklist rows survive archive like task_comments.
+    task_subtasks,
+    # Soft-referenced audit of retired integration delegates; no FKs.
+    integration_delegate_releases,
+    # Soft-referenced audit of integration owner recoveries; no FKs.
+    integration_owner_recoveries,
+    # Document reviews: soft task references, no FK to tasks; revisions and
+    # comments reference doc_reviews.
+    doc_reviews,
+    doc_review_revisions,
+    doc_review_comments,
+    doc_review_dispatches,
+    dashboard_state_documents,
     agent_questions,
     subagent_events,
     metrics_samples,
@@ -155,22 +363,40 @@ _ORDERED_TABLES = [
     playbook_pending_events,
     layout_dirty,
     layout_jobs,
+    layout_reflow_requests,
+    layout_tidy_requests,
     task_layout_cells,
     digest_windows,
+    # Durable report authoring history; owner/session/message references are soft.
+    supervisor_report_requests,
+    # Durable morning report history, coverage cursors and cited evidence.
+    # FK → morning_reports for facts; coverage uses a soft report reference.
+    morning_reports,
+    morning_report_coverage,
+    morning_report_facts,
+    # Frozen outbound payloads and delivery receipts; owner references are soft.
+    outbound_deliveries,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
+    # Managed script jobs now reference playbook_v2_runs.
+    jobs,
+    # FK → jobs; terminal receipt intents survive until delivery.
+    job_outbox,
     # FK → playbook_v2_runs
     playbook_step_receipts,
     playbook_waits,
     # FK → agent_profiles
     projects,
     # FK → projects
+    layout_tidy_request_pairs,
     repos,
     project_layout_meta,
     gates,
     merge_slots,
     project_constraints,
+    # FK → projects; durable conditions and result pointers survive restarts.
+    agent_waits,
     # FK → projects, playbook_v2_runs
     workflows,
     # FK → projects (reply_to_id is a self-FK — deferred)
@@ -181,16 +407,25 @@ _ORDERED_TABLES = [
     # FK -> escalations, messages
     escalation_messages,
     # FK -> escalations, escalation_messages
+    escalation_actions,
+    # FK -> escalations, escalation_messages
     escalation_deliveries,
+    # FK -> messages (conversation_inputs also -> supervisor_conversations)
+    supervisor_conversations,
+    conversation_inputs,
     # FK → repos (current_task_id deferred)
     agents,
     # FK → projects, repos, agents, agent_profiles, workflows
     # (preferred_workspace_id and parent_task_id deferred)
     tasks,
+    # Soft references to tasks on both columns; copy after the task rows.
+    epic_dependencies,
     # FK → projects, playbook_v2_runs, tasks
     task_assignment_routes,
     # FK → projects, agents, tasks
     workspaces,
+    # FK → jobs, workspaces; pins survive until verified process cleanup.
+    job_workspace_pins,
     # FK → projects, tasks
     task_layouts,
     # FK → tasks
@@ -212,6 +447,7 @@ _ORDERED_TABLES = [
     # FK → projects, agents, tasks
     token_ledger,
     task_results,
+    task_reroutes,
     # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
     # FK → plugins
     plugin_data,
@@ -219,6 +455,7 @@ _ORDERED_TABLES = [
     # --- pre-existing table references any of these and none is self-referential)
     # No FK dependencies
     integration_batches,
+    integration_legacy_deliveries,
     integration_branch_owners,
     integration_candidate_revisions,
     integration_check_evidence,
@@ -257,8 +494,6 @@ _ORDERED_TABLES = [
     integration_child_dispositions,
     # FK → integration_history_waivers, integration_rollout_transitions, projects
     integration_history_waiver_consumptions,
-    # FK → gates, integration_history_waivers, integration_rollout_transitions, projects
-    integration_legacy_gate_applicability,
     # FK → integration_repair_operations, playbook_artifacts
     integration_operation_artifact_pins,
     # FK → integration_parent_episodes, integration_repair_operations, tasks
@@ -354,12 +589,13 @@ async def migrate_sqlite_to_postgres(
 
 
 async def _check_pg_empty(engine: AsyncEngine) -> None:
-    """Raise if any user tables in PostgreSQL already contain data."""
+    """Refuse user data while preserving the schema's installation identity seed."""
     async with engine.connect() as conn:
         result = await conn.execute(
             text(
                 "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
+                "WHERE schemaname = 'public' "
+                "AND tablename NOT IN ('alembic_version', 'record_installation')"
             )
         )
         for row in result:
@@ -394,7 +630,20 @@ async def _copy_tables(
 
         for table in _ORDERED_TABLES:
             async with src.connect() as src_conn:
-                result = await src_conn.execute(select(table))
+                projection = list(table.c)
+                optional = _POSTGRES_ONLY_COLUMNS.get(table.name, frozenset())
+                defaulted = _POSTGRES_DEFAULT_COLUMNS.get(table.name, frozenset())
+                if optional or defaulted:
+                    present = await src_conn.run_sync(
+                        lambda conn: {column["name"] for column in inspect(conn).get_columns(table.name)}
+                    )
+                    projection = [
+                        null().label(column.name)
+                        if column.name in optional and column.name not in present else column
+                        for column in table.c
+                        if column.name not in defaulted or column.name in present
+                    ]
+                result = await src_conn.execute(select(*projection).select_from(table))
                 rows = result.mappings().fetchall()
 
             if not rows:

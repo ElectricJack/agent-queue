@@ -9,9 +9,12 @@ no commands here.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.models.graph import GraphGate, GraphTaskNode
+from src.api.models.task import EpicDeliveryStatus, PhaseHoldDetail
 
 __all__ = [
     "AncestorRef",
@@ -28,6 +31,8 @@ __all__ = [
     "LocateRequest",
     "LocateResponse",
     "NodeResponse",
+    "ReviewWait",
+    "RunningTargetResponse",
     "StubOverflow",
     "TidyRequest",
     "TidyResponse",
@@ -51,11 +56,20 @@ class TilesRequest(BaseModel):
     max_depth: int | None = None
     q: str = ""
     status: str = ""
+    #: Compute the "active subgraph" expanded set server-side (design A3)
+    #: instead of using ``expanded``. Only takes effect when ``expanded``
+    #: is empty -- an explicit (even empty) expansion always wins.
+    auto_expand: bool = False
 
 
 class ListRequest(BaseModel):
     variant: str = "active"
     expanded: list[str] = []
+    #: The container the viewer has ENTERED. Same semantics as the tiles
+    #: request's ``root``: the container itself is open, its own child
+    #: containers stay collapsed, and only its scope is paged -- so a page
+    #: can never be short because rows from another scope used it up.
+    root: str | None = None
     q: str = ""
     status: str = ""
     cursor: str | None = None
@@ -65,14 +79,18 @@ class ListRequest(BaseModel):
 class LocateRequest(BaseModel):
     """Where the matches for a filter are, in the geometry the canvas draws.
 
-    Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-    collapsing a container reflows everything after it, so a match's position
-    depends on the viewer's expanded set and cannot be answered from the
-    persisted layout alone.
+    Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+    ``list`` are POSTs: collapsing a container reflows everything after it
+    and entering one re-packs its scope, so a match's position depends on
+    the viewer's own view state and cannot be answered from the persisted
+    layout alone.
     """
 
     variant: str = "active"
     expanded: list[str] = []
+    #: The container the viewer has entered, so hit boxes are resolved in
+    #: the same geometry the focused tiles request draws.
+    root: str | None = None
     q: str = ""
     status: str = ""
     limit: int = 200
@@ -98,6 +116,30 @@ class ExtentResponse(BaseModel):
     job: LayoutJob | None = None
 
 
+class ReviewWait(BaseModel):
+    """A document review one of this task's gates is tied to.
+
+    ``blocking`` is the ``blocked_gate`` test ``aq task explain`` applies: the
+    review's gate is attached to the task and not resolved (open or expired).
+    A review gate is resolved only by an approval, so a rejected or withdrawn
+    review still blocks.  A non-blocking entry is an approved review whose
+    gate released the task, reported while the task is not yet completed so
+    the card can still link to the design it was gated on.
+    """
+
+    review_id: str
+    #: ``in_review`` | ``changes_requested`` | ``rejected`` | ``approved`` | ``withdrawn``
+    review_state: str
+    #: ``spec`` | ``plan`` | ``other``
+    review_kind: str
+    review_title: str
+    gate_id: str
+    gate_type: str
+    #: ``open`` | ``expired`` | ``resolved``
+    gate_status: str
+    blocking: bool
+
+
 class LayoutNode(GraphTaskNode):
     x: float
     y: float
@@ -113,6 +155,15 @@ class LayoutNode(GraphTaskNode):
     agg_running: int = 0
     agg_blocked: int = 0
     agg_active: int = 0
+    subtasks_total: int = 0
+    subtasks_settled: int = 0
+    phase_order: int | None = None
+    phase_label: str | None = None
+    phase_hold: PhaseHoldDetail | None = None
+    # Implementation vs delivery for a node with children (``None`` for a leaf).
+    delivery: EpicDeliveryStatus | None = None
+    # Reviews this task waits on (blocking first), linked from the card.
+    review_waits: list[ReviewWait] = Field(default_factory=list)
 
 
 class LayoutEdge(BaseModel):
@@ -147,6 +198,23 @@ class LayoutWorker(BaseModel):
     in_collapsed: bool
 
 
+class RunningTargetResponse(BaseModel):
+    """The live leaf task a graph should navigate to, if one exists.
+
+    ``ancestors`` is ordered from the project root to the task's immediate
+    parent when a published layout is available.  It lets the root graph pan
+    to the visible enclosing tile while the toolbar enters ``parent_task_id``
+    to reveal the task itself.
+    """
+
+    task_id: str
+    project_id: str
+    parent_task_id: str | None = None
+    ancestors: list[str] = []
+    observed_at: float
+    layout_version: int | None = None
+
+
 class TilesResponse(BaseModel):
     nodes: list[LayoutNode] = []
     edges: list[LayoutEdge] = []
@@ -155,12 +223,27 @@ class TilesResponse(BaseModel):
     workers: list[LayoutWorker] = []
     gates: list[GraphGate] = []
     layout_version: int
+    #: The variant this response was actually served from, which is not
+    #: always the one asked for: entering a container the active layout
+    #: stubbed or dropped is served from ``all``. Clients cannot infer this
+    #: (the promoting condition is the layout's, not the task's status), so
+    #: it is reported.
+    variant_applied: str = "active"
+    #: The expanded set the server computed and applied for this response,
+    #: when ``auto_expand`` was honored (``expanded`` was empty). ``None``
+    #: when the request's own ``expanded`` was used instead.
+    expanded_applied: list[str] | None = None
 
 
 class ListResponse(BaseModel):
     nodes: list[LayoutNode] = []
     next_cursor: str | None = None
     layout_version: int
+    #: The variant this response was served from -- see ``TilesResponse``.
+    variant_applied: str = "active"
+    #: Why an accepted first page has no displayed cards. ``None`` means the
+    #: response is non-empty or an older server cannot establish the reason.
+    empty_reason: Literal["no_work", "all_finished", "no_matches"] | None = None
 
 
 class AncestorRef(BaseModel):
