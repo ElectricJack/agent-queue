@@ -12,7 +12,6 @@ from sqlalchemy import select
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig, DiscordConfig, DiscordDigestConfig
-from src.database import Database
 from src.database.tables import messages
 from src.digest import DigestScheduleService
 from src.escalations.transport import SinkTransport, TransportAmbiguous, TransportUnavailable
@@ -20,7 +19,6 @@ from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import load_definition_json
 from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
 from src.profiles.capabilities import DENY_ALL
-from tests.db_fixtures import lease_dsn
 from tests.test_report_requests import Clock, completed_task
 from tests.test_report_requests import service as hourly_service
 
@@ -29,14 +27,12 @@ BASE = 1_800_000.0
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("report_delivery"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("report_delivery")
     from src.models import Project
 
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 async def reserve(
@@ -326,7 +322,7 @@ async def test_disabled_or_narrowed_reports_never_request_author(db, monkeypatch
 
 
 def test_optional_bundle_uses_only_durable_requests_and_no_model_steps():
-    source = Path("src/prompts/default_playbooks/supervisor-hourly-report.md")
+    source = Path("src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md")
     parsed = PlaybookSource.load(source, vault_root=source.parent)
     assert parsed.frontmatter["enabled"] is False
     definition = load_definition_json(

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/stale_schedule.py::release_outstanding_request_on::277a9f66fd761af4f384602e8ee18db1170e7d23206e47d04f056a534dfe1f85": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 352,
+      "owner": "release_outstanding_request_on",
+      "owner_fingerprint": "1d1be6cf5f4c9df33ac456b3f945e441d042932241c330e0af0288f549491af6",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
