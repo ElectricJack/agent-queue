@@ -33,6 +33,20 @@ inspected through `aq integration redrive-root ROOT_ID`. Preview first; apply
 uses the exact head and reason and repeats the proof. Changed remote ancestry,
 source identity, live writers or human holds are blockers, never retry overrides.
 
+For an older completed code leaf reporting `missing_git_provenance`, a local
+operator or live project supervisor can preview source recovery:
+
+```bash
+aq integration redrive-child CHILD_ID --adopt-source
+aq integration redrive-child CHILD_ID --adopt-source --apply --head FULL_PREVIEWED_OID --reason "Recover missing completion source"
+```
+
+This retains the existing passing generation after proving its published branch
+matches its checkpoint and materialized parent origin. A conflicting recorded
+source, missing passing completion or live writer refuses recovery. Adoption
+lets the train evaluate the source; its usual review, check and containment
+requirements still apply.
+
 ## Human holds and repair progress
 
 A human-held parent Subject reports its gate id and current version. After
@@ -223,6 +237,23 @@ as the recovery result. Dry runs do not write an audit row.
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |
 | `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
+
+**A live worker blocked on its own failed preparation.** A retry automatically
+rechecks a self-owned pending handoff using the exact unactivated pool claim and
+clean, published checkout proof. If it remains fenced, the operator or project
+supervisor can preview and restore that reservation without killing the session:
+
+```bash
+aq integration release-owner --task-id TASK_ID --self-owned --dry-run
+aq integration release-owner --task-id TASK_ID --self-owned --apply
+```
+
+This requires a retained failure record for the same session instance, claim epoch
+and workspace generation. It retains the claim and workspace locks for retry, even
+if repeated failures requested drain and disabled the workspace. It refuses active
+claims, incomplete child cleanup, changed bindings, dirty or unpublished work.
+An apply writes `integration.preparation_handoff_restored` and a task comment.
+Without `--self-owned`, the ordinary stopped-writer proof still applies.
 
 **A worker still bound to a closed task.** A daemon restart during
 `aq task close` can commit the terminal transition and lose everything after

@@ -595,15 +595,32 @@ def _cells(
     *,
     exclude: frozenset[str] = frozenset(),
     operator: bool = False,
+    exclusions: list[str] | None = None,
 ) -> list[ProfileFacts]:
     """Worker profiles at *class_id* a lane's *selectors* admit and *exclude* does not."""
-    return [
-        profile for profile in snapshot.profiles
-        if class_id in worker_classes(profile)
-        and profile.operator == operator
-        and (selectors is None or any(selector_matches(profile.harness, s) for s in selectors))
-        and not any(selector_matches(profile.harness, s) for s in exclude)
-    ]
+    found = []
+    for profile in snapshot.profiles:
+        classes = worker_classes(profile)
+        reason = None
+        if not profile.enabled:
+            reason = "profile disabled"
+        elif profile.slots <= 0:
+            reason = "profile has no configured slots"
+        elif class_id not in classes:
+            reason = f"class {class_id} required, worker classes {sorted(classes)}"
+        elif profile.operator != operator:
+            reason = f"operator={operator} required"
+        elif selectors is not None and not any(
+            selector_matches(profile.harness, s) for s in selectors
+        ):
+            reason = f"lane harnesses {sorted(selectors)} exclude {profile.harness}"
+        elif any(selector_matches(profile.harness, s) for s in exclude):
+            reason = f"narrow-only harness {profile.harness} excluded from general candidates"
+        if reason is None:
+            found.append(profile)
+        elif exclusions is not None:
+            exclusions.append(f"{profile.id}: {reason}")
+    return found
 
 
 def _order_key(policy: RoutingPolicy, lane: Lane | None):
@@ -655,6 +672,7 @@ def _filter(
     candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy,
     *, respect_reserved: bool = True, local_gate: bool = True, kind: str | None = None,
     risk_harnesses: tuple[str, ...] = (),
+    exclusions: list[str] | None = None,
 ) -> tuple[list[Candidate], str | None]:
     """Step 2's removals, returning the survivors and why the list emptied.
 
@@ -682,6 +700,27 @@ def _filter(
     reason = None if candidates else "no_worker_candidates"
     for name, keep in stages:
         kept = [candidate for candidate in candidates if keep(candidate)]
+        if exclusions is not None:
+            for candidate in candidates:
+                if candidate not in kept:
+                    detail = name
+                    if name == "reserved":
+                        lanes = sorted({
+                            lane for cell in policy.reserved
+                            if cell.class_ == candidate.intelligence_class
+                            and cell.harness == candidate.harness
+                            for lane in cell.only_lanes
+                        })
+                        detail += f" for lanes {lanes}"
+                    elif name == "preferred_provider_unavailable":
+                        detail += f": project preferred_provider={task.preferred_provider}"
+                    elif name == "risk_harnesses":
+                        detail += f": allowed harnesses {list(risk_harnesses)}"
+                    elif name == "excluded_providers":
+                        detail += f": {sorted(task.exclude_providers)}"
+                    elif name == "local_model_gate":
+                        detail += f": {local_refusal(task, policy, kind)}"
+                    exclusions.append(f"{candidate.profile_id}: {detail}")
         if candidates and not kept:
             reason = name
         candidates = kept
@@ -714,6 +753,7 @@ def _candidates(
     rule: _Rule,
     flags: frozenset[str] | None,
     risk: str | None = None,
+    *, exclusions: list[str] | None = None,
 ) -> _Pool:
     """Step 2.  *flags* ``None`` means the classification is still unknown;
     *risk* ``None`` means no risk was classified."""
@@ -721,7 +761,8 @@ def _candidates(
     if rule.lane is not None:
         lane = policy.lanes[rule.lane]
         class_id = lane.class_ or rule.class_id
-        cells = _cells(snapshot, class_id, frozenset(lane.harnesses), operator=rule.kind == "operator")
+        cells = _cells(snapshot, class_id, frozenset(lane.harnesses),
+                       operator=rule.kind == "operator", exclusions=exclusions)
         prefer = lane.preferred_harnesses
         found = [
             _candidate(
@@ -733,6 +774,7 @@ def _candidates(
         ]
         found, reason = _filter(
             found, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+            exclusions=exclusions,
         )
         ordered = sorted(found, key=_order_key(policy, lane))
         preferred = [c for c in ordered if c.tier == PREFERRED]
@@ -743,17 +785,24 @@ def _candidates(
     # the active policy names every installed member of that CLI family.
     from src.routing.policy import is_opencode_family
 
+    if exclusions is not None:
+        exclusions.extend(
+            f"{profile.id}: OpenCode family requires an eligible narrow lane"
+            for profile in snapshot.profiles
+            if is_opencode_family(profile.harness, profile.provider, profile.harness_family)
+        )
     general = [
         _candidate(profile, rule.class_id, tier=FALLBACK, lane=None,
                    preferred_hosted=profile.harness in rule.prefer_harnesses)
         for profile in _cells(
             snapshot, rule.class_id, None, exclude=policy.narrow_harnesses(),
-            operator=rule.kind == "operator",
+            operator=rule.kind == "operator", exclusions=exclusions,
         )
         if not is_opencode_family(profile.harness, profile.provider, profile.harness_family)
     ]
     general, reason = _filter(
         general, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+        exclusions=exclusions,
     )
     general.sort(key=_order_key(policy, None))
 
@@ -763,20 +812,28 @@ def _candidates(
         for name, lane in policy.narrow_lanes():
             mapped = (lane.classes or {}).get(rule.class_id)
             if mapped is None:
+                if exclusions is not None:
+                    exclusions.append(f"lane {name}: no mapping for class {rule.class_id}")
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
                 for profile in _cells(snapshot, mapped, frozenset(lane.harnesses),
-                                      operator=rule.kind == "operator")
+                                      operator=rule.kind == "operator", exclusions=exclusions)
             ]
             lane_cells, _reason = _filter(
                 lane_cells, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+                exclusions=exclusions,
             )
             lane_cells.sort(key=_order_key(policy, lane))
             if flags is None:
                 potential.extend(lane_cells)
             elif set(lane.requires) <= flags and _lane_admits_risk(lane, risk):
                 preferred.extend(lane_cells)
+            elif exclusions is not None and lane_cells:
+                exclusions.append(
+                    f"lane {name}: requires {list(lane.requires)}, flags {sorted(flags)}, "
+                    f"max_risk={lane.max_risk}, risk={risk}"
+                )
     seen: set[tuple[str, str]] = set()
     ordered: list[Candidate] = []
     for candidate in preferred + general:
@@ -840,6 +897,39 @@ def _apply_preference(pool: _Pool, task: TaskFacts) -> tuple[_Pool, str | None]:
         return _Pool(matching, matching_potential, pool.reason), None
     return _Pool(_flagged(pool.candidates, target), _flagged(pool.potential, target),
                  pool.reason), None
+
+
+def _preference_refusal_detail(
+    task: TaskFacts, policy: RoutingPolicy, snapshot: Snapshot, rule: _Rule,
+    flags: frozenset[str] | None, risk: str | None,
+) -> str:
+    """Trace the actual admission checks for the target, without changing selection."""
+    target = prefer_target(task)
+    profiles = tuple(
+        profile for profile in snapshot.profiles
+        if profile.id == target or profile.harness == target
+    )
+    details = [
+        f"strict preference {target}: no worker candidate serves it",
+        f"{rule.rule}: selected class {rule.class_id}, narrow={rule.narrow}",
+    ]
+    if rule.lane is not None:
+        lane = policy.lanes[rule.lane]
+        details.append(
+            f"lane {rule.lane}: class {lane.class_ or rule.class_id}, "
+            f"harnesses {list(lane.harnesses)}"
+        )
+    if rule.clamped_from:
+        details.append(f"class clamped from {rule.clamped_from} to {rule.class_id}")
+    details.extend(rule.notes)
+    if profiles:
+        # Use the same class, lane and filter code as the real plan. Capacity
+        # and provider liveness come later; neither explains this refusal.
+        _candidates(task, policy, replace(snapshot, profiles=profiles), rule, flags, risk,
+                    exclusions=details)
+    else:
+        details.append("no installed profile matches the target")
+    return "; ".join(dict.fromkeys(details))
 
 
 def preference_record(
@@ -1275,10 +1365,7 @@ def plan_route(
         return PlanResult("no_candidates", {
             "task_id": task.task_id,
             "reason": refused,
-            "detail": (
-                f"strict preference {prefer_target(task)}: no worker candidate serves it"
-                + (f" in lane {rule.lane}" if rule.lane else "")
-            ),
+            "detail": _preference_refusal_detail(task, policy, snapshot, rule, flags, risk),
             # The pre-preference list, so ``kind`` still reads as profile or
             # harness for a name the planner could not place.
             "preference": preference_record(task, eligible, snapshot, None),
