@@ -93,6 +93,11 @@ class IngestExists(Exception):
 
 
 class SpecIngestCommandsMixin:
+    async def _cmd_spec_ingest_legacy_adopt(self, args):
+        from src.commands.legacy_ingest import adopt_legacy
+
+        return await adopt_legacy(self, args)
+
     async def _cmd_ensure_spec_ingest(self, args):
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.SESSION:

@@ -230,6 +230,9 @@ def build_session_env(
     """
     explicit: dict[str, str] = {}
     explicit.update(session_db_isolation(work_dir))
+    from src.build_cache import cache_environment
+
+    explicit.update(cache_environment(config, project_id))
     if harness_env:
         harness_explicit = {str(k): str(v) for k, v in harness_env.items()}
         # A harness file cannot restore a marker inherited from its enclosing

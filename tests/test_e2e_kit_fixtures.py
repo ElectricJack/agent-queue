@@ -926,6 +926,50 @@ def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
         assert detail in str(error.value)
 
 
+def test_s16_canary_retries_when_empty_long_poll_consumes_its_wait(
+    s16_canary_surfaces, monkeypatch,
+):
+    smoke, responses, calls, clock, _profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * 2
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 4)
+    original_aq = smoke.aq
+
+    def elapsed_aq(*args, **kwargs):
+        result = original_aq(*args, **kwargs)
+        if result.get("result") == "no_ready_work":
+            clock.now += int(args[-1])
+        return result
+
+    monkeypatch.setattr(smoke, "aq", elapsed_aq)
+
+    worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert held == expected == worker.task_id
+    assert len(_claims(calls)) == 3
+    assert clock.now < smoke.CONVERGE_TIMEOUT
+
+
+@pytest.mark.parametrize("wrong_task", [False, True])
+def test_s16_canary_observes_only_its_fixture_preparation(
+    s16_canary_surfaces, wrong_task,
+):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    responses.insert(0, {
+        "result": "claim_in_progress", "task_id": "foreign-task" if wrong_task else expected,
+        "claim_epoch": 7, "claim_phase": "preparing",
+    })
+
+    if wrong_task:
+        with pytest.raises(smoke.Failure, match=f"{expected}.*foreign-task"):
+            smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert len(_claims(calls)) == 1
+    else:
+        worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert held == expected == worker.task_id
+        assert worker.claim_epoch == 7
+        assert len(_claims(calls)) == 2
+
+
 @pytest.fixture
 def s19_claim_surfaces(monkeypatch, tmp_path):
     """Exercise both S19 claims up to the checklist, without a live daemon."""
@@ -1424,8 +1468,9 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider; S20 proves ordinary train delivery.
-    assert set(by_key) == {f"S{number}" for number in range(1, 21)}
+    # filing under the fake provider; S20 proves ordinary train delivery;
+    # S21 proves held ingestion, assigned fidelity review and release replay.
+    assert set(by_key) == {f"S{number}" for number in range(1, 22)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -1438,6 +1483,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
     assert by_key["S20"].families == ("integration/train/provenance",)
+    assert by_key["S21"].families == ("ingestion/recovery/fidelity",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():
@@ -1474,6 +1520,10 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
             raise failure
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {
+        "assignment_playbook_id": "project-router",
+    })
+    monkeypatch.setattr(smoke, "observe_scheduler_cycles", lambda _: calls.append(("cycle",)))
     monkeypatch.setattr(smoke, "_s16", manual_sweep)
     monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
     monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
@@ -1486,9 +1536,12 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
         assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--no-enabled"),
+        ("cycle",),
         ("manual sweep",),
         ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--enabled"),
         ("readiness",),
     ]
 
