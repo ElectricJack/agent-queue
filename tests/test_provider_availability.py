@@ -23,6 +23,7 @@ from src.providers.availability import (
     LAUNCH_FAILURE,
     LAUNCH_SUCCESS,
     LLM_CALL,
+    LLM_OK,
     PROBE_AUTHENTICATED,
     PROBE_CANNOT_TELL,
     PROBE_NOT_AUTHENTICATED,
@@ -348,6 +349,57 @@ def test_rate_limit_exits_outside_the_window_do_not_combine():
     assert d.state == DEGRADED
 
 
+def test_explicit_usage_screen_exhausts_until_reset_despite_late_launch_acknowledgements():
+    d = Driver(provider="opencode-zen")
+    reset = T0 + 15 * 3600 + 2 * 60
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.state == EXHAUSTED and d.row.until == reset
+    # Even after the evidence ring loses the footer, daemon acknowledgements
+    # from sessions launched before the outage cannot clear the known quota.
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+    d.tick(reset - d.clock.now + d.config.recovery.reset_grace_seconds)
+    assert d.row.reason_code == RECOVERING
+    d.success()
+    assert d.state == AVAILABLE
+
+
+def test_corroborated_long_retries_use_the_stated_reset_instead_of_backoff_cap():
+    d = Driver()
+    reset = T0 + 15 * 3600
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={"resets_at": reset})
+    assert d.state == DEGRADED
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s2", detail={"resets_at": reset})
+    assert d.state == EXHAUSTED and d.row.until == reset
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+
+
+def test_a_new_usage_screen_extends_exhaustion_and_recovery_canary_obeys_reset():
+    d = Driver()
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={"usage_exhausted": True})
+    first_reset = d.row.until
+    reset = first_reset + 7200
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s2", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.row.until == reset
+    d.tick(reset - d.clock.now + d.config.recovery.reset_grace_seconds)
+    assert d.row.reason_code == RECOVERING
+    reset = d.clock.now + 54000
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s3", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.state == EXHAUSTED and d.row.until == reset
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+
+
 # -- D3: failing and attribution -------------------------------------------------
 
 
@@ -460,6 +512,123 @@ def test_a_running_session_success_moves_exhausted_to_probation():
     assert d.state == EXHAUSTED
     d.success()
     assert (d.state, d.row.reason_code) == (DEGRADED, RECOVERING)
+
+
+# -- D4: a still-valid exhausted reading outranks every positive signal ----------
+
+
+def _exhausted_at_full(resets_in: float | None = 200_000.0) -> Driver:
+    d = Driver()
+    resets_at = None if resets_in is None else T0 + resets_in
+    d.account = UsageReading("primary", 100.0, observed_at=T0, resets_at=resets_at)
+    d.tick(1)
+    assert (d.state, d.row.reason_code) == (EXHAUSTED, "usage_exhausted")
+    return d
+
+
+def test_successes_do_not_flap_a_still_valid_exhausted_reading():
+    """The 2026-10-01 replay: success, tick, success, tick... was eight transitions."""
+    d = _exhausted_at_full()
+    gen, trips = d.row.generation, len(d.transitions)
+    for _ in range(4):
+        d.success()
+        d.tick(5)
+    assert (d.state, d.row.reason_code) == (EXHAUSTED, "usage_exhausted")
+    assert d.row.until == T0 + 200_000
+    assert (d.row.generation, len(d.transitions)) == (gen, trips)
+    # The successes are still recorded: the evidence is kept, only its verdict changed.
+    assert d.row.evidence[0]["kind"] == LAUNCH_SUCCESS
+
+
+def test_an_api_success_or_a_signed_in_probe_does_not_clear_it_either():
+    d = _exhausted_at_full()
+    gen = d.row.generation
+    d.feed(LLM_CALL, LLM_OK)
+    d.probe(PROBE_AUTHENTICATED)
+    assert d.state == EXHAUSTED
+    assert d.row.generation == gen
+
+
+def test_a_passed_backoff_does_not_clear_a_reading_with_no_reset_clock():
+    d = _exhausted_at_full(resets_in=None)
+    gen, first_until = d.row.generation, d.row.until
+    grace = d.config.recovery.reset_grace_seconds
+    d.tick(first_until - d.clock.now + grace + 1)
+    assert d.state == EXHAUSTED
+    assert d.row.generation == gen
+    # The guessed recovery time moves on rather than staying in the past.
+    assert d.row.until > d.clock.now
+
+
+def test_exhausted_still_recovers_on_a_fresher_low_reading():
+    d = _exhausted_at_full()
+    d.success()
+    d.account = UsageReading("primary", 10.0, observed_at=d.clock.now + 1, resets_at=None)
+    d.tick(2)
+    assert (d.state, d.row.reason_code) == (DEGRADED, RECOVERING)
+    d.success()
+    assert d.state == AVAILABLE
+
+
+def test_exhausted_still_recovers_once_its_reading_resets_or_goes_stale():
+    # The window reset: ``usage_view`` drops the reading, then the clock applies.
+    d = _exhausted_at_full(resets_in=500.0)
+    d.account = None
+    d.tick(500 + d.config.recovery.reset_grace_seconds)
+    assert (d.state, d.row.reason_code) == (DEGRADED, RECOVERING)
+    # A stale reading is not a statement about now: a success may start probation.
+    d = _exhausted_at_full()
+    d.account = None
+    d.success()
+    assert (d.state, d.row.reason_code) == (DEGRADED, RECOVERING)
+    d.success()
+    assert d.state == AVAILABLE
+
+
+def test_a_reading_below_the_exhausted_threshold_does_not_hold_the_state():
+    d = Driver()
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1")
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s2")
+    assert d.state == EXHAUSTED
+    d.account = UsageReading("primary", 90.0, observed_at=d.clock.now, resets_at=T0 + 9000)
+    d.success()
+    assert (d.state, d.row.reason_code) == (DEGRADED, RECOVERING)
+    d.success()
+    assert (d.state, d.row.reason_code) == (DEGRADED, "usage_high")
+
+
+def test_an_available_override_over_a_held_exhaustion_returns_to_it_once():
+    d = _exhausted_at_full()
+    d.row = set_override(
+        d.row, AVAILABLE, until=d.clock.now + 600, by="human:cli", reason="false positive",
+        now=d.clock.now,
+    ).row
+    assert d.state == AVAILABLE
+    gen = d.row.generation
+    d.success()
+    assert (d.state, d.row.state) == (AVAILABLE, EXHAUSTED)
+    d.tick(5)
+    assert (d.state, d.row.state) == (AVAILABLE, EXHAUSTED)
+    d.tick(600)
+    assert d.state == EXHAUSTED
+    assert d.row.generation == gen + 1
+    assert (d.transitions[-1].from_state, d.transitions[-1].to_state) == (AVAILABLE, EXHAUSTED)
+
+
+def test_auto_over_a_held_exhaustion_rederives_it_without_a_transition():
+    d = _exhausted_at_full()
+    d.success()
+    gen = d.row.generation
+    result = clear_override(
+        d.row, by="human:cli", now=d.clock.tick(1), config=d.config, account=d.account
+    )
+    d.row = result.row
+    assert result.transition is None
+    assert d.state == EXHAUSTED
+    d.success()
+    d.tick(5)
+    assert d.state == EXHAUSTED
+    assert d.row.generation == gen
 
 
 def test_success_does_not_clear_unauthenticated():

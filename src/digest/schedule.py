@@ -34,6 +34,7 @@ from src.config import (
     MIN_DIGEST_CATCHUP_HOURS,
     MIN_DIGEST_INTERVAL_MINUTES,
     DiscordConfig,
+    ReportQuietHoursConfig,
 )
 from src.digest.facts import CATEGORIES, DigestWindow
 
@@ -54,6 +55,11 @@ def config_generation(config: DiscordConfig) -> int:
         {
             "channel_id": config.channel_id,
             "interval_minutes": digest.interval_minutes,
+            # Phase P3 (2026-10-03 §4.1) redefines the window grid when the
+            # supervisor authors the digest, so the cadence that is actually in
+            # force -- not merely the flag -- is what rolls the generation.
+            "cadence_minutes": digest.cadence_minutes if digest.supervisor_authored else None,
+            "supervisor_authored": digest.supervisor_authored,
             "project_ids": sorted(digest.project_ids),
             "categories": sorted(digest.categories),
             "catchup_hours": digest.catchup_hours,
@@ -76,6 +82,12 @@ class DigestSchedule:
     catchup_seconds: float
     project_ids: tuple[str, ...]
     categories: frozenset[str]
+    #: Phase P3 (2026-10-03 §4): the window is held for the supervisor, posted
+    #: from ``aq digest post`` or by the deterministic fallback at the deadline.
+    supervisor_authored: bool = False
+    author_fallback_seconds: float = 0.0
+    quiet_hours: ReportQuietHoursConfig | None = None
+    quiet_line_after_skips: int = 3
 
     def window_for(self, now: float, *, last_window_end: float | None = None) -> DigestWindow:
         """The window ending at ``now``'s boundary.
@@ -137,14 +149,22 @@ class DigestSchedule:
 def schedule_for(config: DiscordConfig) -> DigestSchedule:
     """Project the configured settings onto the durable schedule identity."""
     digest = config.digest
+    # Phase P3: with the supervisor authoring the digest, the cadence replaces
+    # the deterministic interval.  The flag off keeps §8's hourly grid exactly
+    # as it was, which is what makes rollback a flag and not a migration.
+    interval = digest.cadence_minutes if digest.supervisor_authored else digest.interval_minutes
     return DigestSchedule(
         destination=destination_id(config),
         generation=config_generation(config),
         enabled=digest.enabled,
-        interval_seconds=digest.interval_minutes * 60.0,
+        interval_seconds=interval * 60.0,
         catchup_seconds=digest.catchup_hours * 3600.0,
         project_ids=tuple(sorted(digest.project_ids)),
         categories=frozenset(digest.categories),
+        supervisor_authored=digest.supervisor_authored,
+        author_fallback_seconds=digest.author_fallback_minutes * 60.0,
+        quiet_hours=digest.quiet_hours,
+        quiet_line_after_skips=digest.quiet_line_after_skips,
     )
 
 
