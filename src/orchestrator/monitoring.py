@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -256,10 +257,22 @@ class MonitoringMixin:
         blocked = [task for task in blocked if task.id not in terminal]
 
         decisions = await self._projected_promotion_decisions(defined, blocked)
+        observed = {task.id: task for task in [*defined, *blocked]}
 
         for task_id in sorted(decisions):
+            # A change set can commit new blockers after this pass's read.
+            # Recheck the projection in the status write, under PostgreSQL's
+            # task-table/row locks, rather than promoting a stale snapshot.
+            from sqlalchemy import and_
+            from src.database.tables import tasks
+
             flipped = await self.db.transition_task(
-                task_id, TaskStatus.READY, context=decisions[task_id]
+                task_id, TaskStatus.READY, context=decisions[task_id],
+                extra_where=and_(
+                    tasks.c.status == observed[task_id].status.value,
+                    tasks.c.updated_at == observed[task_id].updated_at,
+                    tasks.c.is_blocked == 0,
+                ),
             )
             # WG-4: bus emit for the flipped set so ``task.blocked`` /
             # ``task.unblocked`` triggers actually fire.  ``log_blocked_flips``
@@ -860,7 +873,7 @@ class MonitoringMixin:
             sweeper = ArtifactRetentionSweeper(
                 self.db, playbooks, self.config.compiled_root
             )
-            await sweeper.sweep(now)
+            await sweeper.sweep(now, collect_runs=False)
         except Exception as e:
             logger.warning("Playbook V2 retention sweep failed: %s", e)
 
@@ -874,6 +887,23 @@ class MonitoringMixin:
         if now - self._last_operational_event_retention_sweep < 3600:
             return
         self._last_operational_event_retention_sweep = now
+        try:
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            async def collect():
+                try:
+                    with principal_context(ExecutionPrincipal.service("operational-retention")):
+                        result = await self._command_handler.execute("operational_retention", {})
+                    if not result.get("success"):
+                        logger.warning("Operational retention refused: %s", result)
+                except Exception:
+                    logger.exception("Operational retention sweep failed")
+
+            task = getattr(self, "_operational_retention_dispatch", None)
+            if task is None or task.done():
+                self._operational_retention_dispatch = asyncio.create_task(collect())
+        except Exception:
+            logger.exception("Operational retention sweep failed")
         try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(
