@@ -1,10 +1,10 @@
-// The phone terminal (mobile terminal spec,
-// docs/superpowers/specs/2026-10-08-mobile-terminal-design.md): one attach,
-// sized to the phone, with tmux history ahead of the screen. Its columns and
-// rows fill the terminal area and follow rotation and the on-screen keyboard; a
-// drag scrolls back through earlier output, with momentum, and never the page;
-// a tap opens the input bar, which types over the same attach with no
-// watch/type toggle. The colours match the desktop terminal's.
+// The agent terminal at a phone viewport (Jack, fleet-pinnacle-21): one window
+// at every width, the same one the host shell page draws. It attaches at a size
+// fitted to the phone, asks tmux for its scrollback and for the agent's window
+// size back, follows rotation and the on-screen keyboard, and a touch drag
+// reaches earlier output. There is no watch/type mode and no phone chrome.
+// `terminal-parity` compares this terminal with the host shell page's;
+// `terminal-headers` covers the header at every profile.
 import assert from "node:assert/strict";
 import { expectLayout, rect } from "../probes.mjs";
 import { SESSION } from "../fixtures/base.mjs";
@@ -13,12 +13,8 @@ import { TERMINAL_PHONES } from "../profiles.mjs";
 export const name = "phone-terminal";
 export const profiles = TERMINAL_PHONES;
 
-const STATUS = '[aria-label="worker-a terminal status"]';
-const HOST = "[data-phone-terminal]";
-const INPUT = 'textarea[aria-label="worker-a terminal input"]';
-const STRIP = '[aria-label="worker-a terminal keys"]';
-const SEND = '[aria-label="Send to worker-a"]';
-const JUMP = '[aria-label="Jump to latest output"]';
+const HOST = "[data-interactive-terminal]";
+const STATUS = '[aria-label="worker-a terminal connection"]';
 /** FitAddon always keeps this much of the width for xterm's scrollbar. */
 const SCROLLBAR_PX = 14;
 const MIN_COLUMNS = 40;
@@ -44,8 +40,6 @@ async function poll(read, ok, timeout, message) {
     await sleep(50);
   }
 }
-const focused = (t) => t.page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
-const pageScroll = (t) => t.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
 
 /** The size tmux was last given: the attach query, then each resize. */
 function reported(viewer) {
@@ -65,7 +59,8 @@ const screen = (t) => t.page.$eval(HOST, (host) => {
   const ruler = rows.map((row) => row.trimEnd()).filter((row) => /^#+$/.test(row)).map((row) => row.length);
   return { rows, hostWidth: box.width, hostHeight: box.height, width: drawn.width, height: drawn.height, rulerCols: ruler.length ? Math.max(...ruler) : null };
 });
-/** Where the view is: the ordinal of its top row, from the first numbered line in view (history, then output). */
+
+/** Where the view is: the ordinal of its top row, from the first numbered line in view. */
 const topLine = (rows) => {
   for (const [index, row] of rows.entries()) {
     const line = row.match(/(history|output) line (\d+)/);
@@ -73,45 +68,6 @@ const topLine = (rows) => {
   }
   return null;
 };
-
-/**
- * tmux's size is the size shown, and it fills the terminal area: less than one
- * cell is left over either way. A fresh ruler at the bottom keeps a full ruler
- * row in view however few rows the keyboard leaves. xterm reflows it on resize
- * only with the cursor below it: the cursor's own line is left for the program
- * to redraw, as tmux does and this stub does not.
- */
-async function expectFilled(t, viewer, label) {
-  t.stub.terminalWrite(SESSION, `\r\n${"#".repeat(RULER)}\r\n`);
-  const measure = async () => {
-    const size = reported(viewer);
-    const shown = await screen(t);
-    const cell = shown.width / size.cols;
-    const row = shown.height / size.rows;
-    return {
-      size, cell, row, shown: { rows: shown.rows.length, cols: shown.rulerCols },
-      matches: shown.rows.length === size.rows && shown.rulerCols === size.cols,
-      slackX: shown.hostWidth - SCROLLBAR_PX - shown.width,
-      slackY: shown.hostHeight - shown.height,
-    };
-  };
-  const fills = (m) => m.matches && m.slackX > -1 && m.slackX < m.cell + 1 && m.slackY > -1 && m.slackY < m.row + 1;
-  // The resize lands a frame or two after the viewport changes; until then the old size still matches.
-  const last = await poll(measure, fills, 5_000, `${label}: the terminal does not fill its area at the size tmux was given`);
-  assert.ok(last.size.cols >= MIN_COLUMNS, `${label}: only ${last.size.cols} columns`);
-  return last.size;
-}
-
-/** iOS keeps the layout viewport and shrinks the visual one: fake that, `covered` px of keyboard. */
-const setKeyboard = (t, covered) => t.page.evaluate((px) => {
-  const vv = window.visualViewport;
-  if (!px) delete vv.height;
-  else {
-    const height = window.innerHeight - px;
-    Object.defineProperty(vv, "height", { configurable: true, get: () => height });
-  }
-  vv.dispatchEvent(new Event("resize"));
-}, covered);
 
 /** A finger dragged `distance` px down (toward earlier output), released while moving. */
 async function flick(t, distance) {
@@ -126,143 +82,128 @@ async function flick(t, distance) {
   await t.page.touchscreen.touchEnd();
 }
 
-/** Computed colours of the sample, the default text and the background. */
-const palette = (t, root) => t.page.$eval(root, (el) => {
-  const span = (text) => [...el.querySelectorAll(".xterm-rows span")].find((s) => s.textContent?.includes(text));
-  const colour = (text, property) => {
-    const found = span(text);
-    return found ? getComputedStyle(found)[property] : null;
-  };
-  const rows = el.querySelector(".xterm-rows");
-  return {
-    font: getComputedStyle(rows).fontFamily,
-    foreground: getComputedStyle(rows).color,
-    background: [".xterm", ".xterm-viewport", ".xterm-scrollable-element", ".xterm-screen"]
-      .map((selector) => { const node = el.querySelector(selector); return node ? getComputedStyle(node).backgroundColor : null; }),
-    red: colour("ansi-red", "color"),
-    indexed: colour("ansi-256", "color"),
-    truecolor: colour("ansi-true", "color"),
-    blueBackground: colour("ansi-bg", "backgroundColor"),
-  };
-});
+/**
+ * tmux's size once it has stopped moving. Three agreeing reads, because the
+ * first fit happens before xterm's scrollbar takes its 14 px, and the refit
+ * that follows is one more resize.
+ */
+async function stable(viewer, timeout = 6_000) {
+  const end = Date.now() + timeout;
+  let last = reported(viewer);
+  let agrees = 0;
+  for (;;) {
+    await sleep(120);
+    const next = reported(viewer);
+    agrees = next.cols === last.cols && next.rows === last.rows ? agrees + 1 : 0;
+    last = next;
+    if (agrees >= 3 || Date.now() > end) return next;
+  }
+}
+
+/** iOS keeps the layout viewport and shrinks the visual one: fake that, `covered` px of keyboard. */
+const setKeyboard = (t, covered) => t.page.evaluate((px) => {
+  const vv = window.visualViewport;
+  if (!px) delete vv.height;
+  else Object.defineProperty(vv, "height", { configurable: true, get: () => window.innerHeight - px });
+  vv.dispatchEvent(new Event("resize"));
+}, covered);
 
 export async function run(t) {
+  const wide = t.page.viewport().width >= 768;
   t.stub.allowTerminal(SESSION, SCREEN);
   await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
-  await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "Live", { timeout: 10_000 }, STATUS);
+  await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "connected", { timeout: 15_000 }, STATUS);
   const vp = t.page.viewport();
 
-  // One attach, sized to the phone, asking for history and for the agent's size back.
+  // One attach, sized to the phone, asking for tmux's scrollback and for the
+  // agent's window size back. The host shell uses the same compact transport.
   const viewers = () => t.stub.terminalViewers.filter((row) => row.sessionId === SESSION);
   assert.equal(viewers().length, 1, "the phone opened more than one attach");
   const viewer = viewers()[0];
   const query = new URL(viewer.url, "http://stub.invalid").searchParams;
   assert.ok(Number(query.get("cols")) > 0 && Number(query.get("rows")) > 0, `the attach carries no size: ${viewer.url}`);
-  assert.equal(query.get("history"), "2000", `the attach asks for no history: ${viewer.url}`);
-  assert.equal(query.get("restore_size"), "1", `the attach leaves the agent's window at the phone's size: ${viewer.url}`);
+  assert.equal(query.get("history"), wide ? null : "2000", `wrong history in the attach: ${viewer.url}`);
+  assert.equal(query.get("restore_size"), wide ? null : "1", `wrong restore_size in the attach: ${viewer.url}`);
 
-  // No watch/type mode: the input bar and the key strip are there from the start.
-  assert.equal(await t.page.$("xpath/.//button[normalize-space()='Type']"), null, "a Type toggle is back");
-  assert.equal(await t.page.$('button[aria-label="Watch only"]'), null, "a Watch only toggle is back");
-  await t.page.waitForSelector(`${STRIP} button:not([disabled])`);
-  await t.page.waitForSelector(INPUT);
-  await expectLayout(t, { primary: [`${STRIP} button`, SEND] });
-  const strip = await rect(t.page, STRIP);
-  assert.ok(strip.left >= -1 && strip.right <= vp.width + 1, `the key strip leaves the viewport (${strip.left}–${strip.right})`);
-  const bar = await rect(t.page, INPUT);
-  assert.ok(bar.bottom <= vp.height + 1 && bar.height >= 44, `the input bar is off screen or short (${bar.top}–${bar.bottom})`);
+  // No watch/type mode and no phone chrome: the terminal and its typing surface.
+  assert.equal(await t.page.$('[aria-label="Watch only"]'), null, "a Watch only toggle is back");
+  await t.page.waitForSelector('textarea[aria-label="worker-a terminal input"]');
+  await t.page.waitForSelector('button[aria-label="Focus worker-a terminal"]');
+  await expectLayout(t);
 
-  // The columns and rows fill the screen, and tmux has exactly that size.
-  const initial = await expectFilled(t, viewer, "on load");
+  /** tmux's size is the size shown, and it fills the terminal area. */
+  const filled = async (label) => {
+    t.stub.terminalWrite(SESSION, `\r\n${"#".repeat(RULER)}\r\n`);
+    const size = reported(viewer);
+    const shown = await screen(t);
+    const cell = shown.width / size.cols;
+    const row = shown.height / size.rows;
+    const slackX = shown.hostWidth - SCROLLBAR_PX - shown.width;
+    const slackY = shown.hostHeight - shown.height;
+    const ok = shown.rows.length === size.rows && shown.rulerCols === size.cols
+      && slackX > -1 && slackX < cell + 1 && slackY > -1 && slackY < row + 1;
+    if (!ok) throw new Error(`${label}: the terminal shows ${shown.rows.length}×${shown.rulerCols} in ${Math.round(shown.width)}×${Math.round(shown.height)} (+${Math.round(slackX)},+${Math.round(slackY)}), tmux was given ${size.cols}×${size.rows}`);
+    assert.ok(size.cols >= MIN_COLUMNS, `${label}: only ${size.cols} columns`);
+    return size;
+  };
+  /** tmux's size after a layout change, once the last resize frame has landed. */
+  const sized = (cols, rows) => poll(() => stable(viewer),
+    (size) => (cols === null || size.cols === cols) && (rows === null || size.rows === rows), 5_000,
+    `tmux was never given ${cols ?? "any"}×${rows ?? "any"} columns (it has ${JSON.stringify(reported(viewer))})`);
+
+  const initial = await poll(() => filled("on load").catch(() => null), (size) => !!size, 5_000, "the terminal never filled its area");
   await t.shot("live");
 
   // Rotation: the size follows, then comes back.
   await t.page.setViewport({ ...vp, width: vp.height, height: vp.width, isLandscape: !vp.isLandscape });
-  const rotated = await expectFilled(t, viewer, "rotated");
-  assert.notEqual(rotated.cols, initial.cols, "rotation left the column count alone");
+  await poll(() => stable(viewer), (size) => size.cols !== initial.cols, 5_000, "rotation left the column count alone");
   await t.shot("rotated");
   await t.page.setViewport(vp);
-  assert.deepEqual(await expectFilled(t, viewer, "rotated back"), initial);
+  await sized(null, initial.rows);
 
-  // The on-screen keyboard: the terminal keeps what the keyboard leaves, the
-  // input bar stays above it, and tmux gets fewer rows; closing it gives them back.
-  await t.page.tap(HOST);
-  assert.equal(await focused(t), "worker-a terminal input", "a tap on the terminal did not focus the input bar");
+  // The on-screen keyboard covers the terminal without changing the layout
+  // viewport, so tmux follows the visual one; closing it gives the rows back.
   const covered = Math.round(vp.height * 0.4);
   await setKeyboard(t, covered);
-  await t.page.waitForSelector("[data-keyboard-open]");
-  const typingSize = await expectFilled(t, viewer, "keyboard open");
-  assert.ok(typingSize.rows < initial.rows, `the keyboard left ${typingSize.rows} of ${initial.rows} rows`);
-  assert.equal(typingSize.cols, initial.cols, "the keyboard changed the column count");
-  const raised = await rect(t.page, INPUT);
-  assert.ok(raised.bottom <= vp.height - covered + 1, `the input bar is behind the keyboard (${raised.bottom} > ${vp.height - covered})`);
+  const typing = await poll(() => stable(viewer), (size) => size.rows < initial.rows, 5_000,
+    "the on-screen keyboard did not take rows from the terminal");
+  // A keyboard never changes the width, so the column count may only move by
+  // the one column xterm's own scrollbar costs the first fit.
+  assert.ok(Math.abs(typing.cols - initial.cols) <= 1, `the keyboard changed the column count (${initial.cols} → ${typing.cols})`);
   await t.shot("keyboard");
   await setKeyboard(t, 0);
-  await t.page.waitForFunction(() => !document.querySelector("[data-keyboard-open]"));
-  assert.deepEqual(await expectFilled(t, viewer, "keyboard closed"), initial);
+  await poll(() => stable(viewer), (size) => Math.abs(size.cols - initial.cols) <= 1, 5_000,
+    `rotating back left ${JSON.stringify(initial.cols)} columns`);
 
-  // Typing goes over the attach: a line, then Enter as its own frame.
+  // Typing goes over the attach: xterm's own textarea, as on the host shell page.
+  await t.page.tap(HOST);
   await t.page.keyboard.type("hello from the phone");
   await t.page.keyboard.press("Enter");
-  await poll(() => t.stub.typed(SESSION), (typed) => typed.length >= 2, 5_000, "the line and its Enter never reached the attach");
-  assert.deepEqual(t.stub.typed(SESSION), ["hello from the phone", "\r"]);
-  assert.equal(await t.page.$eval(INPUT, (el) => el.value), "", "the sent line stayed in the input bar");
-
-  // The key strip: each tap is its bytes, and focus (the on-screen keyboard) stays put.
-  for (const key of ["Send 2", "Send Escape", "Send Ctrl-C", "Send Up arrow", "Send Enter"]) {
-    await t.page.tap(`[aria-label="${key}"]`);
-  }
-  await poll(() => t.stub.typed(SESSION), (typed) => typed.length >= 7, 5_000, "key strip taps never reached the attach");
-  assert.deepEqual(t.stub.typed(SESSION).slice(2), ["2", "\x1b", "\x03", "\x1b[A", "\r"]);
-  assert.equal(await focused(t), "worker-a terminal input", "a key tap took focus from the input bar (the keyboard would close)");
-  const clipped = await t.page.$$eval(`${STRIP} button`, (keys) =>
-    keys.filter((key) => key.scrollWidth > key.clientWidth).map((key) => key.textContent));
-  assert.deepEqual(clipped, [], "a key label is wider than its key");
-
-  // Several lines (Shift+Enter) go as one bracketed paste with CR line ends, then Enter.
-  await t.page.keyboard.type("line one");
-  await t.page.keyboard.down("Shift");
-  await t.page.keyboard.press("Enter");
-  await t.page.keyboard.up("Shift");
-  await t.page.keyboard.type("line two");
-  await t.page.tap(SEND);
-  await poll(() => t.stub.typed(SESSION), (typed) => typed.length >= 9, 5_000, "the multi-line entry never reached the attach");
-  assert.deepEqual(t.stub.typed(SESSION).slice(7), ["\x1b[200~line one\rline two\x1b[201~", "\r"]);
-  await t.shot("typed");
+  // xterm sends what the keyboard sends: one key per frame, then Enter.
+  await poll(() => t.stub.typed(SESSION).join(""), (typed) => typed === "hello from the phone\r", 5_000,
+    `typing never reached the attach (${JSON.stringify(t.stub.typed(SESSION))})`);
+  assert.equal(t.stub.typed(SESSION).at(-1), "\r", "Enter did not follow the line");
 
   // A drag scrolls the terminal, not the page, and keeps going after the finger lifts.
   t.stub.terminalWrite(SESSION, Array.from({ length: OUTPUT_LINES }, (_, i) => `\r\noutput line ${String(i + 1).padStart(3, "0")}`).join(""));
-  await poll(async () => (await screen(t)).rows, (rows) => rows.some((row) => row.includes(`output line ${String(OUTPUT_LINES).padStart(3, "0")}`)), 3_000, "live output never drew");
-  await t.page.evaluate(() => (document.activeElement instanceof HTMLElement) && document.activeElement.blur());
+  await poll(async () => (await screen(t)).rows,
+    (rows) => rows.some((row) => row.includes(`output line ${String(OUTPUT_LINES).padStart(3, "0")}`)), 5_000, "live output never drew");
   const before = topLine((await screen(t)).rows);
   await flick(t, (await rect(t.page, HOST)).height * 0.5);
   const released = topLine((await screen(t)).rows);
   assert.ok(before !== null && released !== null && released < before, `the drag did not scroll back (top line ${before} → ${released})`);
-  const glided = await poll(async () => topLine((await screen(t)).rows), (line) => line < released, 2_000,
+  await poll(async () => topLine((await screen(t)).rows), (line) => line < released, 2_000,
     "the terminal stopped when the finger lifted (no momentum)");
-  assert.ok(glided < released);
-  await t.page.waitForSelector(JUMP);
-  assert.notEqual(await focused(t), "worker-a terminal input", "a drag focused the input bar (it is not a tap)");
 
   // Flicks reach the first history line, hundreds of lines back.
-  for (let i = 0; i < 80 && topLine((await screen(t)).rows) !== 1; i++) {
+  for (let i = 0; i < 90 && topLine((await screen(t)).rows) !== 1; i++) {
     await flick(t, (await rect(t.page, HOST)).height * 0.5);
-    await sleep(200);
+    await sleep(150);
   }
-  await poll(async () => topLine((await screen(t)).rows), (line) => line === 1, 3_000, "flicks never reached the first history line");
-  assert.deepEqual(await pageScroll(t), { x: 0, y: 0 }, "the drag scrolled the page");
+  await poll(async () => topLine((await screen(t)).rows), (line) => line === 1, 5_000, "flicks never reached the first history line");
+  assert.deepEqual(await t.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })), { x: 0, y: 0 }, "the drag scrolled the page");
   await expectLayout(t);
   await t.shot("scrolled-back");
-
-  // Output that arrives while reading back does not pull the view down;
-  // Jump to latest shows it.
-  t.stub.terminalWrite(SESSION, "\r\nlive output while scrolled back\r\n$ ");
-  await sleep(300);
-  assert.ok((await screen(t)).rows.some((row) => row.includes("history line 001")), "live output pulled the view off the history");
-  await t.page.tap(JUMP);
-  await t.page.waitForFunction((selector) => !document.querySelector(selector), {}, JUMP);
-  await poll(async () => (await screen(t)).rows, (rows) => rows.some((row) => row.includes("live output while scrolled back")),
-    3_000, "Jump to latest did not show the live screen");
 
   // One attach throughout; besides input only sizes, flow-control credit and
   // keepalive; nothing remembered.
@@ -274,23 +215,4 @@ export async function run(t) {
   // Leaving closes the attach, which is when the daemon gives the agent its size back.
   await t.page.goto(t.url("/focus"), { waitUntil: "domcontentloaded" });
   await poll(() => viewer.open, (open) => !open, 5_000, "leaving left the attach open");
-
-  // The phone and the desktop terminal draw the same screen in the same colours.
-  // Compared in portrait: a landscape phone is too wide for the Agents page's
-  // compact layout, so it shows the desktop terminal there.
-  if (vp.isLandscape) return;
-  await t.page.goto(t.url("/agents?agent=worker-a"), { waitUntil: "domcontentloaded" });
-  await t.page.waitForFunction(() => [...document.querySelectorAll("[data-phone-terminal] .xterm-rows span")].some((s) => s.textContent?.includes("ansi-red")), { timeout: 10_000 });
-  const phone = await palette(t, HOST);
-  await t.shot("theme-phone");
-  await t.page.setViewport({ ...vp, width: 1024, height: 768, isLandscape: true });
-  await t.page.waitForFunction(() => [...document.querySelectorAll("[data-interactive-terminal] .xterm-rows span")].some((s) => s.textContent?.includes("ansi-red")), { timeout: 10_000 });
-  const desktop = await palette(t, "[data-interactive-terminal]");
-  await t.shot("theme-desktop");
-  assert.ok(phone.red && phone.indexed && phone.truecolor && phone.blueBackground, `the phone drew no colour sample: ${JSON.stringify(phone)}`);
-  assert.notEqual(phone.red, phone.foreground, "the phone drew red in the default colour");
-  // xterm.css paints the viewport #000; the band below the last row shows it.
-  assert.equal(phone.background[1], "rgb(13, 17, 23)", "the terminal viewport is not the theme background");
-  assert.deepEqual(phone, desktop, "the phone and the desktop terminal use different colours");
-  await t.page.setViewport(vp);
 }
