@@ -1,13 +1,13 @@
 ---
 playbook_id: default-assignment-routing
-artifact_sha256: sha256:d4d6c9bd48d564421387e1263ee141003dd66efd66cae2a830f1637bbd15ac62
-source_sha256: sha256:928ce342b14a423804349acc155f278acac8d36e542dd1ade96f7ef5610b8e96
-contract_fingerprint: sha256:3369c072f1c5dd11fe03dd629d92fd2cb5c3b0036b3dc2ea8880c9191fd2efa2
+artifact_sha256: sha256:4ec68bae1d26ff1535ae4249fa8ae35989834dc0d7535a637cae05cc503ebae4
+source_sha256: sha256:e6592357cb4b9468d4cd3548ccfcd5ee6a3323148a0ac985841b6df12fa74191
+contract_fingerprint: sha256:dd441e7c2e0d7cde7836aed7f1f9526d2cd314a53cc04598f254054f634d7991
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - task_route
-  - task_route_options
+  - task_route_apply
+  - task_route_plan
   harness_tools: []
   plugin_tools: []
 profiles_referenced:
