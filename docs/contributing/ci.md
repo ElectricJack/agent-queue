@@ -6,7 +6,7 @@ important — what it does not run.
 ## Why this page exists
 
 AQ's CI runs the full suite **before** a change reaches `main`, never after.
-The test workflow runs on pull requests into `main` and on pushes to the
+The test workflow runs on pull requests into `dev`, `staging` and `main`, and on pushes to the
 integration branches AQ itself creates. A push to `main` does not start it, so
 `main`'s own commits carry only the checks of the candidate or PR run that
 tested them. Knowing that saves you from waiting for a run that is never going
@@ -38,8 +38,8 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
-| [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `main` | Verifies the pushed SHA's integration attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev`, `staging` or `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
+| [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `dev`, `staging` or `main` | Verifies the pushed SHA's branch attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
@@ -107,13 +107,19 @@ See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeou
 for marker precedence and timeout behavior.
 
 `fail-fast: false`, so one red arm does not hide the others. A cache-miss
-dependency install has a 12-minute step deadline and the test step a 10-minute
+dependency install has a 12-minute step deadline and the test step a 20-minute
 one (11 minutes for an E2E scenario group, a minute above its 600-second test
 limit); each job times out at their sum plus three minutes for checkout,
-PostgreSQL, migrations and cleanup (25 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
+PostgreSQL, migrations and cleanup (35 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
 tests' time: in the 40 runs up to 36831813696, eight jobs were cancelled after
 installs of 306–600 seconds, while no test or scenario step took over 332
-seconds. These limits bound failures and improve diagnostics. Profiling on 2026-09-26 measured the
+seconds. Run 38601833262 later exhausted the ten-minute test step on two
+progressing default shards, with collection taking up to three minutes, and
+run 38612265340 exhausted fifteen minutes on a slow runner (collection 3:06,
+PostgreSQL checkpoints of 270 s) at 92% of a shard that took 8:37 one run
+earlier. The 20-minute step limit leaves time for completion and pytest's failure diagnostics;
+the 120-second per-test deadline remains in force. These limits bound failures
+and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
 run in four separate jobs with 11-minute scenario steps, as described below. Hosted
@@ -172,11 +178,22 @@ to four workers with `--dist loadfile`. The eight groups are disjoint and
 together select the complete default suite. New test IDs use the average
 stored duration; removed IDs do not affect selection.
 
-The target is at most 4.5 minutes per default shard job, leaving headroom below
-the five-minute CI job goal. Stored test seconds are summed across workers;
-they are a balancing input, not a wall-clock guarantee. Check the actual job
-times after changing the shard count or refreshing the map. The separately
-selected integration and migration suites retain their own commands.
+The test step has a 15-minute deadline. Run `39368476563`, job `118450643210`,
+reported 3,985 passing tests in 594.60 seconds on `default-8/8`, then hit the
+former 10-minute deadline during shutdown. The new deadline puts that observed
+runtime at 66% of its budget, below the 70% target, with room for reporting and
+worker teardown. The job allows 30 minutes: 12 for a cold dependency install,
+15 for tests, and three for setup and cleanup.
+
+After every started test step, including failures, `Check test runtime budget`
+measures elapsed wall time and emits an Actions warning above 80% of the step
+budget (12 minutes). The annotation names the suite and elapsed/budget seconds;
+it does not change the test result. Investigate these warnings and refresh the
+timing map from a complete passing hosted run before rebalancing shards.
+Stored test seconds are summed across workers; they are a balancing input,
+not a wall-clock guarantee. Check actual step times after changing the shard
+count or refreshing the map. The separately selected integration and migration
+suites retain their own commands.
 
 The initial map comes from the 2026-09-26 local default profile with eight
 workers (`local-default-n8.txt` in the task's CI profiling data). It sums the
@@ -347,7 +364,14 @@ remaining integration tests.
 ### Environment
 
 * Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. GitHub Actions service
+  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
+  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
+  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
+  limited per runner IP, and a login secret would not reach pull requests from
+  forks. The test matrix explicitly pulls the image before starting the
+  container, retrying up to three times with five seconds between attempts to
+  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
+  fail the job; container-start errors are not retried. GitHub Actions service
   containers do not accept PostgreSQL server arguments. The server runs with
   `max_connections=300` so concurrent xdist workers can lease databases without
   exhausting the default 100 connections. It also uses `fsync=off`,
@@ -410,6 +434,13 @@ in `AQ_INTEGRATION_ATTESTATION_APP_ID`, requires canonical payload text and a
 matching `external_id`, checks the payload's repository, head and
 `AQ_INTEGRATION_REQUIRED_CHECK_VERSION`, and reads every attested check run back
 from GitHub. It writes `attested`, `configured` and `reason` as step outputs.
+
+On `dev` it checks the integration attestation. On `staging` and `main` it
+requires the promotion attestations for steps `staging` and `release`, respectively,
+and binds each proof to its exact target ref. The repository trust manifest names
+both promotion attestations. The
+[activation plan](../config/dev-staging-main-github-plan.md) records the matching
+branch rules and Actions variables.
 
 * **Variables unset** (development mode, before the cutover):
   `configured=false`, and nothing else runs.
