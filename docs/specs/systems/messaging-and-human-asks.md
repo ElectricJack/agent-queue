@@ -709,7 +709,9 @@ These hold today, and changes to this system must keep them.
    ledger. An unknown application is reconciled, never retried blindly.
 10. **Mode changes are generation compare-and-sets** under an advisory lock.
     A migrated destination never returns to `legacy`, and the compatibility
-    deadline is never extended.
+    deadline is never extended. [Project/configuration fencing](../design/ask-channel-config-fencing.md)
+    requires current ownership for the ask's project and preserves unrelated
+    destinations and legacy rows during configuration reconciliation.
 11. **Escalations outrank everything else**, and the shared rate guard is
     never bypassed.
 12. **Reports have a fallback before an author is woken**, carry no URLs in
@@ -717,32 +719,20 @@ These hold today, and changes to this system must keep them.
 13. **Mechanism here, judgment in playbooks.** Planning, auto-resolve, the
     sweep, the watchdog and the digest are deterministic and make no LLM
     calls.
+14. **One rate tracker and one hourly budget.** Startup configures the shared
+    invalid-request tracker in place so logging and the bot count the same
+    responses. Hourly report submissions use the digest's `MAX_CHARS` budget
+    (600), including the dashboard footer and delivery marker; validation
+    messages derive the limit from that constant. Escalation diagnostics and
+    compatibility refusals both link to `/focus/asks/<id>`.
 
 ## 5. Known gaps
 
-**Probable bugs.**
+**Resolved audit findings.**
 
-- **Discord's internal 429s may go uncounted.** `setup_logging`
-  (`src/logging_config.py`) attaches a `DiscordHTTPLogHandler` bound to the
-  tracker returned by `get_tracker()` at that moment. The bot later calls
-  `configure_tracker` (`src/discord/bot.py`), which replaces the module
-  singleton with a new tracker (`src/discord/rate_guard.py`). The log
-  handler keeps feeding the old one, so the rate guard never sees the 429s
-  that discord.py retries internally.
-- **The hourly report budget disagrees with itself.** `report_submit` checks
-  against the digest `MAX_CHARS` (600), but its error says "exceeds 1,200
-  characters", and the hourly playbook also says 1,200. The operator guide
-  now documents the enforced 600-character ceiling, including link and marker.
-- **`ask_channel_enabled` ignores project and config fingerprint**
-  (`src/database/queries/ask_input_queries.py`). If any project on a
-  destination is in channel mode, every inbound message there goes to ask
-  intake.
-- **A Discord config change permanently retires writers.** Ask delivery
-  reconciliation marks every mode row whose fingerprint no longer matches as
-  `delivery_disabled` and migrated, including rows still in `legacy`.
-- **Ask URLs are inconsistent.** `escalation_get` returns `/focus/asks/<id>`,
-  while the missing-context response in `_legacy_ask_decision` directs callers
-  to `/asks/<id>` (`src/commands/escalation_commands.py`).
+The 429 tracker binding, hourly report budget and ask URL findings are
+corrected by the changes described in §4. Channel admission and configuration
+retirement are corrected by task `amber-torrent-90`.
 
 **Design hazards.**
 
@@ -847,10 +837,11 @@ legacy ask and escalation records, per Jack's 2026-10-19 reset directive.
   spec, profile and skill drift, and a final live sample of acceptance tests
   A01–A18.
 
-The two publishers and old notification queries remain cleanup work.
-The documentation drift listed in the earlier snapshot was corrected by this audit. The ask-specific bugs in §5
-(`ask_channel_enabled`, fingerprint retirement, inconsistent URLs, the
-missing application sweep) are not in any filed task.
+The documentation drift listed in the earlier snapshot was corrected by this audit.
+The two publishers and old notification queries remain cleanup work. Task
+`amber-torrent-90` addresses channel admission and configuration retirement;
+the missing application sweep remains a separate gap. The inconsistent ask URLs
+are corrected by the changes described in §4.
 
 ### 6.2 Event-driven hibernation and verified waits
 
@@ -915,3 +906,25 @@ Other open work was checked and does not change this system.
   [`../design/messaging-rework.md`](../design/messaging-rework.md),
   [`../implementation/messaging-rework.md`](../implementation/messaging-rework.md),
   [`../../superpowers/specs/2026-09-08-discord-simplification-implementation.md`](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md).
+
+## Operational escalation lifecycle
+
+Operational wait, continuation, train-stall and delivery-watchdog incidents notify
+the project supervisor first. Reconciliation must not turn them into human-channel
+requests. A supervisor's explicit `escalate_to_human` wait decision authorizes human
+delivery; other unresolved operational incidents can be escalated through the
+supervisor's normal human-question command.
+
+Every periodic auto-resolution pass inspects the complete open set, including old
+incidents. Cancelled gates, terminal/removed batches, settled waits, released
+continuations and completed source tasks retire their incidents with durable source
+evidence and a non-null automatic outcome. Completed tasks alone do not prove that
+delivery reached its target: delivery incidents require their bound containment
+projection to settle. The explicit sweep uses the same source rules and revalidates
+them before applying a saved plan.
+
+Train and admission alarms measure lack of progress, rather than total queue age.
+Active repairs, bounded running visits, deferred retries and recent admissions defer
+alarms. Measured visit duration can increase the train threshold above its floor.
+One batch or active admission-capacity episode produces one supervisor incident,
+regardless of the number of members or waits observing it.

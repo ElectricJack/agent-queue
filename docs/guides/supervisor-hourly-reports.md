@@ -64,9 +64,8 @@ SHA-256 hash. Replays reuse the row; reuse of a dedup key for different content,
 route or owner is refused. Consumer commands own visibility authorization and
 server-resolved links before reservation. There is no arbitrary Discord-post
 command. Morning summaries allow 1,500 characters including marker, conversation
-messages 2,000, and hourly submissions currently enforce 600 characters, including the
-server-added link and marker. The hourly error message and playbook still say
-1,200; use the enforced 600-character ceiling until that code discrepancy is fixed.
+messages 2,000, and hourly submissions use the digest budget (`MAX_CHARS` in
+`src/digest/render.py`, currently 600 characters including footer and marker).
 
 `claim_report_deliveries` leases the globally oldest due rows. Typed adapters use
 the same message delivery engine and record receipts through guarded finish

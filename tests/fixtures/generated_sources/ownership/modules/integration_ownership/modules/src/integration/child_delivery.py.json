@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/child_delivery.py::ChildDelivery.run::ec1a6f074eeb4a11b5b2dccbdfa9655731669c03f0b01ac74e350940d0cb455b": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 519,
+      "owner": "ChildDelivery.run",
+      "owner_fingerprint": "ef365c9015dff9b19eb8f1f9ba655c98f600d002a5e00b1d6464b460b692a6cb",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

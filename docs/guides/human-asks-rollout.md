@@ -155,6 +155,12 @@ requires elapsed compatibility and observed operational acceptance.
 
 ## Operational acceptance and rollback
 
+Configuration changes fence pinned shared writers only at the current and last
+observed destination; other destinations retain their ownership. Legacy and
+missing-pin rows require explicit cutover and are not automatically migrated.
+See [configuration fencing and migration](../specs/design/ask-channel-config-fencing.md).
+Reverting YAML cannot enable a retired writer.
+
 H08-OPS records an authorized test-project sample: one new ask, one migrated root,
 a deterministic decision, ambiguous text across two asks, discussion and conditional
 review approval, comment-aware approval, pause/resume, deleted root and simulated
