@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/api/models/ask.py`](../../../src/api/models/ask.py) |
-| Contract fingerprint | `sha256:cb27042889ff57dfe4cfa6d7267159436a7a3d6081538f07cc289de031c899c5` |
+| Contract fingerprint | `sha256:e1059685ca3b693ff95d5166a769c807fe8b05f862b4a6df2b5ef69cc0ae1a31` |
 
 ## Parameters
 
@@ -23,6 +23,12 @@
 | `project_id` | `string` | yes | — | — |
 | `mode` | `"legacy" \| "shadow" \| "dashboard" \| "transferring" \| "channel" \| "delivery_disabled"` | yes | — | — |
 | `expected_generation` | `integer` | yes | — | — |
+| `inventory_sha256` | `string \| null` | no | `null` | — |
+| `evidence` | `string \| null` | no | `null` | — |
+| `legacy_controls_disabled` | `boolean` | no | `false` | — |
+| `aliases_redirected` | `boolean` | no | `false` | — |
+
+Redacted in receipts and explanations: `evidence`.
 
 ## Result
 

@@ -109,6 +109,14 @@ SUCCESS_PAYLOAD = {
     "samples": [],
     "classes": [],
     "triggers": [],
+    "count": 0,
+    "source_health": "complete",
+    "snapshot_at": 0,
+    "next_cursor": None,
+    "ask": {"id": "x", "context": {}},
+    "expected": {},
+    "actions": [],
+    "preview": {"id": "x", "packet": {}, "packet_sha256": "sha"},
 }
 
 
@@ -209,19 +217,11 @@ def test_required_and_malformed_structured_values_are_usage_errors_without_dispa
         malformed = CliRunner().invoke(
             cli,
             [
-                "system",
-                "delivery-promote",
-                "--operation-key",
-                "op",
-                "--source-task-id",
-                "t1",
-                "--source-head",
-                "abc",
-                "--source-base",
-                "def",
-                "--expected-target",
-                "ghi",
-                "--fence",
+                "playbook",
+                "dry-run",
+                "--playbook-id",
+                "example",
+                "--event",
                 "{bad",
             ],
         )

@@ -60,7 +60,7 @@ vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useRemoveTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteTaskPreview: () => ({ data: { task_ids: [], tasks: [] }, isFetching: false }),
   usePauseTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useResumeTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useStopTask: () => ({ mutate: mocks.stop, isPending: false, error: null }),
@@ -251,8 +251,8 @@ describe("unified task table", () => {
 
   it("closes a removal dialog backdrop without selecting its task row", async () => {
     render(<Tasks />);
-    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
-    const dialog = screen.getByRole("dialog", { name: "Remove task" });
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete task" });
     fireEvent.click(dialog.parentElement!);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(mocks.open).not.toHaveBeenCalled();
@@ -429,4 +429,22 @@ describe("below 768 px", () => {
       expect(cards.length).toBeLessThan(200);
     } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
+});
+
+it("counts delivery-held work separately and filters it by the visible wait", () => {
+  const original = mocks.tasks;
+  mocks.tasks = [Object.assign({ ...original[0]!, status: "READY" }, {
+    claim_readiness: { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" },
+  })];
+  try {
+    mocks.filters.status = "WAITING_ON_DELIVERY";
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: "Ready: 0 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on delivery: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Land source.6 on dev; refresh aq/epic").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally {
+    mocks.tasks = original;
+  }
 });

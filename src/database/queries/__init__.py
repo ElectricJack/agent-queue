@@ -14,6 +14,7 @@ the only adapter; it composes the mixins via multiple inheritance.
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.ask_queries import AskQueriesMixin
+from src.database.queries.ask_delivery_queries import AskDeliveryQueriesMixin
 from src.database.queries.ask_input_queries import AskInputQueriesMixin
 from src.database.queries.assignment_route_queries import AssignmentRouteQueryMixin
 from src.database.queries.blocked_state import BlockedStateMixin
@@ -48,6 +49,7 @@ __all__ = [
     "AgentQueryMixin",
     "ArchiveQueryMixin",
     "AskQueriesMixin",
+    "AskDeliveryQueriesMixin",
     "AskInputQueriesMixin",
     "AssignmentRouteQueryMixin",
     "BlockedStateMixin",
