@@ -127,7 +127,7 @@ def _updater_changes():
 
 
 def _before_updater_catalogue(catalogue=None):
-    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    catalogue = _before_held_ingestion_pipeline_catalogue() if catalogue is None else catalogue
     for name, approved in _updater_changes()["transport_definitions"].items():
         [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
         assert definition["description"] == approved["description"]
@@ -670,8 +670,27 @@ def test_legacy_playbook_fixtures_are_unchanged():
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    held_pipeline = _held_ingestion_pipeline_transport_changes()["playbook_fixtures"]
     pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    wait_evidence = json.loads((
+        ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-changes.json"
+    ).read_text())
+    wait_grants = wait_evidence["playbook_fixtures"]
+    assert set(wait_grants) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    wait_change = wait_grants["tests/fixtures/playbooks/v2/default-pipeline/artifact.json"]
+    assert wait_change["previous_sha256"] == pipeline[
+        "tests/fixtures/playbooks/v2/default-pipeline/artifact.json"
+    ]["sha256"]
+    for name, digest in [
+        (wait_change["preserved_previous_path"], wait_change["previous_sha256"]),
+        ("tests/fixtures/playbooks/scenarios/default-pipeline/wait-grants.artifact.json",
+         wait_change["sha256"]),
+    ]:
+        assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
+    composition = json.loads((
+        ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-composition.json"
+    ).read_text())["playbook_fixtures"]
     failover = json.loads(FAILOVER_CHANGES.read_text())["playbook_fixtures"]
     assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
     triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
@@ -770,6 +789,20 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert pipeline[path]["sha256"] != digest
             digest = pipeline[path]["sha256"]
+        if path in held_pipeline:
+            change = held_pipeline[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in composition:
+            change = composition[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
@@ -1277,7 +1310,7 @@ def _pool_delete_changes():
 
 def _before_pool_delete_catalogue(catalogue=None):
     evidence = _pool_delete_changes()
-    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    catalogue = _before_held_ingestion_pipeline_catalogue() if catalogue is None else catalogue
     definitions = catalogue["explicit"]
     index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
     assert definitions.pop(index) == evidence["transport_definition"]
@@ -1310,7 +1343,7 @@ def test_pool_delete_original_catalogue_evidence():
 
 
 def _before_parallel_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_held_ingestion_pipeline_catalogue()
     catalogue = _before_updater_catalogue(catalogue)
     catalogue = _before_pool_delete_catalogue(catalogue)
     catalogue = _before_retention_catalogue(catalogue)
@@ -1421,7 +1454,7 @@ def test_original_pr_1872_legacy_execution_documents_and_fingerprints():
 
 def _before_workspace_catalogue(catalogue=None):
     return _revert_catalogue(
-        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+        _before_held_ingestion_pipeline_catalogue() if catalogue is None else catalogue,
         _workspace_changes(),
     )
 
@@ -1507,13 +1540,13 @@ def _revert_held_release_catalogue(catalogue):
 
 def _before_held_release_catalogue(catalogue=None):
     return _revert_held_release_catalogue(
-        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+        _before_held_ingestion_pipeline_catalogue() if catalogue is None else catalogue,
     )
 
 
 def _before_retention_catalogue(catalogue=None):
     evidence = _retention_changes()
-    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    catalogue = _before_held_ingestion_pipeline_catalogue() if catalogue is None else catalogue
     entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
     assert entries == [evidence["explicit_entry"]]
     catalogue["explicit"].remove(entries[0])
@@ -1530,8 +1563,11 @@ def test_held_release_merge_only_adds_reviewed_delta_to_dev():
     previous = json.dumps(_before_wait_requeue_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == merge["previous_cli_catalogue_sha256"]
     snapshot = command_snapshot()
+    # Reverse the separately reviewed transport promotion before checking this historical pin.
+    catalogue = _before_held_ingestion_pipeline_catalogue()
     for name, approved in held["added_contracts"].items():
-        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        transport = catalogue["fallback"].get(name, snapshot.commands[name].tool_definition())
+        assert _digest(transport) == approved["transport_sha256"]
         if "execution" in approved:
             contract = CONTRACTS.require(name).contract
             assert canonical_execution_document(contract.execution) == approved["execution"]
@@ -1563,3 +1599,34 @@ def test_retention_original_catalogue_evidence():
                                     if name in categories}
     original = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+def _held_ingestion_pipeline_transport_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/held-ingestion-pipeline-transport-changes.json").read_text()
+    )
+
+
+def _before_held_ingestion_pipeline_catalogue():
+    return _revert_catalogue(
+        json.loads(render_command_catalogue()), _held_ingestion_pipeline_transport_changes(),
+    )
+
+
+def test_held_ingestion_pipeline_only_promotes_three_reviewed_transports():
+    evidence = _held_ingestion_pipeline_transport_changes()
+    names = {"task_batch_review_record", "task_batch_release", "task_batch_retire"}
+    for section in ("explicit", "fallback", "tool_categories"):
+        assert set(evidence["catalogue_sections"][section]["entries"]) == names
+    previous = json.dumps(_before_held_ingestion_pipeline_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    for path, change in evidence["playbook_fixtures"].items():
+        baseline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"][path]
+        assert change["previous_sha256"] == baseline["sha256"]
+        previous = (ROOT / change["preserved_previous_path"]).read_bytes()
+        assert hashlib.sha256(previous).hexdigest() == change["previous_sha256"]
+        composition = json.loads((
+            ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-composition.json"
+        ).read_text())["playbook_fixtures"][path]
+        assert composition["previous_sha256"] == change["sha256"]
+        held = ROOT / composition["preserved_previous_path"]
+        assert hashlib.sha256(held.read_bytes()).hexdigest() == change["sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == composition["sha256"]

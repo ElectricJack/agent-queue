@@ -1289,6 +1289,7 @@
     "task-dependencies": {
       "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release.",
       "modules": [
+        "tests/test_cli_batch.py",
         "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
         "tests/test_fidelity_review.py",
@@ -2625,7 +2626,7 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:7100fea96bd16a00066b5d4a6b338264c27718d32cf158b8ad2c4504be60029a",
+      "digest": "sha256:03439b0786e11a9eab1d0befe2601b6550f25db0fbed57629709a34909e10c85",
       "imports": [
         "src.api",
         "src.api.app",
@@ -2637,6 +2638,9 @@
         "src.commands.contracts.builtin",
         "src.config",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
         "src.event_bus",
         "src.mcp_registration",
         "src.models",
@@ -2644,7 +2648,9 @@
         "src.plugins.internal",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Live API ↔ generated-client conformance guards (api-cli plan 1-3, API-2)."
     },
     "tests/test_api_codegen_input_models.py": {
@@ -3818,6 +3824,21 @@
         "parametrize"
       ],
       "summary": "CLI tests for ``aq prime``, ``aq handoff``, ``aq inbox`` (Phase S1)."
+    },
+    "tests/test_cli_batch.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:567f2d778114ad616ab235108f8e289713fe122887ac18185be279da865363e6",
+      "imports": [
+        "src.cli.app",
+        "src.cli.exceptions",
+        "src.commands.contracts.builtin",
+        "src.tools"
+      ],
+      "markers": [],
+      "summary": "``aq batch`` — held spec-ingestion batch CLI and its MCP tools (held batches L6.3)."
     },
     "tests/test_cli_claim_restart.py": {
       "areas": [
@@ -5591,7 +5612,7 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:c6e314968fa56cfa5afca411b633576783141507f8c18899f61aded3a4a45eeb",
+      "digest": "sha256:b88bba7864b6ddffd78f5b1d76f857fa9dc1d8901a929db63433e4963e45ac9b",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -5599,7 +5620,8 @@
         "src.commands.principal",
         "src.playbooks.definition",
         "src.playbooks.engine",
-        "src.playbooks.executors.base"
+        "src.playbooks.executors.base",
+        "src.playbooks.profiles"
       ],
       "markers": [
         "parametrize"
@@ -15426,14 +15448,23 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:876b6eb2c058cfd96ac1959d21c68143c4c17be161d8f9092c11a0ce7c3d6805",
+      "digest": "sha256:b65fe87c286735ac80e68069b526fb46fe654f3887f993d188816b2a4f08883e",
       "imports": [
+        "src.api.auth",
+        "src.api.graph",
+        "src.api.graph_layout",
+        "src.api.models.task",
         "src.api.routers.proposals",
         "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
-        "src.models"
+        "src.database.tables",
+        "src.models",
+        "src.task_graph.layout.driver"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "GET /api/proposals/{id} — dashboard ghost-overlay read."
     },
     "tests/test_proposal_status_event.py": {
@@ -17919,7 +17950,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:7b4a32a6989e0f5bff2b6f9a019a2d7f6a37a9c71222cd5116693d158eb25b23",
+      "digest": "sha256:b590faf27b3ba17d0dfe956a8392f9e6b7da08d38a1419ff1707c2e1f0b528eb",
       "imports": [
         "src.config",
         "src.doctor",
@@ -17937,7 +17968,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Additive sync of shipped capabilities into the vault supervisor profile."
+      "summary": "Additive sync of shipped capabilities into vault system profiles."
     },
     "tests/test_supervisor_failure_triage.py": {
       "areas": [
