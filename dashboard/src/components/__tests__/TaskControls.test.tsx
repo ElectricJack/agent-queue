@@ -155,3 +155,13 @@ describe("epic activity in the detail header", () => {
     expect(screen.getByText("Waiting")).toBeInTheDocument();
   });
 });
+
+it.each(["WAITING", "HIBERNATED", "RESUME_PENDING"])("prevents status edits on %s while retaining pause", (status) => {
+  data.task.status = status;
+  mount("status");
+  expect(screen.getByRole("combobox", { name: "Status for Task" })).toBeDisabled();
+  cleanup();
+  mount("row");
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Restart" })).toBeNull();
+});

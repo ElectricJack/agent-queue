@@ -57,7 +57,13 @@ def _marked() -> list[str]:
 def test_gitattributes_marks_exactly_what_the_script_regenerates():
     """A generator added to one list and not the other is either never rebuilt
     at merge time or rebuilt without its conflicts ever being avoided."""
-    assert sorted(p.removesuffix("/**") for p in _marked()) == sorted(_listed())
+    def expand(patterns):
+        return {
+            path for pattern in patterns
+            for path in _git(ROOT, "ls-files", "--", pattern.removesuffix("/**")).stdout.splitlines()
+        }
+
+    assert expand(_marked()) == expand(_listed())
 
 
 def test_every_regenerated_artifact_is_tracked_and_resolves_to_the_driver():
@@ -80,6 +86,75 @@ def test_an_unknown_argument_is_a_usage_error_not_a_regeneration():
     )
     assert result.returncode == 2
     assert "unknown argument: --bogus" in result.stderr
+
+
+def test_recorded_artifacts_preserve_approved_bytes_and_historical_policy(tmp_path):
+    """Extracting source inputs must not reapprove policy or reset a baseline."""
+    script = ROOT / "scripts/generate-recorded-artifacts.py"
+    listed = subprocess.run(
+        [sys.executable, str(script), "--list"], capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    expected = {name: (ROOT / name).read_bytes() for name in listed}
+    shutil.copytree(ROOT / "tests/fixtures/generated_sources",
+                    tmp_path / "tests/fixtures/generated_sources")
+    for _ in range(2):
+        subprocess.run([sys.executable, str(script), "--root", str(tmp_path)], check=True)
+        assert {name: (tmp_path / name).read_bytes() for name in listed} == expected
+    subprocess.run(
+        [sys.executable, str(script), "--root", str(tmp_path), "--check"], check=True,
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing_input", "unapproved_definition", "unapproved_source"])
+def test_recorded_artifacts_refuse_missing_or_unapproved_inputs(tmp_path, failure):
+    shutil.copytree(ROOT / "tests/fixtures/generated_sources",
+                    tmp_path / "tests/fixtures/generated_sources")
+    source = tmp_path / "tests/fixtures/generated_sources/playbooks/default-pipeline/definition.json"
+    if failure == "missing_input":
+        source.unlink()
+    elif failure == "unapproved_definition":
+        definition = json.loads(source.read_text())
+        definition["compiled_at"] = "2000-01-01T00:00:00Z"
+        source.write_text(json.dumps(definition))
+    else:
+        source.with_name("source.md").write_text("Unapproved replacement policy\n")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/generate-recorded-artifacts.py"),
+         "--root", str(tmp_path)], capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "Recorded artifact input refused" in result.stderr
+    assert not (tmp_path / "tests/integration_ownership.json").exists()
+
+
+async def test_recorded_input_conflict_is_a_source_conflict(tmp_path):
+    """Derived manifest conflicts never authorize choosing an approval input."""
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "--initial-branch=main", str(repo))
+    shutil.copyfile(ROOT / ".gitattributes", repo / ".gitattributes")
+    source = "tests/fixtures/generated_sources/playbooks/default-pipeline/manifest.md"
+    artifact = "src/prompts/reviewed_playbooks/default-pipeline/manifest.md"
+    for name in (source, artifact):
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("approved provenance\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    heads = []
+    for note in ("left", "right"):
+        _git(repo, "checkout", "--detach", base)
+        for name in (source, artifact):
+            (repo / name).write_text(f"{note} provenance\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", note)
+        heads.append(_git(repo, "rev-parse", "HEAD").stdout.strip())
+    with pytest.raises(GeneratedMergeConflict) as raised:
+        await merge_generated_tree(
+            GitManager(), repo, ["merge-tree", "--write-tree", *heads],
+        )
+    assert source in raised.value.stdout
+    assert not list(tmp_path.glob("aq-regen-*"))
 
 
 def test_real_generated_paths_merge_without_conflicting(tmp_path):
