@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, case, func, insert, or_, select, update
+from sqlalchemy import and_, case, exists, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.waits.sources import insert_message_with_source_event
@@ -36,6 +36,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_completion_records,
+    wait_records,
     tasks,
 )
 
@@ -726,7 +727,7 @@ class AgentWaitQueriesMixin:
                 session["last_claim_epoch"] is None
                 or session["last_claim_epoch"] == row["claim_epoch"]
             )
-            and task["status"] in ("ASSIGNED", "IN_PROGRESS")
+            and task["status"] in ("ASSIGNED", "IN_PROGRESS", "WAITING")
             and task["assigned_agent_id"] == session["agent_id"]
             and (session["lifecycle"] != "pool" or session["claim_phase"] == "active")
         )
@@ -812,6 +813,10 @@ class AgentWaitQueriesMixin:
                                 waits.c.result_message_id.is_(None),
                             )
                         )
+                        .where(~exists(select(wait_records.c.id).where(
+                            wait_records.c.legacy_kind == "agent_wait",
+                            wait_records.c.legacy_id == waits.c.id,
+                        )))
                         .where(waits.c.id == wait_id if wait_id else True)
                         .order_by(
                             case((or_(
@@ -859,6 +864,13 @@ class AgentWaitQueriesMixin:
                 if not row:
                     continue
                 row = dict(row)
+                # Recheck after the v1 row lock: the bridge may have committed
+                # since candidate discovery. Its v2 outbox now owns delivery.
+                if await conn.scalar(select(wait_records.c.id).where(
+                    wait_records.c.legacy_kind == "agent_wait",
+                    wait_records.c.legacy_id == row["id"],
+                )):
+                    continue
                 if row["state"] != "active":
                     if row["result_message_id"] is None:
                         await self._enqueue_wait_result(conn, row, now)
