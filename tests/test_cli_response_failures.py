@@ -104,6 +104,27 @@ async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("command", ["integration_release_owner", "integration_restore_task_origin"])
+async def test_release_owner_allows_provider_and_git_verification_read_budget(dry_run, command):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.extensions["timeout"]["read"] == 300.0
+        return httpx.Response(200, json={"ok": True, "result": {"success": True}})
+
+    client = CLIClient(base_url="http://test")
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as transport:
+        client._http = transport
+        assert await client.execute(
+            command, {"task_id": "task", "dry_run": dry_run}
+        ) == {"success": True}
+    assert len(calls) == 1
+
+
 @pytest.fixture
 def command_http_server():
     """Real HTTP framing, so a subprocess exercises httpx's response reader."""
@@ -268,6 +289,67 @@ async def test_unhealthy_http_response_is_actionable_and_closes_client(monkeypat
         await client.connect()
     assert client._http is None
     assert transport.is_closed
+
+
+@pytest.mark.parametrize("argv", [["--json", "prime"], ["prime", "--json"], ["prime"]])
+def test_prime_refusal_preserves_budget_diagnostics(monkeypatch, argv):
+    """A fake daemon refusal passes through the real client and error envelope."""
+    from src.cli.app import cli
+
+    for name in ("AQ_JSON_LEGACY", "AQ_TASK_ID", "AQ_SESSION_ID", "AQ_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    details = {
+        "success": False,
+        "error_code": "context.required_over_budget",
+        "context_budget": {
+            "requested": {
+                "input_tokens": 32768, "output_tokens": 4096, "wrapper_tokens": 256,
+                "knowledge_tokens": 4000, "knowledge_bytes": 16384,
+                "discovery_tokens": 1000, "discovery_items": 8,
+                "method": "upper_bound_bytes",
+            },
+            "effective_knowledge_tokens": 0,
+            "required_tokens": 40000, "knowledge_tokens": 0, "knowledge_bytes": 0,
+            "total_tokens": 44352, "method": "upper_bound_bytes", "fits": False,
+            "diagnostic": "context.required_over_budget",
+        },
+        "required_body_bytes": 40000,
+        "required_section_bytes": {"role": 6000, "task": 33000, "context": 0},
+        "source": "default",
+    }
+    message = (
+        "context.required_over_budget: required body 40000 bytes exceeds 28416 available; "
+        "largest required sections (UTF-8 bytes, excluding headings): task=33000, role=6000"
+    )
+    calls = []
+
+    def handler(request):
+        assert request.url.path == "/api/execute"
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "ok": False, "error": message, "details": details,
+        })
+
+    async def connect(client):
+        client._http = httpx.AsyncClient(
+            base_url="http://test", transport=httpx.MockTransport(handler),
+        )
+
+    monkeypatch.setattr(CLIClient, "connect", connect)
+    result = CliRunner().invoke(cli, [*argv, "--task-id", "test-task"])
+    assert result.exit_code == 1, result.output
+    if "--json" in argv:
+        payload = json.loads(result.stdout)
+        assert payload == {
+            "schema_version": 1,
+            "data": None,
+            "error": {"code": "command_error", "message": message, "details": details},
+        }
+    else:
+        assert "context.required_over_budget" in result.output
+        assert "task=33000" in result.output and "role=6000" in result.output
+    # No prime body/bundle, delivery receipt, retry, or actual daemon request.
+    assert calls == [{"command": "prime", "args": {"task_id": "test-task"}}]
 
 
 # A controlled preview with every identity an apply must echo back.

@@ -187,6 +187,7 @@ async def completed_undelivered(ctx: DoctorContext, *, project_ids=None, now=Non
 
     return await observe_completed_branches(
         ctx.db, _doctor_observer(ctx), project_ids=project_ids, now=now,
+        **({"cached_only": True} if ctx.read_only else {}),
     )
 
 
@@ -205,12 +206,17 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
     stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
     accounted = [e for e in entries if e["accounted"]]
     unknown = [e for e in entries if e["rule"] == "unknown"] + inventory["unavailable"]
+    # Accounting explains why a branch remains; it does not establish root
+    # delivery. In particular a queued PR/batch must not hide a completed root.
+    roots = [e for e in entries if e.get("root") and not e["archived"]
+             and not e["wip"] and e["rule"] != "unknown"]
     by_rule: dict[str, int] = {}
     for entry in entries:
         by_rule[entry["rule"]] = by_rule.get(entry["rule"], 0) + 1
     data = {
         "stranded": stranded[:100], "accounted": accounted[:100], "unknown": unknown[:100],
         "by_rule": dict(sorted(by_rule.items())), "projects": inventory["projects"],
+        "undelivered_roots": roots[:100],
     }
     if stranded:
         return CheckResult(
@@ -220,6 +226,16 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
                 "cannot reach, and nothing on record will deliver or retire them — e.g. "
                 f"{_describe_completed(stranded[0])}. Settle it: {stranded[0]['remedy']}"
             ),
+            data=data,
+        )
+    if roots:
+        first = roots[0]
+        return CheckResult(
+            id=check_id, severity=Severity.WARN,
+            detail=f"{len(roots)} COMPLETED root branch(es) are not contained in the default "
+                   f"branch — e.g. {_describe_completed(first)}. Inspect "
+                   f"`aq integration redrive-root {first['task_id']}`; implementation "
+                   "completion does not establish delivery",
             data=data,
         )
     detail = "no COMPLETED task branch holds work that nothing will deliver or retire"
@@ -464,7 +480,7 @@ async def continuous_promotion_lag(
         try:
             snapshot = await observer.snapshot(DeliveryTarget(
                 row["id"], row["repository_id"], row["url"], "refs/heads/" + row["default_branch"],
-            ))
+            ), **({"cached_only": True} if ctx.read_only else {}))
             observed = getattr(snapshot, "observation", snapshot)
             if observed.error:
                 raise ValueError(observed.error)
@@ -526,6 +542,27 @@ async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
         f"{report['max_age_seconds'] / 3600:g}h; {len(unavailable)} unavailable"
         + "".join(f"\n{item['project_id']}: {item['detail']}" for item in findings),
         data=report)
+
+
+async def _check_ci_producer(ctx: DoctorContext) -> CheckResult:
+    from src.integration.models import invalid_policy_producers
+
+    check_id = "integration.ci_producer"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    invalid = [
+        {"project_id": project.id, **entry}
+        for project in await ctx.db.list_projects()
+        for entry in invalid_policy_producers(project.hierarchical_integration_policy)
+    ]
+    return CheckResult(
+        check_id, Severity.ERROR if invalid else Severity.OK,
+        "; ".join(f"{entry['project_id']}: {entry['field']}={entry['producer_id']!r} "
+                  "must be a positive decimal GitHub App ID (GitHub Actions: 15368); "
+                  "update with `aq project set <id> integration-policy`" for entry in invalid)
+        or "every configured CI producer is a numeric GitHub App ID",
+        data={"invalid": invalid},
+    )
 
 
 async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
@@ -724,6 +761,7 @@ def integration_checks() -> list[DoctorCheck]:
             ("promotion_stranded", _check_promotion_stranded, 30.0, None),
             ("train_batches_stalled", _check_train_batches_stalled, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
+            ("ci_producer", _check_ci_producer, 30.0, None),
         )
     ]
 
