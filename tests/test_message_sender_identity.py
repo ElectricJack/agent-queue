@@ -52,6 +52,10 @@ async def api(env, monkeypatch):
         ))
     config = AppConfig()
     config.messages.enabled = True
+    # Exercise legacy wait ownership in its supported rollback configuration.
+    # The default v2 cutover's registration and ACK path has separate coverage.
+    config.wait_policy.v2_enabled = False
+    config.wait_policy.scheduler_waits_enabled = False
     config.security.capability_enforcement = "enforce"
     # Exercise legacy compatibility during a flag-only rollback.
     config.wait_policy.v2_enabled = False

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/message_queries.py::MessageQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/message_queries.py::_new_message_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
