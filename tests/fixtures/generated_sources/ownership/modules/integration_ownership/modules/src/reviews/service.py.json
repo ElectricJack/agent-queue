@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/reviews/service.py::PlaybookPin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/reviews/service.py::ReviewService.withdraw::486bc271871bf7a17ab5e58aede8e5c57a36639f5bce0409a18d0e3dd6f1ded2": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 551,
+      "owner": "ReviewService.withdraw",
+      "owner_fingerprint": "9f690adc2166387d8bab762b58cf64fa66dff8b241ee878c507872ca65ba6ba0",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    }
+  }
+}

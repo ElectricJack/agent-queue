@@ -228,13 +228,17 @@ def test_promotion_payload_roundtrips_independently_of_integration_payload():
         AttestationPayload.from_canonical_bytes(payload.canonical_bytes())
 
 
+@pytest.mark.parametrize("step,target", [("staging", "staging"), ("release", "main")])
 @pytest.mark.parametrize("proof", ["promotion", "integration", "other-step"])
-def test_step_verifier_accepts_only_this_steps_promotion_proof(proof):
-    payload = _promotion_payload("staging" if proof == "other-step" else "release")
-    name = "Agent Queue Promotion Attestation (release)"
+def test_step_verifier_accepts_only_this_steps_promotion_proof(proof, step, target):
+    other_step = "release" if step == "staging" else "staging"
+    target_ref = f"refs/heads/{target}"
+    payload = _promotion_payload(other_step if proof == "other-step" else step,
+                                 target_ref=target_ref)
+    name = f"Agent Queue Promotion Attestation ({step})"
     github = FakeGitHub(name=name)
     _publish(github, _payload() if proof == "integration" else payload, name=name)
-    verdict = hosted.verify(_env(ATTESTATION_NAME=name, STEP="release", TARGET_REF="refs/heads/main"),
+    verdict = hosted.verify(_env(ATTESTATION_NAME=name, STEP=step, TARGET_REF=target_ref),
                             github)
     assert verdict.configured and verdict.attested is (proof == "promotion"), verdict
 
@@ -324,6 +328,20 @@ def test_accepts_exactly_what_the_daemon_publishes(payload: AttestationPayload) 
     assert (verdict.configured, verdict.attested) == (True, True), verdict.reason
     rechecked = {url.rsplit("/", 1)[1] for url in github.requests if "/check-runs/" in url}
     assert rechecked == {str(check.check_run_id) for check in payload.checks}
+
+
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "timed_out"])
+def test_workflow_aggregate_does_not_override_verified_required_jobs(conclusion):
+    payload = _payload()
+    payload = payload.model_copy(update={"workflow_runs": (
+        payload.workflow_runs[0].model_copy(update={"conclusion": conclusion}),
+    )})
+    github = FakeGitHub()
+    _publish(github, payload)
+    verdict = hosted.verify(_env(), github)
+    assert verdict.attested, verdict.reason
+    github.check_runs[101]["conclusion"] = "failure"
+    assert not hosted.verify(_env(), github).attested
 
 
 def test_ignores_other_apps_and_names_and_takes_the_newest_trusted_record() -> None:
