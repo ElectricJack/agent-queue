@@ -21,12 +21,14 @@ stays silent when nothing happened, and an escalation that names one decision
 and waits for an answer. Both go to one configured Discord channel and nowhere
 else.
 
-> **Discord is notification-only.** There are no AQ slash commands, no task
+> **Discord is notification-only by default.** There are no AQ slash commands, no task
 > controls, no buttons and no per-project channels. The six former slash
 > commands were retired and the control views, the notification handler and
 > the Discord command mirror were deleted; the dashboard and the `aq` CLI own
-> every read and control surface now. The one thing Discord can still send
-> *into* AQ is a reply typed in an escalation thread. See
+> the operational read and control surfaces. Escalation-thread replies reach
+> the owning project supervisor; the deliberate opt-in exception is
+> [supervisor conversations](../guides/discord-conversations.md), where an
+> allowlisted bot mention reaches the elevated global supervisor. See
 > [what Discord no longer does](#what-discord-no-longer-does).
 
 ## Vocabulary
@@ -45,6 +47,29 @@ terms this page leans on.
 | **Escalation** | A durable incident that needs a human decision; it gets one channel post and one thread. |
 | **Delivery** | A row in an outbox recording one intended external send, and what happened to it. |
 | **Transport** | The narrow port that actually talks to a chat platform. Today there is one: Discord. |
+
+## Optional supervisor conversations
+
+The `src/conversations/` package supports an opt-in Discord mention route to
+the global supervisor, controlled by `discord.conversation.enabled` (false by
+default). Intake classifies gateway-observed provenance and normalized text;
+the envelope validates Discord identifiers and the root mention. Replies in
+escalation threads stay with escalation intake.
+
+The route requires an explicit author allowlist, configured guild and channel,
+enabled messages and sessions, completed Discord cutover, and a bound outbound
+queue. Both the gateway and intake command check these prerequisites. The
+package supplies a refusing `UnboundOutbox` until a delivery implementation is
+bound, plus `RecordingOutbox` for tests. Shared constants define message sizes,
+rate windows and retention; pure renderers produce supervisor briefs, fixed
+notices and dashboard pointers. Conversation text does not resolve gates or
+approve work.
+
+Enabling treats the allowlisted identities as trusted operator correspondents
+of the existing elevated session. There is no sandboxed chatbot: deployments
+requiring enforced read-only chat keep this feature off. See
+[Discord supervisor conversations](../guides/discord-conversations.md) for
+enabling, limits and diagnostics.
 
 ## The three lanes
 
@@ -75,8 +100,8 @@ Three things to take from the picture:
   into it, rather than by poking a process;
 * the **digest** and **escalations** share one channel and one transport but
   keep separate outboxes, so an outage in one cannot stall the other;
-* the only arrow pointing back *into* AQ from Discord is a reply inside an
-  escalation thread.
+* by default, the arrow back *into* AQ is an escalation-thread reply. The
+  opt-in conversation route also persists input through the message queue.
 
 ## A realistic example
 
@@ -120,18 +145,15 @@ Replied to msg-c8555439f8134d8f869bbabe7c109997 (reply
 msg-eb4b28932e244b258ccdbf0d68965760)
 ```
 
-The reply is itself a message row addressed back to the sender, so both are now
-in the mailbox. Clean up by consuming them the way the harness hook does —
-`--inject` marks each row delivered and prints it:
+Replying acknowledges the original. The reply is itself a pending message row
+addressed back to the sender. Consume it with `--inject`, which marks each row
+delivered and prints it:
 
 ```bash
 aq inbox --inject
 ```
 
 ```text
-[msg-c8555439f8134d8f869bbabe7c109997 from session:ac5bb8c6-…] Docs example
-Reply here when you see this.
-
 [msg-eb4b28932e244b258ccdbf0d68965760 from session:ac5bb8c6-…]
 Seen — closing the loop.
 ```
@@ -148,12 +170,25 @@ That is the whole protocol an agent needs: `aq inbox` to see what is waiting,
 `aq reply <id> "…"` to answer, `aq message send` to raise something. The
 canonical human recipient is `user:dashboard`.
 
+The server, not the client, decides who a reply comes from and goes to. A
+worker session can reply only to a message addressed to one of its own
+mailboxes in its own project; anything else reads as not found. The reply is
+signed as the mailbox the original was addressed to; a worker that names a
+different `from_kind` or `from_id` is refused. The reply goes to the original's
+sender, so a message from a `system:*` sender cannot be replied to. Supervisor
+guidance (`aq agent message`) is signed by the caller's authenticated identity.
+A live launch of the target project's own supervisor signs as
+`session:supervisor-<project>`, so a worker can reply to it. The operator CLI,
+automation, the global supervisor and a stale launch have no such return
+address. Their guidance stays `system:supervisor`, and the worker answers it
+with `aq message send --to session:supervisor-<project>`.
+
 ## Inputs and outputs
 
 | Lane | Input | Output |
 |---|---|---|
 | Messages | `message_send` (`aq message send`), a playbook's `message_send` step, an escalation reply | A row in `messages`; a nudge typed into a session, a block in `aq prime`, or a `message.sent` event the dashboard renders |
-| Digest | Durable evidence recorded by other subsystems — completions, attempt starts, progress comments, `pr_url` | At most one Discord message per interval, ≤1,200 characters, or a persisted silence |
+| Digest | Durable evidence recorded by other subsystems — completions, attempt starts, progress comments, `pr_url` | At most one Discord message per interval, ≤600 characters, or a persisted silence |
 | Escalation | `escalation_create` from a supervisor or trusted core source; `aq question escalate` | One channel post, one thread, and later an acknowledgement, relay or resolution in that thread |
 
 ### Recipient kinds, and what each one means
@@ -165,7 +200,7 @@ canonical human recipient is `user:dashboard`.
 |---|---|---|---|
 | `session` | `supervisor-agent-queue`, or a session name | Nudged into the live terminal; a supervisor address is woken if asleep | Yes — after 24 h it is re-addressed to the sender |
 | `task` | a task id | Rides into the next `aq prime` for that task | No — it waits for the next session |
-| `profile` | a profile id such as `worker-deep-high-claude` | Consumed by `aq inbox` / prime; the engine never touches a session for it | No |
+| `profile` | a profile id such as `standard-high-claude` | Consumed by `aq inbox` / prime; the engine never touches a session for it | No |
 | `user` | `dashboard` | Marked delivered immediately and emitted as `message.sent` for the dashboard chat | No |
 
 Senders (`from_kind`) are `session`, `user` or `system`. A message whose
@@ -181,17 +216,26 @@ is this recipient doing right now?* — and acts on the answer:
 
 | Activity | Meaning | What the engine does |
 |---|---|---|
-| `idle` | Live and quiet | Renders the batch as one nudge and types it in |
-| `busy` | Live and mid-turn (output within the last 30 s) | Skips this pass; the prompt-boundary `aq inbox` hook will catch it |
+| `idle` | Live and quiet | Submits one pointer to the command that reads the body |
+| `busy` | Live and mid-turn (output within the last 30 s) | Leaves mail pending for a later pass or inbox/prime injection |
 | `sleeping` | A wake-able supervisor with no live session | Cold-starts the supervisor, then nudges |
 | `absent` | No live session, and the messenger may not spawn one | Leaves it pending; a `session` recipient is parked after 24 h |
 
-Three delivery paths therefore exist, and each stamps the row's `via` column so
-you can tell them apart afterwards: `nudge` (typed into a live terminal),
-`prime` (rendered into a starting agent's context by
-[`src/prime/sections.py`](../../src/prime/sections.py)), and `inject` (claimed
-by `aq inbox --inject` at a prompt boundary). All three compare-and-set the
-same row, so a racing nudge and a racing inject can never both deliver it.
+A nudge records a notification attempt, and leaves the message in the pending
+inbox. The recipient runs `aq message status <id> --json` to read and acknowledge
+the body; another supervisor or an operator inspecting status does not consume
+it. Reading the body some other way, such as a non-consuming `aq message inbox`
+peek, is not an acknowledgment, so the pointer says so: ``Handle `aq message status
+<id> --json` (running it marks the message read).`` Unread notifications retry after
+60 seconds, doubling to a five-minute cap. A read message is never nudged again.
+After three unanswered attempts, AQ queues one alert with the original body to
+the global supervisor. The original stays pending; alerts do not recursively
+escalate. Attempt records and alert deduplication survive daemon restarts.
+
+Delivery receipts come from recipient reads (`via="read"`), replies, `aq prime`
+(`via="prime"`) or `aq inbox --inject` (`via="inject"`). These use a compare-and-set
+so racing body reads and injection record delivery only once. A delivery receipt
+means the body was handed over; it does not prove the requested work was done.
 
 If a delivered message goes unanswered past `messages.reply_timeout` (120 s by
 default) and the recipient's transcript shows a completed assistant turn since
@@ -200,6 +244,36 @@ delivery, the engine materialises that turn as a reply with
 prose instead of running `aq reply`; it is deliberately never applied to an
 `agent_question` or `task_recovery` row, because those have explicit commands
 and a fabricated answer would be treated as a decision.
+
+Five things bound the fallback, so it can only ever recover an answer that
+actually answered that message:
+
+- **The turn must be prose.** A turn with no assistant text — the transcript's
+  `[tool_use: Bash]` placeholder, say — is a tool call, not a reply. The first
+  prose turn in the window is used, so a tool call never masks the answer
+  behind it.
+- **The turn must land inside a window.** Only turns between `delivered_at` and
+  `delivered_at + messages.reply_window_multiplier × reply_timeout` qualify.
+  Without the window, a long-lived session that resumed after a restart would
+  "answer" every delivered-but-unreplied row in its backlog — including
+  messages from days earlier — with whatever it happened to say next.
+- **The sender must be a human.** Rows from `system:*` senders (review
+  approvals, watchdog pings, delivery-engine notices) are never swept, and
+  neither are rows from agents. A tail reply to a worker would land in its
+  mailbox, satisfy its durable message wait and read as the supervisor's
+  answer, even when the turn was about different work. Agents get only explicit
+  replies (`aq message reply`, `aq agent message --reply-to`).
+- **The turn must be attributable to one conversation.** A transcript turn
+  names no message, so if anything from another conversation (another project,
+  thread or sender) reached the same recipient within one window length of the
+  request's delivery, the turn could be about that one and nothing is posted.
+- **The reply is inserted atomically.** One transaction locks the request,
+  confirms it is unchanged and still unanswered, and writes the reply already
+  delivered. An explicit reply locks the same row, so whichever commits first
+  wins and the other leaves nothing behind.
+
+Prose that answers an agent is never recovered: transcripts carry no message
+correlation, so the recipient must reply explicitly.
 
 ## The hourly digest, in one paragraph
 

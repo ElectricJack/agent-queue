@@ -71,6 +71,24 @@ async def test_counts_active_direct_workers_from_previous_parent_sessions_once()
     }
 
 
+async def test_named_supervisor_counts_children_without_a_durable_agent_identity():
+    from src.agents.subagents import subagent_counts
+
+    supervisor = replace(session("named-supervisor", None, hooks=True),
+                         profile_id="supervisor", lifecycle="named")
+    rows = [supervisor, session("child-s", "child", task_id="a")]
+    lookup = AgentLookup(native={supervisor.id: events(3, 1)})
+    result = await subagent_counts(
+        lookup, f"session:{supervisor.id}", rows, [task("a", creator=supervisor.id)],
+        owned_sessions=[supervisor],
+    )
+    assert result == {
+        "active_subagent_count": 3, "subagent_count_complete": True,
+        "aq_subagent_count": 1, "native_subagent_count": 2,
+        "subagents_spawned_total": 3,
+    }
+
+
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.DEFINED, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PAUSED])
 async def test_queued_and_finished_tasks_do_not_count_even_with_stale_sessions(status):
     rows = [session("parent-old", "parent", state="stopped"), session("child-s", "child", task_id="a")]
@@ -258,6 +276,87 @@ async def test_another_agents_session_events_are_never_attributed_here():
     result = await counts(rows, [], native={"stranger": events(9, 0)})
     assert result["native_subagent_count"] == 0
     assert result["subagents_spawned_total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Shared index (the flock view builds it once for every agent)
+# ---------------------------------------------------------------------------
+
+
+class CountingLookup(AgentLookup):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.reads = 0
+
+    async def get_agent(self, agent_id):
+        self.reads += 1
+        return await super().get_agent(agent_id)
+
+
+def flock_fixture():
+    sessions = [
+        session("parent-old", "parent", state="stopped"),
+        session("parent-live", "parent", harness="claude", hooks=True),
+        session("child-a", "child", task_id="a"),
+        session("legacy", None, task_id="b"),
+        session("other-parent", "other", harness="claude", hooks=True),
+        session("stranger-child", "stranger", task_id="c"),
+    ]
+    tasks = [
+        task("a"), task("b", worker="legacy-worker"),
+        task("c", creator="other-parent", worker="stranger"),
+        task("done", status=TaskStatus.COMPLETED),
+    ]
+    native = {"parent-live": events(3, 1), "other-parent": events(2, 2)}
+    busy = {"legacy-worker": "b"}
+    return sessions, tasks, native, busy
+
+
+async def test_an_index_built_once_answers_every_agent_exactly_as_a_fresh_fold():
+    from src.agents.subagents import build_subagent_index, subagent_counts
+    sessions, tasks, native, busy = flock_fixture()
+    agent_ids = ["parent", "child", "other", "stranger", "legacy-worker", "nobody"]
+    shared = await build_subagent_index(
+        AgentLookup(busy_workers=busy, native=native), sessions, tasks,
+    )
+    for agent_id in agent_ids:
+        fresh = await subagent_counts(
+            AgentLookup(busy_workers=busy, native=native), agent_id, sessions, tasks,
+        )
+        indexed = await subagent_counts(
+            AgentLookup(busy_workers=busy, native=native), agent_id, sessions, tasks,
+            native_by_session=native, index=shared,
+        )
+        assert indexed == fresh, agent_id
+    parent = await subagent_counts(
+        AgentLookup(busy_workers=busy, native=native), "parent", sessions, tasks, index=shared,
+    )
+    # "child" on a live session, "legacy-worker" busy on an unlinked one.
+    assert parent["aq_subagent_count"] == 2
+    assert parent["native_subagent_count"] == 2
+    other = await subagent_counts(
+        AgentLookup(busy_workers=busy, native=native), "other", sessions, tasks, index=shared,
+    )
+    assert other["aq_subagent_count"] == 1
+
+
+async def test_an_index_seeded_with_the_listed_agents_reads_none_of_them_again():
+    from src.agents.subagents import build_subagent_index, subagent_counts
+    sessions, tasks, native, busy = flock_fixture()
+    seed = AgentLookup(busy_workers=busy, native=native)
+    listed = {
+        agent_id: await seed.get_agent(agent_id)
+        for agent_id in ["parent", "child", "other", "stranger", "legacy-worker"]
+    }
+    db = CountingLookup(busy_workers=busy, native=native)
+    index = await build_subagent_index(db, sessions, tasks, agents=listed)
+    for agent_id in listed:
+        await subagent_counts(db, agent_id, sessions, tasks, native_by_session=native, index=index)
+    assert db.reads == 0
+    # An agent the list did not hold (deleted, say) is still read, once.
+    await subagent_counts(db, "deleted", sessions, tasks, native_by_session=native, index=index)
+    await subagent_counts(db, "deleted", sessions, tasks, native_by_session=native, index=index)
+    assert db.reads == 1
 
 
 # ---------------------------------------------------------------------------

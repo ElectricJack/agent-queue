@@ -95,6 +95,29 @@ Two rules in `_cmd_create_task`:
    `child.mcp_servers ⊆ parent.mcp_servers`. Equal-or-stricter is fine;
    anything broader is rejected with a clear error.
 
+Worker-filed work (a non-elevated session holding a task, swarm work
+model §12) does not default-inherit: the filer's profile is its own
+execution route, and inheriting it pinned every finding to the rung that
+found it. A worker filing with no `profile_id` carries no profile, skips
+the project default, and is routed by the `default-assignment-routing`
+playbook. Rule 2 still applies to an explicit `profile_id`. The routed
+child is bounded instead by `task_route`: a task carrying the
+`filed_by_profile_id` marker may be routed only to an ordinary worker
+profile unless the operator, a daemon service or an elevated supervisor
+routes it. A strict `child ⊆ filer` bound cannot be applied there, because
+worker rungs on different harnesses carry disjoint command lists.
+
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** rule 1 is gone. No
+> filer inherits its own profile and there is no project default: a task created without a
+> profile is stored `unrouted` and its project's router (the bound routing playbook, through
+> `task_route_apply`) writes its profile, choosing only among worker candidates. `profile_id`
+> is refused on every filing surface with `routing.choice_forbidden`, except a role profile
+> (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) named by a `SERVICE` or `PLAYBOOK`
+> principal, and rule 2 still bounds that role profile by the caller's capabilities. The
+> `filed_by_profile_id` marker is kept as provenance only; `aq task route` takes no profile
+> and re-runs the router.
+
 System-prompt subsetting is not enforced — there's no mechanical notion
 of "subset of prose". The parent profile's author owns the prompt they
 delegate; the runtime guards the tool/server bound.

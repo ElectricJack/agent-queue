@@ -52,7 +52,7 @@ session runtime sets alongside `AQ_API_URL`.
 > **Note.** Ships with `api_auth.require_session_token: false`: a request
 > without a token is trusted, which is what makes the local CLI work with no
 > setup. Turning it on makes every non-exempt path require a token;
-> `/api/health`, `/health`, `/ready`, `/docs`, `/redoc` and `/openapi.json`
+> `/api/health`, `/health`, `/ready` and `/openapi.json`
 > stay open either way.
 
 Two identity fields are never taken from the client. `profile_id` and
@@ -69,7 +69,8 @@ commands a worker needs to do its job and close out: `prime`, `task_show`,
 `task_set`, `task_comment`, `task_comments`, `task_close`, `task_children`,
 `task_progress`, `task_heartbeat`, `task_handoff`, `task_claim`,
 `session_drain_ack`, `create_task`, `reparent_task`, `project_ready`,
-`message_send`, `message_inbox`, `message_reply`, `memory_save`,
+`message_send`, `message_inbox`, `message_reply`, `message_status` (only
+for messages addressed to the caller's own mailboxes), `memory_save`,
 `memory_search`, `formula_list`, `formula_show`, `get_schema`,
 `subagent_event`, `integration_status`,
 `integration_resolve_candidate_member`. Anything else is refused:
@@ -144,7 +145,7 @@ and both shapes are pinned by
 Success is the command's result object, at the top level, with `200`:
 
 ```text
-{"created":"demo","name":"demo","default_profile_id":null}
+{"created":"demo","name":"demo","assignment_playbook_id":"default-assignment-routing"}
 ```
 
 Failures map onto HTTP status codes:
@@ -233,7 +234,7 @@ and never stored.
 | `403 out of scope: project_id mismatch` | The body named a different project than the token's. | Omit the field and let the daemon inject it. |
 | `403 out of scope: this interactive agent has no assigned project` | A manually opened terminal session has no project; only `prime`, `get_schema` and `subagent_event` work there. | Run the command from a task session, or as the local operator. |
 | `422 Field required` with `loc: ["body", …]` | The body is missing a required field, or a field has the wrong type. | Check the request schema in `openapi.json` or `/docs`. |
-| A `null` you sent was ignored | Typed routes drop `null` fields before dispatch, so "unset" and "explicitly null" normally collapse. | A few commands preserve an explicit null deliberately (`task_set`, `pool_scale`'s bounds, `edit_task`'s routing fields). For anything else, use `/api/execute`, which forwards `args` verbatim. |
+| A `null` you sent was ignored | Typed routes drop `null` fields before dispatch, so "unset" and "explicitly null" normally collapse. | A few commands preserve an explicit null deliberately (`task_set`, `pool_scale`'s bounds, `edit_task`'s `intelligence_class`, where null clears the class hint). For anything else, use `/api/execute`, which forwards `args` verbatim. |
 
 ## Related pages
 

@@ -1,338 +1,391 @@
-# Integration troubleshooting
+# Integration troubleshooting with durable Subjects
 
-Symptoms you will actually see when a finished branch is not reaching your
-default branch, and the command that answers each one.
-
-Every command here is read-only unless it says otherwise. Start with the
-[integration concept page](../concepts/integration.md) if the words *batch*,
-*manifest*, *journal* or *parked* are new; start with the
-[development integration guide](development-integration.md) if you are looking
-for how to run this rather than how to unstick it.
-
-## Start here
+The reconciler owns enabled root, parent and development delivery. Read the
+Subject's recorded phase, policy pin, wait reason, last decision and next visit:
 
 ```bash
-aq integration status <project>
+aq integration status PROJECT_ID
+aq task show TASK_ID
+aq doctor --check integration.subjects_overdue
+aq doctor --check integration.subjects_held
 ```
 
-Three fields answer most questions:
+These are read-only projections. An overdue visit is retried from durable state
+once the daemon can run it. A held Subject needs the named gate resolved;
+configuration changes and daemon restarts do not clear that gate or grant a
+writer authority. Status can read Git to verify delivery evidence; it never advances delivery.
 
-| Field | Reading |
-|---|---|
-| `pending_publications` | Non-empty → a push happened whose outcome is not yet confirmed. Wait one sweep. |
-| `parked` | Non-empty → something is assembled but undelivered. Read its journal row's `reason` and `evidence`. |
-| `blockers` | Non-empty → the daemon is telling you what it is waiting for. |
+Inspect App credentials and branch protection with `aq integration app-verify
+PROJECT_ID`. `app-setup` prints the fixes; applying GitHub settings is a separate
+repository administrator action. See [App-mode setup](../config/app-mode-train.md).
 
-Then, for the fleet-wide view:
+## A passed task blocked at delivery
+
+Passing close records execution, while delivery requires the exact revision to
+be present on its target. Check `task show` for its checkpoint, current receipts
+and blockers. Resolve missing source evidence or CI under the reviewed policy.
+For a missing no-code receipt, a local operator records a no-code child's disposition with `aq integration record-noop`.
+No worker or supervisor session can invoke that operator control.
+
+A completed child missing from a parent's collection can be inspected through
+`aq integration redrive-child CHILD_ID`. A completed root missing its PR can be
+inspected through `aq integration redrive-root ROOT_ID`. Preview first; apply
+uses the exact head and reason and repeats the proof. Changed remote ancestry,
+source identity, live writers or human holds are blockers, never retry overrides.
+
+For an older completed code leaf reporting `missing_git_provenance`, a local
+operator or live project supervisor can preview source recovery:
 
 ```bash
-aq doctor --check integration.operational
-aq doctor --check integration.stranded_fences
-aq doctor --check integration.branch_discards
-aq doctor --check integration.unreviewed_prs
+aq integration redrive-child CHILD_ID --adopt-source
+aq integration redrive-child CHILD_ID --adopt-source --apply --head FULL_PREVIEWED_OID --reason "Recover missing completion source"
 ```
 
-## Symptom index
+This retains the existing passing generation after proving its published branch
+matches its checkpoint and materialized parent origin. A conflicting recorded
+source, missing passing completion or live writer refuses recovery. Adoption
+lets the train evaluate the source; its usual review, check and containment
+requirements still apply.
 
-| Symptom | Cause | Go to |
-|---|---|---|
-| Task is `COMPLETED`, work is not on `main` | Normal: delivery is batched | [Nothing is wrong yet](#nothing-is-wrong-yet) |
-| `blockers: [{"code": "publication_pending"}]` | A push is unconfirmed | [Publication pending](#publication-pending) |
-| Journal row `parked`, evidence `kind: merge_conflict` | A source would not merge | [A member conflicted](#a-member-conflicted) |
-| Journal row `parked`, evidence `conclusion: failed` | Validation failed | [Validation failed](#validation-failed) |
-| `blocked: validation modified the candidate; refusing publication` | A check wrote to the tree | [Validation modified the candidate](#validation-modified-the-candidate) |
-| `blocked: repository publisher is already running` | Another sweep holds the lock | [The publisher is busy](#the-publisher-is-busy) |
-| `blocked: remote write … needs reconciliation: target changed` | Someone else moved the ref | [The remote moved under a publication](#the-remote-moved-under-a-publication) |
-| `blocked: development publication must preserve target history` | The candidate would drop history | [History would be lost](#history-would-be-lost) |
-| `blocked: legacy default-branch mutation must be reconciled first` | Old strict-mode writes are in flight | [Switching modes is blocked](integration-migration.md#the-switch-is-blocked) |
-| `unauthorized: … requires LOCAL operator authority` | Wrong caller | [Who may run what](#who-may-run-what) |
-| Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
-| A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
-| A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
-| Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
-| `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
+## Human holds and repair progress
 
-## Nothing is wrong yet
-
-A task closing `pass` means its branch is pushed and finished. Delivery is a
-separate batched pass that runs on the project's `interval_seconds` (default
-300). Between those two events the work is finished and undelivered, and that
-is the normal state of a busy fleet.
-
-Check when the last batch landed:
+A human-held parent Subject reports its gate id and current version. After
+reviewing the gate answer, release that exact hold:
 
 ```bash
-aq integration status <project>
+aq integration release-held-gate SUBJECT_ID GATE_ID --apply --expected-version VERSION --reason REASON
 ```
 
-Look at the newest `deliveries` row. If the newest row is minutes old and your
-task is not in any manifest, its branch was either not pushed, is blocked, or
-depends on something that parked.
+Repair delegates keep their frozen starting commit, fence, deadline and attempt
+budget. A stopped writer's preserved work can be inspected with
+`recover-preserved-repair`; detached attachments can be inspected with
+`rebind-detached-repair`. These controls repeat their Git and ownership proofs
+before applying. See [repair recovery](hierarchical-integration-trains.md#repair-and-collection-recovery).
 
-## Publication pending
+A historical cancelled parent collection can be previewed with
+`aq integration reopen-collection PARENT_ID`. It reuses the existing episode and
+receipts, and refuses ambiguous writes, attached writers, changed targets and
+human gates. The old cancellation control is retired.
 
-A journal row in state `publishing` means the push ran and the remote has not
-yet been read back. AQ does not guess: the next sweep reconciles the row
-against the real remote and moves it to `delivered` (the ref carries the
-prepared SHA or a descendant) or `parked` (the ref is still at the old SHA).
+## A finished task still owns its branch
 
-Do nothing except wait one interval. If it never clears, the sweep itself is
-failing — check the daemon log for `Development batch remains recoverable for
-<project>`, which is what a failed sweep logs before retrying.
+A branch-owner row in `integration_branch_owners` with `handoff_state` of
+`attached` or `handoff_pending` fences its branch, pins the writer's claim and
+workspace lock, and keeps the branch off the deletion path even after the task
+is done. Several paths strand such a row: delegate retirement and
+historical cancellation keep it by design, a failed ownership transfer leaves it
+`handoff_pending` forever, archive and delete drop the proof rows the exit-time
+confirmers need, and slot reuse makes the "no newer session" check impossible.
+The row stays `attached` and the branch stays held indefinitely.
 
-## A member conflicted
-
-```text
-"evidence": {"kind": "merge_conflict", "detail": "CONFLICT (content): Merge conflict in …"}
-"reason": "source conflict; independent work may continue"
-```
-
-The rest of the batch continued without that member. Nothing was lost: the
-worker's branch is untouched and the conflict text is in the journal.
-
-What happens next, automatically:
-
-* If a later batch delivers the same content by another route, the parked row
-  becomes `adopted` on the next sweep and nothing else happens.
-* Otherwise AQ files one repair task — see [Repair tasks](#repair-tasks).
-
-What you can do:
-
-* Nothing, if the conflict is between two tasks that are still moving. A
-  worker pushing new commits makes its member eligible again by itself.
-* `aq integration sweep <project> --retry` to retry unchanged parked content
-  under the current policy.
-* Resolve it yourself and record it with `aq integration adopt` — see
-  [the guide](development-integration.md#record-work-you-delivered-by-hand).
-
-> **A very common cause.** Two tasks that both edit a generated file conflict
-> every time. If the file is regenerated rather than hand-edited, arrange for
-> exactly one ticket to regenerate it rather than having each ticket refresh it.
-
-## Validation failed
+**Spot it.** Either of these symptoms points here:
 
 ```text
-"evidence": {"kind": "local", "validation": "focused",
-             "checks": [{"command": "…", "exit_code": 1, "output": "…"}],
-             "conclusion": "failed"}
-"reason": "selected validation failed"
-```
-
-The batch was assembled and preserved as a ref, and nothing was published. The
-`output` field holds the last 8,000 characters of that command's combined
-output — read it before anything else; it is the actual failure.
-
-Exit code 124 means the command hit `timeout_seconds` (default 300) and its
-process group was killed. Raise `timeout_seconds` (maximum 3600) with another
-`aq integration develop … --reason …`, or make the check smaller.
-
-The candidate itself is on the remote as
-`refs/heads/aq/development/<project digest>/<head sha>`, so you can check it
-out and reproduce the failure locally.
-
-Re-run after a fix with `aq integration sweep <project> --retry`.
-
-## Validation modified the candidate
-
-```text
-blocked: validation modified the candidate; refusing publication
-```
-
-A validation command moved `HEAD` or left the working tree dirty. AQ refuses to
-publish something other than what it validated. Generated artefacts, caches
-written into the checkout, or a check that commits are the usual causes. Make
-the command write outside the checkout, or add its outputs to the repository's
-ignore rules.
-
-## The publisher is busy
-
-```text
-blocked: repository publisher is already running
-```
-
-One publisher per repository, enforced by a PostgreSQL advisory lock. Another
-sweep — scheduled or manual — holds it. Wait and retry; there is nothing to
-clean up, because the lock dies with the process that held it and the durable
-journal is what survives.
-
-## The remote moved under a publication
-
-```text
-blocked: remote write <id> needs reconciliation: target changed
-```
-
-A row was left `publishing`, and the ref is now at neither the SHA that was
-being published nor the SHA it was published from. Something outside AQ wrote
-to that branch. The sweep stops rather than guessing.
-
-Establish what happened before you do anything else: `git log` the target
-branch, and compare against the row's `expected_sha` and `prepared_sha`. If the
-work is on the branch by another route, record it with
-`aq integration adopt … --accept-equivalent`. This is the one integration
-failure that genuinely needs a human to look at the repository.
-
-## History would be lost
-
-```text
-blocked: development publication must preserve target history
-```
-
-The candidate does not contain the current target as an ancestor, so publishing
-it would drop commits. AQ refuses. This normally means the default branch was
-force-pushed. Check `aq integration status <project>` for `repository_id` and
-compare it with what the project is really pointed at: a mismatched retained
-clone raises its own message, `retained repository URL differs from configured
-repository`, from
-[`src/integration/development.py`](../../src/integration/development.py).
-
-## Who may run what
-
-`develop`, `sweep`, `adopt` and `cancel-preserving` require **local operator
-authority**: they must come from the machine running the daemon, not from a
-worker session's token. A worker calling them gets:
-
-```text
-unauthorized: manual sweep requires LOCAL operator authority
-```
-
-`aq integration status` is readable by a worker session for its own project,
-which is why a worker can diagnose but not act.
-
-## A branch is held by a writer that is gone
-
-```text
+# One task's claim fails on every attempt
 canonical branch is not reserved by this task
+
+# A delivered branch is still on the remote, held by an owner row
+integration owner … is reserved
 ```
 
-Every claim of one particular task fails with this, the task stays `READY`, and
-the scheduler keeps offering it — burning a pool worker each time.
+Preview the owner's current proof using its task id or row id:
 
 ```bash
-aq doctor --check integration.stranded_fences
+aq integration release-owner --task-id TASK_ID --dry-run
+aq integration release-owner --owner-row-id OWNER_ROW_ID --dry-run
 ```
 
-That check reports an ownership row still marked `attached` or
-`handoff_pending` while the database says no writer is left: no live session for
-the owning task, no workspace locked by it, and the task not `ASSIGNED` or
-`IN_PROGRESS`.
+The command resolves its project server-side and checks the caller's scope.
 
-It is a **report, not a repair**, and deliberately so: nothing it can see proves
-the old writer's process is stopped, its checkout clean, or its work published.
-The repair is the guarded integration recovery path, which takes those proofs —
-in a development-mode project, `preserve_stopped_owners` does exactly that on
-each sweep, once the session provider confirms the process is really gone.
+**What the recovery proves** (for each row, independently, in one transaction
+when it passes):
 
-## A branch origin was never materialized
+1. *The writer is gone.* The row's session is `stopped` in both `state` and
+   `desired_state`, **and** the session provider confirms the process is no
+   longer running by a fresh probe. A tmux session that no longer exists counts
+   as gone. `writer_live` is returned if either check fails.
+2. *The branch is safe.* After `git fetch origin`, every worktree holding the
+   branch is inspected. Anything origin does not already carry — a dirty tree,
+   a commit the remote is missing — is first pushed, never forced, to
+   `aq/preserved/<owner-row-id>`. The worktree is then detached. A branch whose
+   origin ref was already deleted by branch-cleanup policy but whose tip is
+   reachable from `origin/main` is safe without preservation. `checkout_in_use`
+   is returned if a live session holds the worktree. `origin_unreachable` is
+   returned if `fetch` or the preservation push fails.
+3. *The release is atomic.* The row is re-read inside a `BEGIN … COMMIT` block
+   and compare-and-swapped on `(id, fence_token, handoff_state)`. If it moved
+   while the check was running — a new writer attached, the fence bumped —
+   `stale_fence` is returned and nothing is written.
 
-Hierarchy and train projects reserve a child's branch before cutting it, and
-claiming is gated on that branch existing. A reservation that was never
-materialized leaves the task permanently unclaimable.
+The row is the only thing touched: no checkout, workspace lock, session, or
+task status is modified. A fresh fence token is assigned so any in-flight
+confirmers holding the old token refuse rather than double-release.
 
-`BranchMaterializationService`
-([`src/integration/branch_materialization.py`](../../src/integration/branch_materialization.py))
-drains those reservations from the integration loop. If tasks are still stuck,
-check the daemon log for materialization failures, and confirm the branch does
-not already exist on the remote with an unexpected tip — the service refuses to
-adopt a ref it did not create.
-
-This does not apply to development-mode projects: they cut ordinary task
-branches with no reservation step.
-
-## A branch discard is parked
-
-Deleting a task that owns a materialized branch takes an explicit choice
-(`aq task delete <id> --branches keep|delete`). A `delete` marks the retired
-origin `pending`, and
-[`BranchDiscardService`](../../src/integration/branch_discard.py) removes the
-ref asynchronously: it refuses a live branch owner or the default branch, and
-compare-and-swaps on the head it observed.
+**What gets preserved.** Uncommitted work in a stranded worktree is snapshotted
+through a temporary index (the working tree and the live index are never
+touched), committed as a single commit on a temporary ref, and pushed to
+`aq/preserved/<owner-row-id>` on origin. The resulting outcome is
+`preserved_and_released`; the `evidence` JSON column records the preserved ref
+and its sha. The work can be pulled back from any clone:
 
 ```bash
-aq doctor --check integration.branch_discards
-aq doctor --check integration.branch_discards --fix
+git fetch origin refs/heads/aq/preserved/<owner-row-id>
+git branch recovered/<owner-row-id> FETCH_HEAD
 ```
 
-Transport failures back off from about 30 seconds towards an hour and are
-retried up to eight times before the row parks as `failed`. A *conflict* — the
-remote moved — never retries on its own, because it is a statement about the
-repository rather than about the network. `--fix` re-arms parked discards for
-another attempt.
-
-## Slot reset keeps failing
-
-A claim that cannot prepare its worktree slot releases the claim and records
-`slot_reset_failure` in the task's metadata with the actual error, the
-workspace, the session, the attempt count and whether the next retry is
-automatic.
+**Example: dry-run then real run.**
 
 ```bash
-aq task explain --task-id <id>
+# First, see what the check would do (no writes, no pushes, no audit row).
+# In a dry run the concrete push is planned but not performed, so the evidence
+# carries a "planned" list instead of a pushed sha:
+aq integration release-owner --task-id repair-repair-batch-…-1 --dry-run
+# => {
+#     "success": true,
+#     "outcome": "preserved_and_released",
+#     "outcomes": [{
+#         "owner_row_id": "o-a3f7…",
+#         "outcome": "preserved_and_released",
+#         "reason": null,
+#         "dry_run": true,
+#         "evidence": {
+#             "handoff_state": "attached",
+#             "fence_token": 3,
+#             "session_id": "4baaded6",
+#             "workspace_id": "slot-3",
+#             "planned": [{
+#                 "action": "push",
+#                 "ref": "aq/preserved/o-a3f7…",
+#                 "source": "snapshot of slot-3",
+#                 "sha": null
+#             }]
+#         }
+#     }]
+# }
+
+# Satisfied. Run it for real — this pushes the preserved ref and writes the
+# audit row in the same logical step as the release.
+aq integration release-owner --task-id repair-repair-batch-…-1 --apply
+# => same shape, dry_run: false, one row now in integration_owner_recoveries
 ```
 
-Retries are automatic with a 120–300 second backoff. After **three**
-consecutive failures the task goes `BLOCKED` instead of repeating forever, and
-other ready work stays claimable. After fixing the cause:
+You can also target a specific owner row directly instead of a task:
 
 ```bash
-aq task resume --task-id <id>
+aq integration release-owner --owner-row-id o-a3f7… --apply
 ```
 
-That retries a `READY`/`BLOCKED` reset failure immediately and starts a fresh
-retry cycle; dependency and approval checks still apply. A successful
-preparation clears both the retry ladder and the stale attention flag.
+`release-owner` previews by default; `--apply` explicitly preserves work and releases
+the stopped attachment. `--dry-run` and `--apply` are mutually exclusive.
+Preservation first proves the local task ref, recorded task origin, claim time
+and matching slot sentinel. An unrelated detached slot is skipped; a missing
+local ref appears as `skip_preserve` with reason `missing_local_ref`. Unpublished
+work without provenance returns `unproven_task_work`, leaving it in place.
+Detached checkouts skipped for a missing task ref or mismatched sentinel remain
+intact and their released slots are disabled, including clean checkouts, until
+their unknown commits can be reviewed. A slot whose sentinel names another task is
+never a push source, even when its detached HEAD holds commits origin lacks.
 
-## Repair tasks
-
-A parked content set that the batch did not resolve produces one ordinary task:
-
-* id `development-repair-<manifest digest>`, branch `aq/development-repair-…`,
-  type `BUGFIX`, three task retries;
-* its description names every parked source SHA and the base to resolve
-  against;
-* it is a normal queue task — waiting for a worker or a provider does not
-  expire it, unlike the strict modes' wall-clock repair stages;
-* at most **three** generations of repair are chained. Past that, the content
-  stays parked for a human rather than starting an unbounded chain.
-
-If you would rather not have a repair episode run at all:
+`--no-push` releases without publishing anything, combined with either the preview or
+`--apply`. Nothing is proved, snapshotted or pushed, so unpublished work does not
+refuse the release with `unproven_task_work`. Each unpublished source appears in
+`evidence.unpublished` and as a `skip_preserve` step with reason `no_push`; it stays in
+its checkout or local branch ref. The row's own slot is retained and disabled, and the
+release comment names what was left behind. Use it when the work belongs elsewhere or
+will be preserved by hand:
 
 ```bash
-aq integration cancel-preserving <operation-id> --reason '…'
+aq integration release-owner --task-id TASK_ID --no-push            # preview
+aq integration release-owner --task-id TASK_ID --no-push --apply
 ```
+It takes no `--project-id`: the task (or the owner row's repository) names the
+project, and the caller's token has to name the same one. A project's supervisor session may
+therefore run this recovery for its own work and is refused for another project's — see
+[aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
 
-Refs and attached workspaces are retained; only detached reservations are
-released; delegate tasks are paused. If the repair writer's session cannot be
-proven stopped by its provider, the command refuses (`stop the current repair
-writer before cancellation`, `provider termination proof is unavailable`)
-rather than pulling a branch out from under a live process.
-
-## Reading a failure message
-
-Every integration command wraps its internal error as
-`{"success": false, "outcome": "blocked", "error": "<message>"}`
-([`src/commands/integration_commands.py`](../../src/commands/integration_commands.py)),
-so the text you see is the exact `ValueError` or `DevelopmentBusy` raised in
-[`src/integration/development.py`](../../src/integration/development.py). Search
-that file for the message: the surrounding code is the precise condition that
-refused.
-
-## Related pages
-
-* [Integration](../concepts/integration.md) — what each state means.
-* [Development integration](development-integration.md) — the commands and
-  their options.
-* [Switching integration modes](integration-migration.md) — mode changes and
-  the blockers they hit.
-* [Session troubleshooting](session-troubleshooting.md) — when the worker,
-  rather than the delivery, is stuck.
-
-## Source and tests
-
-[`src/integration/development.py`](../../src/integration/development.py),
-[`src/integration/branch_discard.py`](../../src/integration/branch_discard.py),
-[`src/doctor/integration_checks.py`](../../src/doctor/integration_checks.py),
-[`src/commands/claim_commands.py`](../../src/commands/claim_commands.py).
+If a task branch was contaminated by an earlier recovery, the local operator or
+live project supervisor can restore its recorded origin after releasing its
+writer. Preview supplies the origin id, current remote SHA and released fence:
 
 ```bash
-aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py
+aq integration restore-task-origin --task-id TASK_ID --json
+aq integration restore-task-origin --task-id TASK_ID --apply \
+  --origin-id ORIGIN_ID --expected-remote-oid BEFORE_SHA \
+  --expected-fence-token FENCE --reason "Remove unrelated slot history"
 ```
+
+Apply retains the displaced head at the preview's `backup_ref`, then uses an
+exact remote lease to publish only the recorded origin (the preview's `after_sha`). A changed origin,
+fence, remote head or active writer refuses the operation. The audit events
+`integration.task_origin_restore_started` and `integration.task_origin_restored`
+record the principal and before/after SHAs. This control never resets a checkout.
+It refuses checked-out branches and other local work; an existing local ref
+matching the displaced head is repaired with an exact compare-and-swap.
+
+**Refusal reasons and how to resolve them.**
+
+Every refusal is recorded in `integration_owner_recoveries` with the row's
+`evidence` field populated — the `evidence.detail` string has the same wording
+as the recovery result. Dry runs do not write an audit row.
+
+| Refusal | Meaning | Fix |
+|---|---|---|
+| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate, or still bound to a task whose close already committed, is stopped automatically (see the repair-delegate section and the paragraph below this table). |
+| `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
+| `unproven_task_work` | Unpublished work lacks the recorded origin, claim time, matching slot sentinel or task-ref ancestry. | Inspect the preview evidence and preserve the work under its actual task. Do not substitute the slot HEAD for a missing task ref. To release without publishing, rerun with `--no-push`. |
+| `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
+| `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
+| `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |
+| `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
+
+**A live worker blocked on its own failed preparation.** A retry automatically
+rechecks a self-owned pending handoff using the exact unactivated pool claim and
+clean, published checkout proof. If it remains fenced, the operator or project
+supervisor can preview and restore that reservation without killing the session:
+
+```bash
+aq integration release-owner --task-id TASK_ID --self-owned --dry-run
+aq integration release-owner --task-id TASK_ID --self-owned --apply
+```
+
+This requires a retained failure record for the same session instance, claim epoch
+and workspace generation. It retains the claim and workspace locks for retry, even
+if repeated failures requested drain and disabled the workspace. It refuses active
+claims, incomplete child cleanup, changed bindings, dirty or unpublished work.
+An apply writes `integration.preparation_handoff_restored` and a task comment.
+Without `--self-owned`, the ordinary stopped-writer proof still applies.
+
+**A worker still bound to a closed task.** A daemon restart during
+`aq task close` can commit the terminal transition and lose everything after
+it: the branch handoff, the completion record and the claim release. The task
+reads `COMPLETED`, but the worker's session still names it, the owner row stays
+`attached` to that session, and `release-owner` answers `writer_live` while the
+worker sits idle at its final summary. Once the worker runs
+`aq session drain-ack`, the session reconciler stops it on its next tick
+(`session.settled_claim_stopped`, plus a task comment from `session-reconciler`).
+The stop needs the agent's own drain-ack and all of this durable proof:
+
+- the task is `COMPLETED` or `FAILED`, holds no agent, and its claim epoch is the
+  session's;
+- a completion record or a `code`/`noop` delivery receipt was written after the
+  session's attempt on the task began, or, before either exists, the task's
+  `accepted_close` marker names this session and its claim epoch. The transition
+  that accepts a close writes that marker in its own transaction.
+  `close_session_id` never counts: the close writes it before it is accepted, so
+  a refused close leaves it behind;
+- no running integration operation owns the task in any seat;
+- no completion of the task is still running in this daemon (its control lock is
+  free), so an ack after a timed-out close never stops a worker mid-handoff.
+
+Nothing about the task changes. The stopped session keeps its claim, checkout and
+binding, so this owner recovery, run by hand or by the sweep below, passes the
+writer check, snapshots unpushed work and then releases the branch.
+
+**Automatic sweep.** The daemon runs this same guarded recovery every 300 s
+against every candidate row quiet for at least 600 s. It ships on by default
+(`integration.owner_recovery_sweep: true`): stranded-owner recovery is routine,
+and the sweep takes no shortcut the manual command does not. A candidate's
+session must be stopped, a live writer is refused with `writer_live`, a live
+checkout with `checkout_in_use`, and an unreachable origin with
+`origin_unreachable`; a refusal repeating its reason is recorded once per
+throttle window. Once the writer is stopped and the branch is genuinely safe
+the sweep succeeds within one tick and the row appears in
+`integration_owner_recoveries` under principal `sweep`. Set it to `false` to
+release stranded owners only by hand: an explicit `false` always stays off, and
+the manual command remains available regardless.
+
+```yaml
+# config.yaml
+integration:
+  owner_recovery_sweep: false   # release stranded owners by hand only
+```
+
+**Reading the audit trail.**
+
+Every non-dry recovery attempt — success or refusal — writes one row to
+`integration_owner_recoveries`. The `principal` field records who triggered it:
+
+| Principal | How it was triggered |
+|---|---|
+| `human:local-operator` | `aq integration release-owner …` from the CLI on the daemon's host |
+| `supervisor session:<id>` | An elevated named supervisor session called the command |
+| `sweep` | The automatic 300-s sweep |
+| `delegate_retirement` | The retirement path inside an ending integration operation |
+
+To read recent recoveries straight from the database, note that `created_at`
+is an integer Unix-epoch timestamp. Run it against the daemon's database with
+`psql`:
+
+```bash
+psql "$AQ_DATABASE_URL" \
+  -c "SELECT created_at, owner_row_id, ref, task_id, outcome, reason,
+            principal
+      FROM   integration_owner_recoveries
+      ORDER  BY created_at DESC
+      LIMIT  20;"
+```
+
+To translate the epoch and narrow to one owner row:
+
+```sql
+SELECT to_timestamp(created_at) AS when,
+       outcome, reason, principal, evidence
+FROM   integration_owner_recoveries
+WHERE  owner_row_id = 'o-a3f7…'
+ORDER  BY created_at DESC;
+```
+
+## A promotion flow is refused or misconfigured
+
+`aq project set PROJECT_ID promotion-flow FLOW.yaml
+--expected-integration-generation N` activates a flow only when every layer
+passes: the schema and chain rules, the trust manifest's attestations and check
+sets, and the targets themselves. Before it writes, it creates any missing target
+with a create-only push from its source's tip. A refusal names the code and the
+JSON pointer into the file, and never stores the flow. The one thing a refusal
+can leave behind is a target branch it already created at its source's tip;
+the result lists it under `created_targets`, and a retry reuses it. Check a file
+first with `aq promote validate --project PROJECT_ID --file FLOW.yaml`.
+
+A step with an open promotion keeps its `id`, `source`, `target`, `type`,
+`gate`, `versioning` and `notes` until that promotion closes
+(`promotion_flow_in_use`). Its `after` hooks, `gate.request_ttl` and new steps
+appended at the end can still change. A flow that names a new target while live
+integration work holds it is refused with `repository_busy`. An open train batch also
+holds the repository: changing the integration repository or deleting the
+project is refused until it finishes.
+
+The daemon re-validates every stored flow when it starts. When a stored flow no
+longer validates, for example after a default-branch rename or a trust-manifest
+change, `aq integration status` marks its targets `misconfigured`. Schema and
+chain problems are re-checked on every status read, so renaming the default
+back clears them at once; a trust-manifest problem clears when the flow is
+activated again or the daemon restarts. The train keeps promoting to the
+default branch, and nothing is rewritten:
+
+```bash
+aq doctor --check integration.promotion_flow
+```
+
+## A promotion intent stays sealed
+
+The train admits a promotion only while its daemon-owned task is `IN_PROGRESS`
+and unrouted. If something else rewrites that row, every train visit holds the
+intent with `promotion_intent_invalid`, and the daemon log names the defect
+once per hold. For example, a restart might reset the task to `READY` and the
+router might hand it a worker profile. The doctor check lists every open intent
+in that state together with its repair command. The repair writes a JSON backup
+of the task row before it restores the row:
+
+```bash
+aq doctor --check integration.promotion_stranded
+aq promote repair REQUEST_ID --project PROJECT_ID
+```
+
+## Source and related pages
+
+[Reconciler operation](hierarchical-integration-trains.md) describes current
+project configuration, exact-head recoveries and receipt requirements.
+[Worker pools](worker-pools.md) describes claims and session handoff.
+The shared stopped-writer implementation is `src/integration/owner_recovery.py`;
+its durable audit table is retained for historical and current recoveries.

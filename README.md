@@ -21,20 +21,52 @@ development; expect to read logs and use `aq doctor`.
 **→ [Install and start Agent Queue](docs/tutorials/install.md)**, then
 [run your first isolated task](docs/tutorials/first-task.md).
 
-The short version, once the prerequisites on that page are in place:
+**macOS** — in Terminal:
 
 ```bash
-git clone https://github.com/ElectricJack/agent-queue.git
-cd agent-queue
-./setup.sh          # virtualenv, Python + dashboard packages, `aq` entry point, setup wizard
-aq start            # starts the daemon; offers to start the dashboard (`--no-dashboard` skips)
-aq status
+curl -fsSL https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install.sh | bash
 ```
+
+**Windows** — in PowerShell (it enables WSL2, then runs the same script inside Ubuntu):
+
+```powershell
+irm https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install-windows.ps1 | iex
+```
+
+Each command downloads one small script that checks the host is supported, puts
+a checkout and an `aq` command in place, and then hands every real decision to
+`aq install` — the resumable onboarding wizard that sets up prerequisites,
+PostgreSQL, agent CLIs, configuration, the daemon and the dashboard. Read either
+script before running it; that is the point of keeping them small.
+
+It stops rather than guessing whenever a human is required — a Homebrew
+administrator password, a `xcode-select --install` dialog, an agent CLI's
+browser login. Do the named thing and run the same command again: it revalidates
+what it already did instead of starting over. It ends with the dashboard open
+at `http://127.0.0.1:8082/`, served by a small dashboard server beside the
+daemon — the daemon itself (port 8081) serves its API, not the dashboard. `aq status`
+then reports what the daemon thinks of itself.
+
+The [Windows + WSL2](docs/tutorials/install.md#windows--wsl2-quickstart) and
+[macOS](docs/tutorials/install.md#macos-quickstart) quickstarts cover the same
+paths in full, alongside [recovery guidance](docs/tutorials/install.md#recovery-upgrade-and-uninstall).
+The versioned release's platform matrix, artifact checks, and intentionally
+visible acceptance limits are in the [installation release record](docs/validation/installation-release-0.1.0.md).
+
+To update later, run `aq update`: it stops AQ, pulls the latest code, rebuilds what changed and
+starts it again, rolling back if anything goes wrong (`aq update --check` just reports). The
+[release notes](docs/release-notes.md) say what an update changes for an existing install.
+
+Contributing rather than installing? Clone and run `./setup.sh`, which adds the
+dev and dashboard toolchains on top of the same `aq install`.
 
 You need Linux or macOS (WSL2 counts, if everything stays on the Linux side), Python
 3.12+, Git, tmux, a PostgreSQL database, and at least one authenticated agent CLI —
 `claude`, `codex` or `gemini`. PostgreSQL is the only supported backend. `npm` is needed
-for the dashboard, and the GitHub CLI (`gh`) for the GitHub-facing delivery paths.
+for the dashboard, and the GitHub CLI (`gh`) for GitHub onboarding and AQ-owned
+delivery with either an existing login or a configured GitHub App. The installer
+does not install `gh`; [GitHub setup](docs/guides/project-onboarding.md#github-on-the-daemon-host)
+describes the two alternative credential modes.
 
 Unsure what a word means? The [glossary](docs/reference/glossary.md) defines the
 vocabulary the rest of the documentation uses.
@@ -67,7 +99,7 @@ flowchart TD
    asks a small model to pick a class and a profile from the catalog of what this install
    can actually run, and writes both onto the task. A *profile* is the markdown role —
    what the agent is for, which tools it may use, which harness runs it. An *intelligence
-   class* maps a level such as `standard-medium` onto provider-specific model and
+   class* maps a level such as `standard-high` onto provider-specific model and
    reasoning settings.
 3. **A shared worker runs it.** Workers are global identities reused across projects. For
    each assignment the daemon starts the profile's harness in an observable tmux session;
@@ -156,7 +188,8 @@ npm -w dashboard run typecheck
 [Local checks](docs/contributing/checks.md) maps what you changed to what you should run;
 [testing](docs/contributing/testing.md) explains why bare `pytest tests/` is the wrong
 habit here. `npm run dev` serves the dashboard on `http://127.0.0.1:5173`, proxying the
-daemon API at `http://127.0.0.1:8081`.
+daemon API at `http://127.0.0.1:8081`; an installed AQ serves the built bundle from the
+dashboard server on `http://127.0.0.1:8082/` instead, and the two can run side by side.
 
 ## License
 
