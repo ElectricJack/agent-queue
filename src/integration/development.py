@@ -235,7 +235,7 @@ async def publisher_exclusion(db, repository_id, subject=None):
     Cleanup only receives exclusion, never root mutation authority.
     """
     key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
-    async with db._engine.connect() as conn:
+    async with db._engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
         acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
         if not acquired:
             raise DevelopmentBusy("repository publisher is already running")

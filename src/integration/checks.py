@@ -253,6 +253,18 @@ class HostedChecks:
             self.required = self.required.model_copy(update={
                 "producer_id": self.required.producer_id + ":" + event,
             })
+        if producer.observer.expected_branch is not None:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":scope:" + digest({
+                    "event": producer.observer.expected_event,
+                    "branch": producer.observer.expected_branch,
+                    "workflow": producer.observer.expected_workflow,
+                }),
+            })
+        elif producer.observer.ignore_cancelled_batches:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":promotion-source",
+            })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return ProducerRequest(outcome="already_running", reason="candidate_push_triggers_checks")

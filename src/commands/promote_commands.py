@@ -784,7 +784,14 @@ class PromoteCommandsMixin:
                     raise PromotionRefusal(
                         "promotion_not_fast_forward", "Target is not an ancestor of the source."
                     )
-                await check_source_green(client, trust, required, source)
+                source_evidence = await check_source_green(client, trust, required, source)
+                if step["ci"] == "reuse_source":
+                    # Source admission may have used the explicitly trusted audit
+                    # names. Freeze that actual set so the lane and attestation
+                    # reuse the evidence that admitted S without needing a new run.
+                    required = required.model_copy(update={
+                        "names": tuple(check.name for check in source_evidence.payload.checks),
+                    })
                 previous = await previous_tag(ops, repo, step) if step_has_version(step) else None
                 if not backmerge:
                     _increasing_version(step, version, previous)
