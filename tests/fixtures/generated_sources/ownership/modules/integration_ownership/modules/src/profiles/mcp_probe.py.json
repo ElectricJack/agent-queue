@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/profiles/mcp_probe.py::probe_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
