@@ -28,6 +28,8 @@ class EventsMixin:
             "project_id": task.project_id,
             "title": getattr(task, "title", ""),
         }
+        if event_type == "task.updated":
+            payload["status"] = task.status.value
         # The default pipeline's review rules stand down on
         # ``event.review_task`` (default-pipeline.md), and an *absent* key
         # reads falsy under ``truthy: false`` — so an emitter that forgets it
