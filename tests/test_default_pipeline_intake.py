@@ -19,12 +19,14 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal
 from src.database.queries.proposal_queries import get_proposal
-from src.models import AgentProfile
+from src.models import AgentProfile, TaskStatus
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from src.reviews.service import ReviewHooks, ReviewService
+from tests._private_values_helper import private_value_service
+from tests.test_review_feedback import accept, prepared
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -55,6 +57,9 @@ def pipeline(handler):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler._db,
+            # The daemon wires protected result storage; ``release-on-receipt``
+            # saves its result to route on the refusal's ``error_code``.
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -207,13 +212,14 @@ async def test_an_approval_without_proposal_identity_never_invokes_the_commit(ha
     assert await handler._db.list_tasks(project_id=PROJECT) == []
 
 
-async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pipeline):
-    """No project row: ``ensure_task`` is refused, and the run must say so."""
+async def test_a_refused_ensure_spec_ingest_ends_the_spec_ingest_run_failed(handler, pipeline):
+    """No project row: ``ensure_spec_ingest`` is refused, and the run must say so."""
     engine, runs, principal = pipeline
 
     result = await engine.dispatch_event(
         {"event_type": "spec.approved", "event_id": "spec-1", "project_id": PROJECT,
-         "spec_path": "projects/p1/specs/x.md"},
+         "spec_path": "projects/p1/specs/x.md", "decision_id": "missing",
+         "packet_sha256": "0" * 64, "review_id": None, "revision": None, "spec_kind": "design"},
         principal,
     )
 
@@ -222,7 +228,10 @@ async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pi
 
 
 @pytest.mark.parametrize("kind", ["spec", "plan"])
-async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind):
+@pytest.mark.parametrize("lifecycle", [
+    "active", "completed", "failed", "obsolete", "archived-completed", "archived-obsolete",
+])
+async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind, lifecycle):
     from src.vault import ensure_default_intelligence_classes
 
     ensure_default_intelligence_classes(handler.config.data_dir)
@@ -249,26 +258,70 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
         content="---\nspec_kind: implementation\n---\n# Specification\n",
         submitted_by="human:local-operator",
     )
-    await svc.decide(
-        review_id=submitted["review_id"], revision=1, decision="approve",
-        note="Approved", decided_by="human:local-operator",
+    args, preview = await prepared(
+        handler, submitted["review_id"], note="Approved",
+        dispositions=[{"feedback_key": "overall_note", "disposition": "no_change",
+                       "reason": "Approval acknowledgment; no implementation change requested."}],
     )
+    approved = await accept(handler, args, preview)
+    assert approved["success"], approved
+    assert approved["application_state"] == "applied", approved
     payload = next(call.args[1] for call in handler.orchestrator.bus.emit.call_args_list
                    if call.args[0] == "spec.approved")
     path = Path(payload["spec_path"])
     assert path.is_absolute()
     assert "status: approved" in path.read_text()
-    for event_id in ("review-approval-1", "review-approval-replay"):
-        result = await engine.dispatch_event(
-            {"event_type": "spec.approved", "event_id": event_id, **payload}, principal,
-        )
-        assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
+    result = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-1", **payload}, principal,
+    )
+    assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
     [task] = await handler.db.list_tasks(project_id=PROJECT)
     assert task.profile_id == "spec-ingest"
     assert task.intelligence_class == "deep-high"
-    assert task.dedup_key == f"spec-ingest:{path}"
-    assert f"spec_path: {path}" in task.description
+    assert task.dedup_key == f"spec-ingest:decision:{payload['decision_id']}"
+    review = await handler.db.get_review(submitted["review_id"])
+    assert f"spec_path: {review['vault_path']}" in task.description
     assert "spec_kind" in task.description
+    # The executable recording must deliver the policy, not just its source Markdown.
+    assert "docs/guides/reviews.md" in task.description
+    assert "every predecessor goal as kept, changed or dropped" in task.description
+    assert "Jack's explicit sign-off for the goal and replacement revision" in task.description
+    assert "do not commit affected work" in task.description
+
+    # A supervisor settling an unnecessary ingest must not commission another
+    # task when approval is delivered again under a fresh event identity.
+    if "obsolete" in lifecycle:
+        closed = await handler.execute("task_close", {
+            "task_id": task.id, "obsolete": True, "reason": "Spec already ingested manually",
+        })
+        assert closed["success"], closed
+        assert (await handler.db.get_task(task.id)).status == TaskStatus.COMPLETED
+    elif lifecycle != "active":
+        status = TaskStatus.FAILED if lifecycle == "failed" else TaskStatus.COMPLETED
+        await handler.db.update_task(task.id, status=status)
+    archived = lifecycle.startswith("archived-")
+    if archived:
+        assert await handler.db.archive_task(task.id)
+    replay = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-replay", **payload},
+        principal,
+    )
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert {t.id for t in await handler.db.list_tasks(project_id=PROJECT)} == (
+        set() if archived else {task.id}
+    )
+    ingest_args = {
+        key: payload[key] for key in ("project_id", "decision_id", "packet_sha256")
+    }
+    # Receipt reuse still requires the exact approved identity, including
+    # after the task row has left the active table.
+    for override in ({"packet_sha256": "0" * 64}, {"decision_id": "other"},
+                     {"project_id": "other"}):
+        refused = await handler.execute("ensure_spec_ingest", {**ingest_args, **override})
+        assert not refused["success"], refused
+        assert refused["code"] == "ask.not_found", refused
+    reused = await handler.execute("ensure_spec_ingest", ingest_args)
+    assert reused == {"success": True, "task_id": task.id, "created": False}
 
 
 async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipeline):
@@ -282,3 +335,191 @@ async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipel
 
     assert result.rules_selected == ("proposal-ready-gate",)
     assert _lifecycles(runs, result) == [RunLifecycle.FAILED]
+
+
+async def test_dispatch_retries_failed_run_until_transactional_task_receipt(handler, pipeline):
+    import asyncio
+    from sqlalchemy import update
+    from src.asks.operations import get_operation
+    from src.database.tables import escalation_actions
+    from src.vault import ensure_default_intelligence_classes
+
+    engine, runs, principal = pipeline
+    await handler.execute("create_project", {"id": PROJECT, "name": PROJECT})
+    path = Path(handler.config.vault_root) / f"projects/{PROJECT}/specs/retry.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nstatus: draft\nspec_kind: implementation\n---\n# Exact approved body")
+    approved = await handler.execute("spec_approve", {"project_id": PROJECT, "spec_path": str(path)})
+    assert approved["success"], approved
+    payload = next(c.args[1] for c in handler.orchestrator.bus.emit.call_args_list
+                   if c.args[0] == "spec.approved")
+    # The role profile is unavailable: a delivered event and a terminal failed
+    # pipeline run cannot be mistaken for its task receipt.
+    first = await engine.dispatch_event({"event_type": "spec.approved",
+                                         "event_id": str(payload["seq"]), **payload}, principal)
+    assert _lifecycles(runs, first) == [RunLifecycle.FAILED]
+    async with handler.db.immediate() as conn:
+        op = await get_operation(conn, approved["decision_id"], "ingestion")
+        assert op["status"] == "pending" and "task_id" not in op["receipt"]
+        await conn.execute(update(escalation_actions).where(escalation_actions.c.id == op["id"])
+                           .values(retry_at=0))
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    await handler.db.create_profile(AgentProfile(
+        id="spec-ingest", name="Ingest", harness="codex", default_class="deep-high",
+    ))
+    path.unlink()  # The sweep must not reread the mirror.
+    retry = await handler.execute("spec_ingest_reconcile", {})
+    assert retry["success"] and retry["errors"] == [], retry
+    payload2 = [c.args[1] for c in handler.orchestrator.bus.emit.call_args_list
+                if c.args[0] == "spec.approved"][-1]
+    assert payload2["seq"] != payload["seq"]
+    second = await engine.dispatch_event({"event_type": "spec.approved",
+                                          "event_id": str(payload2["seq"]), **payload2}, principal)
+    assert _lifecycles(runs, second) == [RunLifecycle.COMPLETED]
+    args = {key: payload[key] for key in ("project_id", "decision_id", "packet_sha256")}
+    results = await asyncio.gather(*(handler.execute("ensure_spec_ingest", args) for _ in range(2)))
+    assert all(r["success"] and not r["created"] for r in results), results
+    assert len({r["task_id"] for r in results}) == 1
+    assert len(await handler.db.list_tasks(project_id=PROJECT)) == 1
+    async with handler.db._engine.connect() as conn:
+        receipt = await get_operation(conn, approved["decision_id"], "ingestion")
+        assert receipt["status"] == "succeeded" and receipt["receipt"]["task_id"] == results[0]["task_id"]
+
+
+# Spec-ingestion held batches, L5.2: the pipeline assigns the one fidelity
+# reviewer and releases on a passing receipt. Batch events are dispatched as
+# the integration outbox delivers them (``src/playbooks/runtime.py``).
+OUTBOX = ExecutionPrincipal.service("integration-outbox")
+
+
+async def _outbox_events(handler, event_type: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from src.database.tables import integration_outbox
+
+    async with handler.db.immediate() as conn:
+        rows = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == event_type,
+        ))).mappings().all()
+    return [{"event_type": event_type, "event_id": row["id"], **dict(row["payload"])}
+            for row in rows]
+
+
+def _receipt_event(batch: dict, event_id: str) -> dict:
+    return {"event_type": "batch.receipt_recorded", "event_id": event_id, "project_id": PROJECT,
+            "batch_id": batch["batch_id"], "structure_revision": batch["structure_revision"],
+            "structure_digest": batch["structure_digest"], "reviewer_task_id": None}
+
+
+async def test_held_batch_gets_exactly_one_fidelity_reviewer(handler, pipeline):
+    from tests.test_fidelity_review import _batch_row, _held_batch, _holds
+
+    engine, runs, _ = pipeline
+    batch, _ = await _held_batch(handler)
+    [held] = await _outbox_events(handler, "batch.held")
+    assert held["batch_id"] == batch["batch_id"]
+
+    first = await engine.dispatch_event(held, OUTBOX)
+    assert first.rules_selected == ("fidelity-review-on-held",)
+    assert _lifecycles(runs, first) == [RunLifecycle.COMPLETED]
+    reviewer_id = (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"]
+    reviewer = await handler.db.get_task(reviewer_id)
+    assert reviewer.profile_id == "fidelity-reviewer"
+
+    replay = await engine.dispatch_event({**held, "event_id": "held-replay"}, OUTBOX)
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"] == reviewer_id
+    assert [t.id for t in await handler.db.list_tasks(project_id=PROJECT)
+            if t.profile_id == "fidelity-reviewer"] == [reviewer_id]
+    # A reviewer never releases anything.
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_passing_receipt_releases_the_held_batch_once(handler, pipeline):
+    from tests.test_task_batch_commands import _live_batch, _release_ready
+
+    engine, runs, _ = pipeline
+    batch, _, _ = await _release_ready(handler)
+    [recorded] = await _outbox_events(handler, "batch.receipt_recorded")
+
+    first = await engine.dispatch_event(recorded, OUTBOX)
+    assert first.rules_selected == ("release-on-receipt",)
+    assert _lifecycles(runs, first) == [RunLifecycle.COMPLETED]
+    row = await _live_batch(handler, batch)
+    assert row["state"] == "released" and row["release_receipt"]
+    assert not await handler.db.ingest_held_task_ids(set(batch["task_ids"]))
+
+    replay = await engine.dispatch_event({**recorded, "event_id": "receipt-replay"}, OUTBOX)
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert (await _live_batch(handler, batch))["release_receipt"] == row["release_receipt"]
+
+
+async def test_a_stale_receipt_fails_the_release_run_and_keeps_the_hold(handler, pipeline):
+    from tests.test_task_batch_commands import _release_ready
+
+    engine, runs, _ = pipeline
+    batch, _, _ = await _release_ready(handler)
+    result = await engine.dispatch_event(
+        {**_receipt_event(batch, "stale-receipt"), "structure_digest": "stale"}, OUTBOX,
+    )
+    assert _lifecycles(runs, result) == [RunLifecycle.FAILED]
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+
+
+async def test_needs_scope_does_not_release(handler, pipeline):
+    """Scenario 5: a scope question holds the tree on its one ask; never a release."""
+    from sqlalchemy import update
+
+    from src.database.tables import ingest_batch_receipts
+    from tests.test_fidelity_review import _batch_row, _holds, _record, _review_request
+
+    engine, runs, _ = pipeline
+    batch, scope, args = await _review_request(handler)
+    args["walkthrough_verdict"] = "scope_question"
+    args["structural_findings"] = [{"question": "Keep the source constraint?", "section": "core"}]
+    recorded = await _record(handler, scope, args)
+    assert recorded["success"] and recorded["state"] == "needs_scope", recorded
+    assert await _outbox_events(handler, "batch.receipt_recorded") == []
+    [needs_scope] = await _outbox_events(handler, "batch.needs_scope")
+
+    # The scope notification dispatches no rule at all.
+    result = await engine.dispatch_event(needs_scope, OUTBOX)
+    assert result.rules_selected == ()
+
+    # A receipt wakeup racing the open question (a replay, or a receipt the
+    # question did not replace) reaches release, which refuses `needs_scope`:
+    # the run ends completed and the batch stays held on its ask.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(ingest_batch_receipts).values(
+            passing=True, walkthrough_verdict="faithful",
+        ))
+    wakeup = await engine.dispatch_event(_receipt_event(batch, "receipt-during-scope"), OUTBOX)
+    assert wakeup.rules_selected == ("release-on-receipt",)
+    assert _lifecycles(runs, wakeup) == [RunLifecycle.COMPLETED]
+    row = await _batch_row(handler, batch["batch_id"])
+    assert row["state"] == "needs_scope" and row["release_receipt"] is None
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_design_approval_no_reviewer(handler, pipeline):
+    """Scenario 10: a design batch is released with the authoring leaf and no reviewer."""
+    from tests.test_fidelity_review import _batch_row
+    from tests.test_task_batch_commands import _ingest_assignment, _ingest_propose
+
+    engine, _runs, _ = pipeline
+    path, scope, decision = await _ingest_assignment(handler, "design")
+    result = await _ingest_propose(handler, path, scope, decision)
+    assert result["status"] == "released"
+    assert result["release_receipt"] == {"kind": "design_authoring_shape"}
+    assert (await _batch_row(handler, result["batch_id"]))["reviewer_task_id"] is None
+    for event_type in ("batch.held", "batch.receipt_recorded", "batch.needs_scope"):
+        assert await _outbox_events(handler, event_type) == []
+    # Whatever batch notification the design batch did enqueue selects no rule.
+    for event_type in ("batch.released", "task.change_set_committed"):
+        for event in await _outbox_events(handler, event_type):
+            assert (await engine.dispatch_event(event, OUTBOX)).rules_selected == ()
+    tasks = await handler.db.list_tasks(project_id=PROJECT)
+    assert len(tasks) == 3  # the ingest task, the epic and its one authoring child
+    assert not [t for t in tasks if t.profile_id == "fidelity-reviewer"]
+    assert not await handler.db.ingest_held_task_ids({t.id for t in tasks})

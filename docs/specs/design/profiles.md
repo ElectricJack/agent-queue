@@ -12,7 +12,13 @@ tags: [design, profiles, agents, markdown]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-**Status:** Draft
+For current behavior, use [profiles and classes](../../reference/profiles-and-classes.md),
+[agents and routing](../../concepts/agents-and-routing.md), and the
+[system spec](../systems/routing-and-profiles.md).
+The original DB-only storage, project-default cascade, profile model pins and
+in-process runtime descriptions below are historical, superseded designs.
+
+**Status:** Historical design with implementation notes
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #9 simple interfaces)
 **Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [specs/agent-profiles](../agent-profiles.md), [agent-coordination](agent-coordination.md)
 
@@ -30,11 +36,18 @@ durable worker is shared between projects, so a definition that applied to only
 one project was a contradiction — project-scoped profiles
 (`project:<pid>:<id>`, sourced from `vault/projects/<pid>/agent-types/`) were
 retired. Pool `lifecycle` and sizing therefore live on the system profile and
-apply everywhere; sizing still happens per project at runtime, under each
-project's own `max_concurrent_agents` (see [guides/worker-pools](../../guides/worker-pools.md) §2-3).
+apply fleet-wide; project concurrency and per-project residency are separate
+admission constraints (see [guides/worker-pools](../../guides/worker-pools.md) §2-3).
 `src/profiles/project_override_migration.py` promotes anything an older vault
 still carries into its system profile — automatically at startup, or on demand
 via `aq doctor --check profiles.project_overrides --fix`.
+
+New non-pool agents created for task demand use their profile's display
+`name`. If an enabled agent of the same profile already uses that name,
+append the lowest available numeric suffix starting at `2` (for example,
+`Review Spec Ingest 2`). Disabled agents and agents of other profiles do not
+reserve names. Existing agent names remain operator-owned; a profile rename
+does not rename them or require another agent when one already serves demand.
 
 ---
 
@@ -304,19 +317,20 @@ load-bearing rather than cosmetic:
 | `read_only` | `GitOpsMixin._task_produces_no_code()` (`src/orchestrator/git_ops.py`) reads it to decide whether a task must push a branch and open a PR. A vault `reviewer` still saying `read_only: false` re-arms the require-a-PR close gate for a session that is told never to push. |
 | `harness` | selects which CLI actually runs the agent. |
 | `lifecycle` | push (`task`) vs pull (`pool`) vs `named`. |
-| `needs_workspace` | whether the orchestrator acquires a worktree. |
+| `needs_workspace` | whether the orchestrator acquires a worktree. `false` also marks the role no-code for `_task_produces_no_code()`, so a proven-clean development-mode close records no artifact instead of requiring the slot branch to be pushed. |
 
 Section renames drift the same way — a copy predating the `## Tools` →
 `## Capabilities` rename routes through the legacy `allowed_tools` adapter
 forever. So does a `## Capabilities` grant list: a release that adds a
 command to a shipped profile's `aq_commands` (or `harness_tools` /
-`plugin_tools`) never reaches an existing vault copy either.
+`plugin_tools`) needs an explicit repair unless the profile receives additive
+capability sync (see below).
 
-**Detection** is `src/profiles/drift.py`, surfaced two ways:
+**Detection** is `src/profiles/drift.py`, surfaced through:
 
 - `profiles.system_drift` — a report-only doctor check (trust-and-ops §5.2).
 - `profiles.supervisor_capability_drift` — the supervisor's missing shipped
-  grants only, with a `--fix` (see *Supervisor capability sync* below).
+  grants only, with a `--fix` (see *Shipped capability sync* below).
 - `aq agent profile-drift [--profile-id <id>] [--drifted-only]` — the same
   comparison as a command, one row per system profile with its status
   (`ok` / `not_seeded` / `drifted` / `unreadable`), the diverging semantic
@@ -325,7 +339,7 @@ command to a shipped profile's `aq_commands` (or `harness_tools` /
   vault copy lacks.
 
 Only the four fields above, *missing* sections, and `missing_grants` count as
-drift. A changed `description`, `default_class` or `harness`, sections the
+drift. A changed `description` or `default_class`, sections the
 operator added, and grants the operator added beyond what ships are the
 operator's business and are reported for context but never flagged.
 
@@ -347,13 +361,17 @@ the full reseed below) or when the merged text would not parse.
 
 Without `--grants-only`, `profile-reseed` copies the old file to
 `profile.md.bak-<epoch>` (pass `--no-backup` to skip) before overwriting it
-wholesale with the shipped default, then syncs the new text straight to the
-DB. There is deliberately no `aq doctor --fix` for either shape: overwriting
-or merging into an operator-owned vault file automatically would violate the
-`--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
-repair explicitly. The supervisor's grants are the one exception, below.
+with the shipped default while preserving a nonempty display `name` from
+valid vault frontmatter, then syncs the new text straight to the DB. Missing
+or unreadable frontmatter uses the shipped name. Neither installer refresh
+nor profile reseeding creates agent rows. There is deliberately no
+`aq doctor --fix` for either shape: overwriting
+or merging arbitrary profile content automatically would violate the
+`--fix` safety rules (trust-and-ops §5.4) — the operator invokes that
+repair explicitly. Additive capability sync is the exception, below: all
+shipped system profiles receive it unless their vault copy opts out.
 
-#### Supervisor capability sync
+#### Shipped capability sync
 
 The supervisor is the operator's own control plane, and the operator's
 policy (2026-09-24) is that it may do basically anything. Under
@@ -361,10 +379,14 @@ write-if-absent seeding, though, each control a release granted the shipped
 supervisor (`integration_eject`, `review_dispatch`,
 `integration_release_stale_owners`, …) stayed `capability denied` on an
 existing install until the vault copy was hand-edited. So its grants are kept
-in step automatically (`src/profiles/capability_sync.py`):
+in step automatically (`src/profiles/capability_sync.py`). The same rule applies
+to every shipped system profile, including spec-ingest, final-reviewer, planner,
+playbook-compiler, reviewer and triage: a deployment must not leave their new
+commands denied until an operator manually reseeds each profile. Custom profiles
+and derived worker rungs are not rewritten; rungs inherit their worker template.
 
 - **When.** On daemon start (before the startup profile→DB scan) and every
-  time the vault watcher reloads `vault/agent-types/supervisor/profile.md`
+  time the vault watcher reloads a synced profile or worker template
   (before that reload's DB sync).
 - **What.** The same additive merge as `--grants-only`
   (`merge_profile_grants`): each shipped `## Capabilities` name the vault copy
@@ -380,10 +402,10 @@ in step automatically (`src/profiles/capability_sync.py`):
   merge cannot touch (no `## Capabilities` block, unparseable) is logged as a
   warning and left alone.
 - **Opt-out.** `capability_sync: false` in the vault copy's frontmatter, for
-  an operator who curates the supervisor's grants by hand; the daemon and the
-  doctor fix then never merge. The key also generalises the other way:
-  `capability_sync: true` opts any other shipped profile in to the same
-  merge. `supervisor`, `worker-claude` and `worker-codex` are synced by default.
+  an operator who curates a system profile's grants by hand; the daemon and the
+  doctor fix then never merge. All shipped system profiles are synced by default;
+  `capability_sync: true` explicitly enables the same merge. Neither setting
+  makes a custom profile a shipped profile.
 - **Doctor.** `profiles.supervisor_capability_drift` reports the shipped
   grants the vault copy still lacks — `warn` while any are missing (`info`
   when the profile opted out), `ok` when none are — and `--fix` runs the
@@ -394,6 +416,11 @@ in step automatically (`src/profiles/capability_sync.py`):
 Because the operator can no longer remove a *shipped* supervisor grant by
 deleting it from the vault copy (the next reload puts it back), narrowing the
 supervisor is done with the opt-out.
+
+The shipped spec-ingest profile grants `wait_register`, `wait_get` and
+`wait_checkpoint` so an ingestion worker can follow prime's durable wait,
+checkpoint and result-consumption instructions. These remain scoped to its own
+session/task; supervisor wait decisions are not granted.
 
 ---
 
@@ -423,6 +450,20 @@ and can be updated or removed as the agent accumulates real experience.
 
 ### Routine worker verification and synchronization
 
+The shipped `worker-claude`, `worker-codex` and `worker-opencode` templates
+share one grant list: the `## Capabilities` block in `worker-codex/profile.md`.
+`scripts/generate-worker-capabilities.py` copies that block to every other
+shipped `worker-*` template; the aggregate regeneration command runs it too.
+Edit the shared list there and regenerate, rather than editing the generated
+blocks. Tests require every worker template to have identical grants and
+`plugin_tools.git_push`, so a new harness cannot silently lose publication.
+OpenCode rungs and harness recipes remain operator configured; shipping its
+template does not activate a pool or change routing.
+
+`profiles.system_drift` compares all capability namespaces, including
+`plugin_tools`. Missing `git_push` or `git_create_pr` is reported as missing
+plugin grants, with the same explicit additive repair as missing AQ commands.
+
 Worker templates grant side-effect-free `dry_run_playbook`, task children/progress,
 and Git status/log/diff/changed-files/branch reads. Dry-run events are pinned to
 the live held task and project, and AI execution remains simulated. Actual
@@ -442,7 +483,7 @@ the updated template without rewriting their local overrides.
 ### Rollout of routine worker grants and knowledge authorization
 
 Deploy the scope implementation together with the shipped worker templates.
-On daemon startup or profile reload, existing `worker-claude` and `worker-codex`
+On daemon startup or profile reload, existing shipped `worker-*` template
 files receive missing shipped grants additively; custom prose and extra grants
 survive, and `capability_sync: false` preserves a curated grant list. Fresh
 installs seed the same defaults. Derived rungs inherit their worker template.
@@ -465,7 +506,7 @@ those failures use `record.stale_claim`. `--source-task-id` adds an evidence lin
 and does not supply or relax authorization. Thus the calm-current-21 report of
 `record.forbidden` despite enabled read/write flags is consistent with an
 operation-grant or live-session identity refusal, separately from the routine
-Git/playbook grant issue. Both shipped worker templates contain `record_search`
+Git/playbook grant issue. All shipped worker templates contain `record_search`
 and `knowledge_create`; an existing install's effective template and authenticated
 session bindings must be checked after deployment to distinguish these causes.
 No ACL or ownership widening is part of this permission rollout.

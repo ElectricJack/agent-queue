@@ -85,3 +85,10 @@ describe("treatmentFor", () => {
     expect(treatmentFor("BLOCKED", false)).toBe(STATUS_TREATMENT.BLOCKED);
   });
 });
+
+it.each(["WAITING", "HIBERNATED", "RESUME_PENDING"])("shows %s as suspended even with blocked predecessors", (status) => {
+  const treatment = treatmentFor(status, true);
+  expect(treatment).toBe(STATUS_TREATMENT[status as keyof typeof STATUS_TREATMENT]);
+  expect(treatment.stripe).toBe(false);
+  expect(treatment.pill).not.toBe("Blocked");
+});
