@@ -59,15 +59,38 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 
 
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
 
+def _pr_repair_changes():
+    return json.loads(PR_REPAIR_CHANGES.read_text())
+
+
+def _before_pr_repair_catalogue():
+    evidence = _pr_repair_changes()
+    catalogue = json.loads(render_command_catalogue())
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_pr_repair_catalogue_only_adds_reviewed_command():
+    evidence = _pr_repair_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    previous = json.dumps(_before_pr_repair_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
 def _before_stuck_check_catalogue():
     evidence = _stuck_check_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_pr_repair_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -389,7 +412,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
     stuck_check = _stuck_check_changes()
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
-    assert actual == stuck_check["cli_catalogue_sha256"]
+    pr_repair = _pr_repair_changes()
+    assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    assert actual == pr_repair["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"

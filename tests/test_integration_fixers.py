@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import asyncio
 import pytest
@@ -175,7 +176,7 @@ def test_no_split_without_a_strict_attributed_subset(groups):
 
 
 @pytest.fixture
-async def live_fixer(db, tmp_path, monkeypatch):
+async def live_fixer(db, tmp_path, monkeypatch, request):
     """Production session launch and real Git; substitute only credentials and routing."""
     from src.api.auth import SessionTokenStore
     from src.config import AppConfig, DiscordConfig
@@ -213,8 +214,10 @@ async def live_fixer(db, tmp_path, monkeypatch):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    registry.upsert(Harness(id="codex", command="codex", model_flag="--model"))
-    profile = AgentProfile(id="fixer-profile", name="Fixer", harness="codex",
+    harness = Harness(**{"id": "codex", "command": "codex", "model_flag": "--model",
+                         **getattr(request, "param", {})})
+    registry.upsert(harness)
+    profile = AgentProfile(id="fixer-profile", name="Fixer", harness=harness.id,
                            model="test-model", lifecycle="pool")
     await db.create_profile(profile)
     transport = LocalGit(remote)
@@ -231,11 +234,16 @@ async def live_fixer(db, tmp_path, monkeypatch):
     runtime = DaemonFixerRuntime(orch, lanes=AsyncMock(return_value=lane))
     runtime.route = AsyncMock(return_value=(profile, {"profile_id": profile.id}))
 
-    async def fetch(destination, *, repository, oid, destination_ref):
-        return await transport._arun(["fetch", str(remote), f"{oid}:{destination_ref}"],
-                                     cwd=destination)
+    # Only the credential and GitHub URL are substituted: launch and rebind go
+    # through the real afetch_repository_oid and its refs/aq/* destination guard.
+    real_fetch = transport._afetch_exact_oid_with_app_auth_to_url
 
-    monkeypatch.setattr(transport, "afetch_repository_oid", fetch)
+    async def file_source_fetch(destination, **kwargs):
+        assert kwargs["destination_url"] == "https://github.com/test/repo.git"
+        return await real_fetch(destination, **(kwargs | {"destination_url": remote.as_uri()}))
+
+    monkeypatch.setattr(transport, "_atoken_for_repository", AsyncMock(return_value=None))
+    monkeypatch.setattr(transport, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
     service = BatchFixerService(db, runtime)
     result = await service.allocate("real", target_ref=candidate_ref("real"), head_sha=source,
                                     authorize=AsyncMock(return_value=True))
@@ -268,6 +276,37 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+@pytest.mark.parametrize("live_fixer", [
+    {"id": "claude", "command": "claude", "session_id_flag": "--session-id"},
+], indirect=True)
+async def test_session_id_flag_launch_carries_a_dashed_uuid(db, live_fixer):
+    # Claude rejects a 32-hex --session-id ("Must be a valid UUID") and dies at startup.
+    _, _, orch, row, _, _, _ = live_fixer
+    command = orch.session_providers.create("fake").sessions[row.name].spec.command
+    value = command[command.index("--session-id") + 1]
+    assert value == row.id == row.session_key
+    assert str(UUID(value)) == value
+
+
+async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer):
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.git.manager import GitError
+    from tests.test_integration_gitops import git
+
+    _service, runtime, _orch, row, _, source, _ = live_fixer
+    state = (await db.get_integration_batch("real"))["fixer_state"]
+    assert state["target_ref"] == candidate_ref("real")
+    assert state["target_ref"].startswith("refs/heads/")
+    store = runtime.git.remote_path.parent / "retained"
+    assert git(store, "rev-parse", f"refs/aq/fixer-sources/{source}") == source
+    assert git(row.work_dir, "branch", "--show-current") == candidate_ref("real")[11:]
+    assert git(row.work_dir, "rev-parse", "HEAD") == source
+    with pytest.raises(GitError, match="daemon recovery namespace"):
+        await runtime.git.afetch_repository_oid(
+            str(store), repository=GitHubRepositoryBinding(123, "test/repo"), oid=source,
+            destination_ref=state["target_ref"])
 
 
 async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_fixer):
@@ -536,6 +575,7 @@ async def test_capacity_retry_reuses_unlaunched_identity_without_spending_rounds
         head_sha=NEXT, authorize=AsyncMock(return_value=True))
     assert result["outcome"] == "filed"
     assert result["session_id"] == first["session_id"]
+    assert str(UUID(first["session_id"])) == first["session_id"]
     current = (await db.get_integration_batch(successor.id))["fixer_state"]
     assert current["red_heads"] == [NEXT]
     assert current["starting_sha"] == NEXT
@@ -613,3 +653,35 @@ async def test_deferred_successor_observes_late_fix_on_retained_writer(split_env
     fresh = await service.visit(following, members, await snapshot(following))
     assert fresh.state == "testing", fresh
     assert await ops.is_ancestor(repo, later, fresh.candidate_sha)
+
+
+async def test_capacity_retry_dashes_a_legacy_hex_identity_before_launch(db, fixer):
+    from src.integration.fixer_runtime import FixerCapacityUnavailable
+
+    service, runtime, now = fixer
+    runtime.start.side_effect = FixerCapacityUnavailable("fleet is full")
+    assert (await allocate(service))["outcome"] == "deferred"
+    # A row deferred before identities were minted dashed carries a 32-hex id.
+    legacy = uuid4().hex
+    successor = Batch("legacy-next", "p", "r", "refs/heads/dev")
+    store = BatchStore(db)
+    await store.freeze(successor, await store.members("batch-fix"),
+                       trees={"one": "e" * 40, "two": "f" * 40})
+    async with db.immediate() as conn:
+        waiting = await state(db)
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == "batch-fix")
+                           .values(fixer_state=None))
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
+                           .values(fixer_state={**waiting, "session_id": legacy,
+                                                "batch_id": successor.id,
+                                                "target_ref": candidate_ref(successor.id)},
+                                   fixer_queue={"family_id": "batch-fix"}))
+    now[0] += 5000
+    runtime.start.side_effect = None
+    result = await service.allocate(successor.id, target_ref=candidate_ref(successor.id),
+        head_sha=NEXT, authorize=AsyncMock(return_value=True))
+    assert result["outcome"] == "filed"
+    dashed = str(UUID(legacy))
+    assert result["session_id"] == dashed
+    assert (await db.get_integration_batch(successor.id))["fixer_state"]["session_id"] == dashed
+    assert runtime.start.await_args_list[-1].args[0]["session_id"] == dashed

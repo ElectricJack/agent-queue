@@ -1118,3 +1118,37 @@ async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_e
     assert created["success"] and created["created"], created
     assert replay["success"] and not replay["created"], replay
     assert len(await records(env, escalations)) == 1
+
+
+async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch, caplog):
+    """A hung or fence-busy project sync cannot hold the tick, or starve later projects."""
+    from src.wait_runtime import scheduler
+
+    monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT", 0.05)
+    projects = [SimpleNamespace(id=pid) for pid in ("a", "b", "c")]
+    synced = []
+
+    async def execute(name, args):
+        assert name == "scheduler_wait_sync"
+        synced.append(args["project_id"])
+        if args["project_id"] == "b":
+            await asyncio.sleep(60)
+        if args["project_id"] == "c":
+            return {"success": False, "error_code": "wait.graph_busy", "error": "busy"}
+        return {"success": True}
+
+    orchestrator = SimpleNamespace(
+        db=SimpleNamespace(list_projects=AsyncMock(return_value=projects)),
+        wait_scheduler_service=SimpleNamespace(sync=AsyncMock(), deadline=AsyncMock()),
+    )
+    handler = SimpleNamespace(orchestrator=orchestrator, execute=execute)
+
+    await asyncio.wait_for(scheduler.scheduler_tick(handler), 5)
+    first = list(synced)
+    synced.clear()
+    await asyncio.wait_for(scheduler.scheduler_tick(handler), 5)
+
+    assert sorted(first) == sorted(synced) == ["a", "b", "c"]
+    assert first[0] != synced[0]
+    assert caplog.text.count("scheduler_wait_sync for project b exceeded") == 2
+    assert caplog.text.count("scheduler_wait_sync for project c deferred") == 2

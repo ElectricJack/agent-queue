@@ -1182,8 +1182,6 @@ async def test_ordinary_reopen_preserves_rejection_if_pr_is_still_closed(credent
 
 
 @pytest.mark.parametrize("pull", [
-    _ordinary_pull(base="release", closed=True),
-    _ordinary_pull(head_sha="c" * 40, closed=True),
     {**_ordinary_pull(closed=True), "html_url": "https://github.com/foreign/repo/pull/7"},
     {**_ordinary_pull(closed=True), "head": {
         "ref": "feature", "sha": "a" * 40,
@@ -1235,15 +1233,67 @@ async def test_ordinary_create_reuses_merged_pr_without_reopening_it(credential_
     assert len(runner.calls) == 2
 
 
-async def test_ordinary_create_keeps_duplicate_request_refusal(credential_identity):
+@pytest.mark.parametrize("pulls", [
+    [_ordinary_pull(), _ordinary_pull()],
+    [_ordinary_pull(closed=True), _ordinary_pull(merged=True)],
+])
+async def test_ordinary_create_keeps_duplicate_request_refusal(credential_identity, pulls):
     runner = FakeRunner(credential_identity, [
         _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
-        _response(200, [_ordinary_pull(), _ordinary_pull(closed=True)]),
+        _response(200, pulls),
     ])
     with pytest.raises(GitHubAccessError, match="multiple existing requests"):
         await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
             title="Fix", body="Body", base="main", head="feature"
         )
+    assert len(runner.calls) == 2
+
+
+def _shipped_pull(number, head_sha, **kwargs):
+    return {
+        **_ordinary_pull(head_sha=head_sha, **kwargs),
+        "number": number, "html_url": f"https://github.com/acme/widgets/pull/{number}",
+    }
+
+
+@pytest.mark.parametrize("history", [
+    # fair-impact-52: a branch whose earlier PRs #21 and #23 already merged.
+    [_shipped_pull(21, "c" * 40, merged=True), _shipped_pull(23, "d" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, closed=True)],
+    [_shipped_pull(21, "a" * 40, base="release", merged=True)],
+])
+async def test_ordinary_create_ignores_earlier_merged_or_closed_prs_of_the_head(
+    credential_identity, history,
+):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, history),
+        FakeResult(0, b"https://github.com/acme/widgets/pull/31\n"),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is True
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+    assert all("PATCH" not in call["args"] for call in runner.calls)
+
+
+async def test_ordinary_create_reuses_the_open_pr_beside_merged_history(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [
+            _shipped_pull(21, "c" * 40, merged=True),
+            _shipped_pull(23, "d" * 40, merged=True),
+            _shipped_pull(31, "a" * 40),
+        ]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is False
     assert len(runner.calls) == 2
 
 
