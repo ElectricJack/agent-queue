@@ -17,6 +17,18 @@ starve later rows. A restart safely revisits rows. The service bounds each
 pass and prevents overlapping instances. Each source has a 60-second budget;
 source order rotates so repeated timeouts cannot starve later sources.
 
+Every completed, failed or cancelled pass emits one structured
+`git truth reconciliation timing` log with `git_truth_timing`. Its phase entries
+include elapsed seconds, outcome, repository/project fan-out, Git proof counters,
+SQL statement and pool-checkout time, graph-lock wait/hold time, shared-observation
+waits, snapshot-lock waits, and Git operations (including authenticated network
+operations and their credential cleanup). `wait.git_read_budget_scope` measures
+the inclusive bounded read, not a separate queue. These timings overlap and must
+not be summed as disjoint wall time; shared producers can run in another caller's
+context. Work that outlives a cancelled phase cannot change its recorded profile.
+Diagnostics record no SQL text, parameters, command arguments or credentials,
+and do not change admission, budgets, cursor order or repair decisions.
+
 For a completed source, the shared Git observer proves containment at the
 configured final or promotion-chain target. Containment at just the immediate
 parent is insufficient to retire a child's collection inputs. Before changing

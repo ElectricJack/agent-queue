@@ -3,7 +3,7 @@
 
 Preview (default) lists what git proves and what it cannot; ``--apply`` writes
 ``integration_legacy_deliveries`` rows for the proven ones only. Originless passing
-completions also retain their exact final reported source when Git proves its
+completions and children with deleted epic refs retain their final source under strict
 ancestry on the target, including repair of previously backfilled rows. Where git can
 prove nothing and the work must not be delivered now either, ``--abandon-task``
 (one completed task, leaf or container) and ``--abandon-epic`` (a container by

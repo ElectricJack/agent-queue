@@ -740,7 +740,9 @@ class DeliveryObserver:
         same target fetched that recently; it still pins one exact target OID.
         """
         from src.projects.storage_binding import repository_path
+        from src.metrics.operation_profile import profile_repository
 
+        profile_repository(target.project_id, target.repository_id)
         path = await repository_path(self.db, target.repository_id,
                                      self.store_path(target.repository_id))
         recent = self._recent.get(target)
@@ -842,7 +844,10 @@ class DeliveryObserver:
                 if (max_age <= 0 and flight is not None and flight.seq is not None
                         and flight.seq <= arrival):
                     # Its fetch began before this caller asked: no proof for it.
-                    await asyncio.wait((flight.task,))
+                    from src.metrics.operation_profile import profile_timing
+
+                    with profile_timing("wait.shared_observation_previous"):
+                        await asyncio.wait((flight.task,))
                     continue
                 if flight is None:
                     if state.last is not None and state.last.seq > arrival:
@@ -853,7 +858,10 @@ class DeliveryObserver:
                             target, path, state, flight))
                         flight.task.add_done_callback(
                             partial(_flight_landed, flights, key, state, flight))
-                await asyncio.wait((flight.task,))
+                from src.metrics.operation_profile import profile_timing
+
+                with profile_timing("wait.shared_observation_current"):
+                    await asyncio.wait((flight.task,))
                 break
         finally:
             state.readers -= 1
@@ -867,8 +875,10 @@ class DeliveryObserver:
         self, target: DeliveryTarget, path: Path, state: _Flights, flight: _Flight,
     ) -> DeliverySnapshot:
         """Fetch one repository observation; any failure is an unknown one."""
+        from src.metrics.operation_profile import profiled_lock
+
         try:
-            async with _fetch_lock(path):
+            async with profiled_lock(_fetch_lock(path), "wait.observer_store_lock"):
                 state.begun += 1
                 flight.seq = state.begun
                 store = await self._store(target)
