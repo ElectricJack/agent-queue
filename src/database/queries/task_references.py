@@ -15,10 +15,11 @@ A future table with a RESTRICT foreign key onto ``tasks`` breaks that test
 instead of silently breaking the sweep again.
 
 Integration audit rows are durable history, not live foreign-key ownership.
-They retain a task id after archive, but still refuse a hard delete so the
-history never resolves to nothing. ``src.integration.removal_guard`` owns
-that policy; this module remains the compact registry and reader shared by
-the guard, doctor checks, and tests.
+They retain a task id after archive or an audited operator delete. Low-level
+system deletion still uses ``src.integration.removal_guard`` to refuse removal
+without that audit. ``src.integration.task_deletion`` preserves the task snapshots
+and history while cancelling live authority. This module remains the compact
+registry and reader shared by those services, doctor checks, and tests.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from src.database.tables import (
     integration_parent_episodes,
     integration_parent_verifications,
     integration_repair_operations,
+    integration_source_ci,
 )
 
 #: ``(table, column)`` → how a task leaving disposes of that reference.
@@ -42,14 +44,16 @@ from src.database.tables import (
 #: * ``"released"`` — ``_delete_one`` clears the whole resource claim.
 #: * ``"db_cascade"`` — the foreign key is ``ON DELETE CASCADE``.
 #: * ``"subtree"``  — the hierarchy edge itself; the subtree goes deepest-first.
-#: * ``"history"``  — durable integration audit; archive retains it and a
-#:   hard delete is refused by ``src.integration.removal_guard``.
+#: * ``"history"``  — durable integration audit retained by archive and audited
+#:   operator deletion; unaudited system deletion is refused by the removal guard.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("agents", "current_task_id"): "nulled",
     ("integration_candidate_resolutions", "repair_task_id"): "history",
     ("integration_parent_episodes", "parent_task_id"): "history",
     ("integration_parent_verifications", "parent_task_id"): "history",
     ("integration_repair_operations", "verifier_task_id"): "history",
+    ("integration_source_ci", "task_id"): "history",
+    ("integration_source_ci", "repair_task_id"): "history",
     ("sessions", "task_id"): "nulled",
     ("task_assignment_routes", "task_id"): "db_cascade",
     ("task_context", "task_id"): "deleted",
@@ -65,6 +69,7 @@ TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("task_tools", "task_id"): "deleted",
     ("task_workspace_requirements", "task_id"): "deleted",
     ("tasks", "parent_task_id"): "subtree",
+    ("wait_priority_projection", "task_id"): "deleted",
     ("workspaces", "locked_by_task_id"): "released",
 }
 
@@ -80,20 +85,22 @@ class IntegrationTaskReference:
 
 #: History entries, in the order a hard-delete refusal reports them.
 INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
+    IntegrationTaskReference("integration_source_ci", "task_id", "exact source CI recovery"),
+    IntegrationTaskReference("integration_source_ci", "repair_task_id", "exact source CI recovery"),
     IntegrationTaskReference(
         "integration_parent_episodes",
         "parent_task_id",
-        "parent collection (src/integration/parent_completion.py)",
+        "parent collection (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_parent_verifications",
         "parent_task_id",
-        "parent verification (src/integration/parent_completion.py)",
+        "parent verification (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_repair_operations",
         "verifier_task_id",
-        "branchless-parent verifier (src/integration/parent_completion.py)",
+        "branchless-parent verifier (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_candidate_resolutions",
@@ -103,10 +110,11 @@ INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
 )
 
 _COLUMNS = {
-    "integration_parent_episodes": integration_parent_episodes.c.parent_task_id,
-    "integration_parent_verifications": integration_parent_verifications.c.parent_task_id,
-    "integration_repair_operations": integration_repair_operations.c.verifier_task_id,
-    "integration_candidate_resolutions": integration_candidate_resolutions.c.repair_task_id,
+    (ref.table, ref.column): table.c[ref.column]
+    for ref in INTEGRATION_TASK_REFERENCES
+    for table in (integration_parent_episodes, integration_parent_verifications,
+                  integration_repair_operations, integration_candidate_resolutions, integration_source_ci)
+    if table.name == ref.table
 }
 
 
@@ -120,7 +128,7 @@ async def find_integration_task_references(conn, ids: Sequence[str]) -> list[dic
         return []
     found: list[dict] = []
     for ref in INTEGRATION_TASK_REFERENCES:
-        column = _COLUMNS[ref.table]
+        column = _COLUMNS[ref.table, ref.column]
         rows = (
             (await conn.execute(select(column).where(column.in_(list(ids))).distinct()))
             .scalars()
@@ -142,6 +150,7 @@ async def find_integration_repository_references(conn, ids: Sequence[str]) -> li
     if not ids:
         return []
     columns = (
+        ("integration_source_ci", "repository_id", integration_source_ci.c.repository_id),
         ("integration_parent_episodes", "repository_id", integration_parent_episodes.c.repository_id),
         (
             "integration_candidate_resolutions",

@@ -1,0 +1,22 @@
+[
+  {
+    "phase": "before",
+    "name": "desktop",
+    "width": 1440,
+    "height": 900,
+    "listTop": 204,
+    "listHeight": 696,
+    "headingHeight": 28,
+    "bodyWidth": 1440
+  },
+  {
+    "phase": "before",
+    "name": "phone",
+    "width": 390,
+    "height": 844,
+    "listTop": 360,
+    "listHeight": 484,
+    "headingHeight": 56,
+    "bodyWidth": 390
+  }
+]
