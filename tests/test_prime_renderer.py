@@ -892,6 +892,46 @@ class TestStaticSections:
         assert "aq session drain-ack" in body
         assert "--deliverable-unmet 'id: reason'" in body
 
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
+    async def test_worker_brief_merges_dev_before_submission(
+        self, db, config, task, lifecycle, delivery_mode
+    ):
+        await db.update_project(task.project_id, hierarchical_integration_mode=delivery_mode)
+        await db.create_session(
+            SessionRecord(
+                id="sync-session",
+                project_id=task.project_id,
+                profile_id="coder",
+                harness="codex",
+                provider="fake",
+                name="sync-session",
+                lifecycle=lifecycle,
+                work_dir="/tmp/sync-session",
+                epoch="test",
+                instance_token="test-only",
+                started_at=time.time(),
+                task_id=task.id,
+                state="running",
+            )
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, session_id="sync-session")
+        body = " ".join({s.key: s.body for s in doc.sections}["completion_protocol"].split())
+        submission = body.split("## Never close over unpushed commits", 1)[1]
+        steps = (
+            "final submission step for every code task",
+            "`git merge origin/dev` (merge, not rebase)",
+            "Resolve any conflicts with full context",
+            "run only targeted tests for the touched files",
+            "do not run a full CI pass",
+            "Commit the result",
+            "push with guarded `aq git push`",
+            "then publish/close the task",
+        )
+        positions = [submission.index(step) for step in steps]
+        assert positions == sorted(positions)
+
     @pytest.mark.parametrize("harness", ["claude", "codex"])
     @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
     async def test_worker_prime_uses_granted_daemon_delivery_commands(
@@ -1311,6 +1351,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq knowledge update": "knowledge_update",
     "aq record capabilities": "record_capabilities",
     "aq record search": "record_search",
+    "aq file read": "read_file",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
@@ -1559,3 +1600,35 @@ def test_primed_context_guidance_tracks_what_the_harness_reports(harness, readab
             harness, config=config, session=session,
             observation={"input_tokens": 130000}).body
         assert "Latest measured request input: 130000 tokens." in measured
+
+
+@pytest.mark.parametrize("global_enabled,override,expected", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
+async def test_prime_wait_guidance_matches_project_activation(
+    db, config, task, global_enabled, override, expected
+):
+    from src.config_wait_policy import WaitProjectOverrides
+
+    config.wait_policy.v2_enabled = global_enabled
+    if override is not None:
+        config.wait_policy.projects[task.project_id] = WaitProjectOverrides(v2_enabled=override)
+    doc = await PrimeRenderer(db, config).render_for_task(task.id)
+    sections = {section.key: section.body for section in doc.sections}
+    guidance = sections["tool_guidance"]
+    completion = sections["completion_protocol"]
+    assert ("aq wait register" in guidance) == expected
+    assert ("--aq-wait" in completion) == expected
+    if not expected:
+        assert "awaiting inbox delivery" in guidance
+        assert "registration is disabled" in completion
+    assert "aq file read --path projects/<project>/plans/<file>" in guidance
+
+
+async def test_pool_completion_does_not_prescribe_disabled_message_wait():
+    from src.prime.sections import build_completion_protocol_section
+
+    body = build_completion_protocol_section("held", lifecycle="pool", waits_enabled=False).body
+    assert "use ONE durable message wait" not in body
+    assert "preserve it and end the turn awaiting the supervisor's inbox delivery" in body
+    assert "--aq-wait" not in body

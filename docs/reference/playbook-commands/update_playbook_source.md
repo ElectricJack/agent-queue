@@ -51,26 +51,24 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 <!-- aq:generated:end -->
 
-## Purpose
+## Current V2 behavior
 
-TODO: what this command is for, in the reader's terms.
+Writes full Markdown for an already installed playbook. `expected_source_hash`
+provides compare-and-swap: a mismatch refuses the write. The id and scope must
+match the existing activation. The file write is atomic, but compilation happens
+afterward; a compile refusal leaves the new source on disk and the previous active
+artifact in place.
 
-## When a playbook uses it
+For `kind: pipeline`, [the handler](../../../src/commands/playbook_commands.py)
+lowers the source, validates it, stores canonical artifact bytes and directly
+replaces the existing activation hash. It preserves the enabled bit and sets
+health to ready/disabled. This path does not run the normal activation-diff blockers.
+For prose it returns `success: false`, `compiled: false` with a compiler-agent
+proposal diagnostic; no automatic compiler task is created.
 
-TODO: the situations a playbook step reaches for it.
-
-## How it works internally
-
-TODO: step by step through the executor and handler, with file references.
-
-## Side effects and persistence
-
-TODO: what it writes, which tables or files hold it, and what survives a restart.
-
-## Failure modes and diagnostics
-
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
-
-## Example step
-
-TODO: a realistic playbook step that calls this command.
+Use [explicit proposal, review, import and activation](../../concepts/playbooks.md#author-validate-import-and-activate)
+when preparing reviewed policy. This command changes source and, for a successfully
+compiled pipeline, active policy; it is not a read-only editing preview. Missing
+source/activation, identity mismatch, stale source hash, compilation errors and
+unresolved questions are named failures. Inspect the source hash and activation
+health after a response rather than assuming a refused compile rolled back source.

@@ -308,6 +308,9 @@ async def _branch_plan(orchestrator, plan, captured, project_path):
             / "integration-repositories"
             / (hashlib.sha256(repository_id.encode()).hexdigest() + ".git")
         )
+        from src.projects.storage_binding import repository_path
+
+        retained = await repository_path(orchestrator.db, repository_id, retained)
         candidates = [repo["checkout_base_path"], repo["source_path"], project_path, str(retained)]
         candidates += [row["workspace_path"] for row in captured["workspaces"]]
         candidates += list(owned_paths)

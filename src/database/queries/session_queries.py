@@ -43,7 +43,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from src.database.tables import (
     agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs,
-    projects, sessions, task_branch_origins, task_integration_checkpoints,
+    projects, sessions, subagent_events, task_branch_origins, task_integration_checkpoints,
     task_session_attempts, tasks, workspaces,
 )
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
@@ -322,11 +322,55 @@ class SessionQueryMixin:
         rows.sort(key=lambda s: (_STATE_RANK.get(s.state, 9), -(s.started_at or 0.0)))
         return rows[0]
 
+    async def list_flock_sessions(self, *, include_stopped: bool = False) -> list[SessionRecord]:
+        """Only history that can affect the flock's current rows and child counts.
+
+        Keep full history on explicit request. Otherwise retain nonterminal
+        executions, the best historical candidate per agent, legacy unlinked
+        current-task executions, delegation parents and native child history.
+        The latter two are essential: children can outlive their parent session.
+        Filtering only to live sessions would silently corrupt these counts.
+        """
+        if include_stopped:
+            return await self.list_sessions()
+        ranked = select(
+            sessions.c.id,
+            func.row_number().over(
+                partition_by=sessions.c.agent_id,
+                order_by=(
+                    func.coalesce(sessions.c.task_id == agents.c.current_task_id, False).desc(),
+                    sessions.c.started_at.desc(), sessions.c.id.desc(),
+                ),
+            ).label("position"),
+        ).select_from(sessions.outerjoin(agents, sessions.c.agent_id == agents.c.id)).where(
+            sessions.c.agent_id.is_not(None),
+        ).subquery()
+        creators = select(tasks.c.created_by_id).where(
+            tasks.c.created_by_kind == "session",
+            tasks.c.status.in_([
+                TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value,
+                TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
+            ]),
+        )
+        query = select(sessions).where(or_(
+            sessions.c.state.not_in(("stopped", "quarantined")),
+            sessions.c.id.in_(select(ranked.c.id).where(ranked.c.position == 1)),
+            and_(sessions.c.agent_id.is_(None), sessions.c.task_id.in_(
+                select(agents.c.current_task_id).where(agents.c.current_task_id.is_not(None)),
+            )),
+            sessions.c.id.in_(creators),
+            sessions.c.id.in_(select(subagent_events.c.session_id)),
+        )).order_by(sessions.c.started_at.desc(), sessions.c.id.desc())
+        async with self._engine.begin() as conn:
+            result = await conn.execute(query)
+            return [_row_to_session(row) for row in result.mappings()]
+
     async def list_sessions(
         self,
         *,
         state: str | None = None,
         states: list[str] | tuple[str, ...] | None = None,
+        excluded_states: tuple[str, ...] = (),
         desired_state: str | None = None,
         lifecycle: str | None = None,
         project_id: str | None = None,
@@ -346,6 +390,8 @@ class SessionQueryMixin:
         query = select(sessions)
         if state is not None:
             query = query.where(sessions.c.state == state)
+        if excluded_states:
+            query = query.where(sessions.c.state.not_in(excluded_states))
         if live_only:
             query = query.where(sessions.c.state.in_(_LIVE_STATES))
         elif states:
