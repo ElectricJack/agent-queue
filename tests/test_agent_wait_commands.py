@@ -18,6 +18,7 @@ from src.config import AppConfig
 from src.database.tables import sessions, tasks
 from src.models import AgentProfile, SessionRecord
 from src.profiles.capabilities import DENY_ALL
+from src.wait_runtime.cycle import CycleWaitMaintenance
 from tests.test_agent_wait_queries import NOW, env as _wait_env
 
 env = _wait_env
@@ -38,8 +39,16 @@ async def commands(env):
         )
     )
     config = AppConfig()
-    orch = SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
-    return CommandHandler(orch, config)
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
+    orch = SimpleNamespace(db=env.db, config=config,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    orch.cycle_waits = CycleWaitMaintenance(orch)
+    try:
+        yield handler
+    finally:
+        await orch.cycle_waits.stop()
 
 
 def scope(**extra):
@@ -193,6 +202,7 @@ async def test_repeated_delivery_after_explicit_consumption_does_not_wake(
         )
         orch._last_delivery_pass = 0
         await Orchestrator._reconcile_sessions(orch)
+        await orch.cycle_waits.task
         await Orchestrator._deliver_messages(orch)
     assert typed() == []
 
@@ -385,6 +395,7 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 200)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == ("expired" if terminal == "expired" else "satisfied")
     assert resolved["wait_resumed_at"] == NOW + 200
@@ -416,6 +427,7 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
     assert message.via == "wait_consume"
     # Repeated reconciliation/delivery must not submit the result twice.
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     orch._last_delivery_pass = 0
     await Orchestrator._deliver_messages(orch)
     assert len(fake.sent_nudges) == 1
@@ -527,7 +539,7 @@ async def test_plain_message_wakes_idle_pool_holder(commands, env, monkeypatch, 
 
     await Orchestrator._deliver_messages(orch)
 
-    assert typed() == [f"Handle `aq message status {message_id} --json`."]
+    assert typed() == [f"Handle `aq message status {message_id} --json` (running it marks the message read)."]
     message = await env.db.get_message(message_id)
     assert message.delivered_at is None and message.read_at is None
     assert message.last_notified_at == NOW and message.notification_attempts == 1
@@ -578,6 +590,7 @@ async def test_thread_wait_fires_on_reply_and_wakes_idle_holder(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == "satisfied"
     assert resolved["digest"]["message_id"] == reply_id
@@ -609,6 +622,7 @@ async def test_unthreaded_guidance_does_not_satisfy_a_thread_wait(commands, env,
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
 
     assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
 
@@ -664,6 +678,7 @@ async def test_operator_approval_on_the_wait_thread_satisfies_it(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
 
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == "satisfied", resolved
@@ -870,7 +885,10 @@ def test_wait_cli_reads_claim_epoch_and_emits_versioned_json(monkeypatch):
     assert json.loads(result.output)["data"]["wait"]["id"] == "w"
     assert calls[0] == (
         "wait_register",
-        {"kind": "task", "ref": "t", "idempotency_key": "k", "claim_epoch": 7},
+        {
+            "kind": "task", "idempotency_key": "k", "claim_epoch": 7,
+            "schema_version": 2, "condition": {"kind": "task", "task_id": "t"},
+        },
     )
     shown = CliRunner().invoke(cli, ["wait", "show", "w", "--json"])
     assert shown.exit_code == 0
