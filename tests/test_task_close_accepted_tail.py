@@ -28,13 +28,17 @@ import pytest
 from src.commands import session_commands
 from src.database.queries.result_queries import PENDING_COMPLETION_KEY, close_identity
 from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+from src.git.manager import GitManager
 from src.models import TaskStatus
 from src.orchestrator import execution
+from src.orchestrator.stranded_work import StrandedWork
 from tests import test_pool_lifecycle_integration as lifecycle
+from tests.test_close_unpushed_work import _commit, _git
 from tests.test_pool_lifecycle_integration import (
     only_pool_session,
     ready,
     scoped,
+    settled_claim,
     single_worker_pool,
 )
 
@@ -67,8 +71,9 @@ async def _claimed(orch, db, handler, tid="t1"):
     await orch._reconcile_pools()
     await orch.wait_for_pool_launches()
     session = await only_pool_session(db)
-    res = await scoped(handler, session.id)._cmd_task_claim({"next": True, "wait": 2})
-    assert (res["result"], res["task"]["id"]) == ("claimed", tid), res
+    res = await settled_claim(scoped(handler, session.id), {"next": True, "wait": 2})
+    assert res["result"] == "claimed", res
+    assert res["task"]["id"] == tid, res
     return session, res["claim_epoch"]
 
 
@@ -151,7 +156,98 @@ class TestCancelledCaller:
         assert not session_commands._CLOSE_ATTEMPTS
 
 
+@pytest.mark.parametrize("cancel_caller", [False, True])
+async def test_unknown_failure_close_keeps_pool_claim_and_slot(
+    orch, db, handler, monkeypatch, cancel_caller
+):
+    session, epoch = await _claimed(orch, db, handler)
+    root = Path(session.work_dir)
+    _git(["init", "--initial-branch=aq/t1"], cwd=session.work_dir)
+    _git(["config", "user.name", "Test"], cwd=session.work_dir)
+    _git(["config", "user.email", "t@t.com"], cwd=session.work_dir)
+    sha = _commit(session.work_dir, "work.py")
+    (root / "work.py").write_text("unfinished work")
+    (root / "untracked.py").write_text("untracked work")
+    orch.git = GitManager()
+    before_task = await db.get_task("t1")
+    before_session = await db.get_session(session.id)
+    before_ws = await db.get_workspace_for_task("t1")
+    claim_file = root / ".aq" / "claim.json"
+    claim = claim_file.read_bytes()
+    dirty = _git(["status", "--porcelain"], cwd=session.work_dir)
+    gate = _Gate()
+
+    async def unknown(*args, **kwargs):
+        gate.entered.set()
+        await gate.release.wait()
+        return StrandedWork(status="unknown", error="injected inspection failure")
+
+    monkeypatch.setattr("src.orchestrator.stranded_work.preserve_unpushed_work", unknown)
+    args = {**_close_args(epoch, claim_next=True), "outcome": "fail", "session_id": session.id}
+    caller = asyncio.create_task(scoped(handler, session.id)._cmd_task_close(args))
+    try:
+        await asyncio.wait_for(gate.entered.wait(), 10)
+        if cancel_caller:
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+        gate.release.set()
+        if cancel_caller:
+            await asyncio.wait_for(_settle_close_attempts(), 10)
+        else:
+            result = await asyncio.wait_for(caller, 10)
+            assert result["success"] is False, result
+            assert result["unmerged"]["status"] == "unknown"
+            assert "next" not in result
+    finally:
+        gate.release.set()
+        await asyncio.gather(caller, return_exceptions=True)
+        await _settle_close_attempts()
+
+    after_task = await db.get_task("t1")
+    assert (after_task.status, after_task.claim_epoch, after_task.assigned_agent_id,
+            after_task.branch_name, after_task.retry_count) == (
+        before_task.status, epoch, before_task.assigned_agent_id,
+        before_task.branch_name, before_task.retry_count,
+    )
+    after_session = await db.get_session(session.id)
+    assert (after_session.task_id, after_session.claim_phase, after_session.instance_token,
+            after_session.state, after_session.desired_state) == (
+        "t1", "active", before_session.instance_token,
+        before_session.state, before_session.desired_state,
+    )
+    assert await db.get_workspace_for_task("t1") == before_ws
+    assert claim_file.read_bytes() == claim
+    assert await db.get_task_completion("t1") is None
+    assert await db.get_task_meta("t1", ACCEPTED_CLOSE_KEY) is None
+    assert await db.get_task_meta("t1", PENDING_COMPLETION_KEY) is None
+    assert _git(["rev-parse", "HEAD"], cwd=session.work_dir) == sha
+    assert _git(["status", "--porcelain"], cwd=session.work_dir) == dirty
+    assert (root / "work.py").read_text() == "unfinished work"
+    assert (root / "untracked.py").read_text() == "untracked work"
+    orch._worktree_slots.return_value.restore_slot_after_task.assert_not_called()
+
+
 class TestClaimDuringAcceptedClose:
+    async def test_setup_waits_for_retained_preparation(self, orch, db, handler, monkeypatch):
+        # A busy runner can exhaust the claim response window before setup
+        # finishes. Exercise that boundary without depending on runner speed.
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+        real_claim = handler._cmd_task_claim
+        outcomes = []
+
+        async def expired_response(args):
+            result = await real_claim({**args, "wait": 0})
+            outcomes.append(result["result"])
+            return result
+
+        monkeypatch.setattr(handler, "_cmd_task_claim", expired_response)
+        session, epoch = await _claimed(orch, db, handler)
+        assert outcomes == ["claim_in_progress", "claimed"]
+        held = await db.get_session(session.id)
+        assert (held.task_id, held.claim_phase) == ("t1", "active")
+        assert (await db.get_task("t1")).claim_epoch == epoch
+
     async def test_same_session_claim_leaves_the_binding_to_the_close(
         self, orch, db, handler, monkeypatch
     ):
@@ -297,4 +393,3 @@ class TestBoundedClosePublication:
         (job,) = execution._DETACHED_CLOSE_PUBLICATIONS
         release.set()
         assert (await job) == {"outcome": "opened"}
-
