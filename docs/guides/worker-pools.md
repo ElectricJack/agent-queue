@@ -548,6 +548,11 @@ fleet-wide whether or not you pass one, because filtering them would misreport
 the pool the sizer actually acts on. A profile with no standing in the named
 project drops out of the listing entirely.
 
+Project supervisors granted `pool_status` automatically receive their own project's
+view, including when they omit `--project-id`. They cannot select another project.
+This read keeps the shared bounds and aggregate counters visible; pool mutations
+still require global authority. Project-mode stall sweeps use this scoped read.
+
 `pool status` and `task explain` use cached delivery observations without network
 Git calls. A cold or expired observation withholds delivery-dependent demand
 until a background consumer refreshes it; task explanations report unknown
@@ -851,6 +856,28 @@ above.
 `unlocked_slot_claim`. The supervisor's control is
 `aq project workspace-retire-claim --workspace-id SLOT`. It applies the same checks
 and either retires the marker or refuses, naming the holder to examine.
+
+#### A sentinel that still names a finished task
+
+A slot's `.aq-worktree.json` names the task that last held it. A pool close returns it
+to the free form once HEAD is detached, clean and published, but integration closes,
+abandons, repair ends and drains can leave it naming the finished task. The next claim
+reconciles it: preparation accepts the slot when the named task is terminal
+(`COMPLETED`, `FAILED`, `BLOCKED`), the tree is clean, and no integration owner or job
+pin retains the slot. The claimant's own integration owner row, which preparation
+attaches to the slot before the reset re-checks the slot, does not count. Before
+bold-torrent-46 it did, so every successor of a finished task was refused with
+`branch disagrees with its source sentinel`, and the half-prepared claim left a
+`handoff_pending` owner row that turned the next attempt into `BranchBusy` (ME slots 0
+and 1, AQ slot 4, 2026-10-19).
+
+The supervisor's control for a slot that still refuses is
+`aq project workspace-clear-sentinel --workspace-id SLOT --if-task-terminal`. It frees
+the sentinel only when the named task is terminal or gone, the workspace row holds no
+task lock, no claim file or live claiming session is in the slot, no integration owner
+or job pin retains it, and the tree is clean with HEAD contained in a remote ref. It
+emits `worktree.sentinel_cleared`. Otherwise it refuses and names the holder and the
+reason.
 
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
