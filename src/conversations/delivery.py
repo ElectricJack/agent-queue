@@ -100,6 +100,22 @@ class ConversationDeliveryAdapter:
             )
             or (not conversation and payload.get("author_id") not in allowed)
         )
+        if payload.get("ask_input"):
+            from src.asks.authority import public_allowed
+
+            async with self.db.immediate() as conn:
+                item = await self.db.get_ask_input(payload.get("input_id"), conn=conn)
+                ask = (
+                    await self.db.get_ask(payload["ask_id"], conn=conn)
+                    if payload.get("ask_id") else None
+                )
+            invalid = invalid or not item or item["state"] in {"expired", "revoked"}
+            invalid = invalid or bool(item and item["routing_state"] == "quarantined")
+            invalid = invalid or payload.get("author_id") not in allowed
+            if payload.get("ask_id"):
+                invalid = invalid or not ask or not public_allowed(
+                    ask, self.config, actor_id=item["verified_actor"] if item else None,
+                )
         if invalid:
             await self._finish(
                 row, status="cancelled", last_error="conversation visibility changed"
@@ -116,7 +132,9 @@ class ConversationDeliveryAdapter:
         # Only an operator-started thread (kind='thread') or an escalation root
         # is bound to a thread.
         in_channel = bool(conversation) and conversation.get("kind") == KIND_CHANNEL
-        reference = conversation["external_root_message_id"] if in_channel else None
+        reference = (
+            payload.get("reference_message_id") or conversation["external_root_message_id"]
+        ) if in_channel else None
         if direct or in_channel:
             thread_id = None
         elif action == ACTION_THREAD_OPEN and not thread_id:
