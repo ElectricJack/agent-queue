@@ -480,6 +480,21 @@ Resets a task back to READY status, clearing retry count and agent assignment.
 
 **Behavior:** Refuses if the task is currently IN_PROGRESS (caller must stop it first). Transitions the task to READY, sets `retry_count=0`, clears `assigned_agent_id`.
 
+A manual pause first goes through Resume with the same scope and termination
+proofs. A refused Resume retains the pause and recovery hold and refuses Restart.
+After a successful Resume, Restart performs its normal cleanup and readmission.
+
+Cold restart shares the task-control lock with resume, including its Git setup.
+For a retained continuation, it first proves its old and resumed writers
+stopped through their providers. Under graph/task/workspace exclusion it checks
+every task reservation and both recorded relocation paths, detaches clean,
+published task checkouts, releases all unpinned reservations, and retires the
+waits, continuation and pending admission requests. Directory contents and saved
+HEADs survive. Live or unknown writers, reused reservations, dirty or unpublished
+work and job pins refuse restart and retain ownership. A failed resume setup must
+record the relocated checkout before setup so cleanup observes its branch holder;
+the persisted relocation intent covers a crash before that path update.
+
 **Returns on success:**
 ```python
 {

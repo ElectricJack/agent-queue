@@ -146,7 +146,10 @@ def normalize(args: dict, *, held: bool = False) -> dict:
             raise ChangeSetError("action must be pause, resume, block or archive")
         if "action" in edit and "status" in edit:
             raise ChangeSetError("use either action or status")
-        if edit.get("status") in ("PAUSED", "ASSIGNED", "IN_PROGRESS", "COMPLETED"):
+        if edit.get("status") in (
+            "PAUSED", "ASSIGNED", "IN_PROGRESS", "COMPLETED",
+            "WAITING", "HIBERNATED", "RESUME_PENDING",
+        ):
             raise ChangeSetError("use pause/resume actions; execution and completion are owned")
         if "title" in edit and (not isinstance(edit["title"], str) or not edit["title"].strip()):
             raise ChangeSetError("title must be a non-empty string")
