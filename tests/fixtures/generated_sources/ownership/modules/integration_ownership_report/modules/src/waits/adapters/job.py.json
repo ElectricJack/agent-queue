@@ -1,0 +1,12 @@
+{
+  "shared_definitions": {
+    "src/waits/adapters/job.py::JobAdapter.authorise": {
+      "baseline_span": null,
+      "landing_span": [
+        22,
+        42
+      ],
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15)."
+    }
+  }
+}

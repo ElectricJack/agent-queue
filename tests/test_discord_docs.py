@@ -36,14 +36,47 @@ def test_migration_guide_yaml_is_a_valid_discord_config() -> None:
     assert blocks, "the migration runbook no longer shows a settings block"
 
     raw = yaml.safe_load(blocks[0])["discord"]
-    from src.config import DiscordDigestConfig, DiscordEscalationConfig
+    from src.config import DiscordConversationConfig, DiscordDigestConfig, DiscordEscalationConfig
 
     digest = DiscordDigestConfig(**raw.pop("digest"))
     escalation = DiscordEscalationConfig(**raw.pop("escalation"))
-    config = DiscordConfig(**raw, digest=digest, escalation=escalation)
+    conversation = DiscordConversationConfig(**raw.pop("conversation"))
+    config = DiscordConfig(**raw, digest=digest, escalation=escalation, conversation=conversation)
 
     assert config.validate() == [], "the documented Discord settings do not validate"
     assert config.warnings() == [], "the documented Discord settings warn"
+    assert not config.conversation.enabled, "migration must not implicitly enable conversations"
+
+
+def test_conversation_guide_yaml_validates_with_the_documented_trust_warning() -> None:
+    """The opt-in example must validate, and enabling must warn about elevation."""
+    from src.config import DiscordConversationConfig
+
+    text = (DOCS / "guides" / "discord-conversations.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```yaml\n(.*?)```", text, re.DOTALL)
+    assert blocks, "the conversation guide no longer shows an opt-in example"
+    raw = yaml.safe_load(blocks[0])
+    discord = raw["discord"]
+    conversation = DiscordConversationConfig(**discord.pop("conversation"))
+    config = DiscordConfig(**discord, conversation=conversation)
+
+    assert config.validate() == []
+    assert config.conversation.enabled
+    assert raw["messages"]["enabled"] and raw["sessions"]["enabled"]
+    assert len(config.warnings()) == 1
+    assert "elevated global supervisor" in config.warnings()[0]
+
+
+def test_conversation_guide_documents_every_precondition_and_ignore_code() -> None:
+    """Status codes and the guide link must survive changes to the live intake gates."""
+    from src.conversations.intake import CONVERSATION_CODES
+    from src.conversations.preconditions import PRECONDITION_CODES
+
+    guide = (DOCS / "guides" / "discord-conversations.md").read_text(encoding="utf-8")
+    for code in (*PRECONDITION_CODES, *CONVERSATION_CODES):
+        assert f"`{code}`" in guide, f"the conversation guide does not explain {code!r}"
+    index = (DOCS / "guides" / "README.md").read_text(encoding="utf-8")
+    assert "discord-conversations.md" in index
 
 
 def test_documented_digest_status_fields_are_produced() -> None:
@@ -58,6 +91,7 @@ def test_documented_digest_status_fields_are_produced() -> None:
         "pending_escalation_deliveries",
         "suppression_reason",
         "would_send",
+        "intake",
     ):
         assert f'"{field}"' in source, f"digest commands no longer return {field!r}"
 
@@ -73,6 +107,22 @@ def test_documented_digest_status_fields_are_produced() -> None:
     ):
         assert field in cutover, f"the cutover report no longer carries {field!r}"
     assert "needs_configuration" in cutover, "the documented conflict status is gone"
+
+
+def test_the_intake_block_and_every_ignore_code_are_documented() -> None:
+    """An operator reading ``intake.ignored`` must find every code it can show.
+
+    The codes come from the live table, so a new refusal in
+    ``src/escalations/intake.py`` fails here until the guide explains it.
+    """
+    from src.discord.escalation_intake import CLASSIFY_ERROR_CODE
+    from src.escalations.intake import REASON_CODES
+
+    guide = (DOCS / "guides" / "escalations.md").read_text(encoding="utf-8")
+    assert "`intake`" in guide, "the escalations guide no longer names the intake block"
+    assert "discord intake ignored" in guide, "the guide no longer names the ignore log line"
+    for code in (*REASON_CODES.values(), CLASSIFY_ERROR_CODE):
+        assert f"`{code}`" in guide, f"the escalations guide does not explain ignore code {code!r}"
 
 
 def test_removed_surfaces_are_not_documented_as_current() -> None:
@@ -97,8 +147,22 @@ def test_implementation_spec_is_published_in_the_repository() -> None:
 
 
 def test_migration_runbook_is_reachable_from_the_docs_index() -> None:
-    index = (DOCS / "index.md").read_text(encoding="utf-8")
-    assert "guides/discord-migration" in index
+    """An operator landing on the documentation home can walk to the runbook.
+
+    ``docs/index.md`` used to be the landing page and named the runbook
+    directly.  The documentation overhaul made it a redirect stub and moved the
+    home to ``docs/README.md``, which delegates the per-guide listing to the
+    guides index -- so reachability is now two hops.  Both are asserted: a home
+    that links an index which no longer names the runbook is not reachability,
+    and that is the failure mode the single-page check used to catch.
+    """
+    home = (DOCS / "README.md").read_text(encoding="utf-8")
+    assert "guides/README.md" in home, "the documentation home no longer links the guides index"
+
+    guides = (DOCS / "guides" / "README.md").read_text(encoding="utf-8")
+    assert "discord-migration.md" in guides, (
+        "the guides index no longer names the migration runbook"
+    )
 
 
 #: Names of Discord surfaces the simplification removed.  Each one is a knob or
@@ -223,6 +287,15 @@ def test_documented_project_commands_exist() -> None:
 
     ``get_project_for_channel`` outlived the channels it looked up by living in
     a table nothing checked.
+
+    The tables scanned here are the ones in ``docs/specs/mcp-server.md``.  The
+    guard used to also read ``docs/guides/agent-tools.md``, but the
+    documentation overhaul replaced that guide with a redirect stub: its
+    per-command tables are gone and the current agent-tool reference is
+    ``docs/reference/cli/``, whose invocations ``test_guidance_docs.py``
+    resolves against the live Click tree.  The two anchors lost with the stub
+    are replaced by two more of the spec's tool tables rather than dropped, so
+    the number of documented names held to the live surface does not shrink.
     """
     from src.commands.handler import CommandHandler
 
@@ -237,11 +310,13 @@ def test_documented_project_commands_exist() -> None:
 
     for rel, heading in (
         ("docs/specs/mcp-server.md", "### Project Management"),
-        ("docs/guides/agent-tools.md", "## Project Category"),
-        ("docs/guides/agent-tools.md", "### Navigation & Response"),
+        ("docs/specs/mcp-server.md", "### Agent & Profile Management"),
+        ("docs/specs/mcp-server.md", "### MCP Server Registry"),
     ):
-        section = _section((REPO_ROOT / rel).read_text(encoding="utf-8"), heading)
+        source = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert heading in source, f"{rel} no longer has a {heading!r} section"
+        section = _section(source, heading)
         documented = re.findall(r"^\| `([a-z_]+)`", section, re.MULTILINE)
-        assert documented, f"{rel} no longer has a project tool table"
+        assert documented, f"{rel} no longer has a tool table under {heading!r}"
         missing = sorted(n for n in documented if n not in live)
         assert not missing, f"{rel} documents commands that do not exist: {missing}"

@@ -1,0 +1,738 @@
+"""The short onboarding wizard: a few questions in, one summary out.
+
+``aq install`` is one command, not two experiences.  The engine already knows
+how to run every step; what a newcomer additionally needs is (a) to be asked
+only the handful of things that cannot be inferred, and (b) to be told, at the
+end, what is ready, where their data lives and which URL to open.
+
+Both halves live here as pure functions over plain values:
+
+* :func:`question_plan` turns what was *observed* about the machine — which
+  provider CLIs exist, whether a PostgreSQL server answers — into every choice
+  the install makes, each with a default decided from those observations.  An
+  ordinary run *asks* only the choices a person has to make (which coding
+  agents to use; see :func:`questions_to_ask`) and decides the rest from the
+  machine — reusing or installing PostgreSQL, starting the daemon — so it cannot
+  be set up wrong by answering a question nobody needed to ask.  ``--advanced``
+  asks every choice.
+* :func:`default_project_folder` and :func:`validate_project_folder` pick and
+  check the one path a person does choose: where their code projects live.
+* :func:`summarize` turns the engine's :class:`~src.install.results.InstallResult`
+  into the closing summary.  It reads only the result and the step details the
+  onboarding steps recorded, so the human text and the ``--json`` payload are
+  the same facts.
+
+Nothing here prompts, prints, or touches a file: the CLI binds the questions to
+a terminal and the summary to a console, and a test binds them to values.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from src.projects.roots import RootFacts, assess_project_roots
+
+from .graft import CAPABILITY_GRAFT, GRAFT_INSTALL_SPEC, GRAFT_PITCH, GraftCli
+from .logins import AuthProbe
+from .onboarding import (
+    CAPABILITY_DAEMON,
+    CAPABILITY_DISCORD,
+    STEP_CHECK,
+    STEP_DAEMON,
+    STEP_DASHBOARD,
+    DashboardInfo,
+    Location,
+)
+from .postgres_steps import CAPABILITY_MANAGED, CAPABILITY_ROTATE, STEP_CONNECTION
+from .prerequisites import STEP_GIT, STEP_TMUX
+from .providers import ProviderInstaller, provider_installers
+from .results import InstallOutcome, InstallResult, StepState
+from .service import CAPABILITY_AUTOSTART
+
+
+@dataclass(frozen=True, slots=True)
+class Question:
+    """One yes/no choice, its default, and the capability it selects."""
+
+    id: str
+    prompt: str
+    capability: str
+    default: bool
+    #: Why this default — shown under the prompt so the answer is informed
+    #: rather than guessed.
+    detail: str = ""
+    #: Advanced questions are asked only under ``--advanced``; their defaults
+    #: are what an ordinary run uses.
+    advanced: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "prompt": self.prompt,
+            "capability": self.capability,
+            "default": self.default,
+            "detail": self.detail,
+            "advanced": self.advanced,
+        }
+
+
+def question_plan(
+    *,
+    probes: Sequence[AuthProbe] = (),
+    installers: Iterable[ProviderInstaller] | None = None,
+    postgres_reachable: bool | None = None,
+    graft: GraftCli | None = None,
+    npm_available: bool = False,
+    advanced: bool = False,
+) -> tuple[Question, ...]:
+    """The questions to ask on this machine, in the order to ask them.
+
+    Defaults are observations, not opinions: a harness that is already
+    installed is offered pre-selected, a machine with no reachable PostgreSQL
+    is offered a managed one, and Discord — which AQ does not need — defaults
+    to no and is only asked at all under ``--advanced``.  graft is recommended:
+    it is offered pre-selected when it is installed or npm could install it,
+    and ``graft=None`` (not probed) offers it unselected.
+    """
+    by_provider = {probe.provider_id: probe for probe in probes}
+    catalog = tuple(installers or provider_installers())
+    anything_installed = any(
+        probe.installed for probe in by_provider.values() if probe is not None
+    )
+
+    questions: list[Question] = []
+    for installer in catalog:
+        probe = by_provider.get(installer.id)
+        if probe is not None and probe.installed:
+            detail = f"already installed{'' if probe.authenticated else '; not signed in yet'}"
+            default = True
+        elif anything_installed:
+            detail = "not installed here; AQ would install it with the provider's own installer"
+            default = False
+        else:
+            # Nothing is installed, so the machine needs at least one harness
+            # to be able to run a task at all.  Offer the first one.
+            detail = "no coding-agent CLI is installed yet; AQ needs at least one to run a task"
+            default = installer is catalog[0]
+        questions.append(
+            Question(
+                id=f"provider.{installer.id}",
+                prompt=f"Use {installer.title}?",
+                capability=installer.capability,
+                default=default,
+                detail=detail,
+            )
+        )
+
+    questions.append(_graft_question(graft, npm_available=npm_available))
+
+    # Decided from the machine, asked only under --advanced.  Answering "yes,
+    # install a server" beside one that already answers, or "no" to the daemon
+    # that runs every task, is how a newcomer sets AQ up wrong.
+    questions.append(
+        Question(
+            id="postgres-managed",
+            prompt="Let AQ install and run a local PostgreSQL server?",
+            capability=CAPABILITY_MANAGED,
+            default=postgres_reachable is False,
+            detail=(
+                "no server answered on the configured host and port"
+                if postgres_reachable is False
+                else "a server is already reachable; AQ will use it"
+                if postgres_reachable
+                else "AQ needs one database; answer no if you already run a server"
+            ),
+            advanced=True,
+        )
+    )
+    questions.append(
+        Question(
+            id="daemon",
+            prompt="Start the AQ daemon when setup finishes?",
+            capability=CAPABILITY_DAEMON,
+            default=True,
+            detail="this runs your tasks, and the dashboard server shows them",
+            advanced=True,
+        )
+    )
+    questions.append(
+        Question(
+            id="autostart",
+            prompt="Start AQ again after a reboot or a crash?",
+            capability=CAPABILITY_AUTOSTART,
+            default=False,
+            detail=(
+                "installs a small watchdog (systemd, launchd or cron) that starts the daemon "
+                "at boot and after a crash, and never overrides `aq stop`. You can add it "
+                "later with `aq service install`."
+            ),
+            advanced=True,
+        )
+    )
+    questions.append(
+        Question(
+            id="discord",
+            prompt="Deliver digests and escalations to Discord?",
+            capability=CAPABILITY_DISCORD,
+            default=False,
+            detail=(
+                "optional and off by default — AQ is operated from the CLI and the dashboard, "
+                "never from Discord. You can add it later with `aq install --with discord`."
+            ),
+            advanced=True,
+        )
+    )
+    del advanced  # every choice is planned; questions_to_ask decides which are put to a person
+    return tuple(questions)
+
+
+def _graft_question(graft: GraftCli | None, *, npm_available: bool) -> Question:
+    """Offer graft: what it is, what AQ would do with it, and whether it can."""
+    where = (
+        "turns its telemetry off and sets it up in each project's main checkout, "
+        "never globally and never in worker worktrees"
+    )
+    if graft is not None and graft.available:
+        default = True
+        detail = (
+            f"graft {graft.version} is installed: {GRAFT_PITCH}. AQ {where}, and never "
+            "upgrades it"
+        )
+    elif graft is not None and npm_available:
+        default = True
+        detail = (
+            f"recommended, not installed: {GRAFT_PITCH}. AQ installs {GRAFT_INSTALL_SPEC} "
+            f"with npm, {where}"
+        )
+    else:
+        default = False
+        detail = (
+            f"optional: {GRAFT_PITCH}. It installs with npm, which is not on this "
+            "machine's PATH; add it later with `aq install --with graft`"
+            if graft is not None
+            else f"optional: {GRAFT_PITCH}"
+        )
+    return Question(
+        id="graft",
+        prompt="Use graft (recommended)?",
+        capability=CAPABILITY_GRAFT,
+        default=default,
+        detail=detail,
+    )
+
+
+def questions_to_ask(questions: Iterable[Question], *, advanced: bool) -> tuple[Question, ...]:
+    """The questions a person is actually asked.
+
+    An ordinary run asks only the choices that cannot be inferred; every other
+    question still selects its capability through its default in
+    :func:`capabilities_for`.  ``--advanced`` asks them all.
+    """
+    return tuple(question for question in questions if advanced or not question.advanced)
+
+
+# ---------------------------------------------------------------------------
+# The projects folder
+# ---------------------------------------------------------------------------
+
+#: Used when the install was not started from inside a projects-looking folder.
+FALLBACK_PROJECT_FOLDER = "Projects"
+
+
+def _within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def default_project_folder(cwd: Path, home: Path, *, reserved: Iterable[Path] = ()) -> Path:
+    """Where the code projects probably live: the folder the install ran from.
+
+    People start the install from where they keep their code (the first macOS
+    install was run from ``~/Shared/AI``).  That guess is only used when it is a
+    real folder under the home directory -- not the home directory itself, not
+    a hidden directory, not one of AQ's own -- and otherwise ``~/Projects``.
+    """
+    home = home.resolve()
+    candidate = cwd.resolve()
+    # A folder the person types may be anywhere (an external volume, say); a
+    # *guessed* one must be under their home, or the guess is probably a
+    # system or scratch directory the install happened to be started from.
+    if not _within(candidate, home):
+        return home / FALLBACK_PROJECT_FOLDER
+    try:
+        validate_project_folder(str(candidate), home, reserved=reserved)
+    except ValueError:
+        return home / FALLBACK_PROJECT_FOLDER
+    relative = candidate.relative_to(home)
+    if any(part.startswith(".") for part in relative.parts):
+        return home / FALLBACK_PROJECT_FOLDER
+    return candidate
+
+
+def validate_project_folder(raw: str, home: Path, *, reserved: Iterable[Path] = ()) -> Path:
+    """Check a projects folder a person typed; raise ``ValueError`` saying why not.
+
+    The home directory itself, the filesystem root and folders at or inside
+    AQ's own directories are refused. A parent containing AQ is allowed so
+    the checkout can live alongside the person's other code projects.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("enter a folder")
+    folder = Path(text).expanduser()
+    if not folder.is_absolute():
+        folder = Path.cwd() / folder
+    folder = folder.resolve()
+    home = home.resolve()
+    if folder == Path(folder.anchor):
+        raise ValueError("the filesystem root is too broad; choose the folder your projects are in")
+    if folder == home:
+        raise ValueError(
+            "your whole home folder is too broad; choose the folder your projects are in"
+        )
+    for own in reserved:
+        own = own.expanduser().resolve()
+        if _within(folder, own):
+            raise ValueError(f"{folder} overlaps {own}, which AQ manages itself")
+    if folder.exists() and not folder.is_dir():
+        raise ValueError(f"{folder} exists and is not a folder")
+    return folder
+
+
+def project_root_entry(folder: Path, existing_ids: Iterable[str] = ()) -> dict[str, str]:
+    """The ``project_roots`` entry for *folder*, with a URL-safe id not yet in use."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", folder.name).strip("-._").lower() or "projects"
+    if not base[0].isalnum():
+        base = f"projects-{base}"
+    taken = set(existing_ids)
+    candidate, counter = base, 2
+    while candidate in taken:
+        candidate, counter = f"{base}-{counter}", counter + 1
+    return {"id": candidate, "label": folder.name or candidate, "path": str(folder)}
+
+
+def capabilities_for(
+    questions: Iterable[Question], answers: Mapping[str, bool] | None = None
+) -> frozenset[str]:
+    """The capabilities selected by *answers*, falling back to each default.
+
+    An unanswered question uses its default, which is what makes "press Enter
+    through the wizard" and "take the recommended install" the same run.
+    """
+    answers = answers or {}
+    return frozenset(
+        question.capability
+        for question in questions
+        if bool(answers.get(question.id, question.default))
+    )
+
+
+# ---------------------------------------------------------------------------
+# The closing summary
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OnboardingSummary:
+    """What to tell the human once the run has stopped."""
+
+    ready: bool
+    headline: str
+    locations: tuple[Location, ...] = ()
+    dashboard: DashboardInfo | None = None
+    #: Optional things this run did not do, each with how to add it later.
+    skipped: tuple[str, ...] = ()
+    #: What to do next, most urgent first.
+    next_steps: tuple[str, ...] = ()
+    #: A measured answer to whether this installation can run the first live task.
+    readiness: FirstTaskReadiness | None = None
+    #: Differences from the setup AQ would make that a step reported rather
+    #: than changed (``detail["drift"]``), such as graft wiring found outside
+    #: any repository.
+    drift: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "headline": self.headline,
+            "locations": [location.to_dict() for location in self.locations],
+            "dashboard": self.dashboard.to_dict() if self.dashboard else None,
+            "skipped": list(self.skipped),
+            "next_steps": list(self.next_steps),
+            "readiness": self.readiness.to_dict() if self.readiness else None,
+            "drift": list(self.drift),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessCheck:
+    """One observable prerequisite for a live first task.
+
+    This is deliberately separate from an install step's state.  For example,
+    an install may complete successfully with every provider declined, while a
+    first task still cannot be claimed by a worker.
+    """
+
+    id: str
+    label: str
+    ready: bool
+    detail: str
+    remediation: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "ready": self.ready,
+            "status": "ready" if self.ready else "needs_attention",
+            "detail": self.detail,
+            "remediation": self.remediation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FirstTaskReadiness:
+    """The non-secret evidence needed before inviting an operator to spend on a task."""
+
+    ready: bool
+    checks: tuple[ReadinessCheck, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ready": self.ready, "checks": [check.to_dict() for check in self.checks]}
+
+
+_CAPABILITY_LABELS: dict[str, str] = {
+    CAPABILITY_AUTOSTART: "restarting the daemon after a reboot or a crash",
+    CAPABILITY_GRAFT: f"graft, {GRAFT_PITCH} (recommended)",
+    CAPABILITY_DISCORD: "Discord delivery for digests and escalations",
+    CAPABILITY_DAEMON: "starting the daemon",
+    CAPABILITY_MANAGED: "installing a local PostgreSQL server",
+}
+
+#: Capabilities that exist for *repair*, not for setup.  Listing them among
+#: "things you could also have installed" would invite a newcomer to rotate a
+#: credential they just created.
+_RECOVERY_CAPABILITIES: frozenset[str] = frozenset({CAPABILITY_ROTATE})
+
+
+def _detail(result: InstallResult, step_id: str) -> dict[str, Any]:
+    for step in result.steps:
+        if step.step_id == step_id:
+            return dict(step.detail)
+    return {}
+
+
+def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
+    """One line per optional thing this run did not do, and how to add it.
+
+    A skipped capability is a *finished* install, not a partial one, so the
+    summary says so explicitly rather than leaving a reader to wonder whether
+    the missing harness or the missing Discord channel was a failure.
+    """
+    lines: list[str] = []
+    for step in result.steps:
+        if step.state is not StepState.SKIPPED:
+            continue
+        row = next((entry for entry in result.plan if entry.step_id == step.step_id), None)
+        capability = row.capability if row else None
+        if not capability or capability in result.capabilities:
+            continue
+        if capability in _RECOVERY_CAPABILITIES:
+            continue
+        label = _CAPABILITY_LABELS.get(capability)
+        if label is None:
+            if capability.startswith("provider."):
+                label = f"the {capability.removeprefix('provider.')} harness"
+            else:
+                label = capability
+        line = f"{label} — not selected; add it with `aq install --with {capability}`"
+        if line not in lines:
+            lines.append(line)
+    return tuple(lines)
+
+
+def _drift_lines(result: InstallResult) -> tuple[str, ...]:
+    """Every drift finding the steps of this run reported, once each."""
+    lines: list[str] = []
+    for step in result.steps:
+        findings = step.detail.get("drift")
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            if isinstance(finding, str) and finding not in lines:
+                lines.append(finding)
+    return tuple(lines)
+
+
+def _step_succeeded(result: InstallResult, step_id: str) -> bool:
+    """Return whether this run observed one named prerequisite as satisfied."""
+    return any(step.step_id == step_id and step.state is StepState.SUCCEEDED for step in result.steps)
+
+
+def _project_root_check(result: InstallResult) -> ReadinessCheck:
+    """Readiness condition 6's second half: a root project creation can use.
+
+    AQ does not invent this path.  ``src/config_tuning.py`` derives defaults
+    from cores and memory alone and deliberately owns no filesystem location,
+    and the contract keeps project selection out of the installation wizard —
+    so the honest installer behaviour is to *measure* the gap and name the page
+    that closes it, not to write a directory into someone's home.
+
+    The measurement itself lives in :mod:`src.projects.roots`, shared with the
+    ``projects.roots`` doctor check: an operator who meets this gap on either
+    surface is told the same thing about the same configuration.  Only the
+    closing "and rerun `aq install`" belongs to the installer.
+    """
+    recorded = _detail(result, STEP_CHECK).get("project_roots")
+    rows = recorded if isinstance(recorded, list) else []
+    entries = [entry for entry in rows if isinstance(entry, Mapping)]
+    assessment = assess_project_roots(
+        RootFacts(
+            id=str(entry.get("id") or "?"),
+            path=str(entry.get("path") or "?"),
+            readable=bool(entry.get("readable")),
+            writable=bool(entry.get("writable")),
+        )
+        for entry in entries
+    )
+    remediation = (
+        None
+        if assessment.remediation is None
+        else f"{assessment.remediation} Then rerun `aq install` to recheck it."
+    )
+    return ReadinessCheck(
+        "project_root",
+        "Project root",
+        assessment.ok,
+        assessment.detail,
+        remediation,
+    )
+
+
+def _worker_pools_check(pools: Any) -> ReadinessCheck:
+    """Tasks run only on worker pools, so a first task needs at least one."""
+    names = tuple(getattr(pools, "pools", ()) or ())
+    if names:
+        created = tuple(getattr(pools, "created", ()) or ())
+        ceiling = getattr(pools, "max_active", None)
+        listed = ", ".join(names) if len(names) <= 4 else f"{', '.join(names[:3])} and {len(names) - 3} more"
+        detail = (
+            f"{len(names)} worker pool(s), {len(created)} new ({listed}); new pools scale from 0 "
+            f"to {ceiling} workers as tasks arrive."
+            if created
+            else f"{len(names)} worker pool(s) configured: {listed}."
+        )
+        return ReadinessCheck("worker_pools", "Worker pools", True, detail, None)
+    problem = getattr(pools, "problem", None)
+    return ReadinessCheck(
+        "worker_pools",
+        "Worker pools",
+        False,
+        "No worker pool is configured, so no task can be claimed.",
+        problem
+        or "Rerun `aq install` after signing in to an agent CLI, or create one with "
+        "`aq pool set-lifecycle` and `aq pool scale`.",
+    )
+
+
+def _first_task_readiness(
+    result: InstallResult,
+    *,
+    probes: Sequence[AuthProbe],
+    activations: Sequence[Any],
+    dashboard: DashboardInfo | None,
+    pools: Any = None,
+) -> FirstTaskReadiness:
+    """Turn install evidence into the explicit first-task admission checklist.
+
+    The checks intentionally consume only non-secret probe results.  A profile
+    being active proves both that its provider is authenticated and that AQ's
+    catalog made it eligible for routing; neither requires examining a token
+    or credential cache.
+    """
+    database = _step_succeeded(result, STEP_CONNECTION)
+    daemon = _step_succeeded(result, STEP_DAEMON)
+    dashboard_ready = bool(dashboard and dashboard.reachable)
+    authenticated = any(probe.installed and probe.authenticated for probe in probes)
+    routed = any(bool(getattr(activation, "active", False)) for activation in activations)
+    workspace = all(
+        _step_succeeded(result, step_id) for step_id in (STEP_CHECK, STEP_GIT, STEP_TMUX)
+    )
+
+    checks = (
+        ReadinessCheck(
+            "database", "Database", database,
+            "AQ connected to its PostgreSQL database in this install run."
+            if database else "AQ did not confirm a PostgreSQL connection in this install run.",
+            None if database else "Run `aq doctor`, fix the reported database issue, then rerun `aq install`.",
+        ),
+        ReadinessCheck(
+            "daemon", "Daemon", daemon,
+            "The daemon answered its health endpoint." if daemon else "The daemon was not confirmed healthy.",
+            None if daemon else "Run `aq start` or rerun `aq install` after fixing the reported failure.",
+        ),
+        ReadinessCheck(
+            "dashboard", "Dashboard", dashboard_ready,
+            f"The dashboard is reachable at {dashboard.url}." if dashboard_ready else
+            "No reachable dashboard was observed; rerun the install to build and serve it.",
+            None if dashboard_ready else "Follow the dashboard hint above, then refresh the browser.",
+        ),
+        ReadinessCheck(
+            "agent_authentication", "Agent authentication", authenticated,
+            "At least one installed harness reported non-secret authentication evidence."
+            if authenticated else "No installed harness reported authentication evidence.",
+            None if authenticated else "Sign in to one selected harness, then rerun `aq install` to recheck it.",
+        ),
+        ReadinessCheck(
+            "profile_routing", "Profile routing", routed,
+            "At least one authenticated provider has an active worker profile."
+            if routed else "No active worker profile can be routed to a live harness.",
+            None if routed else "Rerun `aq install` after harness authentication, then check `aq agent list-profiles`.",
+        ),
+        _worker_pools_check(pools),
+        ReadinessCheck(
+            "workspace_prerequisites", "Workspace prerequisites", workspace,
+            "Git, tmux, and AQ's configured worktree location were verified."
+            if workspace else "Git, tmux, or AQ's configured worktree location was not verified.",
+            None if workspace else "Fix the named prerequisite and rerun `aq install` before creating a project.",
+        ),
+        _project_root_check(result),
+    )
+    return FirstTaskReadiness(
+        ready=result.outcome is InstallOutcome.READY and not result.dry_run and all(
+            check.ready for check in checks
+        ),
+        checks=checks,
+    )
+
+
+def _next_steps(
+    result: InstallResult,
+    dashboard: DashboardInfo | None,
+    readiness: FirstTaskReadiness,
+) -> tuple[str, ...]:
+    steps: list[str] = []
+    if result.dry_run:
+        # A dry run changed nothing, so the only honest next step is the run
+        # that would.
+        return (
+            (
+                "This was a dry run: nothing was changed. Rerun without `--dry-run` "
+                "to carry out the plan above."
+            ),
+        )
+    if result.outcome is InstallOutcome.NEEDS_USER:
+        blocking = result.blocking_step
+        subject = f"for {blocking.step_id}" if blocking else "named above"
+        steps.append(
+            f"Finish the action {subject} and rerun `aq install` — it resumes where it "
+            "stopped and re-runs nothing that is already done."
+        )
+    elif result.outcome in (InstallOutcome.FAILED, InstallOutcome.UNSUPPORTED_HOST):
+        steps.append("Fix the failure named above, then rerun `aq install`.")
+    if result.outcome is InstallOutcome.READY:
+        if dashboard and dashboard.reachable:
+            steps.append(f"Open the dashboard at {dashboard.url}.")
+        elif dashboard and dashboard.hint:
+            steps.append(dashboard.hint)
+        if readiness.ready:
+            steps.append(
+                "Create your first project and task: `aq project onboard --root-id <root> "
+                "--help`, or follow docs/tutorials/first-task.md."
+            )
+        else:
+            first_missing = next(check for check in readiness.checks if not check.ready)
+            steps.append(
+                "First-task readiness needs attention: "
+                f"{first_missing.detail} {first_missing.remediation or ''}".rstrip()
+            )
+        steps.append("`aq doctor` checks this installation whenever something looks wrong.")
+    return tuple(steps)
+
+
+def summarize(
+    result: InstallResult,
+    *,
+    probes: Sequence[AuthProbe] = (),
+    activations: Sequence[Any] = (),
+    pools: Any = None,
+) -> OnboardingSummary:
+    """Fold the engine's result into the closing summary.
+
+    Everything comes from the result: the locations the ``config.check`` step
+    recorded, the dashboard the ``daemon.dashboard`` step classified, and the
+    outcome the engine classified.  There is no second source of truth to keep
+    in step with the run.
+    """
+    check = _detail(result, STEP_CHECK)
+    locations = tuple(
+        Location(
+            label=str(entry.get("label", "")),
+            path=str(entry.get("path", "")),
+            note=str(entry.get("note", "")),
+        )
+        for entry in check.get("locations") or ()
+        if isinstance(entry, Mapping)
+    )
+    board = _detail(result, STEP_DASHBOARD).get("dashboard")
+    dashboard = (
+        DashboardInfo(
+            url=str(board.get("url", "")),
+            reachable=bool(board.get("reachable")),
+            source=str(board.get("source", "unknown")),
+            hint=str(board.get("hint", "")),
+        )
+        if isinstance(board, Mapping)
+        else None
+    )
+    ready = result.outcome is InstallOutcome.READY and not result.dry_run
+    if result.dry_run:
+        headline = "Dry run: this is the plan, and nothing was changed."
+    elif ready:
+        headline = "AQ is installed and ready."
+    else:
+        headline = f"Installation stopped: {result.outcome.value}."
+    readiness = _first_task_readiness(
+        result, probes=probes, activations=activations, dashboard=dashboard, pools=pools
+    )
+    return OnboardingSummary(
+        ready=ready,
+        headline=headline,
+        locations=locations,
+        dashboard=dashboard,
+        skipped=_skipped_lines(result),
+        next_steps=_next_steps(result, dashboard, readiness),
+        readiness=readiness,
+        drift=_drift_lines(result),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WizardChoices:
+    """The answers a front-end collected, and what they select."""
+
+    questions: tuple[Question, ...] = ()
+    answers: Mapping[str, bool] = field(default_factory=dict)
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return capabilities_for(self.questions, self.answers)
+
+
+__all__ = [
+    "FirstTaskReadiness",
+    "OnboardingSummary",
+    "Question",
+    "ReadinessCheck",
+    "WizardChoices",
+    "capabilities_for",
+    "question_plan",
+    "summarize",
+]

@@ -1,0 +1,331 @@
+"""Route authenticated gateway messages: escalation ownership precedes chat."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
+
+from src.asks.delivery import config_fingerprint
+from src.commands.principal import ExecutionPrincipal, principal_context
+from src.conversations.intake import (
+    ACTION_IGNORE,
+    ACTION_OPEN,
+    DM_GUILD,
+    ObservedMessage,
+    classify_conversation,
+    dm_thread_id,
+    is_dm_thread,
+    normalise_tag,
+)
+from src.conversations.preconditions import conversation_preconditions
+from src.discord.escalation_intake import DiscordEscalationIntake, _raw_id
+from src.discord.intake_diagnostics import IgnoreCounter
+from src.escalations.intake import IGNORE_LOG_FORMAT
+
+logger = logging.getLogger(__name__)
+
+
+class DiscordInboundRouter:
+    """No transport writes; all conversation state goes through the command boundary."""
+
+    def __init__(
+        self,
+        *,
+        bot: Any,
+        handler: Any,
+        config: Any,
+        escalation_intake: DiscordEscalationIntake,
+        diagnostics: IgnoreCounter,
+        cutover_status: Callable[[], str | None],
+        outbox_bound: Callable[[], bool],
+    ) -> None:
+        self._bot = bot
+        self._handler = handler
+        self._config = config
+        self._escalation_intake = escalation_intake
+        self._diagnostics = diagnostics
+        self._cutover_status = cutover_status
+        self._outbox_bound = outbox_bound
+
+    def observe(self, message: Any, *, bot_user_id: int | None) -> ObservedMessage:
+        """Capture gateway identity, mention membership and the message timestamp."""
+        channel = message.channel
+        parent_id = getattr(channel, "parent_id", None)
+        author = message.author
+        direct = message.guild is None
+        channel_id = str(parent_id) if parent_id else _raw_id(channel)
+        return ObservedMessage(
+            transport="discord",
+            external_message_id=str(message.id),
+            guild_id=_raw_id(message.guild),
+            channel_id=channel_id,
+            # §2.1: a direct message is admitted as its own channel
+            # conversation, named by a synthetic thread so one lookup finds it.
+            thread_id=dm_thread_id(channel_id)
+            if (direct and channel_id)
+            else (_raw_id(channel) if parent_id else None),
+            author_id=_raw_id(author) or "",
+            text=message.content or "",
+            received_at=message.created_at.timestamp(),
+            author_is_bot=bool(getattr(author, "bot", False)),
+            is_own_message=bot_user_id is not None and author.id == bot_user_id,
+            is_webhook=getattr(message, "webhook_id", None) is not None,
+            is_dm=direct,
+            is_edit=False,
+            mentions_bot=any(
+                getattr(user, "id", None) == bot_user_id
+                for user in (getattr(message, "mentions", None) or [])
+            )
+            if bot_user_id is not None
+            else False,
+        )
+
+    def _ignore(self, code: str, message: Any) -> str:
+        channel = getattr(message, "channel", None)
+        logger.info(
+            IGNORE_LOG_FORMAT,
+            code,
+            _raw_id(getattr(message, "guild", None)),
+            getattr(channel, "parent_id", None) or _raw_id(channel),
+            _raw_id(message),
+            _raw_id(getattr(message, "author", None)),
+        )
+        self._diagnostics.record(code)
+        return f"ignored:{code}"
+
+    def preconditions(self):
+        """Share the current gateway admission state with reconnect recovery."""
+        return conversation_preconditions(
+            self._config,
+            cutover_status=self._cutover_status(),
+            outbox_bound=self._outbox_bound(),
+        )
+
+    async def _thread_tag(self, message: Any) -> str | None:
+        """What the post a thread hangs off is about, from durable receipts.
+
+        §2.2 tags a review, digest or report thread so the supervisor knows the
+        subject; a producer that records no receipt simply has no tag, which
+        makes the thread a conversation of its own rather than a refusal.
+        """
+        channel = getattr(message, "channel", None)
+        parent_message_id = getattr(channel, "message_id", None)
+        if not parent_message_id:
+            return None
+        resolve = getattr(self._handler.db, "find_conversation_thread_tag", None)
+        if resolve is None:
+            return None
+        return normalise_tag(await resolve(str(parent_message_id)))
+
+    async def _route_shared(self, message, *, bot_user_id, source):
+        observed = self.observe(message, bot_user_id=bot_user_id)
+        if (observed.author_is_bot or observed.is_own_message or observed.is_webhook
+                or observed.is_dm or observed.is_edit):
+            return self._ignore("not_human", message)
+        envelope = {
+            "transport": "discord", "guild_id": observed.guild_id,
+            "channel_id": observed.channel_id, "external_message_id": observed.external_message_id,
+            "external_root_message_id": observed.external_message_id,
+            "external_thread_id": observed.thread_id, "author_id": observed.author_id,
+            "text": observed.text, "received_at": observed.received_at,
+            "mentions_bot": observed.mentions_bot,
+            "reference_message_id": str(message.reference.message_id)
+                if getattr(message, "reference", None) and message.reference.message_id else None,
+        }
+        with principal_context(ExecutionPrincipal.service("discord-gateway")):
+            result = await self._handler.execute("ask_intake", {"envelope": envelope, "source": source})
+        if result.get("success"):
+            return "posted:created" if result.get("created") else "posted:replayed"
+        return "refused:" + result.get("error_code", "ask.intake_failed")
+
+    async def route(self, message: Any, *, bot_user_id: int | None, source: str = "gateway") -> str:
+        """Escalations stop routing even on failure; conversations fail closed."""
+        # Once channel ownership transfers, admission precedes every consumer.
+        # A failed shared route never falls through to legacy escalation intake.
+        enabled = getattr(self._handler.db, "ask_channel_enabled", None)
+        if enabled is not None:
+            try:
+                active = await enabled(channel_id=str(self._config.discord.channel_id),
+                                       guild_id=str(self._config.discord.guild_id),
+                                       project_id=self._config.discord.project_id or None,
+                                       config_fingerprint=config_fingerprint(self._config))
+                if active is True:
+                    return await self._route_shared(message, bot_user_id=bot_user_id, source=source)
+            except Exception:
+                logger.warning("shared human intake failed", exc_info=True)
+                return "refused:ask.intake_failed"
+        try:
+            # Keep the existing boolean entry point and its exact ignore
+            # diagnostics while this opt-in feature is off.
+            if not self._config.discord.conversation.enabled:
+                consumed = await self._escalation_intake.handle(message, bot_user_id=bot_user_id)
+                return "escalation" if consumed else "ignored:preconditions_unmet"
+            outcome = await self._escalation_intake.handle_detailed(
+                message, bot_user_id=bot_user_id
+            )
+        except Exception:
+            logger.warning("escalation intake failed before routing", exc_info=True)
+            self._ignore("classify_error", message)
+            return "escalation_failed"
+        if outcome.consumed:
+            return "escalation"
+        if outcome.failed:
+            # The adapter already logged and counted classify_error.
+            return "escalation_failed"
+
+        try:
+            observed = self.observe(message, bot_user_id=bot_user_id)
+            discord = self._config.discord
+            conversation_config = discord.conversation
+            preconditions = self.preconditions()
+            classification_args = {
+                "preconditions": preconditions,
+                "configured_guild_id": discord.guild_id,
+                "configured_channel_id": discord.channel_id,
+                "authorized_author_ids": tuple(discord.authorized_users),
+                "bot_user_id": bot_user_id,
+                "require_mention": bool(conversation_config.require_mention),
+                "allow_dm": bool(conversation_config.allow_dm),
+            }
+            # The first pass costs nothing: with a mention required a
+            # top-level message is decided here, and only a thread that reached
+            # ``unknown_thread`` needs the durable lookups below.
+            decision = classify_conversation(
+                observed, **classification_args, escalation_bound=False, conversation=None
+            )
+            if decision.action == ACTION_IGNORE and decision.code != "unknown_thread":
+                return self._ignore(decision.code, message)
+
+            conversation = None
+            channel_conversation = None
+            if is_dm_thread(observed.thread_id):
+                # §2.1/§2.2: a direct message belongs to its private channel's
+                # one conversation. No escalation can be bound to a DM, so no
+                # escalation lookup is made for it.
+                channel_conversation = await self._handler.db.find_channel_conversation(
+                    transport="discord", channel_id=observed.channel_id
+                )
+                decision = classify_conversation(
+                    observed,
+                    **classification_args,
+                    escalation_bound=False,
+                    conversation=None,
+                    channel_conversation=channel_conversation,
+                )
+                if decision.action == ACTION_IGNORE:
+                    return self._ignore(decision.code, message)
+            elif observed.thread_id:
+                # thread_unbound is returned only after escalation intake's
+                # durable lookup. Reuse that negative result to avoid a second
+                # query; disabled or otherwise refusing intake still needs the
+                # exclusive ownership check before looking up a conversation.
+                checked_unbound = (
+                    outcome.decision is not None and outcome.decision.code == "thread_unbound"
+                )
+                binding = (
+                    None
+                    if checked_unbound
+                    else await self._handler.db.find_escalation_by_thread(
+                        channel_id=observed.channel_id, thread_id=observed.thread_id
+                    )
+                )
+                if not binding:
+                    conversation = await self._handler.db.find_conversation_by_thread(
+                        transport="discord",
+                        channel_id=observed.channel_id,
+                        external_thread_id=observed.thread_id,
+                    )
+                decision = classify_conversation(
+                    observed,
+                    **classification_args,
+                    escalation_bound=bool(binding),
+                    conversation=conversation,
+                    channel_conversation=None,
+                )
+                if decision.action == ACTION_IGNORE:
+                    return self._ignore(decision.code, message)
+            elif not conversation_config.require_mention:
+                # §2.2: the top-level message joins the channel's one
+                # conversation. With a mention required this costs no query.
+                channel_conversation = await self._handler.db.find_channel_conversation(
+                    transport="discord", channel_id=observed.channel_id
+                )
+                decision = classify_conversation(
+                    observed,
+                    **classification_args,
+                    escalation_bound=False,
+                    conversation=None,
+                    channel_conversation=channel_conversation,
+                )
+                if decision.action == ACTION_IGNORE:
+                    return self._ignore(decision.code, message)
+
+            if decision.action == ACTION_OPEN and observed.thread_id:
+                # Only a new conversation records what it is about; a follow-up
+                # inherits it from the row it names.
+                decision = replace(decision, tag=await self._thread_tag(message))
+            envelope = {
+                "transport": observed.transport,
+                "guild_id": DM_GUILD if observed.is_dm else (observed.guild_id or ""),
+                "channel_id": observed.channel_id,
+                "external_message_id": observed.external_message_id,
+                "external_root_message_id": (
+                    conversation["external_root_message_id"]
+                    if conversation
+                    else (
+                        channel_conversation["external_root_message_id"]
+                        if channel_conversation
+                        else observed.external_message_id
+                    )
+                ),
+                "external_thread_id": observed.thread_id,
+                "author_id": observed.author_id,
+                "text": decision.text,
+                "received_at": observed.received_at,
+                "mentions_bot": observed.mentions_bot,
+                "tag": decision.tag,
+            }
+        except Exception:
+            logger.warning("conversation intake failed to classify a message", exc_info=True)
+            return self._ignore("classify_error", message)
+
+        try:
+            # A direct message names no conversation: the command resolves the
+            # private channel's one conversation itself, so a stale name can
+            # never carry a turn into another one.
+            named = None if observed.is_dm else decision.conversation_id
+            with principal_context(ExecutionPrincipal.service("discord-gateway")):
+                result = await self._handler.execute(
+                    "supervisor_inbox_post",
+                    {
+                        "envelope": envelope,
+                        "conversation_id": named,
+                        "source": source,
+                    },
+                )
+            if result.get("success"):
+                logger.info(
+                    "discord conversation posted conversation=%s input=%s created=%s",
+                    result.get("conversation_id"),
+                    result.get("input_id"),
+                    result.get("created"),
+                )
+                return "posted:created" if result.get("created") else "posted:replayed"
+            code = result.get("error_code") or "post_failed"
+        except Exception:
+            logger.warning("conversation input could not be persisted", exc_info=True)
+            code = "post_failed"
+        logger.info(
+            "discord conversation refused reason=%s guild=%s channel=%s message=%s author=%s",
+            code,
+            observed.guild_id,
+            observed.channel_id,
+            observed.external_message_id,
+            observed.author_id,
+        )
+        return f"refused:{code}"
+
+
+__all__ = ["DiscordInboundRouter"]
