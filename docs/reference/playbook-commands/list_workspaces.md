@@ -3,27 +3,29 @@
 
 # `list_workspaces`
 
-**List Workspaces.** List workspaces with lock status.
+**List Workspaces.** List workspaces with lock status, owner identity and bounded diagnostics.
 
 | Property | Value |
 |---|---|
 | Capability | `list_workspaces` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:dd8bbd9f62d940e0ea5586166e19c72ad4b4e8ae5befe4939183a0124b19fdf3` |
+| Contract fingerprint | `sha256:b8565cdc1e31b9ffad2a85923271ec112bf0516dc822c0c6cc2aad607d71f4bd` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string` | no | — | Filter by project ID (optional) |
+| `git` | `boolean` | no | — | Probe each checkout's branch and dirty state with git (default true). False returns lock and owner facts only. |
+| `deadline_seconds` | `number` | no | — | Overall time budget for diagnostics (default 10, clamped to 0.5-20). Unfinished probes report timeout/not_started. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id | — | always |
+| Read using project_id, git, deadline_seconds | — | always |
 
 <!-- aq:generated:end -->
 

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `formula_show` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:de0ca92a97a77947018a716ec92f6b595d19b50a8b68744f102036c586725613` |
+| Contract fingerprint | `sha256:dec6eaf4217134025a0cc18202e72cdd48e98207023ee726e51dbd6c61c86200` |
 
 ## Parameters
 
@@ -26,7 +26,7 @@
 | `as_cooked` | `string` | no | — | Container task id: render its formula_snapshot instead of resolving 'name' from the registry |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -48,7 +48,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using name, project_id, vars, as_cooked | — | always |
+| Read using name, project_id, vars, as_cooked | — | always |
 
 <!-- aq:generated:end -->
 

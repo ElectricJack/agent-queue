@@ -436,9 +436,13 @@ def _rendered(path: Path, render) -> str:
 
 def render_all(output: Path) -> dict[Path, str]:
     """The full desired content of the section, keyed by path."""
-    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.registry import ContractRegistry
 
-    contracts = {name: CONTRACTS.require(name).contract for name in sorted(CONTRACTS.names())}
+    # Committed documentation describes the shipped offline inventory. The
+    # process-wide registry can contain installation-specific plugin commands
+    # after a live handler provider is installed.
+    registry = ContractRegistry(autoload=True)
+    contracts = {name: registry.require(name).contract for name in sorted(registry.names())}
     pages: dict[Path, str] = {}
     for name, contract in contracts.items():
         path = output / f"{name}.md"

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `provider_history` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:3211705e12b4af605052b2973a17140306e34c5080919599f47082eb768857d2` |
+| Contract fingerprint | `sha256:6029328f13dff875985e467f92cd2a30f121f84afcde1b744cf044b6ac5d1738` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `limit` | `integer` | no | — | Most transitions to return. Default 50. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using provider, limit | — | always |
+| Read using provider, limit | — | always |
 
 <!-- aq:generated:end -->
 

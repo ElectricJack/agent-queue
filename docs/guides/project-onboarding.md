@@ -268,3 +268,56 @@ aq project doctor --project-id widgets
 The diagnosis offers `aq project bind-repository widgets --repo-url ...
 --expected-repo-url '' --reason ...`. Review the destination and run that command
 to authorize the existing project; the doctor never changes authorization itself.
+
+## Repair a moved repository checkout
+
+For a repository registration that still names an absent checkout, a local operator
+or global supervisor can preview a replacement:
+
+```bash
+aq project repair-repository-checkout --project-id widgets \
+  --repository-id widgets-repo --expected-path /old/widgets \
+  --replacement-path /home/me/dev/widgets --reason 'Checkout moved' --json
+```
+
+Review `before` and `after`, then repeat with `--apply`. Save each response for
+before/after evidence; the applied response also names the atomic audit event.
+The replacement must already be a Git checkout whose origin matches the registered
+repository URL. The old path must be confirmed missing. The command updates only
+matching repository path fields and preserves the repository ID and all workspace,
+task and integration records. Workspace registrations have their own lifecycle;
+repair those separately if the sweep names a missing workspace too.
+
+The daily branch sweep skips missing source and checkout-base paths, delivers one
+warning to the project supervisor, and suppresses repeats across days and daemon
+restarts. Once the path is repaired, the next sweep drops that warning state.
+Shipped supervisor capabilities merge into installed profiles on daemon startup
+and profile reload, unless that profile opts out with `capability_sync: false`.
+
+When slots share a different clone from their registered base, preview the base
+metadata repair instead:
+
+```bash
+aq project repair-workspace-checkout --project-id widgets \
+  --workspace-id widgets-primary --expected-path /mnt/d/old/widgets \
+  --replacement-path /home/me/dev/widgets --reason 'Correct base clone registration' --json
+```
+
+Review the full `before`/`after` and `identity` evidence, then repeat with `--apply
+--expected-proof <proof-from-preview>`. Save both responses and the returned audit
+event ID. The old clone may still exist: matching origins and every slot's shared
+Git common directory and object directory identity prove the replacement. A third
+clone with the same origin fails this check. The base must be idle; existing slot
+locks, claims, dirty files and source sentinels remain intact. This command changes
+only the base's registered path and allows the normal slot identity preflight to
+succeed. It does not change repository registration paths; repair those separately
+when needed.
+
+A slot whose `.aq-worktree.json` was deleted can recover during its next claim
+preparation. AQ proves the registered slot and base share the exact Git repository,
+checks the slot's Git registration and ownership fences, records the proof on the
+incoming task, and preserves unpublished commits before reconstructing that file.
+The normal reset then salvages dirty files and reruns workspace setup. A valid
+sentinel naming a completed predecessor already permits reuse; keep it in place
+so salvage retains its task attribution. Conflicting or unreadable identity files,
+foreign claims and mismatched clones remain preserved for investigation.

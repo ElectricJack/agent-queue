@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `session_show` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:720baa98ea300fb9b19dbdd1ba8416617dfe2e92a1a6e399d220b2467294bf87` |
+| Contract fingerprint | `sha256:5572e4f8017612d4c7e1d37e4b3b7ceb66fce29781b0ce11074b96d3edf44623` |
 
 ## Parameters
 
@@ -26,7 +26,7 @@
 | `task_id` | `string` | no | — | Resolve session from this task id |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `fallback`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `fallback`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -48,7 +48,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using session_id, id, name, task_id | — | always |
+| Read using session_id, id, name, task_id | — | always |
 
 <!-- aq:generated:end -->
 
