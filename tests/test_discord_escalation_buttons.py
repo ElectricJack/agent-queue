@@ -26,7 +26,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig, DiscordEscalationConfig
-from src.database import Database
 from src.database.queries.escalation_queries import TERMINAL_ESCALATION_STATES
 from src.discord.bot import AgentQueueBot
 from src.discord.escalation_buttons import (
@@ -214,9 +213,8 @@ async def test_build_view_is_none_when_a_post_offers_nothing():
 
 
 @pytest.fixture
-async def env(tmp_path):
-    db = Database(lease_dsn("escalation-buttons"))
-    await db.initialize()
+async def env(tmp_path, reuse_database):
+    db = await reuse_database("escalation-buttons")
     await db.create_project(Project(id="p", name="Project P"))
     await db.create_profile(
         AgentProfile(
@@ -260,7 +258,6 @@ async def env(tmp_path):
     orch.db = db
     orch.git = MagicMock()
     yield CommandHandler(orch, config), db, config
-    await db.close()
 
 
 def interaction(*, custom_id: str, user_id: str = JACK, message_id: str = ROOT_MESSAGE, pk="900"):
@@ -285,6 +282,7 @@ async def incident_with_choices(db, handler, *, choices=("keep the trial", "reve
             "project_id": "p",
             "source_kind": "core",
             "source_identity": "incident-1",
+            "task_title": "Choose the trial outcome",
             "incident_key": "incident-1",
             "summary": "Two release branches claim the fix",
             "investigation": "Both were built from main",

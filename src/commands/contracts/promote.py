@@ -32,6 +32,11 @@ class PromoteRequestArgs(PromoteProjectArgs):
     notes_reviewed: bool = Field(
         default=False, description="Acknowledge reading the notes at the pinned source."
     )
+    from_task: str | None = Field(default=None, description="Completed hotfix task to promote.")
+    allow_breaking_migration: bool = Field(
+        default=False,
+        description="Local operator override of non-additive migrations; disables code rollback.",
+    )
 
     @field_validator("source_sha")
     @classmethod
@@ -65,6 +70,20 @@ class PromotionNotesInputArgs(PromoteProjectArgs):
     source_sha: str | None = None
 
     _exact_source = field_validator("source_sha")(PromoteRequestArgs.exact_source.__func__)
+class PromoteHotfixArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    from_task: str | None = None
+    version: str | None = None
+
+
+class PromotionPolicyInputArgs(PromoteRequestArgs):
+    pass
+
+
+class BackmergeSourceArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
 
 
 class PromoteReadArgs(PromoteProjectArgs):
@@ -89,9 +108,18 @@ class PromoteValue(CommandValue):
     notes_input: dict[str, Any] | None = None
     draft: str | None = None
     notes: str | None = None
+    policy: dict[str, Any] | None = None
+    migration_admission: dict[str, Any] | None = None
+    backmerges: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PromoteRepairValue(PromoteValue):
+    backup_path: str | None = None
+    previous: dict[str, Any] | None = None
 
 
 REFUSALS = (
+    "backmerge_ledger_invalid", "hotfix_patch_required",
     "not_found",
     "unavailable",
     "rate_limited",
@@ -123,8 +151,13 @@ REFUSALS = (
     "prepare_in_progress",
     "version_not_increasing",
     "notes_stale",
+    "migrations_not_additive",
+    "migration_range_invalid",
+    "breaking_migration_override_forbidden",
     "notes_range_invalid",
+    "notes_range_too_large",
     "notes_source_missing",
+    "promotion_body_too_large",
 )
 
 
@@ -132,29 +165,38 @@ def register_promote_contracts(registry):
     from src.commands.contracts.integration import _hierarchy_adapter, _operational_contract
 
     for name, args_model, successes, read in (
+        ("integration_promotion_policy_input", PromotionPolicyInputArgs, ("policy_input",), True),
         ("promote_prepare", PromotePrepareArgs, ("prepared",), False),
         ("integration_promotion_notes_input", PromotionNotesInputArgs, ("notes_input",), True),
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
+        ("promote_hotfix", PromoteHotfixArgs, ("hotfix_filed",), False),
+        ("integration_backmerge_source", BackmergeSourceArgs, ("backmerges_authored",), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
+        ("promote_repair", PromoteIntentArgs, ("repaired", "already_healthy"), False),
         ("promote_status", PromoteReadArgs, ("status",), True),
         ("promote_list", PromoteReadArgs, ("listed",), True),
     ):
         outcomes = successes + REFUSALS
+        value_model = PromoteRepairValue if name == "promote_repair" else PromoteValue
         contract = _operational_contract(
             name,
             args_model,
             outcomes,
             successes=frozenset(successes),
             side_effect=SideEffectClass.READ if read else SideEffectClass.COMPOSITE,
-            result_model=PromoteValue,
+            result_model=value_model,
         )
         summaries = {
+            "integration_promotion_policy_input": "Read pinned source and outstanding promotion facts for reviewed policy.",
             "promote_prepare": "File ordinary release preparation on the repository default branch.",
             "integration_promotion_notes_input": "Assemble immutable promotion notes from full Git history.",
+            "promote_hotfix": "File a hotfix based on a promotion target, through ordinary task routing.",
+            "integration_backmerge_source": "Author gated back-merge sources and fast-forward intents down the chain.",
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",
+            "promote_repair": "Back up and restore a stranded promotion task the train refuses.",
             "promote_status": "Read promotion intents and cached check and PR review evidence.",
             "promote_list": "List promotion history using the local evidence cache.",
         }
@@ -166,8 +208,8 @@ def register_promote_contracts(registry):
             }
         )
 
-        async def adapter(args, ctx, _name=name, _outcomes=outcomes):
-            return await _hierarchy_adapter(_name, args, ctx, PromoteValue, set(_outcomes))
+        async def adapter(args, ctx, _name=name, _outcomes=outcomes, _value=value_model):
+            return await _hierarchy_adapter(_name, args, ctx, _value, set(_outcomes))
 
         if registry.get(name) is None:
             registry.register(CommandRegistration(name, contract, adapter))

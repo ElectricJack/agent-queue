@@ -25,6 +25,8 @@ from src.models import (
     AgentState,
     Project,
     ProjectConstraint,
+    ProjectStatus,
+    SessionRecord,
     Task,
     TaskStatus,
 )
@@ -118,6 +120,46 @@ async def _ensure_project(db, project_id="p-1"):
     existing = await db.get_project(project_id)
     if not existing:
         await db.create_project(Project(id=project_id, name=f"Project {project_id}"))
+
+
+async def test_project_pause_and_resume_notify_only_live_holders(handler, db):
+    await _ensure_project(db)
+    await _ensure_project(db, "other")
+    for sid, project_id, task_id, state in (
+        ("task-worker", "p-1", "t-1", "running"),
+        ("waiting-pool", "p-1", "t-2", "running"),
+        ("idle-pool", "p-1", None, "running"),
+        ("supervisor", "p-1", None, "running"),
+        ("old-worker", "p-1", "t-3", "stopped"),
+        ("other-worker", "other", "t-4", "running"),
+    ):
+        if task_id is not None:
+            await db.create_task(make_task(id=task_id, project_id=project_id))
+        await db.create_session(SessionRecord(
+            id=sid, project_id=project_id, task_id=task_id, profile_id="worker",
+            harness="codex", provider="fake", name=sid, lifecycle="pool",
+            work_dir="/tmp/test-project-pause", epoch="test", instance_token=sid,
+            started_at=10.0, state=state,
+        ))
+    await handler._cmd_pause_project({"project_id": "p-1"})
+    assert (await db.get_project("p-1")).status == ProjectStatus.PAUSED
+    for sid in ("task-worker", "waiting-pool"):
+        pending = await db.get_pending_messages("session", sid)
+        assert len(pending) == 1
+        assert pending[0].priority == 0
+        assert "next safe point" in pending[0].body
+        assert "pending wait completing" in pending[0].body
+    for sid in ("idle-pool", "supervisor", "old-worker", "other-worker"):
+        assert await db.get_pending_messages("session", sid) == []
+    # A repeated pause does not send another stop notice.
+    await handler._cmd_pause_project({"project_id": "p-1"})
+    assert len(await db.get_pending_messages("session", "task-worker")) == 1
+    await handler._cmd_resume_project({"project_id": "p-1"})
+    assert (await db.get_project("p-1")).status == ProjectStatus.ACTIVE
+    pending = await db.get_pending_messages("session", "waiting-pool")
+    assert len(pending) == 2
+    assert pending[1].subject == "Project resumed"
+    assert "Run aq prime" in pending[1].body
 
 
 async def _setup(db, project_id="p-1", agent_id="a-1", task_id="t-1", profile_id="claude"):
