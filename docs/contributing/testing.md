@@ -113,6 +113,20 @@ configuration must initialize their own adapters. Use a dedicated scratch
 database when testing migrations, and keep separate connections when testing
 locking or concurrent finalization.
 
+### Copying shared Git seeds
+
+Session-scoped Git seeds must be quiescent before per-test `copytree` reads them.
+Use `tests/git_seed_helpers.py` to initialize bare seeds and clone working seeds:
+both persist `maintenance.auto=false`, `gc.auto=0` and `receive.autogc=false`
+before commits, fetches or pushes can start automatic maintenance. Clone settings
+apply before its initial fetch. The bare remote needs its own configuration;
+local receive-pack does not inherit the sender's command-line settings.
+
+Keep these settings local to disposable test repositories. Each test still copies
+the complete repository and rewrites its origin to its private remote. Do not
+ignore lock files, retry a partial copy, or sleep to hide a changing seed. Tests
+that explicitly exercise maintenance can override their private copy's settings.
+
 ## The `aq test` wrapper
 
 [`src/cli/test_runner.py`](../../src/cli/test_runner.py) does five things, in
@@ -123,8 +137,9 @@ order:
    from inside a worktree); otherwise the `resources:` section of
    `~/.agent-queue/config.yaml`; otherwise built-in fallbacks of 2 slots and 4
    workers. A worktree with no config still gets gating.
-2. **Preflights.** A missing `POSTGRES_TEST_DSN` or a path-shaped argument that
-   does not exist is refused *before* a slot is taken — because pytest under
+2. **Preflights.** A missing `POSTGRES_TEST_DSN` for agent-queue's suite, an
+   unavailable pinned interpreter, or a path-shaped argument that does not
+   exist is refused *before* a slot is taken — because pytest under
    xdist turns a bad path into a green-looking "no tests ran".
 3. **Takes a slot**, printing a `waiting …` line every poll so a queued run
    looks queued rather than hung. A run that selects the whole suite (no path,
@@ -132,10 +147,11 @@ order:
    box-wide full-suite lock, so only one full-suite run goes at a time and it
    queues without holding a slot; focused runs never wait for that lock. See
    [resource gating](../guides/resource-gating.md#one-full-suite-run-at-a-time).
-4. **Execs pytest** with `-n <cap> --dist loadfile`, a fresh
+4. **Runs pytest** under the project's interpreter with `-n <cap> --dist loadfile`, a fresh
    `AQ_TEST_RUN_ID` database-ownership token, and the default marker deselects
    — each only when you did not pass your own. An explicit `-n 0`,
-   `-p no:xdist` or `-m perf` is always honoured.
+   `-p no:xdist` or `-m perf` is always honoured. If the interpreter has no
+   xdist, the wrapper omits its worker/distribution options and runs serially.
 5. **Treats "no tests collected" as the failure it is**, with a line saying so.
 
 `--dist loadfile` keeps one module's tests on one worker, because their
@@ -155,7 +171,11 @@ pytest, including `-h`.
 | `--aq-no-wait` | Fail immediately instead of queueing for a slot (or the full-suite lock). |
 | `--aq-workers N` | Override the enforced `-n`, clamped to the machine's core count. |
 | `--aq-timeout N` | Seconds to wait for a slot, and for a full-suite run the full-suite lock too (default 1800). |
-| `--aq-all-markers` | Run the deselected markers too. |
+| `--aq-all-markers` | Override marker deselects with `-m ''`, unless you supplied a marker expression. |
+| `--aq-project ID` | Select a configured project interpreter outside a worker session. |
+| `--aq-reap-orphans [--aq-apply]` | Inspect orphaned slot holders; explicitly apply verified cleanup. |
+| `--aq-detach [--aq-wait]` | Submit a managed test job, optionally with an atomic durable wait. |
+| `--aq-idempotency-key KEY` | Replay the same detached submission safely. |
 
 | Exit code | Meaning |
 |---|---|
@@ -164,6 +184,20 @@ pytest, including `-h`.
 | `4` | Preflight failure: a missing path, or no `POSTGRES_TEST_DSN`. Nothing ran. |
 | `5` | pytest collected nothing. Nonzero, and the wrapper says why. |
 | `75` | No slot came free, or another full-suite run holds the full-suite lock (`EX_TEMPFAIL`). **Retryable — not a test failure.** |
+
+The interpreter is selected from `resources.test_interpreters[<project id>]`,
+then agent-queue's own interpreter or a foreign project's `.venv`, including
+the main checkout's venv for worker slots. Foreign suites do not require
+`POSTGRES_TEST_DSN`. See [project interpreter selection](../guides/resource-gating.md#other-projects-tests).
+
+Detached runs use server admission and caps; they cannot combine with foreground
+slot overrides or smart selection. They need `resources.jobs.enabled` and, for
+agent-queue, the configured disposable job test database. Keep the submission
+key and returned job/wait IDs, end the turn as instructed, and consume the
+delivered result. See [managed test jobs](../guides/resource-gating.md#managed-test-jobs).
+For a non-executing test-selection proposal, use
+`aq test --aq-smart --aq-plan-only`; [smart selection](../guides/smart-test-selection.md)
+explains its switches and why a proposal does not verify a task.
 
 Checking what a command will actually run, without running it:
 
@@ -240,6 +274,14 @@ because wall-clock assertions are not confined to that package — any suite tha
 asserts elapsed time needs the same gate, and an ungated one turns CI's default
 arm red on runner load.
 
+Keep behavior assertions in the default arm when separating a latency budget.
+For example, the session command no-op close test always checks the real close
+result, the completion pipeline's work outcome and its persisted metadata, with
+a 120-second hang backstop. Its separate `test_no_op_close_latency_budget` uses
+the same assertions under `perf_strict` and retains the two-second close budget.
+PostgreSQL transaction startup under load must not prevent the default arm from
+checking those outcomes.
+
 ## The PostgreSQL substrate
 
 PostgreSQL is the suite's **only** backend; SQLite was removed and
@@ -272,6 +314,11 @@ Teardown wipes *and* replays the migration seed rows: the built-in
 test after the first without them.
 
 The wipe (`db_fixtures.reset_all`) deletes rows rather than truncating tables.
+Before scanning tables, it temporarily blocks new connections to the leased
+database and terminates the test role's existing clients, including idle ones.
+This prevents a late background write from surviving the wipe while its identity
+sequence restarts. Connection admission is restored even if the reset fails or
+is cancelled. Each lease belongs to one worker; other test databases remain open.
 `TRUNCATE ... CASCADE` gives every table in the foreign-key closure new files —
 279 of them after a test that wrote one `projects` row — and each new file is
 an fsync the next checkpoint owes. Every `DROP DATABASE` waits for a
@@ -326,18 +373,18 @@ tests/
   db_fixtures.py               template, lease pool, row-level reset + seed replay
   pg_dsn.py                    per-worker DSN derivation and owned-database cleanup
   *_helpers.py                 shared builders (git mocks, playbook V2, session dispatch, …)
-  test_<area>.py               ~549 files, one per area
+  test_<area>.py               focused modules, one per area
   perf/                        statement-count and latency budgets (marker: perf)
   llm/                         LLM client, adapters, providers, fakes
   task_graph/                  graph commands and the spatial layout engine
     layout/
-  fixtures/                    ~180 data files, not tests
+  fixtures/                    test data and reviewed artifacts, not collected tests
     contracts/  fake_gh/  formulas/  harnesses/
     playbooks/  task_graphs/  transcripts/
 ```
 
 Tests are documented as a layout and a set of markers rather than file by file;
-the coverage manifest assigns all 771 of them to this page. `pyproject.toml`'s
+the coverage manifest assigns the test tree to this page. `pyproject.toml`'s
 `testpaths` also lists `packages/`, which currently contains only the two
 generated clients and no tests.
 
@@ -379,14 +426,14 @@ script, so a fresh checkout does not need a separate generation step — see
 
 ## End-to-end
 
-For changes to claims, pools, formulas or the task hierarchy there is a real
+For changes to claims, pools, formulas, the task hierarchy or provider failover there is a real
 daemon on real PostgreSQL, driven through the real CLI, with no LLM:
 
 ```bash
 scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh
 ```
 
-It runs sixteen scenarios in roughly six minutes inside an isolated
+It runs twenty scenarios inside an isolated
 world under `~/.agent-queue-e2e` — its own database, port, vault, tmux socket
 and throwaway repository. Nothing it touches is shared with your daemon. The
 full guide is [e2e swarm](../guides/e2e-swarm.md); the scripts are inventoried
@@ -418,7 +465,7 @@ referencing that task until the fix lands.
 
 | Input | Output |
 |---|---|
-| `POSTGRES_TEST_DSN` | Template, per-worker and lease databases, all dropped on teardown. |
+| `POSTGRES_TEST_DSN` | Run-owned template clones and lease databases; teardown drops owned databases and later sweeps retry proven orphans. |
 | A test path or `-k` expression | pytest's report, plus `--durations=10` from `addopts`. |
 | `resources:` config or `AQ_TEST_*` env | The slot count and the `-n` cap actually used. |
 | Nothing | `.pytest_cache/`, `.coverage.*` if you asked for coverage — both gitignored. |
@@ -427,9 +474,9 @@ referencing that task until the fix lands.
 
 * **The harness** owns every database under `POSTGRES_TEST_DSN` whose name
   carries this run's ownership token, and removes them at session finish.
-* **The box** owns the `flock` slots; they outlive a crashed `aq test` only
-  until the descriptor closes, and the wrapper forwards `SIGINT`/`SIGTERM` to
-  pytest so a killed wrapper cannot orphan a running suite.
+* **The box** owns the `flock` slots. The wrapper forwards `SIGINT`, `SIGTERM`
+  and `SIGHUP`; surviving pytest descendants inherit the slot descriptor and
+  keep it held. The orphaned-run diagnostic handles cleanup after abrupt death.
 * **The daemon's database** is owned by the operator and is never addressed.
 
 ## Common failures and recovery
@@ -453,7 +500,7 @@ referencing that task until the fix lands.
 * [Resource gating](../guides/resource-gating.md) — the three enforcement
   layers `aq test` is the middle of.
 * [Code generation](codegen.md) — what to regenerate when a drift guard fails.
-* [CI](ci.md) — the four suite arms that run everything you deselected.
+* [CI](ci.md) — default shards, specialized marker arms and stateful CLI checks.
 * [e2e swarm](../guides/e2e-swarm.md) — the real-daemon functional kit.
 
 ## Source and tests

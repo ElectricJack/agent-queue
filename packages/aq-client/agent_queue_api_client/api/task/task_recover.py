@@ -65,11 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskRecoverRequest,
 ) -> Response[TaskRecoverResponse422 | TaskRecoveryResponse]:
-    """Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+    """Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
-     Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+     Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
     Args:
         body (TaskRecoverRequest):
@@ -98,11 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskRecoverRequest,
 ) -> TaskRecoverResponse422 | TaskRecoveryResponse | None:
-    """Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+    """Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
-     Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+     Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
     Args:
         body (TaskRecoverRequest):
@@ -126,11 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskRecoverRequest,
 ) -> Response[TaskRecoverResponse422 | TaskRecoveryResponse]:
-    """Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+    """Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
-     Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+     Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
     Args:
         body (TaskRecoverRequest):
@@ -157,11 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskRecoverRequest,
 ) -> TaskRecoverResponse422 | TaskRecoveryResponse | None:
-    """Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+    """Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
-     Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded
-    diagnosis. Never bypass a rejection using restart_task or status edits.
+     Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis,
+    or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a
+    rejection using restart_task or status edits.
 
     Args:
         body (TaskRecoverRequest):
