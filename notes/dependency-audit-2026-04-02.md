@@ -1,5 +1,11 @@
 # Dependency Audit — 2026-04-02
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 ## Security Vulnerabilities Found & Fixed
 
 19 vulnerabilities across 8 packages, **all resolved** by upgrading:

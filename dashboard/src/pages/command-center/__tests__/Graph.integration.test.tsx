@@ -2,12 +2,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Graph from "../Graph";
 import type { PlaybookSummary } from "../../../api/hooks";
+import { clearRunningWorkJump } from "../layout-v2/runningWork";
 const mocks = vi.hoisted(() => ({
   playbooks: [] as PlaybookSummary[], open: vi.fn(), close: vi.fn(), pane: { kind: "closed" } as { kind: string; view?: string; args?: unknown },
   query: "", showCompleted: false, extentPending: false, projectIds: ["alpha"],
+  runningTarget: null as { task_id: string; project_id: string; parent_task_id: string | null; ancestors: string[]; observed_at: number; layout_version: number | null } | null,
   project: { id: "alpha", name: "Alpha" },
   layoutProps: { current: null as Record<string, unknown> | null },
-  listProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(),
+  listProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(), setShowCompleted: vi.fn(),
 }));
 vi.mock("../../../api/hooks", () => ({
   usePlaybooks: () => ({ data: mocks.playbooks, isLoading: false }),
@@ -16,6 +18,7 @@ vi.mock("../../../api/graphLayout", () => ({
   useLayoutExtents: (ids: string[]) => ids.map(() => (mocks.extentPending
     ? { pending: true }
     : { layout_version: 1, extent_w: 4, extent_h: 4, node_count: 7 })),
+  useRunningTarget: () => ({ data: mocks.runningTarget }),
 }));
 vi.mock("../layout-v2/LayoutCanvas", () => ({ default: (props: Record<string, unknown>) => {
   mocks.layoutProps.current = props;
@@ -32,11 +35,15 @@ vi.mock("../layout-v2/MobileLayoutList", () => ({
 }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ state: mocks.pane, open: mocks.open, close: mocks.close }) }));
 vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: mocks.projectIds, projects: [mocks.project],
-  filters: { query: mocks.query, status: "", showCompleted: mocks.showCompleted, focus: "" }, focusId: null, setFocus: vi.fn(),
+  filters: { query: mocks.query, status: "", showCompleted: mocks.showCompleted, focus: "", window: "", held: false }, focusId: null, setFocus: vi.fn(),
+  setShowCompleted: mocks.setShowCompleted,
   isLoadingProjects: false, projectsError: null }) }));
 vi.mock("../useTaskSelection", () => ({ useTaskSelection: () => ({ selectedTaskId: null, selectTask: mocks.selectTask, clearTask: vi.fn() }) }));
 beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear();
   mocks.query = ""; mocks.showCompleted = false; mocks.extentPending = false; mocks.selectTask.mockClear();
+  mocks.setShowCompleted.mockClear();
+  mocks.runningTarget = null;
+  clearRunningWorkJump();
   mocks.layoutProps.current = null; mocks.listProps.current = null; mocks.projectIds = ["alpha"];
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -72,6 +79,12 @@ it("renders the layout canvas and maps Show completed to the variant", () => {
   expect(mocks.layoutProps.current).toMatchObject({ variant: "active" });
 });
 
+it("gives a root graph its current running target for the initial viewport", () => {
+  mocks.runningTarget = { task_id: "g0", project_id: "alpha", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
+  render(<Graph />);
+  expect(mocks.layoutProps.current).toMatchObject({ runningTarget: { task_id: "g0" }, manualRunningTarget: false });
+});
+
 it("keeps the canvas mounted and reports progress while an extent is still building", () => {
   mocks.extentPending = true;
   render(<Graph />);
@@ -86,7 +99,7 @@ it("uses the mobile layout list on portrait phones, one per project", () => {
   render(<Graph />);
   expect(screen.getByTestId("layout-lists")).toBeInTheDocument();
   expect(screen.queryByTestId("layout-canvas")).toBeNull();
-  expect(mocks.listProps.current).toMatchObject({ projectIds: ["alpha", "beta"] });
+  expect(mocks.listProps.current).toMatchObject({ projectIds: ["alpha", "beta"], setShowCompleted: mocks.setShowCompleted });
 });
 
 it("routes a clicked card that belongs to a playbook run through its own payload", () => {

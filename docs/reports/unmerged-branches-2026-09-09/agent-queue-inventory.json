@@ -1,0 +1,3194 @@
+[
+  {
+    "name": "aq/agile-current",
+    "sha": "febec9e4347934dbf9316de045204f7d1a91cf0b",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver successor-instance protection for abandoned worker recycling",
+    "pr": {
+      "headRefName": "aq/agile-current",
+      "headRefOid": "febec9e4347934dbf9316de045204f7d1a91cf0b",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 571,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(pool): protect successor after recycle fence",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/571"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "9 files changed, 316 insertions(+), 15 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "CONSOLIDATE: approved successor protection; operator reconciler already has the same post-CAS instance-token refusal (branch adds explanatory comment). Preserve other operator recovery logic.",
+    "reviews": [
+      {
+        "id": "sound-summit",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/amber-crest",
+    "sha": "275b500bb107c9f42a6cf225de28684bf6eac3ae",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover detached historical repair claims after pool slot reuse",
+    "pr": {
+      "headRefName": "aq/amber-crest",
+      "headRefOid": "275b500bb107c9f42a6cf225de28684bf6eac3ae",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 538,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): preserve successor claims during recovery",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/538"
+    },
+    "contained": [],
+    "ahead": "46",
+    "stat": "68 files changed, 14270 insertions(+), 234 deletions(-)",
+    "patch_unique": 4,
+    "patch_equivalent": 1,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "crisp-torrent",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "keen-falcon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/amber-zenith",
+    "sha": "b219c4e9d7ef2ae5d600726eaf04c4e1e9bd890f",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Make task explain dependency blockers match scheduler semantics",
+    "pr": {
+      "headRefName": "aq/amber-zenith",
+      "headRefOid": "b219c4e9d7ef2ae5d600726eaf04c4e1e9bd890f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 537,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(explain): match typed dependency blockers",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/537"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "3 files changed, 175 insertions(+), 50 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "grand-rapids",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/azure-nexus",
+    "sha": "985c03040680a1ddaa16d431982272d900ece2c0",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Keep workspace spec scanning off the scheduler critical path",
+    "pr": {
+      "headRefName": "aq/azure-nexus",
+      "headRefOid": "985c03040680a1ddaa16d431982272d900ece2c0",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 561,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(scheduler): run workspace spec scans outside cycles",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/561"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 139 insertions(+), 4 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "CONSOLIDATE: approved background spec scanning; operator source and watcher tests already match this implementation; use operator snapshot.",
+    "reviews": [
+      {
+        "id": "grand-lantern",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/bright-journey",
+    "sha": "8612d27a709b48b715c9e2f847a1b752af16f4d8",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover malformed unwritten parent resolution reservations",
+    "pr": null,
+    "contained": [],
+    "ahead": "1",
+    "stat": "9 files changed, 500 insertions(+), 11 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD: latest implementation completed, review brisk-ember READY. Adds migration a00000000005, which collides with existing operator migration 5; must reconcile onto current migration chain (operator head 7).",
+    "reviews": [
+      {
+        "id": "brisk-ember",
+        "status": "READY"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-apex",
+    "sha": "114f6c4a53dc4576f0b1161e15604161a48748b2",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Restore parent collection atomically when integration repair resumes",
+    "pr": {
+      "headRefName": "aq/brisk-apex",
+      "headRefOid": "114f6c4a53dc4576f0b1161e15604161a48748b2",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 530,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): restore parent on repair resume",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/530"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "2 files changed, 353 insertions(+), 45 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "grand-quest",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-crest",
+    "sha": "c1836fe4732329dc71fcd7dca7fcfba2b326838c",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver green-candidate moved-main repair adoption fix",
+    "pr": {
+      "headRefName": "aq/brisk-crest",
+      "headRefOid": "c1836fe4732329dc71fcd7dca7fcfba2b326838c",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 566,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): adopt green candidate rebuild conflicts",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/566"
+    },
+    "contained": [],
+    "ahead": "5",
+    "stat": "6 files changed, 777 insertions(+), 11 deletions(-)",
+    "patch_unique": 2,
+    "patch_equivalent": 2,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "noble-nexus",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-delta",
+    "sha": "2601f3adee09dce266dd2f7afcc735b0afe1140d",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Fail-close never releases the integration writer, so a train-mode pool session keeps its claim and the branch stays owned",
+    "pr": {
+      "headRefName": "aq/brisk-delta",
+      "headRefOid": "2601f3adee09dce266dd2f7afcc735b0afe1140d",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 575,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(close): release the integration writer on a failing close",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/575"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 410 insertions(+), 16 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "MERGE NEXT: release retryable integration ownership on failed close; review sound-lantern approved this exact tip. Reconcile with operator close/recovery changes.",
+    "reviews": [
+      {
+        "id": "sound-lantern",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-glacier",
+    "sha": "9a8817f060b11351a2eca379201fcc673071c961",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Pool repair resolution principal omits live task id",
+    "pr": {
+      "headRefName": "aq/brisk-glacier",
+      "headRefOid": "9a8817f060b11351a2eca379201fcc673071c961",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 526,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): accept pool tokens for conflict resolution by live held task",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/526"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 200 insertions(+), 12 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "azure-glacier",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-journey",
+    "sha": "f645d9bb63482076838629b3c3720cae2e55035b",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Review and deliver the PR-link recovery lock-order correction",
+    "pr": {
+      "headRefName": "aq/brisk-journey",
+      "headRefOid": "f645d9bb63482076838629b3c3720cae2e55035b",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 550,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): release repository lock before PR recovery writes",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/550"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "2 files changed, 104 insertions(+), 42 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "swift-falcon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-rapids",
+    "sha": "76472377de95c2c6b000df3616fcc160e5a79dc8",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Verifier task is re-offered by aq task claim but stays READY, so it can never be commented on or closed",
+    "pr": {
+      "headRefName": "aq/brisk-rapids",
+      "headRefOid": "76472377de95c2c6b000df3616fcc160e5a79dc8",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 573,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(claim): never re-serve a held task that left IN_PROGRESS",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/573"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 333 insertions(+), 9 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD: corrected stale-claim epoch fencing revision; latest review prime-falcon IN_PROGRESS. Earlier revision was rejected for a reclaim race.",
+    "reviews": [
+      {
+        "id": "prime-falcon",
+        "status": "IN_PROGRESS"
+      },
+      {
+        "id": "wise-crest",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/calm-dune",
+    "sha": "90e2b8120954d3e2122bb6563500578761334591",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover a completed task whose pool claim and branch attachment survived close",
+    "pr": {
+      "headRefName": "aq/calm-dune",
+      "headRefOid": "90e2b8120954d3e2122bb6563500578761334591",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 546,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Recover interrupted terminal pool claims",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/546"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "6 files changed, 400 insertions(+), 65 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "sharp-zenith",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/clear-quest",
+    "sha": "925df51151587d93e76b73a439ef5ec2108ac448",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Bind existing unmaterialized tasks during hierarchy rollout",
+    "pr": {
+      "headRefName": "aq/clear-quest",
+      "headRefOid": "925df51151587d93e76b73a439ef5ec2108ac448",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 539,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Reconcile unmaterialized hierarchy rollout tasks",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/539"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "9 files changed, 546 insertions(+), 6 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "bold-meadow",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "fresh-impact",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/eager-falcon",
+    "sha": "f925bf456e2cbbb1e9f121684e21589d3ad77470",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover root rebuild conflicts after main moves within the repair budget",
+    "pr": {
+      "headRefName": "aq/eager-falcon",
+      "headRefOid": "f925bf456e2cbbb1e9f121684e21589d3ad77470",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 529,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): repair conflicting root candidate rebuilds",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/529"
+    },
+    "contained": [],
+    "ahead": "34",
+    "stat": "63 files changed, 12244 insertions(+), 115 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 1,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "swift-lantern",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "stark-current",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/fair-willow",
+    "sha": "8de63a5c0dd2bb9985d378934da524e4cad7706e",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Stranded 'attached' verifier fence on aq/keen-harbor blocks every claim of verify-81d0aaee",
+    "pr": {
+      "headRefName": "aq/fair-willow",
+      "headRefOid": "73405c7112ee74adddd9716081d29034eb19558d",
+      "isDraft": false,
+      "mergedAt": "2026-09-02T06:31:34Z",
+      "number": 101,
+      "reviewDecision": "",
+      "state": "MERGED",
+      "title": "test: include subagent event in agent command set",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/101"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "9 files changed, 627 insertions(+), 21 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD: revised unsafe doctor repair to report-only plus durable requeue fix. Latest review vivid-lantern READY. Historical same-name PR #101 is not evidence for this tip.",
+    "reviews": [
+      {
+        "id": "vivid-lantern",
+        "status": "READY"
+      }
+    ]
+  },
+  {
+    "name": "aq/fleet-glacier",
+    "sha": "5482060065b8cb0dac6e14dbf8de0956e6f8435f",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "docs(cli): audit report claims post-5d8bc501 commits are documentation-only, but two runtime repairs landed after it",
+    "pr": {
+      "headRefName": "aq/fleet-glacier",
+      "headRefOid": "5482060065b8cb0dac6e14dbf8de0956e6f8435f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 570,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "docs(cli): re-baseline the audit report to the collected aggregate head",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/570"
+    },
+    "contained": [],
+    "ahead": "38",
+    "stat": "99 files changed, 19813 insertions(+), 1632 deletions(-)",
+    "patch_unique": 21,
+    "patch_equivalent": 1,
+    "recommendation": "FOLD INTO CLI epic: completed documentation correction based on the CLI aggregate; do not merge its inherited CLI history separately.",
+    "reviews": [
+      {
+        "id": "swift-vault",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/fresh-flare",
+    "sha": "3c2f245d591059939ebda362877f636bfb5d2759",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver accurate fleet versus project pool capacity explanations",
+    "pr": {
+      "headRefName": "aq/fresh-flare",
+      "headRefOid": "3c2f245d591059939ebda362877f636bfb5d2759",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 554,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): explain fleet capacity separately from project occupancy",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/554"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "2 files changed, 32 insertions(+), 7 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "calm-crest",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/fresh-rapids",
+    "sha": "8149cc8fb5ec83daad9c2f861c684d900fb3cbeb",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "READY",
+    "title": "Recover orphan branch ownership after failed pool claim release",
+    "pr": null,
+    "contained": [],
+    "ahead": "2",
+    "stat": "5 files changed, 893 insertions(+), 232 deletions(-)",
+    "patch_unique": 2,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD: READY after incomplete validation/rejection; stopped-writer recovery overlaps newer operator proof paths.",
+    "reviews": [
+      {
+        "id": "clear-vault",
+        "status": "FAILED"
+      }
+    ]
+  },
+  {
+    "name": "aq/grand-apex",
+    "sha": "165663ef19b989b7eda398b7afca12ae55d0e427",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Finish stopped integration writer claim cleanup and safe recovery",
+    "pr": {
+      "headRefName": "aq/grand-apex",
+      "headRefOid": "165663ef19b989b7eda398b7afca12ae55d0e427",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 534,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): release stopped pool handoff claims",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/534"
+    },
+    "contained": [],
+    "ahead": "44",
+    "stat": "66 files changed, 14010 insertions(+), 230 deletions(-)",
+    "patch_unique": 2,
+    "patch_equivalent": 1,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "noble-orbit",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "vivid-grove",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/grand-vault",
+    "sha": "dec77b8cbfb9c8d0496329a554d190ca1d68fd73",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver canonical root-receipt eligibility and recovery migration follow-through",
+    "pr": {
+      "headRefName": "aq/grand-vault",
+      "headRefOid": "dec77b8cbfb9c8d0496329a554d190ca1d68fd73",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 553,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): recover canonical root receipt eligibility",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/553"
+    },
+    "contained": [],
+    "ahead": "56",
+    "stat": "93 files changed, 16407 insertions(+), 375 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "sound-dune",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "swift-apex",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+    "sha": "50edaa1990c840a63efe3f7f3b9ca9c38e72fc10",
+    "locations": [
+      "local"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "repair(integration): retain contained pool wake fix",
+    "pr": null,
+    "contained": [],
+    "ahead": "4",
+    "stat": "6 files changed, 179 insertions(+), 51 deletions(-)",
+    "recommendation": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes.",
+    "reviews": []
+  },
+  {
+    "name": "aq/keen-bridge",
+    "sha": "b43b3ed6c840789623742ff4c4e7dc3ceb020561",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Keep aggregate verifier close out of legacy PR-to-main verification",
+    "pr": {
+      "headRefName": "aq/keen-bridge",
+      "headRefOid": "b43b3ed6c840789623742ff4c4e7dc3ceb020561",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 572,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): verify hierarchy aggregates without PR gate",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/572"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 574 insertions(+), 25 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE: new verifier-close revision after rejection; operator snapshot already contains manual-hold and replay corrections. Do not replace operator fixes with this branch wholesale.",
+    "reviews": [
+      {
+        "id": "clear-dune",
+        "status": "FAILED"
+      },
+      {
+        "id": "swift-zenith",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-forge",
+    "sha": "92ebcec35b17475a1a0088d3178db47ef3110a63",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Fix red CI on main @ 999990a7 (attempt 1)",
+    "pr": {
+      "headRefName": "aq/keen-forge",
+      "headRefOid": "92ebcec35b17475a1a0088d3178db47ef3110a63",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 518,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(ci): wait for privileged Git process-group cleanup",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/518"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "1 file changed, 14 insertions(+)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "MERGE NEXT: scoped Git process-group cleanup fix; review sound-ridge approved this exact tip.",
+    "reviews": [
+      {
+        "id": "sound-ridge",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-glacier",
+    "sha": "890c5536334b96faf6c4711c80083158eeda8078",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Repair delegate cannot discover its fence token: no read surface exposes integration_branch_owners.fence_token to a repair session",
+    "pr": {
+      "headRefName": "aq/keen-glacier",
+      "headRefOid": "890c5536334b96faf6c4711c80083158eeda8078",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 535,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(integration): expose a repair delegate's fence via integration_repair_fence",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/535"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "13 files changed, 530 insertions(+)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "calm-zenith",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "steady-bridge",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor",
+    "sha": "24dffd43416f63f84a22b1ea90c8ff25606e52c2",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "PAUSED",
+    "title": "Epic: Make the aq CLI consistent, robust, and fully verifiable",
+    "pr": {
+      "headRefName": "aq/keen-harbor",
+      "headRefOid": "24dffd43416f63f84a22b1ea90c8ff25606e52c2",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 568,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "aq CLI audit repairs and final acceptance (keen-harbor aggregate)",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/568"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "38",
+    "stat": "101 files changed, 19794 insertions(+), 1644 deletions(-)",
+    "recommendation": "HOLD aggregate: all 16 child tips are contained. New CI repair 24dffd43 has landed on this branch since the preceding status update; no new CI was run or green result established in this inventory.",
+    "reviews": []
+  },
+  {
+    "name": "aq/keen-harbor.1",
+    "sha": "3a11d77064e404eb60f92b1ffaa3f76fbe596281",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Preserve task-create flags and validate interactive/noninteractive input",
+    "pr": {
+      "headRefName": "aq/keen-harbor.1",
+      "headRefOid": "3a11d77064e404eb60f92b1ffaa3f76fbe596281",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 513,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): preserve partial task creation flags",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/513"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "5 files changed, 267 insertions(+), 42 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "bold-beacon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.10",
+    "sha": "b0837745263403c4d62a65ae09bf0e9fb881465f",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Add a maintained command inventory and CLI conformance regression suite",
+    "pr": {
+      "headRefName": "aq/keen-harbor.10",
+      "headRefOid": "b0837745263403c4d62a65ae09bf0e9fb881465f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 531,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "test(cli): maintain command inventory and conformance suite",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/531"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "9 files changed, 9959 insertions(+), 11 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "amber-rapids",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.11",
+    "sha": "1db075b31a8ab39b306cb4d78edb99f9998bdd41",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Make CLI test preflight and scratch database isolation failures actionable",
+    "pr": {
+      "headRefName": "aq/keen-harbor.11",
+      "headRefOid": "1db075b31a8ab39b306cb4d78edb99f9998bdd41",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 525,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Make PostgreSQL test failures actionable and run-isolated",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/525"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "11 files changed, 620 insertions(+), 152 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "nimble-summit",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.12",
+    "sha": "69e57767fdac6967ef56e4d6560a2c6934642f10",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Cover stateful CLI workflows with disposable end-to-end smoke tests",
+    "pr": {
+      "headRefName": "aq/keen-harbor.12",
+      "headRefOid": "69e57767fdac6967ef56e4d6560a2c6934642f10",
+      "isDraft": false,
+      "mergedAt": "2026-09-09T10:34:52Z",
+      "number": 549,
+      "reviewDecision": "",
+      "state": "MERGED",
+      "title": "test(e2e): cover stateful CLI workflows",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/549"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "14",
+    "stat": "34 files changed, 3778 insertions(+), 280 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "quick-stone",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "vivid-torrent",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.13",
+    "sha": "d380aba02651ba892dde0790475f61e0ae22b631",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Re-audit CLI consistency and publish final per-command acceptance report",
+    "pr": {
+      "headRefName": "aq/keen-harbor.13",
+      "headRefOid": "d380aba02651ba892dde0790475f61e0ae22b631",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 560,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "test(cli): publish final acceptance audit",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/560"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "32",
+    "stat": "99 files changed, 19613 insertions(+), 1629 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "nimble-vault",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "bright-beacon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.14",
+    "sha": "ca7d5c0646506376cab346e32207db7abd04056c",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Fix task graph creation rejected by atomic hierarchy integration guard",
+    "pr": {
+      "headRefName": "aq/keen-harbor.14",
+      "headRefOid": "ca7d5c0646506376cab346e32207db7abd04056c",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 512,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(task-graph): file graphs through atomic hierarchy filing on train projects",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/512"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "5 files changed, 958 insertions(+), 32 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "amber-stone",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.15",
+    "sha": "c74d7f5935ac86ad99f48a87fc67aef467752f54",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Bootstrap new root task origins from an existing repository ref",
+    "pr": {
+      "headRefName": "aq/keen-harbor.15",
+      "headRefOid": "c74d7f5935ac86ad99f48a87fc67aef467752f54",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 511,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): bootstrap new root origins from the default branch",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/511"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "3 files changed, 317 insertions(+), 15 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "swift-current",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.16",
+    "sha": "36378a72dc101d697ab67f25c856667c7a65a925",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver structured unknown-outcome errors for interrupted CLI replies",
+    "pr": {
+      "headRefName": "aq/keen-harbor.16",
+      "headRefOid": "36378a72dc101d697ab67f25c856667c7a65a925",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 548,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): report unknown outcome for interrupted replies",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/548"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "3 files changed, 142 insertions(+), 3 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "sound-willow",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.2",
+    "sha": "01536a44803b429f628cf1e6b26f4df40ea475fd",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Make task creation return a parseable success response in JSON mode",
+    "pr": {
+      "headRefName": "aq/keen-harbor.2",
+      "headRefOid": "01536a44803b429f628cf1e6b26f4df40ea475fd",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 514,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): return a parseable envelope from single task creation",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/514"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "7 files changed, 312 insertions(+), 10 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "clear-cascade",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.3",
+    "sha": "738d4089591492c79cb6e47122e3030a6087211a",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Unify success/error envelopes, brief output, and exit codes across the CLI",
+    "pr": {
+      "headRefName": "aq/keen-harbor.3",
+      "headRefOid": "738d4089591492c79cb6e47122e3030a6087211a",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 520,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): unify structured output contracts",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/520"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "2",
+    "stat": "23 files changed, 1535 insertions(+), 617 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "grand-cascade",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "quick-ember",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.4",
+    "sha": "401d59437555cf0e23bdee4c06c4211e1e606684",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Remove database initialization from CLI import and help discovery",
+    "pr": {
+      "headRefName": "aq/keen-harbor.4",
+      "headRefOid": "401d59437555cf0e23bdee4c06c4211e1e606684",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 517,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): keep help and schema offline",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/517"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "11 files changed, 544 insertions(+), 111 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "azure-falcon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.5",
+    "sha": "04b85dce843551bf03e90f239638470defa81eec",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Make global output flags consistent across command positions and help",
+    "pr": {
+      "headRefName": "aq/keen-harbor.5",
+      "headRefOid": "04b85dce843551bf03e90f239638470defa81eec",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 523,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(cli): global output flags parse at every command position",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/523"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "9 files changed, 678 insertions(+), 15 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "vivid-dune",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.6",
+    "sha": "d17e096b85300aa82c5be79551484e0564037d4c",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Expose task workspace requirements and guard handwritten CLI/backend parity",
+    "pr": {
+      "headRefName": "aq/keen-harbor.6",
+      "headRefOid": "d17e096b85300aa82c5be79551484e0564037d4c",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 516,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(cli): expose requires_kinds on aq task create",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/516"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "4 files changed, 570 insertions(+), 1 deletion(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "agile-summit",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.7",
+    "sha": "2a76cb7c777fb775a4993170cfe80575174b1907",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Resolve the advertised but unimplemented task ask-human command",
+    "pr": {
+      "headRefName": "aq/keen-harbor.7",
+      "headRefOid": "2a76cb7c777fb775a4993170cfe80575174b1907",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 515,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): retire unimplemented ask-human surface",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/515"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "21 files changed, 96 insertions(+), 459 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "keen-apex",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.8",
+    "sha": "64066bb9f825748d94ec493c8812756c6b68819e",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Retire or explicitly deprecate the obsolete plugin hook-log command",
+    "pr": {
+      "headRefName": "aq/keen-harbor.8",
+      "headRefOid": "64066bb9f825748d94ec493c8812756c6b68819e",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 522,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(cli): make `aq plugin logs` an explicit removal, not a quiet no-op",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/522"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "2",
+    "stat": "3 files changed, 171 insertions(+), 10 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "solid-lantern",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "fresh-nexus",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/keen-harbor.9",
+    "sha": "6fa48f53ac11fa2f453b6d62f58446f99f0aa243",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Refresh aq skills, command examples, auth/module docs and profile guidance",
+    "pr": {
+      "headRefName": "aq/keen-harbor.9",
+      "headRefOid": "6fa48f53ac11fa2f453b6d62f58446f99f0aa243",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 527,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "docs(cli): refresh aq skills, CLI module map, auth and profile guidance",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/527"
+    },
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "1",
+    "stat": "13 files changed, 583 insertions(+), 71 deletions(-)",
+    "recommendation": "COLLECTED: exact tip is in CLI epic aggregate; merge through epic only.",
+    "reviews": [
+      {
+        "id": "crisp-glacier",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/nimble-cascade",
+    "sha": "43449391719b630eb3b17545a6ebd842e10c0748",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Resume the current parent conflict through durable repair events",
+    "pr": {
+      "headRefName": "aq/nimble-cascade",
+      "headRefOid": "43449391719b630eb3b17545a6ebd842e10c0748",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 533,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): continue current conflict on resume",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/533"
+    },
+    "contained": [],
+    "ahead": "43",
+    "stat": "65 files changed, 13677 insertions(+), 205 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 2,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "crisp-grove",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "prime-bridge",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/nimble-forge",
+    "sha": "37fcaa4a13907c27717f9c4a272a82948460c37f",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Continue repeated parent conflicts within the frozen repair budget",
+    "pr": {
+      "headRefName": "aq/nimble-forge",
+      "headRefOid": "37fcaa4a13907c27717f9c4a272a82948460c37f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 528,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): continue repeated parent repair conflicts",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/528"
+    },
+    "contained": [],
+    "ahead": "25",
+    "stat": "59 files changed, 11810 insertions(+), 147 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "wise-zenith",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge",
+    "sha": "de34e965e1fda18329bf95f5dd98df7f2fa69571",
+    "locations": [
+      "local"
+    ],
+    "live": true,
+    "task": "BLOCKED",
+    "title": "Epic: Simplify Discord to hourly activity digests and escalation threads",
+    "pr": null,
+    "contained": [],
+    "ahead": "6",
+    "stat": "236 files changed, 23829 insertions(+), 14770 deletions(-)",
+    "recommendation": "HOLD aggregate: blocked resolution recovery; local de34e965 and remote 1db9cc5f differ. Final child acceptance remains. Several latest child tips are not Git ancestors of the remote aggregate; completion does not establish collection.",
+    "reviews": []
+  },
+  {
+    "name": "aq/noble-ridge.1",
+    "sha": "3a6795bc6705059d4474dbc2be3536d212fb372e",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Add durable escalation, reply, delivery and digest state",
+    "pr": {
+      "headRefName": "aq/noble-ridge.1",
+      "headRefOid": "3a6795bc6705059d4474dbc2be3536d212fb372e",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 521,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Add durable escalation, reply, delivery, and digest state",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/521"
+    },
+    "contained": [
+      "origin/aq/noble-ridge"
+    ],
+    "ahead": "1",
+    "stat": "9 files changed, 1915 insertions(+)",
+    "recommendation": "Exact tip is already in remote Discord aggregate; final epic acceptance pending.",
+    "reviews": [
+      {
+        "id": "bold-torrent",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.10",
+    "sha": "822eedb0954d3d5d91b24650f2a3f33da09e613c",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Verify the full Discord escalation and digest lifecycle under failures",
+    "pr": {
+      "headRefName": "aq/noble-ridge.10",
+      "headRefOid": "822eedb0954d3d5d91b24650f2a3f33da09e613c",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 565,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "test(discord): verify simplified lifecycle end to end",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/565"
+    },
+    "contained": [],
+    "ahead": "24",
+    "stat": "234 files changed, 23739 insertions(+), 14639 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "bold-nexus",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "agile-stone",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.11",
+    "sha": "e9b05844980e11289c82da093cd4bcdfcef5774e",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Publish Discord simplification migration, settings and operator documentation",
+    "pr": {
+      "headRefName": "aq/noble-ridge.11",
+      "headRefOid": "e9b05844980e11289c82da093cd4bcdfcef5774e",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 558,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "docs(discord): publish the simplification migration and operator runbook",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/558"
+    },
+    "contained": [],
+    "ahead": "21",
+    "stat": "236 files changed, 23829 insertions(+), 14770 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "eager-vault",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "vivid-apex",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.2",
+    "sha": "3a13e0e7c77b160156895b2af20dcc5522de8d9b",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Expose scoped escalation commands, human-evidence application and typed APIs",
+    "pr": {
+      "headRefName": "aq/noble-ridge.2",
+      "headRefOid": "3a13e0e7c77b160156895b2af20dcc5522de8d9b",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 532,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(escalations): expose verified human command surface",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/532"
+    },
+    "contained": [],
+    "ahead": "2",
+    "stat": "58 files changed, 9240 insertions(+), 3 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "brisk-torrent",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.3",
+    "sha": "d0309c3bf7bba1ff9b584fda572c4c3f5069701a",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Route blocked work and worker questions through supervisor-owned escalations",
+    "pr": {
+      "headRefName": "aq/noble-ridge.3",
+      "headRefOid": "d0309c3bf7bba1ff9b584fda572c4c3f5069701a",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 540,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(escalations): route recovery through supervisors",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/540"
+    },
+    "contained": [],
+    "ahead": "3",
+    "stat": "86 files changed, 10168 insertions(+), 175 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "fair-grove",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.4",
+    "sha": "da5696e224ca767438f6638545fac1844d0d1e3c",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Add Discord settings, escalation inbox and digest preview/status",
+    "pr": {
+      "headRefName": "aq/noble-ridge.4",
+      "headRefOid": "da5696e224ca767438f6638545fac1844d0d1e3c",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 536,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(messaging): Discord settings, digest preview/status and escalation inbox",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/536"
+    },
+    "contained": [],
+    "ahead": "8",
+    "stat": "105 files changed, 17151 insertions(+), 1672 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "eager-glacier",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "keen-rapids",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.5",
+    "sha": "377d5c9a89c7c1eedc4b31eee21e622676b4a5c4",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Deliver and reconcile one escalation post/thread per incident",
+    "pr": {
+      "headRefName": "aq/noble-ridge.5",
+      "headRefOid": "377d5c9a89c7c1eedc4b31eee21e622676b4a5c4",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 542,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(escalations): deliver and reconcile one Discord post/thread per incident",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/542"
+    },
+    "contained": [],
+    "ahead": "11",
+    "stat": "116 files changed, 20186 insertions(+), 1672 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "grand-nexus",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "sharp-willow",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "prime-delta",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "noble-summit",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.6",
+    "sha": "68aa92aa655d113cb343c607f59fdeb871a638f5",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Correlate escalation-thread replies and return them only to supervisors",
+    "pr": {
+      "headRefName": "aq/noble-ridge.6",
+      "headRefOid": "68aa92aa655d113cb343c607f59fdeb871a638f5",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 545,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(escalations): correlate thread replies back to the owning supervisor",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/545"
+    },
+    "contained": [],
+    "ahead": "11",
+    "stat": "146 files changed, 22084 insertions(+), 2182 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "fair-nexus",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.7",
+    "sha": "b0a40a07f8b4190644ea0ed258f63b2f8bd35838",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Build deterministic activity eligibility and concise multi-project digests",
+    "pr": {
+      "headRefName": "aq/noble-ridge.7",
+      "headRefOid": "b0a40a07f8b4190644ea0ed258f63b2f8bd35838",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 524,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(digest): deterministic hourly digest eligibility, aggregation and rendering",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/524"
+    },
+    "contained": [
+      "origin/aq/noble-ridge"
+    ],
+    "ahead": "1",
+    "stat": "27 files changed, 1754 insertions(+), 5 deletions(-)",
+    "recommendation": "Exact tip is already in remote Discord aggregate; final epic acceptance pending.",
+    "reviews": [
+      {
+        "id": "agile-nexus",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "fleet-horizon",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "crisp-ridge",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.8",
+    "sha": "08c73c618bef6a74771e0155c45e51b90c76af8a",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Schedule durable hourly digests with silent idle windows and bounded catch-up",
+    "pr": {
+      "headRefName": "aq/noble-ridge.8",
+      "headRefOid": "08c73c618bef6a74771e0155c45e51b90c76af8a",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 547,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(digest): schedule, reserve and deliver the hourly digest",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/547"
+    },
+    "contained": [],
+    "ahead": "12",
+    "stat": "118 files changed, 20981 insertions(+), 1672 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "bright-horizon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-ridge.9",
+    "sha": "34b2b62e3c819a99cc55b7be03bd4d1381032ed1",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Migrate pending conversations and remove Discord control/chat/streaming surfaces",
+    "pr": {
+      "headRefName": "aq/noble-ridge.9",
+      "headRefOid": "34b2b62e3c819a99cc55b7be03bd4d1381032ed1",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 557,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Retire Discord control surfaces with atomic conversation cutover",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/557"
+    },
+    "contained": [],
+    "ahead": "19",
+    "stat": "227 files changed, 22325 insertions(+), 14598 deletions(-)",
+    "recommendation": "Latest tip is not an ancestor of remote Discord aggregate; check delivery receipt/resolution before merging epic. Do not merge child independently.",
+    "reviews": [
+      {
+        "id": "bright-summit",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/noble-torrent",
+    "sha": "40c90c52c7300614d08ad4199cc5f87c84414c44",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Start untouched container collection and gate dependents on delivered prerequisites",
+    "pr": {
+      "headRefName": "aq/noble-torrent",
+      "headRefOid": "40c90c52c7300614d08ad4199cc5f87c84414c44",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 567,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): gate container collection and sibling delivery",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/567"
+    },
+    "contained": [],
+    "ahead": "4",
+    "stat": "8 files changed, 791 insertions(+), 2 deletions(-)",
+    "patch_unique": 3,
+    "patch_equivalent": 1,
+    "recommendation": "HOLD/reconcile: new durable root identity fix; review solid-bridge READY. Prior revisions rejected for missing runtime wiring; operator snapshot already contains runtime wiring and prerequisite guards.",
+    "reviews": [
+      {
+        "id": "steady-zenith",
+        "status": "FAILED"
+      },
+      {
+        "id": "solid-bridge",
+        "status": "READY"
+      },
+      {
+        "id": "quick-grove",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "nimble-horizon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/prime-beacon",
+    "sha": "282addb8d294f0cf35ecee89d485f0e5becef6a9",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Record confirmed pool stop while branch ownership retains the claim",
+    "pr": {
+      "headRefName": "aq/prime-beacon",
+      "headRefOid": "282addb8d294f0cf35ecee89d485f0e5becef6a9",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 563,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(pools): persist confirmed stop while owner handoff retains claim",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/563"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "5 files changed, 989 insertions(+), 65 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "noble-falcon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/prime-ridge",
+    "sha": "e68e3788e6292603a8c8ece66341c759afa83b77",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Streamline header in project command center view",
+    "pr": {
+      "headRefName": "aq/prime-ridge",
+      "headRefOid": "e68e3788e6292603a8c8ece66341c759afa83b77",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 476,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Streamline project command center header",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/476"
+    },
+    "contained": [],
+    "ahead": "2",
+    "stat": "7 files changed, 136 insertions(+), 22 deletions(-)",
+    "patch_unique": 2,
+    "patch_equivalent": 0,
+    "recommendation": "MERGE NEXT: header/graph UI changes plus PostgreSQL startup query correction; review keen-dune approved final two-commit diff.",
+    "reviews": [
+      {
+        "id": "nimble-falcon",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "keen-dune",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/smart-horizon",
+    "sha": "f929c83db145999ca0da9ce20a7172d5ddbd70c3",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "READY",
+    "title": "Recover AQ-injected unsubmitted terminal prompts across daemon restart",
+    "pr": {
+      "headRefName": "aq/smart-horizon",
+      "headRefOid": "f929c83db145999ca0da9ce20a7172d5ddbd70c3",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 569,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(sessions): persist pending terminal injections",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/569"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "5 files changed, 296 insertions(+), 72 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD: READY after reviewer amber-apex rejected substring-based prompt matching; exact composer equality correction outstanding.",
+    "reviews": [
+      {
+        "id": "amber-apex",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/sound-apex",
+    "sha": "82712d1ac6daecaa7c09a246e3c1a940212233c2",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Continue the current parent conflict on the first human repair resume",
+    "pr": {
+      "headRefName": "aq/sound-apex",
+      "headRefOid": "82712d1ac6daecaa7c09a246e3c1a940212233c2",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 543,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): continue conflict on first human resume",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/543"
+    },
+    "contained": [],
+    "ahead": "44",
+    "stat": "65 files changed, 13810 insertions(+), 205 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 3,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "stark-nexus",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/sound-current.5",
+    "sha": "54aaca69793174cb1daaf6fea386e79e6453adb2",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(providers): measure usage staleness from last_seen_at",
+    "pr": {
+      "headRefName": "aq/sound-current.5",
+      "headRefOid": "54aaca69793174cb1daaf6fea386e79e6453adb2",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 482,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Provider usage: GET /api/providers/usage (T5)",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/482"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "7 files changed, 253 insertions(+), 34 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "Older provider usage-staleness change; no matching active/archived task found in queried records; PR #482 open. Hold for targeted current-code review.",
+    "reviews": []
+  },
+  {
+    "name": "aq/sound-nexus",
+    "sha": "ec88e246a9030d3ec100486beca247902cb1a802",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Allow guarded operator resume of an expired pre-reservation repair writer",
+    "pr": {
+      "headRefName": "aq/sound-nexus",
+      "headRefOid": "ec88e246a9030d3ec100486beca247902cb1a802",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 559,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): rearm exact repair writer before reservation",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/559"
+    },
+    "contained": [],
+    "ahead": "101",
+    "stat": "109 files changed, 19070 insertions(+), 508 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 0,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "solid-apex",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/swift-journey",
+    "sha": "475143b0feb4f0d8a38443ec8c17d770a59f51d9",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Review and deliver accumulated operator reliability fixes through the integration train",
+    "pr": {
+      "headRefName": "aq/swift-journey",
+      "headRefOid": "475143b0feb4f0d8a38443ec8c17d770a59f51d9",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 544,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "merge: deliver operator reliability fixes",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/544"
+    },
+    "contained": [],
+    "ahead": "54",
+    "stat": "77 files changed, 15038 insertions(+), 288 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 0,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": [
+      {
+        "id": "crisp-current",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/wise-lantern",
+    "sha": "fa94941f8ab151c80695ade3dd0b216b15ac63de",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "test(tools): register playbook delete expectation",
+    "pr": {
+      "headRefName": "aq/wise-lantern",
+      "headRefOid": "fa94941f8ab151c80695ade3dd0b216b15ac63de",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 472,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(dashboard): delete playbooks from the graph, list and detail views",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/472"
+    },
+    "contained": [],
+    "ahead": "3",
+    "stat": "18 files changed, 905 insertions(+), 21 deletions(-)",
+    "patch_unique": 3,
+    "patch_equivalent": 0,
+    "recommendation": "Archived AQ task COMPLETED: playbook deletion UI/API. Old PR #472 remains open; aged three-commit diff needs comparison with current V2 playbooks before any merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/wise-nexus",
+    "sha": "4ff4db60413137c32eb8ff2618ac46953c1a7368",
+    "locations": [
+      "local",
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover stopped stale pool writers during integration repair handoff",
+    "pr": {
+      "headRefName": "aq/wise-nexus",
+      "headRefOid": "4ff4db60413137c32eb8ff2618ac46953c1a7368",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 555,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(pool): recover stopped stale integration writers",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/555"
+    },
+    "contained": [],
+    "ahead": "1",
+    "stat": "4 files changed, 931 insertions(+), 65 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "RECONCILE with operator snapshot: AQ completed, but this delivery branch has different ancestry/patches. Many recovery implementations were applied and corrected on operator main; do not blindly replay older variants.",
+    "reviews": [
+      {
+        "id": "fair-journey",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "keen-pinnacle",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "codex/fix-triage-routing-lifecycle",
+    "sha": "257bb840beb41bad0ba9b29f4c8b26dc5b469d57",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "Restore applied dependency-description migration",
+    "pr": null,
+    "contained": [],
+    "ahead": "2",
+    "stat": "50 files changed, 3187 insertions(+), 261 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 2,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": []
+  },
+  {
+    "name": "codex/mandatory-triage",
+    "sha": "c0915c2a3baa3815ff419f7a4bd204c06ba5b241",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "fix(triage): harden authenticated routing boundary",
+    "pr": null,
+    "contained": [],
+    "ahead": "4",
+    "stat": "49 files changed, 2855 insertions(+), 325 deletions(-)",
+    "patch_unique": 4,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge.",
+    "reviews": []
+  },
+  {
+    "name": "design/global-worker-pools",
+    "sha": "c3afc8bbc0283508418f5c182b8843d6fb65b347",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "docs(spec): global worker pools design",
+    "pr": null,
+    "contained": [],
+    "ahead": "1",
+    "stat": "1 file changed, 525 insertions(+)",
+    "patch_unique": 0,
+    "patch_equivalent": 1,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": []
+  },
+  {
+    "name": "design/hierarchical-integration-trains",
+    "sha": "e3298a0207f5d8118bdb4d063217a3fbdaabe386",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "docs: incorporate integration trains adversarial review",
+    "pr": null,
+    "contained": [],
+    "ahead": "3",
+    "stat": "2 files changed, 995 insertions(+)",
+    "patch_unique": 3,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge.",
+    "reviews": []
+  },
+  {
+    "name": "design/project-onboarding",
+    "sha": "3843e7a4bdfe65ac863085e923eb6eae535f2b92",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "docs: design dashboard project onboarding",
+    "pr": null,
+    "contained": [],
+    "ahead": "2",
+    "stat": "2 files changed, 565 insertions(+)",
+    "patch_unique": 0,
+    "patch_equivalent": 2,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": []
+  },
+  {
+    "name": "fix/ci-integration-boundaries",
+    "sha": "171e798060f896d1d4ffbc42de4fbd808e4cd672",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "feat(ci): run full suites only at integration boundaries",
+    "pr": null,
+    "contained": [],
+    "ahead": "7",
+    "stat": "27 files changed, 1886 insertions(+), 86 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 7,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": []
+  },
+  {
+    "name": "fix/feature-merge-model",
+    "sha": "8a0aea2301c38088c9ed6002601022249cc051f1",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "feat(integration): preserve reviewed feature ancestry with merge commits",
+    "pr": null,
+    "contained": [],
+    "ahead": "5",
+    "stat": "14 files changed, 799 insertions(+), 23 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 5,
+    "recommendation": "CONSOLIDATE: git cherry finds no unique non-merge patches versus local operator main; ancestry may differ. Do not independently replay; retain until canonical delivery.",
+    "reviews": []
+  },
+  {
+    "name": "fix/profile-editor-capability-namespaces",
+    "sha": "9d52fa3bc97a4c403259062ce12fb9092b277aae",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "fix(profiles): round-trip the tool picker through the capability namespaces",
+    "pr": null,
+    "contained": [],
+    "ahead": "1",
+    "stat": "5 files changed, 214 insertions(+), 45 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "HOLD legacy/local work: ancestry-unmerged; patch uniqueness is not proof of missing functionality. Compare current implementation/spec before proposing any merge.",
+    "reviews": []
+  },
+  {
+    "name": "main",
+    "sha": "39783ab5476da90e1961f133cdea92e54a851311",
+    "locations": [
+      "local"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): integrate fenced rejected candidate recovery with operator CLI",
+    "pr": null,
+    "contained": [],
+    "ahead": "151",
+    "stat": "125 files changed, 23538 insertions(+), 621 deletions(-)",
+    "patch_unique": 0,
+    "patch_equivalent": 0,
+    "recommendation": "MERGE via published operator branch below; local main is 151 commits ahead of origin/main, 0 behind.",
+    "reviews": []
+  },
+  {
+    "name": "noble-torrent-root-identity",
+    "sha": "40c90c52c7300614d08ad4199cc5f87c84414c44",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "fix(integration): persist root branch identity",
+    "pr": null,
+    "contained": [],
+    "ahead": "4",
+    "stat": "8 files changed, 791 insertions(+), 2 deletions(-)",
+    "patch_unique": 3,
+    "patch_equivalent": 1,
+    "recommendation": "Local alias of aq/noble-torrent at the same tip; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "safety/prime-beacon-before-prereq-rebuild",
+    "sha": "74c17a84e94bfb5e86e6677ecff47d07036abd78",
+    "locations": [
+      "local"
+    ],
+    "live": false,
+    "task": "no matching active task",
+    "title": "fix(pools): persist confirmed stop when ownership retains claim",
+    "pr": null,
+    "contained": [],
+    "ahead": "1",
+    "stat": "2 files changed, 749 insertions(+), 2 deletions(-)",
+    "patch_unique": 1,
+    "patch_equivalent": 0,
+    "recommendation": "Safety backup of an earlier retained-owner stop implementation; no direct merge; keep until final delivery reconciled.",
+    "reviews": []
+  },
+  {
+    "name": "aq/bright-grove",
+    "sha": "92971ae88d2aebe0ed0283c47d2e81fb2d6d4b90",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover idle pool workers that abandon claiming after prepare failure",
+    "pr": {
+      "headRefName": "aq/bright-grove",
+      "headRefOid": "92971ae88d2aebe0ed0283c47d2e81fb2d6d4b90",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 564,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(pool): recover workers stalled after prepare failures",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/564"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "2",
+    "stat": "9 files changed, 290 insertions(+), 15 deletions(-)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "prime-harbor",
+        "status": "FAILED"
+      },
+      {
+        "id": "sound-ember",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/brisk-pinnacle",
+    "sha": "b0dfc39599a1ad4746c608f7f725bd5aeacd237f",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Candidate construction replays already-integrated members and conflicts (src/integration/candidates.py::_construct)",
+    "pr": {
+      "headRefName": "aq/brisk-pinnacle",
+      "headRefOid": "b0dfc39599a1ad4746c608f7f725bd5aeacd237f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 552,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): skip merge replay for already-contained candidate members",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/552"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "1",
+    "stat": "2 files changed, 105 insertions(+)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "keen-horizon",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/fleet-harbor",
+    "sha": "04b42fb8b111ef46451d66a0b9a2ca6a52c215b6",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Recover pushed candidate resolutions for already-contained frozen members",
+    "pr": {
+      "headRefName": "aq/fleet-harbor",
+      "headRefOid": "04b42fb8b111ef46451d66a0b9a2ca6a52c215b6",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 574,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): accept contained frozen repair lineage",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/574"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "1",
+    "stat": "14 files changed, 833 insertions(+), 35 deletions(-)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "calm-orbit",
+        "status": "FAILED"
+      },
+      {
+        "id": "keen-cascade",
+        "status": "READY"
+      }
+    ]
+  },
+  {
+    "name": "aq/fresh-beacon",
+    "sha": "3136b02f34b93f6de08b764bf4593c32657958d7",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "READY",
+    "title": "Prevent automatic routing from stranding ready work on disabled worker pools",
+    "pr": {
+      "headRefName": "aq/fresh-beacon",
+      "headRefOid": "3136b02f34b93f6de08b764bf4593c32657958d7",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 551,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(routing): avoid disabled worker pools",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/551"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "1",
+    "stat": "5 files changed, 143 insertions(+), 10 deletions(-)",
+    "recommendation": "Included in operator snapshot by ancestry, but AQ task remains READY after follow-up; merging existing code does not close remaining task work.",
+    "reviews": [
+      {
+        "id": "clear-willow",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/integration-repairs/d3b49b4e-3651-50cf-94ee-c6650ac6687f",
+    "sha": "50edaa1990c840a63efe3f7f3b9ca9c38e72fc10",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "repair(integration): retain contained pool wake fix",
+    "pr": null,
+    "contained": [],
+    "ahead": "4",
+    "stat": "6 files changed, 179 insertions(+), 51 deletions(-)",
+    "recommendation": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes.",
+    "reviews": []
+  },
+  {
+    "name": "aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+    "sha": "9e8f06509b4af43ca9ba5a28a23adaf1c3a33b4d",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Integrate azure-beacon",
+    "pr": null,
+    "contained": [],
+    "ahead": "3",
+    "stat": "3 files changed, 175 insertions(+), 50 deletions(-)",
+    "recommendation": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes.",
+    "reviews": []
+  },
+  {
+    "name": "aq/noble-ridge",
+    "sha": "1db9cc5f1231a5589b8c922121ab67a190290889",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "BLOCKED",
+    "title": "Epic: Simplify Discord to hourly activity digests and escalation threads",
+    "pr": null,
+    "contained": [],
+    "ahead": "5",
+    "stat": "33 files changed, 3669 insertions(+), 5 deletions(-)",
+    "recommendation": "HOLD aggregate: blocked resolution recovery; local de34e965 and remote 1db9cc5f differ. Final child acceptance remains. Several latest child tips are not Git ancestors of the remote aggregate; completion does not establish collection.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-background-spec-scan-20260909",
+    "sha": "58d8c386e8da3557ed4060db5829781865e17d56",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(scheduler): run workspace spec scans outside scheduling cycles",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "97",
+    "stat": "109 files changed, 18891 insertions(+), 505 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-candidate-member-cli-20260909",
+    "sha": "21639491d35270acb83705ab048846619e1e1822",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Merge guarded candidate member repair CLI for live integration recovery",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "103",
+    "stat": "115 files changed, 19936 insertions(+), 515 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-candidate-rejection-recovery-20260909",
+    "sha": "39783ab5476da90e1961f133cdea92e54a851311",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): integrate fenced rejected candidate recovery with operator CLI",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "151",
+    "stat": "125 files changed, 23538 insertions(+), 621 deletions(-)",
+    "recommendation": "MERGE FIRST: full accumulated operator snapshot, identical to local main; includes the other 22 operator branch tips.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-claim-loop-recovery-20260909",
+    "sha": "7aabdd3905efbc8b73da1fd92344d9559dc9a4f6",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Merge abandoned claim-loop recovery with successor-instance protection",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "116",
+    "stat": "118 files changed, 21055 insertions(+), 543 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-cli-response-20260909",
+    "sha": "6310cb23e7451a7ea192e557f0c2a41a15f90fe2",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Report interrupted command replies without replaying possible writes",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "58",
+    "stat": "87 files changed, 15898 insertions(+), 297 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-closed-audit-recovery-20260909",
+    "sha": "3f61fb0b3b3219ee6a2f7af33308c39b37e15305",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Adopt exact closed batch audit PR across candidate revisions",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "129",
+    "stat": "119 files changed, 21595 insertions(+), 553 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-container-hold-regression-20260909",
+    "sha": "a18e68c871012ff2f437c345ab3a7b9d70eea497",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Prove operator hold blocks container transfer after reserved episode",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "135",
+    "stat": "121 files changed, 22045 insertions(+), 585 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-fleet-explain-20260909",
+    "sha": "b4abefe0387d5377fb07fef6c94a143d1afca885",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(cli): explain fleet capacity separately from project occupancy",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "91",
+    "stat": "104 files changed, 18123 insertions(+), 499 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-green-ci-retry-20260909",
+    "sha": "6990d85329ffb3ab756bdc29a0f46f2b282c4022",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Merge exact-green CI recovery and preserve escalated candidate replay budgets",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "110",
+    "stat": "116 files changed, 20664 insertions(+), 520 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-green-rebuild-20260909",
+    "sha": "22f8d73daff026767ebb56cb30b7fcc4abbf3380",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): adopt resolved main conflicts from green candidates",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "66",
+    "stat": "90 files changed, 16534 insertions(+), 405 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-member-contract-20260909",
+    "sha": "a3b68b904e7eb73c1a07955f26a307e12a2e12bd",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Merge typed candidate repair result preservation",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "113",
+    "stat": "116 files changed, 20743 insertions(+), 528 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-pr-lock-20260909",
+    "sha": "df2c438938741a537b4fa5ccd1b9e50ea98a66a4",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): release repository lock before PR recovery writes",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "62",
+    "stat": "90 files changed, 16462 insertions(+), 404 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-pre-reservation-resume-20260909",
+    "sha": "3d28ddb7abddd85da5db967cf949775a9df6ead2",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): rearm exact repair writer before push reservation",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "99",
+    "stat": "109 files changed, 19047 insertions(+), 508 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-prerequisite-delivery-20260909",
+    "sha": "abef631edda57af7673846737f82fe56602593c9",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Integrate receipt-backed prerequisite preparation and safe container bootstrap",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "120",
+    "stat": "119 files changed, 21391 insertions(+), 544 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-recovery-followups-20260909",
+    "sha": "6340eab7fc2cc5360cd13b294a1f3943110f9fd3",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): recognize canonical main delivery receipts when sealing",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "79",
+    "stat": "99 files changed, 17675 insertions(+), 482 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-reliability-20260909",
+    "sha": "7391eeac947d1cc43880bed40fa640209beddd5b",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Fence historical claim recovery to the exact repair operation",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "53",
+    "stat": "77 files changed, 15038 insertions(+), 288 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-resolution-prevalidation-20260909",
+    "sha": "6e8d4748f29c496ee5ea83f3d8cd338c4cab3b74",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Validate resolution Git proof before freezing reservation",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "134",
+    "stat": "121 files changed, 22030 insertions(+), 585 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-retained-owner-stop-20260909",
+    "sha": "56636748c3f80d0efbda2da750d50be2c3f9a66f",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(pools): persist confirmed stop when ownership retains claim",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "101",
+    "stat": "109 files changed, 19130 insertions(+), 508 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-routing-diagnostics-20260909",
+    "sha": "e1888186985c08dbd73bb7d3350dfe540e0f5fb3",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(cli): give executable disabled-pool recovery command",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "84",
+    "stat": "104 files changed, 17891 insertions(+), 492 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-scheduler-diagnostics-20260909",
+    "sha": "f3413ae74a8de7054191bb7fcc40b8e0c0d9d1a1",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "diagnostics: report long scheduler await chains without cancellation",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "96",
+    "stat": "106 files changed, 18751 insertions(+), 500 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-stopped-pool-handoff-20260909",
+    "sha": "5df42ba798e10e4a8c80fa725cd24dd7cbd3bdf2",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): recover exact stopped pool writer attachments safely",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "95",
+    "stat": "104 files changed, 18695 insertions(+), 499 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-stopped-verifier-recovery-20260909",
+    "sha": "a409458fdb030b0216e73e0c2076f88c48f5d528",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(integration): prove stopped historical workspace users before verifier recovery",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "145",
+    "stat": "122 files changed, 22618 insertions(+), 587 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/operator-verifier-close-20260909",
+    "sha": "afd54e73748cbf2171c9bd05f77b6fc156305fba",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "Complete aggregate verifiers idempotently while honoring operator holds",
+    "pr": null,
+    "contained": [
+      "main"
+    ],
+    "ahead": "137",
+    "stat": "122 files changed, 22262 insertions(+), 585 deletions(-)",
+    "recommendation": "CONSOLIDATE: ancestor of operator-candidate-rejection-recovery-20260909; no separate merge.",
+    "reviews": []
+  },
+  {
+    "name": "aq/parent/keen-harbor/347e783cf25a260c27f1e7664a772260/7/bd054e4129b2a66a859408f0fa2b76b62a5d670e",
+    "sha": "bd054e4129b2a66a859408f0fa2b76b62a5d670e",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "style(cli): format integrated inventory metadata",
+    "pr": null,
+    "contained": [
+      "origin/aq/keen-harbor"
+    ],
+    "ahead": "37",
+    "stat": "99 files changed, 19769 insertions(+), 1632 deletions(-)",
+    "recommendation": "INTERNAL CHECKPOINT: candidate/resolution/aggregate evidence, not an independent feature merge. Preserve until owning integration operation finishes.",
+    "reviews": []
+  },
+  {
+    "name": "aq/prime-ridge-wip",
+    "sha": "653973dd1a7b50330bba746eb918cd38e71bba9b",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "no matching active task",
+    "title": "fix(dashboard): retain graph completed opt-out",
+    "pr": null,
+    "contained": [],
+    "ahead": "2",
+    "stat": "5 files changed, 75 insertions(+), 14 deletions(-)",
+    "patch_unique": 2,
+    "patch_equivalent": 0,
+    "recommendation": "Older UI work-in-progress branch; use approved aq/prime-ridge final branch, not this snapshot.",
+    "reviews": []
+  },
+  {
+    "name": "aq/quick-falcon",
+    "sha": "9753de13552234ed2ebe839694444925710b6fe8",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Expose guarded candidate-member conflict recovery through the AQ CLI",
+    "pr": {
+      "headRefName": "aq/quick-falcon",
+      "headRefOid": "9753de13552234ed2ebe839694444925710b6fe8",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 562,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "feat(integration): expose candidate member repair",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/562"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "104",
+    "stat": "115 files changed, 19990 insertions(+), 523 deletions(-)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "brisk-dune",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "wise-current",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/sharp-beacon",
+    "sha": "1a7ac2c1fdcc777e185a2f6f9aa5c1fc55dfb558",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Resume an expired repair while its exact live writer holds an unpublished resolution",
+    "pr": {
+      "headRefName": "aq/sharp-beacon",
+      "headRefOid": "1a7ac2c1fdcc777e185a2f6f9aa5c1fc55dfb558",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 541,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "Resume proven unstarted integration resolution writers",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/541"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "70",
+    "stat": "97 files changed, 16588 insertions(+), 456 deletions(-)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "nimble-apex",
+        "status": "FAILED"
+      },
+      {
+        "id": "azure-zenith",
+        "status": "FAILED"
+      },
+      {
+        "id": "clear-flare",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "nimble-meadow",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "crisp-delta",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "name": "aq/sharp-glacier",
+    "sha": "414f9b2381d0fced0de4f97734c7f9b1f1898a82",
+    "locations": [
+      "remote"
+    ],
+    "live": true,
+    "task": "COMPLETED",
+    "title": "Keep exact candidate CI progressing across repair-stage deadlines",
+    "pr": {
+      "headRefName": "aq/sharp-glacier",
+      "headRefOid": "414f9b2381d0fced0de4f97734c7f9b1f1898a82",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 556,
+      "reviewDecision": "",
+      "state": "OPEN",
+      "title": "fix(integration): preserve candidate CI at repair deadline",
+      "url": "https://github.com/ElectricJack/agent-queue/pull/556"
+    },
+    "contained": [
+      "main"
+    ],
+    "ahead": "5",
+    "stat": "9 files changed, 796 insertions(+), 7 deletions(-)",
+    "recommendation": "CONSOLIDATE: exact tip already contained in local main/operator snapshot; no separate merge.",
+    "reviews": [
+      {
+        "id": "steady-apex",
+        "status": "FAILED"
+      },
+      {
+        "id": "smart-vault",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "clear-meadow",
+        "status": "COMPLETED"
+      },
+      {
+        "id": "steady-rapids",
+        "status": "COMPLETED"
+      }
+    ]
+  }
+]

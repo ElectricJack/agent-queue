@@ -8,8 +8,8 @@ import pytest
 
 from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
-from src.database import Database
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
+from tests.assignment_routing_helpers import route_source_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,9 +20,8 @@ COMPILER_COMMANDS = [
 
 
 @pytest.fixture
-async def compiler(tmp_path):
-    db = Database(str(tmp_path / "compiler-scope.db"))
-    await db.initialize()
+async def compiler(tmp_path, reuse_database):
+    db = await reuse_database("compiler-scope.db")
     await db.create_project(Project(id="p", name="Project"))
     for profile_id in ("playbook-compiler", "worker"):
         await db.create_profile(AgentProfile(id=profile_id, name=profile_id))
@@ -36,7 +35,7 @@ async def compiler(tmp_path):
                 title=task_id,
                 description="Compile one playbook",
                 status=TaskStatus.IN_PROGRESS,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
                 assigned_agent_id=agent_id,
             )
         )
@@ -62,7 +61,6 @@ async def compiler(tmp_path):
             )
         )
     yield db
-    await db.close()
 
 
 def scope(agent_id="compiler"):
@@ -105,7 +103,7 @@ async def test_stale_or_changed_assignment_loses_compiler_capabilities(compiler,
     elif change == "blocked-task":
         await compiler.update_task("compiler-task", status=TaskStatus.BLOCKED)
     elif change == "wrong-task-profile":
-        await compiler.update_task("compiler-task", profile_id="worker")
+        await compiler.update_task("compiler-task", profile_id="worker", route_source="legacy")
     else:
         await compiler.update_agent("compiler", state=AgentState.IDLE, current_task_id=None)
     assert (
@@ -127,3 +125,10 @@ async def test_shadow_compile_remains_operator_only(compiler):
         await check_request_scope("playbook_v2_shadow_compile", {}, scope(), db=compiler)
         == "out of scope: playbook_v2_shadow_compile"
     )
+
+
+@pytest.mark.parametrize("command", ["playbook_commands", "doctor_catalog"])
+async def test_compiler_catalogue_reads_do_not_inject_identity_into_schema(compiler, command):
+    args = {}
+    assert await check_request_scope(command, args, scope(), db=compiler) is None
+    assert args == {}

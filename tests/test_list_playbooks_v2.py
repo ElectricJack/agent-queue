@@ -18,6 +18,8 @@ class _Handler(PlaybookCommandsMixin):
                 "health": "ready",
             }]),
             list_runs=AsyncMock(return_value=[]),
+            latest_run_per_playbook=AsyncMock(return_value={}),
+            count_active_runs_per_playbook=AsyncMock(return_value={}),
         )
         self.config = SimpleNamespace(data_dir=str(tmp_path) if tmp_path else "/tmp/aq-test")
         artifact = SimpleNamespace(
@@ -41,6 +43,7 @@ async def test_list_playbooks_projects_v2_activations_to_dashboard_summaries() -
     result = await _Handler()._cmd_list_playbooks({})
 
     assert result == {
+        "success": True,
         "playbooks": [{
             "id": "router",
             "scope": "system",
@@ -51,15 +54,76 @@ async def test_list_playbooks_projects_v2_activations_to_dashboard_summaries() -
             "node_count": 2,
             "status": "ready",
             "enabled": True,
+            "running_count": 0,
+            "last_run": None,
         }],
         "count": 1,
     }
 
 
-async def test_list_playbooks_applies_scope_filter() -> None:
-    result = await _Handler()._cmd_list_playbooks({"scope": "project"})
+async def test_list_playbooks_reports_the_newest_run_and_the_live_count() -> None:
+    handler = _Handler()
+    handler.db.latest_run_per_playbook.return_value = {"router": SimpleNamespace(
+        run_id="run-9",
+        lifecycle=SimpleNamespace(value="completed"),
+        budget=SimpleNamespace(total_tokens=42),
+        started_at=10.0,
+        completed_at=12.5,
+    )}
+    handler.db.count_active_runs_per_playbook.return_value = {"router": 2}
 
-    assert result == {"playbooks": [], "count": 0}
+    result = await handler._cmd_list_playbooks({})
+
+    assert result["playbooks"][0]["last_run"] == {
+        "run_id": "run-9",
+        "status": "completed",
+        "started_at": 10.0,
+        "completed_at": 12.5,
+        "tokens_used": 42,
+    }
+    assert result["playbooks"][0]["running_count"] == 2
+    handler.db.latest_run_per_playbook.assert_awaited_once_with(["router"])
+
+
+async def test_list_playbooks_applies_scope_filter() -> None:
+    handler = _Handler()
+
+    result = await handler._cmd_list_playbooks({"scope": "project"})
+
+    assert result == {"success": True, "playbooks": [], "count": 0}
+    handler.db.latest_run_per_playbook.assert_awaited_once_with([])
+
+
+async def test_invalid_artifact_is_quarantined_without_hiding_good_playbooks(caplog) -> None:
+    handler = _Handler()
+    invalid = {
+        "activation_id": "activation-bad",
+        "playbook_id": "quilt-health-watch",
+        "scope": "project",
+        "scope_identifier": "quilt-trader",
+        "active_artifact_sha256": "sha256:bad",
+        "enabled": True,
+        "health": "ready",
+    }
+    good = handler.db.list_playbook_activations.return_value[0]
+    handler.db.list_playbook_activations.return_value = [invalid, good]
+    original_load = handler.engine.services.artifact_store.load
+
+    def load(sha):
+        if sha == "sha256:bad":
+            raise ValueError("agent_task profile_id must name a role")
+        return original_load(sha)
+
+    handler.engine.services.artifact_store.load = load
+
+    result = await handler._cmd_list_playbooks({})
+
+    assert result["count"] == 2
+    assert [row["id"] for row in result["playbooks"]] == ["quilt-health-watch", "router"]
+    assert result["playbooks"][0]["status"] == "invalid"
+    assert result["playbooks"][0]["triggers"] == []
+    assert result["playbooks"][1]["status"] == "ready"
+    assert "quilt-health-watch" in caplog.text
 
 
 async def test_list_runs_projects_v2_snapshots_to_dashboard_summaries() -> None:

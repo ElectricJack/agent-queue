@@ -14,8 +14,7 @@ def _execute(ctx: click.Context, command: str, params: dict) -> dict:
     return _run(run())
 
 
-def _render_questions(data: dict) -> None:
-    rows = data.get("questions") or []
+def _render_questions(rows: list[dict]) -> None:
     if not rows:
         click.echo("No pending agent questions.")
     for row in rows:
@@ -39,7 +38,15 @@ def question() -> None:
 def question_list(ctx: click.Context, project_id: str | None) -> None:
     """List questions waiting for a supervisor, human, or safe answer delivery."""
     params = {"project_id": project_id} if project_id else {}
-    emit(ctx, _execute(ctx, "question_list", params), render=_render_questions)
+    result = _execute(ctx, "question_list", params)
+    rows = result.get("questions") or []
+    emit(
+        ctx,
+        rows,
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render_questions,
+    )
 
 
 @question.command("answer")
