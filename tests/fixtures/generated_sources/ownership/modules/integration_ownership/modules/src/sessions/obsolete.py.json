@@ -1,0 +1,84 @@
+{
+  "generic_dependencies": {
+    "src/sessions/obsolete.py::prepare_retirement_on": "Validates and applies explicit typed dependency rewiring for an obsolete leaf; it writes no task status, completion, integration journal or Git ref."
+  },
+  "shared": {
+    "src/sessions/obsolete.py::ObsoleteClose._refuse_unsafe": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim": {
+      "reason": "Operator one-shot close (amber-quest-41): clears the claim record, workspace locks and agent binding a stopped writer left, so a no-change/done/obsolete close needs no resume through READY. Ordinary task lifecycle; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.cleanup": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close": {
+      "reason": "Queues an explicit branch retirement for a superseded task in the obsolete-close transaction via src.integration.branch_retirement, replacing the removed branch_abandon callback; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::ReleaseOwner": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Claim-record key the operator one-shot close (amber-quest-41) clears for a durably stopped writer; ordinary claim lifecycle."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_dependencies, task_metadata, tasks, workspaces": {
+      "reason": "Imports legacy integration subjects, batches and branch owners used to fence obsolete-task closure and reservation retirement."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  },
+  "storage_sinks": {
+    "src/sessions/obsolete.py::ObsoleteClose._record_cleanup::209996bd6a28d1375f335ce38b97022f3411025593a530bafa356f17b816195d": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 665,
+      "owner": "ObsoleteClose._record_cleanup",
+      "owner_fingerprint": "656d947f41757db65487e12643cd64d3aed914c9e9fcd8e4184b3629057091b5",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 361,
+      "owner": "ObsoleteClose._release_stopped_claim",
+      "owner_fingerprint": "a9f88374fe0b48e9c86b20e79b34bc351b9a4ad4e2e38c16d163715f410c5508",
+      "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 243,
+      "owner": "ObsoleteClose.close",
+      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::37df82dbbcf4ce30cc0f9d0951d9e179f7f7f5023c7650af375ece047532cf8d": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 488,
+      "owner": "ObsoleteClose.close",
+      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "reason": "Audits obsolete/cancelled task closure with reason, disposition, principal, previous status and released resources; explicit close guards own retirement authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 425,
+      "owner": "ObsoleteClose.close",
+      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "reason": "Deletes ordinary close/claim metadata during fenced obsolete closure; branch retirement remains an independently guarded request rather than a metadata-driven ref replay."
+    }
+  }
+}
