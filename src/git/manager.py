@@ -170,7 +170,7 @@ class ChildPreparationConflict(GitError):
     def __init__(self, child_head, parent_head, merge_head, files, reason):
         self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
         self.files = tuple(files)
-        super().__init__(reason)
+        super().__init__(f"child merge conflict in {', '.join(self.files)}: {reason}")
 
 
 class ForeignSlotClaim(GitError):
@@ -3791,6 +3791,40 @@ class GitManager:
             found[ref] = oid
         return found
 
+    async def als_remote_head_refs(
+        self, checkout_path: str, *, repository_url: str | None = None,
+    ) -> dict[str, str]:
+        """List all remote branch heads using this repository's read credentials."""
+        destination, token = await self._apush_destination(
+            checkout_path, "origin", repository_url=repository_url,
+        )
+        if destination is None:
+            result = await self.arun_git_result(
+                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "remote head inventory failed")
+            output = result.stdout
+        else:
+            with tempfile.TemporaryDirectory(prefix="aq-app-heads-") as temporary:
+                home = Path(temporary)
+                home.chmod(0o700)
+                output = (await self._arun_authenticated_git(
+                    ["ls-remote", "--heads", destination], home=home,
+                    repository_url=destination, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                    budget_seconds=self._GIT_TIMEOUT,
+                )).decode("utf-8")
+        found = {}
+        for line in output.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if (not separator or not ref.startswith("refs/heads/")
+                    or not is_valid_git_oid(oid) or ref in found):
+                raise GitError("remote returned malformed or duplicate head identity")
+            _validate_ref(ref.removesuffix("^{}"))
+            found[ref] = oid
+        return found
+
     async def als_remote_qualified_refs(
         self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
         repository_url: str | None = None,
@@ -6091,22 +6125,25 @@ class GitManager:
         the agent never moved the task branch) counts.
 
         A merged pull request is evidence that the branch's work has already
-        shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        shipped only when its head commit contains the tip: a merged PR from an
+        earlier use of the same branch name does not deliver newer commits.
+        Closed-but-unmerged PRs deliberately remain a failure.
         ``head_ref`` supplies the exact local or remote-tracking ref whose tip
         must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
+        if include_workspace_head:
+            refs.append("HEAD")
+        shas = [await self.arev_parse(checkout_path, ref) for ref in refs]
+        tips = {sha for sha in shas if sha}
         if include_workspace_head:
             url = await self._open_pr_url_by_head_name(
-                checkout_path, branch_name, repository=repository
+                checkout_path, branch_name, tips, shas[0], repository=repository
             )
             if url:
                 return url
 
-        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
-        if include_workspace_head:
-            refs.append("HEAD")
-        tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
         if not tips:
             return None
         return await self._open_pr_url_by_head_commit(
@@ -6117,17 +6154,43 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str,
+        tips: set[str],
+        branch_tip: str | None,
         *, repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
+        """URL of an open PR for *branch_name*, or a merged one containing the work.
+
+        An open PR is the branch's current request.  A merged PR is history: a
+        reused branch name (PRs #21/#23 merged, then new work for #65) must not
+        count an earlier merge as delivering newer commits, so a merged PR
+        counts only when its head commit is one of *tips* or descends from
+        *branch_tip* (the exact-delivery rule ``GitHubClient._ordinary_pr_for_head``
+        applies).  Ancestry is never checked against the workspace ``HEAD``,
+        which may still sit at a start point every earlier PR descends from.
+        """
         try:
             prs = await self._github_client(repository).list_pull_requests(
-                state="all", head=branch_name, limit=100
+                state="all", head=branch_name, limit=100, include_head_oid=True
             )
         except (GitError, GitHubAccessError, ValueError):
             return None
-        return next(
-            (pr["url"] for pr in prs if pr.get("state") in {"OPEN", "MERGED"}), None
-        )
+        merged: list[dict] = []
+        for pr in prs:
+            if not isinstance(pr, dict) or not pr.get("url"):
+                continue
+            if pr.get("state") == "OPEN":
+                return pr["url"]
+            if pr.get("state") == "MERGED":
+                merged.append(pr)
+        for pr in merged:
+            head_oid = pr.get("headRefOid")
+            if not isinstance(head_oid, str) or re.fullmatch(r"[0-9a-f]{40}", head_oid) is None:
+                continue
+            if head_oid in tips or (
+                branch_tip and await self.ais_ancestor(checkout_path, branch_tip, head_oid)
+            ):
+                return pr["url"]
+        return None
 
     async def _open_pr_url_by_head_commit(
         self,

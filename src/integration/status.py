@@ -131,9 +131,7 @@ class IntegrationStatusService:
         async with self.db._engine.connect() as conn:
             if task_id is not None:
                 row = (
-                    await conn.execute(
-                        select(tasks.c.status).where(tasks.c.id == task_id)
-                    )
+                    await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
                 ).one_or_none()
                 if row is None:
                     return set()
@@ -279,9 +277,7 @@ class IntegrationStatusService:
             return await self._control_status_on(conn, project_id)
 
     async def _control_status_on(self, conn: AsyncConnection, project_id: str):
-        project = await self._one(
-            conn, select(projects).where(projects.c.id == project_id)
-        )
+        project = await self._one(conn, select(projects).where(projects.c.id == project_id))
         if project is None:
             return None
         rows = await self._all(
@@ -308,8 +304,7 @@ class IntegrationStatusService:
                 .limit(1),
             )
             refs = set()
-            for kind, identity in (("task", row.get("task_id")),
-                                   ("batch", row.get("batch_id"))):
+            for kind, identity in (('task', row.get('task_id')), ('batch', row.get('batch_id'))):
                 if identity:
                     refs.update(await related_on(conn, kind, identity))
             subjects.append({**row, "last_record": journal,
@@ -500,9 +495,7 @@ class IntegrationStatusService:
         )
         if owners:
             blockers.append(
-                _blocker(
-                    "active_owner", "task branch has an active owner", owners[0]["id"]
-                )
+                _blocker('active_owner', 'task branch has an active owner', owners[0]['id'])
             )
 
         readiness_operation = None
@@ -554,9 +547,7 @@ class IntegrationStatusService:
                 child_id = item["task_id"]
                 cause = item["reason"]
                 if child_status.get(child_id) not in TERMINAL_TASK_STATES:
-                    blockers.append(
-                        _blocker("open_child", "child task is not terminal", child_id)
-                    )
+                    blockers.append(_blocker('open_child', 'child task is not terminal', child_id))
                 elif cause == "origin_mismatch":
                     blockers.append(
                         _blocker(
@@ -588,9 +579,7 @@ class IntegrationStatusService:
         for item in repair:
             if item["state"] == "human_required":
                 blockers.append(
-                    _blocker(
-                        "human_hold", "repair requires a human decision", item["id"]
-                    )
+                    _blocker('human_hold', 'repair requires a human decision', item['id'])
                 )
         blockers.extend(self._repair_blockers(repair, now=self.clock()))
         return {
@@ -674,9 +663,7 @@ class IntegrationStatusService:
                 cached_only=self.cached_only or not observe,
             )
         async with self._consistent_snapshot() as conn:
-            project = await self._one(
-                conn, select(projects).where(projects.c.id == project_id)
-            )
+            project = await self._one(conn, select(projects).where(projects.c.id == project_id))
             if project is None:
                 return None
             batches = await self._train_batches_on(
@@ -783,9 +770,7 @@ class IntegrationStatusService:
             carrying = select(integration_batch_members.c.batch_id).where(
                 integration_batch_members.c.task_id == task_id
             )
-            batches = await self._train_batches_on(
-                conn, integration_batches.c.id.in_(carrying)
-            )
+            batches = await self._train_batches_on(conn, integration_batches.c.id.in_(carrying))
             ahead = []
             if not batches and row["status"] == "COMPLETED":
                 ahead = await self._open_batches_ahead_on(conn, row["project_id"], task_id)
@@ -950,6 +935,12 @@ class IntegrationStatusService:
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )
             row["candidate_ref"] = candidate_ref(row["id"])
+            row["check_reconciliation"] = list((await conn.scalars(
+                select(integration_check_evidence.c.check_reconciliation).where(
+                    integration_check_evidence.c.check_reconciliation["batch_id"].as_string()
+                    == row["id"]
+                ).order_by(integration_check_evidence.c.check_name)
+            )).all())
             # A retired BLOCKED primary remains history after a successor is
             # allocated; only the batch's current filing can own its candidate.
             row["repairs"] = [
