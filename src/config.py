@@ -2437,9 +2437,17 @@ class GitHubAppConfig:
     app_id: int = field(metadata={"json_schema": {"minimum": 1}})
     installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
     private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
+    actions_permission: str = field(default="read", metadata={"json_schema": {
+        "enum": ["read", "write"],
+    }})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if not isinstance(self.actions_permission, str) or self.actions_permission not in (
+            "read", "write",
+        ):
+            errors.append(ConfigError("integration", "github_app.actions_permission",
+                                      "must be read or write"))
         if not _is_safe_identity(self.client_id):
             errors.append(
                 ConfigError("integration", "github_app.client_id", "must be a safe identity")
@@ -2464,7 +2472,7 @@ class GitHubAppConfig:
 
 
 _GITHUB_APP_CONFIG_KEYS = frozenset(
-    {"client_id", "app_id", "installation_id", "private_key_path"}
+    {"client_id", "app_id", "installation_id", "private_key_path", "actions_permission"}
 )
 
 _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
@@ -2585,6 +2593,7 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
                 "app_id": _is_positive_int,
                 "installation_id": _is_positive_int,
                 "private_key_path": _is_safe_path_or_env,
+                "actions_permission": lambda v: isinstance(v, str) and v in ("read", "write"),
             }
             if name == "github_app"
             else {
@@ -2665,17 +2674,14 @@ class IntegrationConfig:
     #: An explicit ``false`` keeps the sweep off.
     owner_recovery_sweep: bool = True
 
-    #: Install root subject observations without performing primitives.
+    #: Historical compatibility flag; installs no subject runtime.
     reconciler_shadow: bool = False
-    #: Run the subject reconciler. New subjects belong to it by default;
-    #: disabling visits preserves ownership and pauses delivery.
+    #: Historical ownership-transfer guard; does not select a delivery engine.
     reconciler_active: bool = True
-    #: Integration protocol selector. Shadow keeps the subject runtimes
-    #: authoritative and logs Git-first comparisons. Active replaces the root,
-    #: parent and development runtimes with one Git-first train
-    #: (src/integration/train.py). Only promotion policy outbox events are
-    #: dispatched in active mode; read at daemon start.
-    git_first: str = "shadow"
+    #: Compatibility key: the Git-first train is always active. Trial mode was
+    #: removed; old shadow configurations must remove this key or set active.
+    #: Only promotion policy outbox events are dispatched by the train.
+    git_first: str = "active"
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -2705,8 +2711,12 @@ class IntegrationConfig:
         for name in ("reconciler_shadow", "reconciler_active"):
             if not isinstance(getattr(self, name), bool):
                 errors.append(ConfigError("integration", name, "must be a boolean"))
-        if self.git_first not in ("shadow", "active"):
-            errors.append(ConfigError("integration", "git_first", "must be shadow or active"))
+        if self.git_first != "active":
+            errors.append(ConfigError(
+                "integration", "git_first",
+                "trial (shadow) mode has been removed; remove integration.git_first "
+                "or set it to active",
+            ))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -5620,6 +5630,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 app_id=github_app_raw.get("app_id"),
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
+                actions_permission=github_app_raw.get("actions_permission", "read"),
             )
         scratch_probe_raw = integ.get("scratch_probe")
         scratch_probe = None
@@ -5650,7 +5661,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             reconciler_shadow=integ.get("reconciler_shadow", False),
             reconciler_active=integ.get("reconciler_active", True),
-            git_first=integ.get("git_first", "shadow"),
+            git_first=integ.get("git_first", "active"),
             owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),

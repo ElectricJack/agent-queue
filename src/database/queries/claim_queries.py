@@ -66,7 +66,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -735,15 +734,20 @@ class ClaimQueryMixin:
         hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
         display_unavailable=None,
     ) -> dict[str, list[dict]]:
-        """Batch the same predicate evaluation used by explain; never fetch Git for display."""
+        """Batch the same predicate evaluation used by explain; never fetch Git for display.
+
+        Unloaded Git evidence is admissible, so it never appears as an exclusion;
+        only proven-missing or unprovable delivery is reported.
+        """
         if not task_ids:
             return {}
-        from src.integration.delivery_observer import hierarchy_frontier_modes, prerequisite_observer
+        from src.integration.delivery_observer import hierarchy_frontier_modes
 
         unavailable = display_unavailable if display_unavailable is not None else {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
+            **({"task_ids": task_ids} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
         if router_ready_projects is not None:
@@ -753,34 +757,11 @@ class ClaimQueryMixin:
             )
         elif router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
-        display_predicates = {}
-        if unavailable:
-            from dataclasses import replace
-
-            # These counterfactual predicates classify diagnostic uncertainty
-            # only. The actual modes and all decision queries remain fail closed.
-            display_modes = {
-                pid: replace(
-                    mode,
-                    delivered_prerequisite_ids=(mode.delivered_prerequisite_ids or frozenset())
-                    | unavailable.get(pid, {}).get("siblings", frozenset()),
-                    default_prerequisite_ids=mode.default_prerequisite_ids
-                    | unavailable.get(pid, {}).get("default", frozenset()),
-                ) for pid, mode in modes.items()
-            }
-            display_predicates = {
-                name: predicate for name, predicate in claim_frontier_predicates(display_modes).items()
-                if name in {
-                    "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                }
-            }
         async with self._engine.connect() as conn:
             rows = (await conn.execute(
                 select(
                     tasks.c.id, tasks.c.project_id, tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
-                    *(predicate.label("display_" + name)
-                      for name, predicate in display_predicates.items()),
                 )
                 .where(tasks.c.id.in_(task_ids), tasks.c.status == TaskStatus.READY.value)
              )).mappings().all()
@@ -814,23 +795,11 @@ class ClaimQueryMixin:
         result = {}
         for row in rows:
             task_id = row["id"]
-            mode = modes.get(row["project_id"])
-            unknown_delivery = (prerequisite_observer(self) is None
-                                or bool(mode and mode.observation_unavailable))
             exclusions = [
                 {
-                    "code": ("delivery_evidence_unavailable"
-                             if (name in display_predicates and row["display_" + name])
-                             or (unknown_delivery and name in {
-                                 "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                             }) else f"frontier_{name}"),
+                    "code": f"frontier_{name}",
                     "detail": (
-                        "Delivery evidence has not loaded yet; claim frontier eligibility "
-                        f"for {name} is unknown (snapshot_unavailable)"
-                        if (name in display_predicates and row["display_" + name])
-                        or (unknown_delivery and name in {
-                            "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                        }) else "Pool claim frontier excludes this READY task: "
+                        "Pool claim frontier excludes this READY task: "
                         + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                     ),
                     "ref": task_id,
@@ -846,19 +815,21 @@ class ClaimQueryMixin:
                         exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
             if not row["prerequisite_not_on_default_branch"]:
                 mode = modes.get(row["project_id"])
-                sources = cross_sources.get(task_id, [])
-                missing = set().union(*(entry["default"] for entry in unavailable.values()))
-                exclusions.extend({
-                    "code": ("delivery_evidence_unavailable" if unknown_delivery or tid in missing
-                             else "prerequisite_not_on_default_branch"),
-                    "ref": tid, "epic_id": parent,
-                    "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
-                               "default-branch delivery is unknown (snapshot_unavailable)"
-                               if unknown_delivery or tid in missing
-                               else f"Prerequisite {tid} (epic {parent or tid}) "
-                               "is not proven on the default branch"),
-                    }
-                    for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+                # Unloaded default-branch evidence is admissible; only sources Git
+                # has answered negatively, or cannot prove, are named here.
+                admitted = frozenset() if mode is None else (
+                    mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
+                )
+                for tid, parent in cross_sources.get(task_id, []):
+                    if tid in admitted:
+                        continue
+                    exclusions.append({
+                        "code": "prerequisite_not_on_default_branch",
+                        "ref": tid,
+                        "epic_id": parent,
+                        "detail": f"Prerequisite {tid} (epic {parent or tid}) "
+                                  "is not proven on the default branch",
+                    })
             if cached_only:
                 for exclusion in exclusions:
                     if exclusion["code"] in {
@@ -868,7 +839,7 @@ class ClaimQueryMixin:
                         "prerequisite_not_on_default_branch",
                     }:
                         exclusion["detail"] += (
-                            "; delivery read is cache-only; missing or stale evidence withholds work"
+                            "; delivery read is cache-only; proven missing ancestry withholds work"
                         )
             result[task_id] = exclusions
         delivery_rows = [row for row in rows if any(
@@ -1694,6 +1665,19 @@ class ClaimQueryMixin:
         async with self.immediate() as conn:
             return await _run(conn)
 
+    async def _manually_paused_claim(self, conn, task_id) -> bool:
+        """Whether a manual pause owns *task_id*'s claim, locking its row.
+
+        The pause's stop path proves the preparation ended and releases the
+        workspace it snapshotted; a timeout release would strand that pause.
+        """
+        return bool(task_id) and (await conn.execute(
+            select(tasks.c.id).where(
+                tasks.c.id == task_id, tasks.c.status == TaskStatus.PAUSED.value,
+                tasks.c.resume_after.is_(None),
+            ).with_for_update()
+        )).first() is not None
+
     async def _release_claim_on(
         self,
         conn,
@@ -1737,6 +1721,7 @@ class ClaimQueryMixin:
         if preparation_expired_before is not None and (
             row["claim_phase"] not in ("claiming", "preparing")
             or (row["claim_phase_at"] or 0.0) > preparation_expired_before
+            or await self._manually_paused_claim(conn, task_id)
         ):
             return out
         # A task close may race pool reconciliation: the reconciler can
@@ -2480,25 +2465,6 @@ class ClaimQueryMixin:
                 "id": record["id"],
                 "detail": f"completion record {record['id']} (outcome {record['outcome']})",
             }
-        else:
-            receipt = (
-                await conn.execute(
-                    select(task_delivery_receipts.c.id, task_delivery_receipts.c.disposition)
-                    .where(
-                        task_delivery_receipts.c.source_task_id == task_id,
-                        task_delivery_receipts.c.disposition.in_(("code", "noop")),
-                        task_delivery_receipts.c.created_at >= attempt_started,
-                    )
-                    .order_by(task_delivery_receipts.c.created_at.desc())
-                    .limit(1)
-                )
-            ).mappings().first()
-            if receipt is not None:
-                evidence = {
-                    "kind": "delivery_receipt",
-                    "id": receipt["id"],
-                    "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
-                }
         if evidence is None:
             marker = (
                 await conn.execute(

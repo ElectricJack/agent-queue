@@ -22,10 +22,17 @@ class JobAdapter(Adapter):
 
     async def authorise(self, conn, cond, scope):
         job = await row(conn, jobs, jobs.c.id == cond.parameters["job_id"])
+        delegated = False
+        if job and job["owner_kind"] == "integration":
+            from src.waits.adapters.close_scope import author_candidate
+
+            delegated = bool(await author_candidate(
+                conn, scope, operation_id=job["owner_id"], head=job["input_ref"]))
         if job and (
             job["project_id"] != scope.project_id
             or (
                 scope.owner_kind == "task"
+                and not delegated
                 and (job["owner_kind"] != "task" or job["owner_id"] != scope.owner_id)
             )
         ):
@@ -57,7 +64,8 @@ class JobAdapter(Adapter):
                     "state": job["state"],
                     "exit_code": job["exit_code"],
                     "reason": job["infra_reason"],
-                    "build_measurements": (job.get("result") or {}).get("build_measurements"),
+                    **({"build_measurements": job["result"]["build_measurements"]}
+                       if (job.get("result") or {}).get("build_measurements") is not None else {}),
                 },
             ),
             f"job:{job['preset']}",
