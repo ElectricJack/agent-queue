@@ -18,6 +18,28 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SPEC_FILE="$ROOT_DIR/openapi.json"
 OUTPUT_DIR="$ROOT_DIR/packages/aq-ts-client/src"
 
+# npx can select an unrelated cached release in a fresh worker slot. Require
+# the checkout's locked install, including the generator's TypeScript peer.
+node - "$ROOT_DIR" <<'NODE'
+const path = require('node:path');
+const root = process.argv[2];
+const manifest = require(path.join(root, 'packages/aq-ts-client/package.json'));
+for (const name of ['@hey-api/openapi-ts', 'typescript', '@hey-api/client-fetch']) {
+    const expected = manifest.devDependencies[name] ?? manifest.dependencies[name];
+    let installed;
+    try {
+        installed = require(path.join(root, 'node_modules', name, 'package.json')).version;
+    } catch {
+        installed = 'missing';
+    }
+    if (installed !== expected) {
+        console.error(`Error: ${name} ${expected} is required in this checkout (found ${installed}).`);
+        console.error(`Run npm ci --prefix "${root}" to install the locked toolchain.`);
+        process.exit(1);
+    }
+}
+NODE
+
 case "${1:-}" in
     --from-file)
         echo "Using saved spec at $SPEC_FILE"
@@ -39,7 +61,7 @@ case "${1:-}" in
 esac
 
 echo "Generating TypeScript client..."
-npx -w packages/aq-ts-client @hey-api/openapi-ts \
+node "$ROOT_DIR/node_modules/@hey-api/openapi-ts/bin/index.cjs" \
     --input "$SPEC_FILE" \
     --output "$OUTPUT_DIR" \
     --client @hey-api/client-fetch
