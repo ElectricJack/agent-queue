@@ -4,9 +4,17 @@ tags: [design, trust, security, ops, doctor, costs, invariants]
 
 # Trust Boundaries & Operations
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#2 everything visible, #5 human judgment, #7 events, #10 fewer moving parts)
-**Related:** [[workspaces-v2]], [[session-runtime]], [[worktree-execution]], [[aq-surface]], [[feature-pauses]], `docs/analysis/framework-overhaul-todo.md` (Workstream G §10, A.4), `docs/analysis/comparison-gascity-beads.md` (§12.1–12.5)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 everything visible, #5 human judgment, #7 events, #10 fewer moving parts)
+**Related:** [workspaces-v2](workspaces-v2.md), [session-runtime](session-runtime.md), [worktree-execution](worktree-execution.md), [aq-surface](aq-surface.md), [feature-pauses](feature-pauses.md), `docs/analysis/framework-overhaul-todo.md` (Workstream G §10, A.4), `docs/analysis/comparison-gascity-beads.md` (§12.1–12.5)
 
 ---
 
@@ -100,7 +108,7 @@ Findings from reading the code; remediation is itemized in the implementation sp
 | `_run_subprocess_shell` runs an arbitrary string via `/bin/sh -c`; sole caller is `_cmd_run_command`, whose `command` argument is authored by the chat/supervisor LLM — untrusted per §2.2. It is already excluded from MCP (`run_command` in `DEFAULT_EXCLUDED_COMMANDS`) and sandboxed to allowed working dirs, but it executes on the daemon host with the daemon's env | `src/commands/helpers.py:127`, `src/commands/system_commands.py:690`, `src/mcp_registration.py:51` | **Known R1 violation, contained**. Interim: scrubbed env + keep MCP-excluded. It is slated to disappear with the in-process supervisor chat loop (overhaul D2); agents get shells inside worktrees instead |
 | Git/`gh` subprocesses inherit `**os.environ` plus prompt-disabling vars | `src/git/manager.py:90` | Acceptable (daemon-side tool, not an agent session), revisit when worktree-execution centralizes git env |
 | Agent subprocess env strips only `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` | `src/runtimes/_subprocess.py:22` | **Remediated (lane 1C)**: `isolated_env` delegates to `scrub_env`, and `RuntimeRegistry.create` hands the daemon `AppConfig` to `ACPXRuntime` so `security.env_scrub_enabled` / `env_allowlist` are read at the real launch site |
-| The **default** runtime (`claude_sdk`) is not scrubbed: the Claude Agent SDK builds its child env as `{**os.environ, **options.env}`, so `options.env` can override a key but cannot remove one. The adapter pops `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` from the daemon's own `os.environ` for the same reason | `src/runtimes/claude_sdk.py` (`wait`) | **Open gap, recorded not fixed.** R6 today covers `acpx` and `run_command` only. Closing it needs the spawn owned by [[session-runtime]] (it builds the child env itself and calls `scrub_env`); widening `options.env` is not a fix — setting a credential to the empty string is a different and worse failure than withholding it |
+| The **default** runtime (`claude_sdk`) is not scrubbed: the Claude Agent SDK builds its child env as `{**os.environ, **options.env}`, so `options.env` can override a key but cannot remove one. The adapter pops `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` from the daemon's own `os.environ` for the same reason | `src/runtimes/claude_sdk.py` (`wait`) | **Open gap, recorded not fixed.** R6 today covers `acpx` and `run_command` only. Closing it needs the spawn owned by [session-runtime](session-runtime.md) (it builds the child env itself and calls `scrub_env`); widening `options.env` is not a fix — setting a credential to the empty string is a different and worse failure than withholding it |
 
 ---
 
@@ -142,7 +150,7 @@ guarantee is "the daemon's known secrets are withheld", not "no secret can pass"
 | `security.env_allowlist` (config.yaml) | operator-listed names or globs that pass through unscathed |
 | Harness / profile `env` maps | **explicit values always win** — setting a key in a harness or profile env injects it regardless of patterns; explicitness is operator intent |
 | `AQ_*` session markers | injected by the session builder after scrubbing (`AQ_SESSION_ID`, `AQ_TASK_ID`, `AQ_API_URL`, …) |
-| `AQ_API_TOKEN` | **explicitly injected**; minting and scoping of the task-scoped token is owned by [[aq-surface]] — the scrubber only guarantees the daemon's own secrets don't leak alongside it |
+| `AQ_API_TOKEN` | **explicitly injected**; minting and scoping of the task-scoped token is owned by [aq-surface](aq-surface.md) — the scrubber only guarantees the daemon's own secrets don't leak alongside it |
 
 `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` (`STRIP_ALWAYS`) are removed regardless of
 the patterns *and* regardless of the kill switch — they exist to stop an
@@ -171,7 +179,7 @@ and this document says so rather than implying otherwise.
 
 The scrub is one pure function (`scrub_env`) owned by this workstream. Today's
 `isolated_env()` in `src/runtimes/_subprocess.py` becomes a thin wrapper over it;
-[[session-runtime]]'s `SessionSpec` builder consumes the same function, so the policy
+[session-runtime](session-runtime.md)'s `SessionSpec` builder consumes the same function, so the policy
 survives the runtime replacement. Scrub results are auditable: the function returns
 the dropped key names (names only, never values) so `aq doctor` and debug logs can
 show what was withheld.
@@ -183,7 +191,7 @@ show what was withheld.
 **Documented default:** task sessions run their harness with permission prompting
 disabled (Claude: `--dangerously-skip-permissions`; equivalents per harness) when —
 and only when — the session's `work_dir` is an isolated per-task worktree
-([[worktree-execution]]).
+([worktree-execution](worktree-execution.md)).
 
 **Reasoning.** A permission prompt is a question addressed to a human. In a detached
 tmux pane there is no human; an unanswered prompt is an indefinite stall, and
@@ -195,7 +203,7 @@ from per-call confirmation; it comes from the **boundary**:
 |---|---|
 | Isolated worktree + fresh `aq/<task>` branch | writes land in a disposable tree; the durable artifact is a branch that must pass the merge slot, gates, and review before integration |
 | Scrubbed env (§3) | the agent cannot exfiltrate daemon credentials it was never given |
-| Task-scoped `AQ_API_TOKEN` ([[aq-surface]]) | the agent's authority over the orchestrator is its own task's surface, not the admin API |
+| Task-scoped `AQ_API_TOKEN` ([aq-surface](aq-surface.md)) | the agent's authority over the orchestrator is its own task's surface, not the admin API |
 | Git as recovery | every change is diffable, revertable, and attributable to the session |
 
 **Honest limits.** Skip-permissions does not confine the *process*: an agent can read
@@ -238,18 +246,22 @@ doctor never hangs and never dies on one bad check.
 | `vault.parse` | profiles, harnesses, workspace kinds, MCP files parse | error per broken file | no |
 | `harness.binaries` | required binaries respond. **As landed:** `git` required; `gh`, `claude`, `acpx` optional. Narrowed from "per configured harness" — deriving the set means mapping every active profile's `runtime`/`agent_name` to a binary, and that mapping lives in `acpx`, not here | error (`git`) / warn (optional) | no |
 | `harness.drift` | `vault/harnesses/*.md` vs the shipped defaults, using the manifest of every hash each shipped file has ever had (`src/sessions/harness_manifest.py`). A copy that matches an *older* shipped version is `stale` (startup seeding refreshes it, so this only shows between upgrade and restart); one that matches nothing is `edited` — an operator's, never touched, but a shipped fix cannot reach it. `aq vault reset-harness <name>` restores the shipped file on request | warn (stale; edited copy that parses with errors/warnings) / info (edited, missing) | yes — seed missing + refresh stale copies only; edited copies are never overwritten |
-| `tmux.server` | tmux socket probe (contributed by [[session-runtime]]) | error when sessions enabled; info otherwise | no |
-| `sessions.stale` | session rows vs process table (contributed by [[session-runtime]]) | warn | yes — reconcile rows through the exit classifier |
-| `sessions.stuck_composer` | live sessions whose composer still holds a nudge the provider typed and could **not** confirm submitted (`src/doctor/session_checks.py`). Enter races the composer's repaint; text left behind then blocks every later nudge on `TmuxProvider._require_empty_composer`, so the stall ladder stops climbing and the message is never seen. Read of provider state plus one screen capture per suspect session — never a scan of every pane, and never a key press | warn | yes — presses Enter, gated on the composer still showing that nudge's marker, so a human draft is never submitted |
-| `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [[worktree-execution]]). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
+| `tmux.server` | tmux socket probe (contributed by [session-runtime](session-runtime.md)) | error when sessions enabled; info otherwise | no |
+| `sessions.stale` | session rows vs process table (contributed by [session-runtime](session-runtime.md)) | warn | yes — reconcile rows through the exit classifier |
+| `sessions.stuck_composer` | live sessions whose composer still holds a nudge the provider typed and could **not** confirm submitted (`src/doctor/session_checks.py`). Enter races the composer's repaint; text left behind then blocks every later nudge on `TmuxProvider._require_empty_composer`, so the stall ladder stops climbing and the message is never seen. Read of provider state plus one screen capture per suspect session — never a scan of every pane, and never a key press. A recorded injection whose composer the guard cannot read at all is reported too, as `unreadable`: it blocks every later wake the same way | warn | yes — presses Enter, gated on the composer still showing that nudge's marker, so a human draft is never submitted; never on an `unreadable` one |
+| `sessions.stop_intent_pending` | live sessions carrying a recorded stop intent (`desired_state='stopped'`) or a spent claim budget that hold no open task and are still `running` past `sessions.stop_intent_report_seconds` (`src/doctor/session_checks.py`). The harness was asked to leave — its task closed, or its budget ran out — and did not, so it holds a pool slot, an agent and a worktree; two OpenCode verifiers sat in that state for 18 and 26 minutes on 2026-10-03. The reconciler stops it within `sessions.idle_stop_grace_seconds`, so this says the graceful path did not run. Aged from the session's own `task_session_attempts.ended_at`, which unlike `last_activity` does not move while a TUI repaints | warn | no — `aq session kill <id>` returns the slot; the fix is to find why the grace did not apply |
+| `messages.idle_worker_backlog` | task/session messages undelivered for more than five minutes whose live recipient the delivery engine's session lens reads as **idle** (`src/doctor/session_checks.py`). The cascade nudges idle recipients every pass, so these are failed wakes; each entry carries the lens's last refused-nudge reason. Without the daemon's lens it lists old mail as info | warn | no |
+| `worktrees.orphans` | orphan worktree dirs, stale `.git/worktrees` entries (contributed by [worktree-execution](worktree-execution.md)). **As landed:** slot worktrees whose `.aq-worktree.json` names a task no longer in `tasks` — a released slot stays on its last task's branch (worktree-execution §3.4), so a deleted task leaves `aq/<task_id>` checked out and git refuses it to every other slot. Report-only: `git worktree prune` does not clear a live worktree's own checkout, and resetting a slot off a branch is an operator call | warn | no — see "as landed" |
 | `leases.stale` | leases past TTL with no live session | warn | yes — clear lease, task re-enters stall handling |
 | `workspaces.base_sessions` | live sessions whose `work_dir` is a **base** workspace — the clone that hosts a kind's slot worktrees, routinely a human's own checkout. Registered unconditionally by the core registry; the launch-time half of the rule is the refusal in `src/orchestrator/base_workspace.py`, which a profile opts out of with `allow_base_checkout: true` | error | no — stopping a session is an operator call |
-| `profiles.system_drift` | each vault copy of a shipped system profile (ids under `src/profiles/defaults/`) still matches the shipped default on the semantic `## Config` fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`) and has not lost a section. `ensure_default_profiles()` is write-if-absent, so an old vault copy keeps old semantics forever — a stale `read_only: false` on `reviewer` re-arms the require-a-PR close gate in `git_ops._task_produces_no_code()`. Cosmetic config keys and operator-added sections are not drift | warn (divergence) / error (vault copy no longer parses) | no — overwriting would discard operator edits; repair with `aq agent profile-reseed <id>` |
+| `profiles.system_drift` | each vault copy of a shipped system profile (ids under `src/profiles/defaults/`) still matches the shipped default on the semantic `## Config` fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`), has not lost a section, and has every `## Capabilities` grant (per namespace: `harness_tools`, `aq_commands`, `plugin_tools`) the shipped default carries. `ensure_default_profiles()` is write-if-absent, so an old vault copy keeps old semantics — and old grants — forever: a stale `read_only: false` on `reviewer` re-arms the require-a-PR close gate in `git_ops._task_produces_no_code()`, and a missing `aq_commands` entry denies a command prime tells the worker to run. Cosmetic config keys, operator-added sections and grants beyond what ships are not drift | warn (divergence) / error (vault copy no longer parses) | no — overwriting or merging would discard/reorder operator edits; repair with `aq agent profile-reseed --profile-id <id> --grants-only` (additive — merges only the missing grants) or the plain form (full overwrite) |
+| `profiles.supervisor_capability_drift` | the vault copy of the `supervisor` profile grants every `## Capabilities` name its shipped default does. The daemon merges missing shipped supervisor grants on every start and vault reload (`src/profiles/capability_sync.py`), so this shows between an upgrade and the next start, or while the vault copy opts out with `capability_sync: false` in its frontmatter. Grants only the vault lists are never drift | warn (missing grants; also a vault copy with no `## Capabilities` block or one that does not parse) / info (missing but opted out, or not seeded) | yes — the same additive merge as `profile-reseed --grants-only` (appends only missing names, keeps `.bak-<epoch>`, atomic), then syncs the DB row; never runs on an opted-out copy |
 | `profiles.project_overrides` | project-scoped profile files (`vault/projects/<pid>/agent-types/<type>/profile.md`, or the legacy colon-encoded `vault/agent-types/project:<pid>:<type>/`) and `project:` rows in `agent_profiles`. Project-scoped profiles were retired — agents are shared between projects, so pool lifecycle and sizing live on the system profile — and anything left no longer resolves, which silently stops applying rather than failing loudly | warn | yes — promotes each override's `## Config` into its system profile (last writer wins, per-key diff logged), deletes the file and drops the row; prose sections are reported, never merged |
+| `playbooks.reviewed_bundles` | each reviewed playbook bundle the daemon ships (`src/prompts/reviewed_playbooks/<id>/`) is byte-identical in `vault/reviewed-playbooks/<id>/`, the only place `playbook_v2_import` reads from. A reviewed artifact freezes the capability fingerprint of every profile it names, so a copy an older release seeded stops validating once a shipped profile's grants move and leaves its activation at `stale_contract` (for `default-assignment-routing`, `/health` 503). Startup never refreshes installed bundles. This check covers only already-installed shipped ids; optional bundles remain absent until deliberately installed | warn | yes — moves the old directory aside to `<id>.bak-<epoch>` and copies the shipped bundle in, carrying over any file the operator kept beside the recording; inside the daemon its explicit fix repairs required activations after refreshing bundles, including re-enabling required rows; optional activation choices are preserved |
 | `db.wal_size` | SQLite WAL above threshold | warn | yes — `PRAGMA wal_checkpoint(TRUNCATE)` |
 | `logs.llm_size` | `logs/llm/` size / dirs older than retention | warn | yes — `LLMLogger.cleanup_old_logs()` (enforces configured retention) |
 | `tasks.stuck` | tasks past `monitoring.stuck_task_threshold_seconds` | warn | no |
-| `pauses.active` | paused subsystems (memory, playbooks, orchestrator) — from [[feature-pauses]] flags | **info** (pauses are intentional) | no |
+| `pauses.active` | paused subsystems (memory, playbooks, orchestrator) — from [feature-pauses](feature-pauses.md) flags | **info** (pauses are intentional) | no |
 | `events.registry` | every event type the live `EventBus` has **actually dispatched** (`EventBus.seen_event_types`) has a registered payload schema. Reports INFO, not OK, when nothing has been emitted yet — "nothing was looked at" must not read like "nothing is wrong". The complementary static half (every literal `.emit("…")` in `src/` has a schema) is a test, not a runtime check | warn | no |
 | `mcp.probes` | configured MCP servers respond to probe (10 s timeout) | warn | no |
 | `plugin.<name>.<id>` | plugin-contributed checks via `PluginContext` | per check | per check |
@@ -274,11 +286,20 @@ or worktree directories that contain content; those always remain human decision
 (principle #5) — which is why `profiles.system_drift` ships without a fix: the
 vault profile is an operator-owned file, so its repair is the explicit,
 per-profile `aq agent profile-reseed` (backs the old file up to
-`profile.md.bak-<epoch>` first). Fixable checks: `sessions.stale`, `sessions.stuck_composer`
+`profile.md.bak-<epoch>` first) — `--grants-only` for the additive merge that
+keeps every other edit, or the plain form to overwrite the whole file.
+`profiles.supervisor_capability_drift` is the one exception:
+its fix applies the same additive merge to the supervisor alone, because the
+operator's standing policy is that the supervisor holds every shipped control;
+it removes nothing, keeps a backup, and never touches a copy that opts out with
+`capability_sync: false`.
+Fixable checks: `sessions.stale`, `sessions.stuck_composer`
 (re-sends only a key the daemon would have sent itself, to submit text the daemon
 itself typed), `worktrees.orphans`
 (prune only), `leases.stale`, `db.wal_size`, `logs.llm_size`, `harness.drift`
-(overwrites only copies byte-identical to a version we shipped), plus plugin checks
+(overwrites only copies byte-identical to a version we shipped), `profiles.supervisor_capability_drift`
+(additive grants only, backup kept), `playbooks.reviewed_bundles`
+(moves the old bundle aside, never deletes it), plus plugin checks
 that declare a fix
 meeting the same rules. `--fix` re-runs each fixed check and reports the post-fix
 severity with `fix_applied: true`.
@@ -288,8 +309,8 @@ severity with `fix_applied: true`.
 Doctor owns the runner and the generic checks; **subsystems own their own checks**
 and register them at startup through the same registry plugins use
 (`PluginContext.register_doctor_check` for plugins; direct registry access for core
-subsystems). Session/worktree/lease checks consume state owned by [[session-runtime]]
-and [[worktree-execution]]; pause reporting consumes [[feature-pauses]] flags. Doctor
+subsystems). Session/worktree/lease checks consume state owned by [session-runtime](session-runtime.md)
+and [worktree-execution](worktree-execution.md); pause reporting consumes [feature-pauses](feature-pauses.md) flags. Doctor
 never reaches into another subsystem's internals — it calls the probe the owner
 registered (principle #8).
 
@@ -310,6 +331,46 @@ A `--check <id>` filter naming an id that is neither registered nor reserved is 
 pinned to a misspelled check id must fail loudly; silently passing is the worst
 possible answer for a health command.
 
+### 5.7 Read-only observations
+
+`doctor_catalog` exposes registered checks' scope, read-only audit, identity and
+payload versions, finding schemas, coverage contracts, timeouts and versioned
+groups. Unported checks remain visible as unsupported. `doctor_run` selects
+exactly one `check_id` or `group`, with optional `project_id`, numeric `now` and
+bounded `timeout_s`. Unknown fields and `fix` are rejected. Both commands use
+the command descriptor surface; the existing `doctor` repair path is unchanged.
+
+`task_observations_v1` contains only `claims.holder_consistency` and `stall.sweep`.
+Both are system-only: project principals are rejected before any probe, including
+when they have a command grant. Nested `explain_task` calls retain the caller's
+principal and capabilities. Repository observations use cached evidence without
+fetching or repairing; missing evidence invalidates the affected coverage.
+
+An unhealthy result can be a successful observation. `execution_status` describes
+execution separately from health severity and `exit_code` (0/1/2). Each coverage
+partition identifies check, kind/version and project, with completeness, counts
+and reasons. Partial responses retain valid findings; failed partitions cannot
+authorize clearing. Legacy checks default to unknown execution and incomplete
+coverage. The sweep reports the four task kinds `unclaimed_work`,
+`undelivered_blocker`, `restore_branch` and `worker_relaunch_loop` independently.
+Bounded log tails and unavailable repository/provider context never prove absence.
+
+Producer adapters supply explicit task/project provenance. Finding keys hash the
+canonical tuple of identity version, check, kind/version, project and subject;
+wording, age and observation time are excluded. Multiple pieces of evidence for
+one subject/kind share one identity. Missing project identity for a task makes its
+kind incomplete. Holder observations retain up to 10,000 identities / 8 MiB from
+the shared producer, while legacy `data.tasks` stays capped at 50. Producer limits
+are explicit, and the sweep also bounds its combined observation model.
+
+`src.doctor.observations.collect_observations` is the full bounded model interface
+for C2 snapshot materialization. Inline transport refuses responses above 262,144
+bytes with `doctor.response_too_large`. Snapshot arguments are validated but return
+`doctor.snapshot_unavailable` until C2 installs durable paging; a continuation is
+never silently rerun as a live scan. Raw check data remains in `checks`; normalized
+findings, coverage, frozen observation time/scan ID and compact identity manifest
+are separate fields.
+
 ---
 
 ## 6. Invariant & Docs-Sync Tests
@@ -324,7 +385,7 @@ describes the pre-SQLAlchemy layer). The suite:
 | Every `_cmd_*` on `CommandHandler` is either MCP-registered (explicit in `_ALL_TOOL_DEFINITIONS` or intentionally auto-discovered) or in the exclusion list | introspection test; new commands must be placed deliberately |
 | Every emitted event type has a registered payload schema | extends the existing `test_event_schema_registry_validation.py` / `test_emit_schema_compliance.py` coverage to assert registry completeness against emit call sites |
 | State-machine enforcement flag honored | when strict mode is on, illegal `transition_task` raises; `force=True` bypasses (lands with Workstream D; test asserts the flag's contract) |
-| Harness profile goldens | each shipped `vault/harnesses/*.md` parses to a golden `SessionSpec` (command argv, env, ready config); lands with [[session-runtime]], shape specced now |
+| Harness profile goldens | each shipped `vault/harnesses/*.md` parses to a golden `SessionSpec` (command argv, env, ready config); lands with [session-runtime](session-runtime.md), shape specced now |
 
 These run in the normal `pytest tests/ -n auto` suite — no separate CI job, no
 tooling beyond pytest.
@@ -351,7 +412,7 @@ project, profile (via `agents.profile_id`), and day. Honesty rule: the ledger to
 stores only `tokens_used` totals with no model or input/output split, so historical
 rows cannot be priced accurately. The ledger gains nullable `model`, `input_tokens`,
 `output_tokens` columns; new writers (and the transcript readers from
-[[session-runtime]] A.6) populate them. Rows without a split or without a matching
+[session-runtime](session-runtime.md) A.6) populate them. Rows without a split or without a matching
 pricing entry are reported as `unpriced_tokens` — never silently priced at a guessed
 rate. Cost = `input_tokens × input_per_mtok / 1e6 + output_tokens × output_per_mtok / 1e6`.
 
@@ -369,7 +430,7 @@ fully-populated **writer** yet. `AgentOutput` (`src/models.py`) carries only a
 (`src/orchestrator/execution.py`, `src/orchestrator/sync_workflow.py`) still record
 totals alone. Every row is therefore unpriced and `total_cost_usd` is `0.0` on a
 real install. `aq costs` is honest about this rather than wrong; the transcript
-readers from [[session-runtime]] are the first writer that populates model + split.
+readers from [session-runtime](session-runtime.md) are the first writer that populates model + split.
 
 ---
 
@@ -401,10 +462,10 @@ cost nothing.
 | Concern | Owner | This spec's relationship |
 |---|---|---|
 | trust model, env scrub function, doctor runner + generic checks, invariant tests, costs, evidence convention | **this spec** | — |
-| session rows, tmux probe, exit classifier, transcript token data | [[session-runtime]] | doctor consumes registered checks; scrub function consumed by SessionSpec builder |
-| worktree lifecycle, orphan detection, `git worktree prune` | [[worktree-execution]] | doctor consumes registered checks |
-| pause flags (`memory.enabled`, `playbooks.enabled`) | [[feature-pauses]] | doctor reports them as info |
-| `AQ_API_TOKEN` minting, scoping, revocation | [[aq-surface]] | scrubber injects the token it is handed |
+| session rows, tmux probe, exit classifier, transcript token data | [session-runtime](session-runtime.md) | doctor consumes registered checks; scrub function consumed by SessionSpec builder |
+| worktree lifecycle, orphan detection, `git worktree prune` | [worktree-execution](worktree-execution.md) | doctor consumes registered checks |
+| pause flags (`memory.enabled`, `playbooks.enabled`) | [feature-pauses](feature-pauses.md) | doctor reports them as info |
+| `AQ_API_TOKEN` minting, scoping, revocation | [aq-surface](aq-surface.md) | scrubber injects the token it is handed |
 
 ## 10. Non-Goals
 

@@ -26,15 +26,18 @@ from src.api.middleware import TokenAuthMiddleware
 from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import PullRequestIdentity
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 #: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
 #: never runs in this test, so the OIDs only have to be well-formed.
+PR_URL = "https://github.com/o/r/pull/1"
+REPOSITORY = GitHubRepositoryBinding(1, "o/r")
 PR_IDENTITY = PullRequestIdentity(
     repository="o/r",
     number=1,
@@ -48,14 +51,26 @@ PR_IDENTITY = PullRequestIdentity(
 pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(scope="module")
-def generated_routers():
-    return build_category_routers()
+def api_app():
+    """Share the route tree; authentication and handlers resolve per request.
+
+    Each case still owns its database adapter, tokens, mocks and HTTP client.
+    No lifespan runs here and no loop-bound resources live on this application.
+    """
+    app = FastAPI()
+    app.include_router(execute_router)
+    paths = {}
+    for router in build_category_routers():
+        app.include_router(router)
+        for route in router.routes:
+            paths[route.operation_id] = route.path
+    app.add_middleware(TokenAuthMiddleware)
+    return app, paths
 
 
 @pytest.fixture(params=["execute", "typed"])
-async def api(tmp_path, monkeypatch, request, generated_routers):
-    db = Database(lease_dsn("reviewer-auth.db"))
-    await db.initialize()
+async def api(tmp_path, monkeypatch, request, api_app, reuse_database):
+    db = await reuse_database("reviewer-auth.db")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
@@ -68,7 +83,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     orch.db = db
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
-        await db.create_project(Project(id=pid, name=pid))
+        await db.create_project(Project(
+            id=pid, name=pid, repo_url=f"https://github.com/o/{'r' if pid == 'p' else pid}.git",
+        ))
     for profile_id in ("reviewer", "final-reviewer", "coder"):
         await db.upsert_profile(AgentProfile(
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
@@ -81,8 +98,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     for tid, pid in (("reviewed", "p"), ("unrelated", "p"), ("foreign", "other")):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Worker output",
-            status=TaskStatus.DEFINED, profile_id="coder", branch_name=f"feature/{tid}",
-            pr_url=("https://example.invalid/pr/1" if tid == "reviewed" else None),
+            status=TaskStatus.DEFINED, profile_id="coder",
+            route_source="legacy", branch_name=f"feature/{tid}",
+            pr_url=(PR_URL if tid == "reviewed" else None),
         ))
         await db.transition_task(tid, TaskStatus.COMPLETED, context="test")
 
@@ -93,7 +111,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description=description,
-            status=TaskStatus.IN_PROGRESS, profile_id=role, assigned_agent_id=worker,
+            status=TaskStatus.IN_PROGRESS, profile_id=role,
+            route_source=route_source_for(role), assigned_agent_id=worker,
         ))
         await db.update_agent(worker, state=AgentState.BUSY, current_task_id=f"{worker}-job")
         await db.create_session(SessionRecord(
@@ -112,8 +131,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     await db.create_task(Task(
         id="final-reviewer-agent-job", project_id="p", title="final review",
         description="Final review for branch feature/reviewed.", status=TaskStatus.IN_PROGRESS,
-        profile_id="final-reviewer", assigned_agent_id="final-reviewer-agent",
-        branch_name="feature/reviewed", pr_url="https://example.invalid/pr/1",
+        profile_id="final-reviewer", route_source="role", assigned_agent_id="final-reviewer-agent",
+        branch_name="feature/reviewed", pr_url=PR_URL,
     ))
     await db.update_agent(
         "final-reviewer-agent", state=AgentState.BUSY,
@@ -137,6 +156,14 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         for worker in ("reviewer-agent", "worker-agent", "final-reviewer-agent")
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
+    monkeypatch.setattr(
+        orch.git, "bind_github_repository",
+        AsyncMock(return_value=REPOSITORY),
+    )
+    monkeypatch.setattr(orch.git, "acheck_pr_merged", AsyncMock(return_value=False))
+    monkeypatch.setattr(orch.git, "apr_check_rollup", AsyncMock(return_value=[]))
+    monkeypatch.setattr(orch.git, "apr_behind_base", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch.git, "apr_base_ref", AsyncMock(return_value="main"))
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
     # ``pr_merge`` pins the merge to the identity GitHub will merge and fails
     # closed when it cannot resolve one; there is no real PR behind this URL.
@@ -147,14 +174,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
     monkeypatch.setattr(deps, "_require_session_token", True)
-    app = FastAPI()
-    app.include_router(execute_router)
-    paths = {}
-    for router in generated_routers:
-        app.include_router(router)
-        for route in router.routes:
-            paths[route.operation_id] = route.path
-    app.add_middleware(TokenAuthMiddleware)
+    app, paths = api_app
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test",
     ) as client:
@@ -178,7 +198,6 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         yield SimpleNamespace(
             db=db, store=store, tokens=tokens, post=post, result=result, merge_pr=merge_pr,
         )
-    await db.close()
 
 
 # --- the grant ------------------------------------------------------------
@@ -264,19 +283,20 @@ async def test_final_reviewer_keeps_its_carve_out_for_commands_triage_also_claim
 
 async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     response = await api.post("pr_merge", {
-        "project_id": "p", "pr_url": "https://example.invalid/pr/1", "method": "squash",
+        "project_id": "p", "pr_url": PR_URL, "method": "squash",
     }, worker="final-reviewer-agent")
     assert response.status_code == 200, response.text
     payload = response.json()
     result = payload.get("result", payload)
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
-    assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
+    assert api.merge_pr.await_args.args[1] == PR_URL
     # The merge is pinned to the validated identity, not just the URL.
     assert api.merge_pr.await_args.kwargs == {
         "method": "squash",
         "expected_head_oid": PR_IDENTITY.head_oid,
         "expected_base_ref": PR_IDENTITY.base_ref,
+        "repository": REPOSITORY,
     }
 
 
@@ -291,7 +311,7 @@ async def test_final_reviewer_can_call_git_diff(api):
 @pytest.mark.parametrize("command,args", [
     ("reopen_with_feedback", {"task_id": "unrelated", "feedback": "not my branch"}),
     ("task_show", {"task_id": "unrelated"}),
-    ("pr_merge", {"project_id": "p", "pr_url": "https://example.invalid/pr/2"}),
+    ("pr_merge", {"project_id": "p", "pr_url": "https://github.com/o/r/pull/2"}),
 ])
 async def test_final_reviewer_cannot_reach_another_branch(api, command, args):
     response = await api.post(command, args, worker="final-reviewer-agent")
@@ -355,7 +375,7 @@ async def test_stale_or_changed_assignment_loses_reviewer_capabilities(api, chan
     elif change == "wrong-session-profile":
         await api.db.update_session("s-reviewer-agent", profile_id="coder")
     elif change == "wrong-task-profile":
-        await api.db.update_task("reviewer-agent-job", profile_id="coder")
+        await api.db.update_task("reviewer-agent-job", profile_id="coder", route_source="legacy")
     elif change == "wrong-agent":
         await api.db.update_task("reviewer-agent-job", assigned_agent_id="worker-agent")
     elif change == "closed-review":
@@ -407,7 +427,7 @@ async def test_reviewer_does_not_gain_operator_commands(api):
         ("list_tasks", {}),
         ("delete_task", {"task_id": "unrelated"}),
         ("restart_task", {"task_id": "unrelated"}),
-        ("pr_merge", {"project_id": "p", "pr_url": "https://example.invalid/pr/1"}),
+        ("pr_merge", {"project_id": "p", "pr_url": PR_URL}),
     ):
         response = await api.post(command, args)
         assert response.status_code == 403, (command, response.text)
@@ -428,3 +448,212 @@ async def test_typed_and_execute_routes_refuse_identically(api):
         assert response.status_code == 403, response.text
         payload = response.json()
         assert payload.get("error") == expected or payload.get("detail") == expected, payload
+
+
+@pytest.fixture(params=["execute", "typed"])
+async def fidelity_api(command_handler_factory, monkeypatch, request, api_app):
+    from tests.test_fidelity_review import _held_batch, _ensure, _reviewer_session
+
+    handler = await command_handler_factory()
+    handler.config.security.capability_enforcement = "enforce"
+    batch, decision = await _held_batch(handler)
+    reviewer_id = (await _ensure(handler, batch))["task_id"]
+    scope = await _reviewer_session(handler, reviewer_id, "s-fidelity-http", epoch=3)
+    store = SessionTokenStore(handler.db)
+    token = await store.mint(session_id=scope.session_id, task_id=None, project_id="p1",
+                             session_instance_token=scope.session_instance_token)
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_token_store", store)
+    monkeypatch.setattr(deps, "_require_session_token", True)
+    app, paths = api_app
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as client:
+        async def post(command, args=None):
+            if command == "approved_spec_packet":
+                args = {"project_id": "p1", **(args or {})}
+            headers = {"Authorization": f"Bearer {token}"}
+            if request.param == "execute":
+                response = await client.post("/api/execute", headers=headers,
+                    json={"command": command, "args": args or {}})
+                payload = response.json()
+                return response.status_code, payload.get("result", payload)
+            response = await client.post(paths[command], headers=headers, json=args or {})
+            return response.status_code, response.json()
+
+        yield SimpleNamespace(handler=handler, db=handler.db, batch=batch, decision=decision,
+                              scope=scope, post=post, reviewer_id=reviewer_id)
+
+
+async def test_fidelity_http_reads_exact_batch_and_immutable_packet(fidelity_api):
+    api = fidelity_api
+    for mode in ("flat", "tree", "compact"):
+        status, result = await api.post("list_tasks", {"display_mode": mode,
+                                                      "show_dependencies": True})
+        assert status == 200, result
+        assert result["display_mode"] == mode
+        if mode == "flat":
+            assert {t["id"] for t in result["tasks"]} == set(api.batch["task_ids"])
+        else:
+            assert len(result["tasks"]) == len(api.batch["task_ids"])
+        assert api.reviewer_id not in str(result)
+    for task_id in api.batch["task_ids"]:
+        status, result = await api.post("task_show", {"task_id": task_id})
+        assert status == 200 and result["id"] == task_id, result
+        assert result["description"] and result["batch_member"]["section_anchor"]
+        assert "primary_outcome" in result["batch_member"]
+    status, result = await api.post("get_downstream_tasks", {
+        "task_id": api.batch["members"]["api"],
+    })
+    assert status == 200 and result["success"], result
+    assert api.batch["members"]["final"] in {task["id"] for task in result["tasks"]}
+    status, packet = await api.post("approved_spec_packet", {
+        "decision_id": api.decision["decision_id"],
+        "packet_sha256": api.decision["packet_sha256"],
+    })
+    assert status == 200 and packet["success"], packet
+    assert "# Approved spec" in packet["body"] and packet["design"] is None
+    # Own control-task reads retain ordinary scope.
+    status, result = await api.post("task_show", {"task_id": api.reviewer_id})
+    assert status == 200 and result["id"] == api.reviewer_id, result
+
+
+async def test_fidelity_http_never_expands_unrelated_members_or_transitive_results(fidelity_api):
+    api = fidelity_api
+    await api.db.create_project(Project(id="foreign-project", name="Foreign"))
+    for tid, pid in (("private-same-project", "p1"), ("private-foreign", "foreign-project")):
+        await api.db.create_task(Task(id=tid, project_id=pid, title=tid,
+                                     description="Private queue work"))
+        # Both direct details and transitive downstream expansion used to be
+        # capable of exposing rows beyond an authorized seed/project.
+        await api.db.add_dependency(tid, api.batch["task_ids"][1], "blocks")
+        for command in ("task_show", "get_downstream_tasks"):
+            status, result = await api.post(command, {"task_id": tid})
+            assert status == 403, result
+    await api.db.add_dependency("private-foreign", "private-same-project", "blocks")
+    # Ordinary task_show expands both these relationships. Neither may
+    # disclose ambient queue rows through an authorized member read.
+    await api.db.update_task(api.batch["task_ids"][1], parent_task_id="private-same-project")
+    await api.db.update_task("private-foreign", parent_task_id=api.batch["task_ids"][1])
+    for command, args in (
+        ("list_tasks", {"show_dependencies": True}),
+        ("list_tasks", {"display_mode": "tree"}),
+        ("task_show", {"task_id": api.batch["task_ids"][1]}),
+        ("get_downstream_tasks", {"task_id": api.batch["task_ids"][1]}),
+    ):
+        status, result = await api.post(command, args)
+        assert status == 200, result
+        assert "private-same-project" not in str(result)
+        assert "private-foreign" not in str(result)
+    for command in ("list_tasks", "approved_spec_packet"):
+        args = {"project_id": "foreign-project"}
+        if command == "approved_spec_packet":
+            args.update(decision_id=api.decision["decision_id"],
+                        packet_sha256=api.decision["packet_sha256"])
+        status, result = await api.post(command, args)
+        assert status == 403, result
+
+
+@pytest.mark.parametrize("change", ["epoch", "instance", "session", "reassigned", "released",
+                                     "metadata", "dedup", "project"])
+async def test_fidelity_http_read_authority_revoked(fidelity_api, change):
+    from sqlalchemy import update
+    from src.database.tables import ingest_batches
+
+    api = fidelity_api
+    status, result = await api.post("list_tasks")
+    assert status == 200, result
+    if change == "epoch":
+        await api.db.update_task(api.reviewer_id, claim_epoch=4)
+    elif change == "instance":
+        await api.db.update_session(api.scope.session_id, instance_token="new-instance")
+    elif change == "session":
+        await api.db.update_session(api.scope.session_id, state="stopped")
+    elif change == "metadata":
+        await api.db.set_task_meta(api.reviewer_id, "fidelity_review", {"batch_id": "spoofed"})
+    elif change == "dedup":
+        await api.db.update_task(api.reviewer_id, dedup_key="fidelity-review:batch:spoofed")
+    else:
+        values = {"reassigned": {"reviewer_task_id": None},
+                  "released": {"state": "released"},
+                  "project": {"project_id": "foreign-project"}}[change]
+        if change == "project":
+            await api.db.create_project(Project(id="foreign-project", name="Foreign"))
+        async with api.db.immediate() as conn:
+            await conn.execute(update(ingest_batches).where(
+                ingest_batches.c.batch_id == api.batch["batch_id"],
+            ).values(**values))
+    for command, args in (
+        ("list_tasks", {}),
+        ("task_show", {"task_id": api.batch["task_ids"][0]}),
+        ("get_downstream_tasks", {"task_id": api.batch["task_ids"][1]}),
+        ("approved_spec_packet", {"decision_id": api.decision["decision_id"],
+                                  "packet_sha256": api.decision["packet_sha256"]}),
+    ):
+        status, result = await api.post(command, args)
+        assert status == 403, result
+
+
+async def test_fidelity_http_cannot_choose_packet_or_mutation_authority(fidelity_api):
+    api = fidelity_api
+    for override in ({"decision_id": "unrelated-approved-decision"},
+                     {"packet_sha256": "0" * 64}):
+        status, result = await api.post("approved_spec_packet", {
+            "decision_id": api.decision["decision_id"],
+            "packet_sha256": api.decision["packet_sha256"], **override,
+        })
+        assert status in {200, 422} and not result.get("success", False), result
+    status, result = await api.post("task_batch_commit", {"proposal_id": api.batch["batch_id"]})
+    assert status == 403, result
+    # Scope's read carve-out must not bypass the profile's capability policy.
+    from src.models import AgentProfile
+    await api.db.upsert_profile(AgentProfile(id="fidelity-reviewer", name="Fidelity",
+        harness="codex", needs_workspace=False, aq_commands=["task_show"]))
+    api.handler._principal_cache.clear()
+    status, result = await api.post("list_tasks")
+    assert status in {200, 403} and not result.get("success", False), result
+    assert "capability" in str(result), result
+
+
+async def test_fidelity_http_packet_pins_source_and_approved_design_lineage(fidelity_api):
+    from sqlalchemy import update
+    from src.database.tables import ingest_batches
+    from tests.test_review_feedback import prepared, accept
+
+    api = fidelity_api
+    # Create a real second approved document, then make it the batch's
+    # server-owned design lineage. It is readable only as that lineage.
+    design = await api.handler.execute("review_submit", {
+        "project_id": "p1", "kind": "spec", "title": "Approved design",
+        "content": "---\nspec_kind: design\n---\n# Design\nPinned design body.\n",
+    })
+    assert design["success"], design
+    args, preview = await prepared(api.handler, design["review_id"])
+    approved = await accept(api.handler, args, preview)
+    assert approved["success"], approved
+    revision = await api.db.get_review_revision(design["review_id"], 1)
+    async with api.db.immediate() as conn:
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == api.batch["batch_id"],
+        ).values(lineage_kind="resolved", design_review_id=design["review_id"],
+                 design_revision=1, design_content_sha256=revision["content_sha256"]))
+    packet_args = {"decision_id": api.decision["decision_id"],
+                   "packet_sha256": api.decision["packet_sha256"]}
+    status, packet = await api.post("approved_spec_packet", packet_args)
+    assert status == 200 and packet["success"], packet
+    assert packet["design"] == {"review_id": design["review_id"], "revision": 1,
+        "content_sha256": revision["content_sha256"], "body": revision["content"]}
+    # Even another actually approved packet is not client-selectable.
+    status, refused = await api.post("approved_spec_packet", {
+        "decision_id": approved["decision_id"], "packet_sha256": preview["packet_sha256"],
+    })
+    assert status in {200, 422} and not refused.get("success", False), refused
+    for changed in ({"source_content_sha256": "0" * 64},
+                    {"design_content_sha256": "0" * 64}):
+        async with api.db.immediate() as conn:
+            await conn.execute(update(ingest_batches).where(
+                ingest_batches.c.batch_id == api.batch["batch_id"],
+            ).values(**{"source_content_sha256": packet["content_sha256"], **changed}))
+        status, refused = await api.post("approved_spec_packet", packet_args)
+        assert status in {200, 422} and not refused.get("success", False), refused
