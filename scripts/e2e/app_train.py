@@ -1737,6 +1737,90 @@ def s10(_args) -> None:
 # ---------------------------------------------------------------------------
 
 
+def hotfix(args) -> None:
+    """Exercise an operator-configured dev -> main flow using the fixture's worker."""
+    require_approval()
+    pid = project_id()
+    status = operator("promote", "status", "--project", pid)
+    flow = status.get("flow") or []
+    check(len(flow) == 1 and flow[0]["source"] == "dev" and flow[0]["target"] == "main",
+          "hotfix requires the prepared one-step dev -> main promotion fixture")
+    release = flow[0]
+    check(release["after"]["backmerge"], "hotfix fixture requires after.backmerge enabled")
+    state = load_state()
+    sc = scenario_state(state, args.scenario)
+    clone = harness_clone()
+    if not sc.get("leaf_id"):
+        cli_args = ["promote", "hotfix", "--project", pid, "--step", release["id"],
+                    "--title", f"{args.scenario}: fix the released fixture"]
+        if args.version:
+            cli_args += ["--version", args.version]
+        filed = operator(*cli_args)
+        changes = {"hotfix-fixture.txt": f"{args.scenario}: released fix\n"}
+        for item in args.copy or []:
+            path, _, source = item.partition("=")
+            changes[path] = Path(source).read_text()
+        for item in args.write or []:
+            path, _, content = item.partition("=")
+            changes[path] = content.replace("\\n", "\n")
+        sc.update(leaf_id=filed["task_id"], changes=changes, hotfix_step=release["id"])
+        save_state(state)
+        record(args.scenario, "hotfix_filed", filed)
+    if not sc.get("leaf_routed"):
+        operator("task", "route", "--task-id", sc["leaf_id"],
+                 "--profile-id", WORKER_PROFILE, "--intelligence-class", TRAIN_CLASS)
+        sc["leaf_routed"] = True
+        save_state(state)
+    if not sc.get("leaf_head"):
+        play_leaf(args)
+        state = load_state()
+        sc = scenario_state(state, args.scenario)
+    git(clone, "fetch", "--prune", "origin")
+    if not sc.get("hotfix_request"):
+        check(git(clone, "merge-base", "--is-ancestor", "origin/main", sc["leaf_head"],
+                  check_ok=False).returncode == 0, "hotfix source does not descend from main")
+        cli_args = ["promote", "request", "--project", pid, "--step", release["id"],
+                    "--from-task", sc["leaf_id"], "--from", sc["leaf_head"], "--notes-reviewed"]
+        if args.version:
+            cli_args += ["--version", args.version]
+        opened = operator(*cli_args)
+        pull = gh_api(f"repos/{REPOSITORY}/pulls/{opened['promotion']['pr_number']}")
+        check(pull["base"]["ref"] == "main" and pull["head"]["sha"] == sc["leaf_head"],
+              f"hotfix PR is not pinned to the task head on main: {pull}")
+        sc["hotfix_request"] = opened
+        save_state(state)
+        record(args.scenario, "hotfix_request", opened)
+    opened = sc["hotfix_request"]
+    if release["gate"]["approval"] != "none":
+        operator("promote", "approve", opened["request_id"], "--project", pid)
+
+    def promoted():
+        value = api("promote_status", {"project_id": pid, "limit": 100})
+        return next((row for row in value.get("promotions", [])
+                     if row["promotion"]["request_id"] == opened["request_id"]
+                     and row["lifecycle"] == "promoted"), None)
+
+    landed = wait_for(promoted, what="hotfix promotion on main", timeout=args.timeout, interval=10)
+    record(args.scenario, "hotfix_promoted", landed)
+    authored = api("integration_backmerge_source", {"project_id": pid, "step_id": release["id"]})
+    check(authored.get("success"), f"backmerge mechanism refused: {authored}")
+    record(args.scenario, "backmerges_authored", authored)
+    debts = authored.get("backmerges") or []
+    for debt in debts:
+        check(debt.get("pr_url"), f"lower branch source lacks its own PR: {debt}")
+        pull = gh_api(f"repos/{REPOSITORY}/pulls/{debt['pr_url'].rsplit('/', 1)[1]}")
+        check(pull["base"]["ref"] == "dev" and pull["head"]["sha"] == landed["promotion"]["source_sha"],
+              f"backmerge PR is not on dev at the released source: {pull}")
+
+    def contained():
+        git(clone, "fetch", "--prune", "origin")
+        return git(clone, "merge-base", "--is-ancestor", sc["leaf_head"], "origin/dev",
+                   check_ok=False).returncode == 0
+
+    wait_for(contained, what="hotfix source contained in dev", timeout=args.timeout, interval=10)
+    record(args.scenario, "hotfix_backmerged", {"source": sc["leaf_head"], "target": "dev"})
+
+
 STEPS = {
     "write-profiles": write_profiles,
     "prepare": prepare,
@@ -1755,6 +1839,7 @@ STEPS = {
     "watch": watch,
     "repair": play_repair,
     "assert-promotion": assert_promotion,
+    "hotfix": hotfix,
 }
 
 
@@ -1776,6 +1861,7 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--candidate", help="assert-promotion: the promoted candidate SHA")
+    parser.add_argument("--version", help="hotfix: PATCH version prepared by --copy or --write")
     args = parser.parse_args()
     HOME.mkdir(parents=True, exist_ok=True)
     try:
