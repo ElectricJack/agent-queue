@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/profiles/inheritance.py::resolve_inheritance": "Merges one agent-profile template with explicit child overrides and validates missing or chained templates; it is general profile inheritance."
+  }
+}
