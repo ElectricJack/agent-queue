@@ -51,17 +51,18 @@ async def state(env, table, field):
 
 
 async def remove(env):
-    return await command(env, "remove_task", confirmed=True, reason="Superseded by new epic")
+    return await command(env, "remove_task", confirmed=True, recursive=True, reason="Superseded by new epic")
 
 
-async def test_preview_and_missing_reason_make_no_changes(env):
+async def test_remove_preview_defaults_to_one_task_and_reason_is_optional(env):
     await child(env)
     preview = await command(env, "remove_task")
     assert preview["disposition"] == "preview"
-    assert set(preview["task_ids"]) == {"t", "child"}
+    assert preview["task_ids"] == ["t"]
     assert (await env.db.get_task("t")).status == TaskStatus.READY
-    rejected = await command(env, "remove_task", confirmed=True)
-    assert rejected["code"] == "removal.reason_required"
+    deleted = await command(env, "remove_task", confirmed=True)
+    assert deleted["success"]
+    assert deleted["deprecated_alias"] == "remove_task"
     assert (await env.db.get_task("child")).status == TaskStatus.READY
 
 
@@ -92,31 +93,33 @@ async def test_remove_stops_exact_running_session_before_releasing_resources(env
     assert await env.db.get_task("t") is None
 
 
-async def test_failed_stop_holds_entire_subtree_and_retry_finishes(env, tmp_path):
+async def test_failed_stop_reports_cleanup_and_keeps_session_draining(env, tmp_path):
     provider, _ = await running_session(env, tmp_path)
     await child(env)
     provider.fail_stop = True
     result = await remove(env)
-    assert result["code"] == "removal.cleanup_pending", result
-    assert (await env.db.get_task("child")).status == TaskStatus.PAUSED
-    assert await env.db.assign_task_to_agent("child", "agent") is False
-    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
-    provider.fail_stop = False
-    assert (await remove(env))["success"]
+    assert result["success"], result
+    assert any(w["code"] == "cleanup_failed" for w in result["warnings"])
     assert await env.db.get_task("child") is None
+    assert (await env.db.get_session("s")).state == "draining"
+    assert (await env.db.get_session("s")).desired_state == "stopped"
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    assert "task-session" in provider.running
 
 
-async def test_remove_cancels_legacy_operation_and_archives_parent_episode(env):
+async def test_remove_cancels_legacy_operation_and_preserves_parent_episode(env):
     await operation(env)
     result = await remove(env)
     assert result["success"], result
-    assert result["disposition"] == "archived"
-    assert result["cancelled_operations"] == ["operation"]
+    assert result["disposition"] == "deleted"
+    assert result["operation_ids"] == ["operation"]
     assert await state(env, t.integration_repair_operations, "state") == "cancelled"
     assert await state(env, t.integration_parent_episodes, "parent_task_id") == "t"
-    archived = await env.db.get_archived_task("t")
-    assert archived["branch_name"] == "preserved"
-    assert "Superseded by new epic" in str(await state(env, t.task_comments, "body"))
+    import json
+
+    audit = (await env.db.get_recent_events(event_type="task.delete_requested"))[0]
+    assert json.loads(audit["payload"])["task_snapshots"][0]["branch_name"] == "preserved"
+    assert "Superseded by new epic" in audit["payload"]
 
 
 async def test_orphan_maintenance_respects_live_subject_until_engine_retired(env):
@@ -160,26 +163,28 @@ async def test_orphan_maintenance_skips_engine_lock_without_waiting(env):
     assert await state(env, t.integration_repair_operations, "state") == "active"
 
 
-async def test_confirmed_remove_stays_fenced_while_cleanup_runs(env, monkeypatch):
+async def test_confirmed_remove_stays_fenced_while_cleanup_runs(env, tmp_path, monkeypatch):
     await child(env)
-    finish = env.orch._finish_manual_pause
+    provider, _ = await running_session(env, tmp_path)
+    stop = provider.stop
 
-    async def check_hold(task_id, snapshot):
+    async def check_hold(*args, **kwargs):
         for tid in ("t", "child"):
             assert (await env.db.get_task(tid)).status == TaskStatus.PAUSED
             assert await env.db.assign_task_to_agent(tid, "agent") is False
-        await finish(task_id, snapshot)
+        await stop(*args, **kwargs)
 
-    monkeypatch.setattr(env.orch, "_finish_manual_pause", check_hold)
+    monkeypatch.setattr(provider, "stop", check_hold)
     assert (await remove(env))["success"]
 
 
-async def test_live_subject_refusal_keeps_audit_and_task(env):
+async def test_live_subject_warns_and_cancels_authority_without_refusing(env):
     await operation(env, subject=True)
     result = await remove(env)
-    assert result["code"] == "hierarchy.integration_owned", result
-    assert await env.db.get_task("t") is not None
-    assert await state(env, t.integration_repair_operations, "state") == "active"
+    assert result["success"], result
+    assert "integration_owned" in {w["code"] for w in result["warnings"]}
+    assert await env.db.get_task("t") is None
+    assert await state(env, t.integration_repair_operations, "state") == "cancelled"
 
 
 @pytest.mark.parametrize("status", [TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.PAUSED])
@@ -221,11 +226,12 @@ async def test_remove_aborts_sealed_batch_and_preserves_delivered_task(env):
     await delivered_batch(env)
     result = await remove(env)
     assert result["success"], result
-    assert result["aborted_batches"] == ["batch"]
-    assert result["disposition"] == "archived"
+    assert result["batch_ids"] == ["batch"]
+    assert result["disposition"] == "deleted"
     assert await state(env, t.integration_batches, "intent") == "aborted"
     assert await state(env, t.task_delivery_receipts, "source_task_id") == "t"
-    assert (await env.db.get_archived_task("t"))["status"] == "COMPLETED"
+    assert await env.db.get_task("t") is None
+    assert (await env.db.get_recent_events(event_type="task.delete_requested"))[0]["payload"]
 
 
 async def test_archive_delivered_task_in_aborted_batch(env):
@@ -242,7 +248,7 @@ async def test_remove_reconciles_aborted_intent_with_stale_sealed_lifecycle(env)
     assert await state(env, t.integration_batches, "lifecycle") == "aborted"
 
 
-async def test_remove_rolls_back_batch_abort_when_a_valid_subject_still_owns_task(env):
+async def test_remove_cancels_subject_and_aborts_its_batch(env):
     await operation(env, subject=True)
     # Reuse the repository owned by the parent operation fixture.
     await env.db.transition_task("t", TaskStatus.COMPLETED, force=True)
@@ -262,9 +268,9 @@ async def test_remove_rolls_back_batch_abort_when_a_valid_subject_still_owns_tas
             t.integration_batches.c.id == "batch",
         ).values(lifecycle="sealed"))
     result = await remove(env)
-    assert result["code"] == "hierarchy.integration_owned", result
-    assert await state(env, t.integration_batches, "lifecycle") == "sealed"
-    assert await state(env, t.integration_batches, "intent") == "open"
+    assert result["success"], result
+    assert await state(env, t.integration_batches, "lifecycle") == "aborted"
+    assert await state(env, t.integration_batches, "intent") == "aborted"
     assert await env.db.get_archived_task("t") is None
 
 
@@ -305,7 +311,8 @@ async def test_remove_standalone_delegate_retires_its_orphan_parent_operation(en
         ).values(verifier_task_id="peer"))
     result = await command(env, "remove_task", "peer", confirmed=True, reason="Obsolete verifier")
     assert result["success"], result
-    assert result["disposition"] == "archived"
-    assert result["cancelled_operations"] == ["operation"]
-    assert await env.db.get_archived_task("peer") is not None
+    assert result["disposition"] == "deleted"
+    assert result["operation_ids"] == ["operation"]
+    assert await env.db.get_task("peer") is None
+    assert (await env.db.get_recent_events(event_type="task.delete_requested"))[0]["task_id"] == "peer"
     assert await env.db.get_task("t") is not None

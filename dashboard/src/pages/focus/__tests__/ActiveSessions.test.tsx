@@ -24,7 +24,7 @@ vi.mock("../../agents/pools", () => ({
 }));
 
 describe("ActiveSessions", () => {
-  it("lists live tmux sessions once each, linking the watch-only view", () => {
+  it("lists live tmux sessions once each, linking the phone terminal", () => {
     render(<MemoryRouter><ActiveSessions /></MemoryRouter>);
     const links = screen.getAllByRole("link");
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
