@@ -1046,6 +1046,51 @@ async def test_slow_target_never_stalls_another():
     assert not any(row["running"] for row in status.values())
 
 
+async def test_tick_lanes_share_one_snapshot_even_when_their_arrivals_are_staggered(setup):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    truth = GitTruth(ops.git, share_fetches=True)
+    targets = [ROOT, *(TrainTarget("p", "r", f"refs/heads/epic-{i}") for i in range(3))]
+    for target in targets[1:]:
+        await ops.push(repo, target.target_ref, base, "")
+    acquired = asyncio.Event()
+    snapshots = {}
+    ops.git.afetch_origin = AsyncMock(wraps=ops.git.afetch_origin)
+
+    async def lane_for(target):
+        if target != ROOT:
+            await acquired.wait()
+
+        async def snapshot_for():
+            snapshot = await truth.snapshot(
+                str(repo.store), project_id="p", repository_id="r",
+                repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+            )
+            snapshots[target.key] = snapshot
+            acquired.set()
+            return snapshot
+
+        return TrainLane(snapshot=snapshot_for, service=Service(),
+                         checks=CandidateChecks.fixed(Checks()))
+
+    t = IntegrationTrain(targets=Targets(*targets), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: 100.0)
+    assert len((await t.tick())["started"]) == 4
+    await t.drain()
+    ops.git.afetch_origin.assert_awaited_once()
+    assert {snapshot.target_oid for snapshot in snapshots.values()} == {base}
+    assert sum(row["timing"]["selection"]["counts"].get("tick_snapshot_hits", 0)
+               for row in t.status()) == 3
+    assert all(row["state"] == "idle" for row in t.status())
+    await ops.push(repo, ROOT.target_ref, head, base)
+    t.wake("p", "r")
+    assert len((await t.tick())["started"]) == 4
+    await t.drain()
+    assert ops.git.afetch_origin.await_count == 2
+    assert snapshots[ROOT.key].target_oid == head
+
+
 async def test_status_reports_a_first_visit_in_flight_as_visiting(monkeypatch):
     """After a restart, a lane whose first visit is running is not 'unvisited'."""
     slow = TrainTarget("p", "r", "refs/heads/main")
@@ -1490,7 +1535,8 @@ async def test_cancelled_shared_fetch_records_waiter_failure_and_retries(setup, 
         release.set()
         assert len((await t.tick())["started"]) == len(waiters)
         await t.drain()
-        assert ops.git.afetch_origin.await_count == 3
+        # One cancelled acquisition, then one shared acquisition for the new tick.
+        assert ops.git.afetch_origin.await_count == 2
         assert not truth._fetches
         for target in waiters:
             lane_state = t._lanes[target.key]

@@ -2221,8 +2221,16 @@ class GitManager:
         lock_held: bool = False,
         all_heads: bool = False,
         refetch: bool = False,
+        refs: Sequence[str] | None = None,
     ) -> None:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
+        if refs is not None:
+            refs = tuple(dict.fromkeys(refs))
+            self._origin_refspecs(refs)  # Validate before any transport or credential lookup.
+            if refetch:
+                raise GitError("a recovery refetch requires the complete origin inventory")
+            if not refs:
+                return
         fetch_args = (
             ["fetch", "--no-tags", "--prune", "origin",
              "+refs/heads/*:refs/remotes/origin/*",
@@ -2231,6 +2239,9 @@ class GitManager:
                               "+refs/heads/*:refs/remotes/origin/*",
                               "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
+        if refs is not None:
+            # Pruning a partial advertisement would retire unrelated branches.
+            fetch_args = ["fetch", "--no-tags", "origin", *self._origin_refspecs(refs)]
         if refetch:
             fetch_args.insert(1, "--refetch")
             fetch_args.append("+refs/tags/*:refs/tags/*")
@@ -2279,6 +2290,7 @@ class GitManager:
             await self._afetch_origin_with_auth_to_url(
                 checkout_path, source_url=source_url, token=token,
                 **({"refetch": True} if refetch else {}),
+                **({"refs": refs} if refs is not None else {}),
             )
 
         if lock_held:
@@ -2287,6 +2299,18 @@ class GitManager:
             async with self.arepository_transaction(checkout_path):
                 await acquire()
 
+    @staticmethod
+    def _origin_refspecs(refs: Sequence[str], *, staged: bool = False) -> list[str]:
+        specs = []
+        for ref in refs:
+            if not ref.startswith(("refs/heads/", "refs/tags/", "refs/aq/provenance/")):
+                raise GitError("origin fetch ref must be a branch, tag or provenance ref")
+            _validate_ref(ref)
+            destination = (ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                           if not staged and ref.startswith("refs/heads/") else ref)
+            specs.append(f"+{ref}:{destination}")
+        return specs
+
     async def _afetch_origin_with_auth_to_url(
         self,
         checkout_path: str,
@@ -2294,6 +2318,7 @@ class GitManager:
         source_url: str,
         token: str | None,
         refetch: bool = False,
+        refs: Sequence[str] | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2308,6 +2333,18 @@ class GitManager:
         checkout lacks, so nothing the checkout keeps depends on the temporary
         repository after it is removed.
         """
+        if refs is not None:
+            refs = tuple(dict.fromkeys(refs))
+            if not refs or refetch:
+                raise GitError("partial origin fetch requires refs and cannot refetch")
+            transport_refs = self._origin_refspecs(refs, staged=True)
+            import_refs = self._origin_refspecs(refs)
+        else:
+            transport_refs = ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                              "+refs/aq/provenance/*:refs/aq/provenance/*"]
+            import_refs = ["+refs/heads/*:refs/remotes/origin/*",
+                           "+refs/aq/provenance/*:refs/aq/provenance/*",
+                           *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
         deadline = started + self._GIT_TIMEOUT
@@ -2350,8 +2387,7 @@ class GitManager:
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
                      "-c", "fetch.fsckObjects=true",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
-                     "+refs/aq/provenance/*:refs/aq/provenance/*"],
+                     *transport_refs],
                     home=home,
                     repository_url=source_url,
                     token=token,
@@ -2369,15 +2405,14 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
+                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                 *(["--prune"] if refs is None else []),
                  *(["--refetch"] if refetch else []),
-                 str(imported), "+refs/heads/*:refs/remotes/origin/*",
-                 "+refs/aq/provenance/*:refs/aq/provenance/*",
-                 *(["+refs/tags/*:refs/tags/*"] if refetch else [])],
+                 str(imported), *import_refs],
                 home=home,
                 deadline=deadline,
             )
-            if not refetch:
+            if not refetch and refs is None:
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                      "-c", "fetch.fsckObjects=true",
@@ -4115,12 +4150,35 @@ class GitManager:
         self, checkout_path: str, *, repository_url: str | None = None,
     ) -> dict[str, str]:
         """List all remote branch heads using this repository's read credentials."""
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--heads"], prefixes=("refs/heads/",),
+        )
+
+    async def als_remote_snapshot_refs(
+        self, checkout_path: str, *, repository_url: str,
+    ) -> dict[str, str]:
+        """Advertise every ref namespace imported by a retained origin fetch.
+
+        Patterns include new and deleted provenance/tags as well as branches;
+        checking only known heads could miss a newly published completion.
+        """
+        prefixes = ("refs/heads/", "refs/tags/", "refs/aq/provenance/")
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--refs"], prefixes=prefixes,
+            patterns=[prefix + "*" for prefix in prefixes],
+        )
+
+    async def _als_remote_inventory(
+        self, checkout_path, *, repository_url, options, prefixes, patterns=(),
+    ):
         destination, token = await self._apush_destination(
             checkout_path, "origin", repository_url=repository_url,
         )
         if destination is None:
             result = await self.arun_git_result(
-                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+                ["ls-remote", *options, "origin", *patterns], cwd=checkout_path,
             )
             if result.returncode:
                 raise GitError(result.stderr or "remote head inventory failed")
@@ -4130,7 +4188,7 @@ class GitManager:
                 home = Path(temporary)
                 home.chmod(0o700)
                 output = (await self._arun_authenticated_git(
-                    ["ls-remote", "--heads", destination], home=home,
+                    ["ls-remote", *options, destination, *patterns], home=home,
                     repository_url=destination, token=token,
                     deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
                     budget_seconds=self._GIT_TIMEOUT,
@@ -4138,7 +4196,7 @@ class GitManager:
         found = {}
         for line in output.splitlines():
             oid, separator, ref = line.partition("\t")
-            if (not separator or not ref.startswith("refs/heads/")
+            if (not separator or not ref.startswith(prefixes)
                     or not is_valid_git_oid(oid) or ref in found):
                 raise GitError("remote returned malformed or duplicate head identity")
             _validate_ref(ref.removesuffix("^{}"))

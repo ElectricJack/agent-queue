@@ -3623,7 +3623,7 @@ class Orchestrator(
             # 5. Schedule READY tasks onto idle agents (skipped when paused).
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self.db)
+            hierarchy_modes = await hierarchy_frontier_modes(self.db, background=True)
             if not self._paused:
                 actions = await self._schedule(hierarchy_modes=hierarchy_modes)
             else:
@@ -4873,7 +4873,7 @@ class Orchestrator(
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self.db)
+            hierarchy_modes = await hierarchy_frontier_modes(self.db, background=True)
         delivery_admission = await self._delivery_admission(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
             hierarchy_modes=hierarchy_modes,

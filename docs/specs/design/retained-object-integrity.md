@@ -71,6 +71,53 @@ their handles through cancellation during spawn, and terminate/reap their proces
 groups before cancellation or timeout releases the caller's exclusion. This
 closes a writer-lifetime gap; it does not identify the cause of a past corruption.
 
+## Tick-scoped observations
+
+Train lanes dispatched by one tick share one repository acquisition, including
+lanes arriving after that acquisition starts or completes. Reconciliation stages
+likewise share one observation per repository in their tick. The train and Git
+truth reconciler use the same GitTruth service for immutable facts and backoff.
+Only work dispatched by that tick retains its scope; later ticks and publication
+follow-ups enter a new scope. Each reader retains independent answer and freshness caches.
+Mutable authority and remote target identity still require their existing checks
+before a proof can authorize a state change.
+
+The service dispatch encloses both train lanes and Git truth reconciliation in
+one scope. Standalone ticks create their own scope; publication follow-ups
+always create a new one. Reader caches and remote freshness fences remain local.
+The reconciler opens the train's canonical retained `repository` checkout under
+the same storage binding, rather than creating a separate reconciliation clone.
+Both readers therefore reuse its TTL/fingerprint integrity baseline between
+ticks as well as its snapshot within a tick. Concurrent first opens serialize
+clone creation, origin validation and hardening under repository exclusion.
+
+For these background observations, a reusable full integrity baseline allows a
+fresh authenticated `ls-remote --refs` inventory before transport, under the
+repository transaction. All branches, tags and provenance refs are compared
+with the retained import inventory, including additions, deletions and rewinds.
+Only new or changed refs travel through authenticated transport and the local
+checked import, using explicit refspecs on both legs. Unrelated lane targets
+share the captured inventory and acquire a moved task branch only once per tick.
+Partial imports never prune other refs. Deleted branch/provenance tracking refs
+are retired in a local ref transaction guarded by their observed old OIDs;
+tags and objects remain retained. Deletion-only or unchanged inventories need
+no transport or foreground maintenance. Changed imports retain fsckObjects and
+the existing baseline-extension checks. Expired or changed integrity baselines,
+recovery journals and pending markers retain full acquisition and recovery.
+A failed remote probe leaves the observation unavailable.
+
+Scheduler and pool sizing read only completed, bounded-age snapshots and start
+one background refresh per repository when needed. Cold or expired snapshots
+remain unavailable for that pass; they never await the shared acquisition.
+Diagnostics do not start refreshes. Claims and preparation keep their ordinary
+synchronous acquisition, identity checks and remote freshness fences.
+
+Per-visit selection metrics distinguish `snapshot_acquisition`,
+`snapshot_scope_wait`, `snapshot_ref_probe`, `retained_fetch`, `retained_fsck`
+and `retained_maintenance`. Counters include `tick_snapshot_hits`,
+`snapshot_ref_probes`, `snapshot_unchanged`, `snapshot_changed_refs`,
+`snapshot_removed_refs` and `retained_fetch_starts`.
+
 ## Recovery authority
 
 Detection is read-only with respect to the lender. It does not change refs,
