@@ -11,7 +11,7 @@
     ]
   },
   "defaults": {
-    "intelligence_class": "standard-medium"
+    "intelligence_class": "standard-high"
   },
   "nodes": [
     {
@@ -27,7 +27,7 @@
       "needs": [],
       "priority": 30,
       "task_type": "bugfix",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"
@@ -48,7 +48,7 @@
       ],
       "priority": 30,
       "task_type": "bugfix",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"
@@ -110,7 +110,7 @@
       ],
       "priority": 50,
       "task_type": "bugfix",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"
@@ -131,7 +131,7 @@
       ],
       "priority": 45,
       "task_type": "feature",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"
@@ -171,7 +171,7 @@
       ],
       "priority": 75,
       "task_type": "chore",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"
@@ -198,7 +198,7 @@
       ],
       "priority": 80,
       "task_type": "docs",
-      "intelligence_class": "standard-medium",
+      "intelligence_class": "standard-high",
       "labels": [
         "cli-consistency",
         "cli-audit-2026-09-08"

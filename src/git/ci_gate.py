@@ -58,7 +58,7 @@ PENDING_STATES = frozenset({"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQU
 
 #: States that carry no information about the code.  A run cancelled by
 #: the workflow's ``concurrency`` group (``.github/workflows/tests.yml``
-#: cancels superseded runs on non-``main`` refs) says nothing about the
+#: cancels a superseded run on the same ref) says nothing about the
 #: commit, so it is dropped whenever the *same check name* also has a
 #: conclusive entry — which is why #341's ``FAILURE, CANCELLED`` pair reads
 #: as red rather than as an ambiguous mix.
