@@ -820,6 +820,14 @@ class IntegrationTrain:
             visit = replace(self._visit(target, state, snapshot=snapshot), detail=opened.detail)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
+            if (visit.detail or {}).get("ejections"):
+                # A build conflict replaced the frozen input. Dispatch and
+                # speculative work must follow the new batch, never the abort.
+                current = await lane.service.store.get(visit.batch_id)
+                opened = replace(opened,
+                    batch=current if current and current.intent == "open" else None,
+                    members=await lane.service.store.members(current.id)
+                    if current and current.intent == "open" else ())
         self._schedule_speculative(target, lane, snapshot, opened, visit)
         blockers = opened.blockers
         window_deferred = (opened.batch is None and opened.blockers and all(
@@ -1027,6 +1035,19 @@ class IntegrationTrain:
                 "reason": "train_policy_wait", "retry_at": self.clock() +
                 lane.train_policy.wait_seconds})
         if observation.state == "conflict":
+            drop_conflict = getattr(self.batches, "drop_conflict", None)
+            if drop_conflict is not None:
+                dropped = await drop_conflict(
+                    target, batch, members, observation, snapshot, lane.service)
+                if dropped is not None:
+                    if dropped.batch is None:
+                        return replace(self._visit(target, "blocked", batch, observation),
+                                       detail={"ejections": list(dropped.blockers)})
+                    continued = await self._visit_batch(
+                        target, lane, snapshot, dropped.batch, dropped.members)
+                    return replace(continued, detail={**(continued.detail or {}), "ejections": [
+                        *dropped.blockers, *(continued.detail or {}).get("ejections", []),
+                    ]})
             async def completion_blocker(task_id, starting_sha):
                 return await lane.service.repair_completion_blocker(
                     batch, task_id, starting_sha, snapshot,

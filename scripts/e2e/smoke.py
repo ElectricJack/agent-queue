@@ -36,6 +36,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S18 failure triage         durable task.failed playbook dispatch and supervisor notice
     S19 scoped planner graph   authenticated graph filing and checklist settlement
     S20 train delivery         ordinary close provenance and git-first batch publication
+    S21 held ingestion         approval, held graph, assigned review, release and replay
 """
 
 from __future__ import annotations
@@ -453,7 +454,11 @@ def session_token(session_id: str) -> str:
 
 
 #: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
-ROLE_PROFILES = frozenset({"triage", "spec-ingest", "reviewer", "final-reviewer"})
+# S4 and S19 deliberately dispatch dedicated stages, outside ordinary worker selection.
+ROLE_PROFILES = frozenset({
+    "triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer", "coding", "planner",
+})
+
 #: Why the operator overrides a route in this kit; the override needs 10-400 chars.
 OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
@@ -575,7 +580,13 @@ class Worker:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
     def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
-        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
+        return self.claim(check_ok=check_ok, wait=wait)
+
+    def claim(
+        self, task_id: str | None = None, *, check_ok: bool = True, wait: int = 0,
+    ) -> dict:
+        out = self.aq("task", "claim", task_id or "--next", "--wait", str(wait),
+                      check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -615,10 +626,13 @@ class Worker:
         )
 
 
-def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> dict:
+def claim_fixture(
+    worker: Worker, task_ids: str | list[str], *, what: str, targeted: bool = False,
+) -> dict:
     """Bound transient empty claims without hiding a wrong task or session failure."""
     fixtures = [task_ids] if isinstance(task_ids, str) else task_ids
     check(fixtures, f"{what}: no fixture tasks available")
+    check(not targeted or len(fixtures) == 1, f"{what}: targeted claim requires one fixture")
     last_claim = None
 
     def claim():
@@ -627,9 +641,18 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
         # no task.ready event to wake a long poll. Leave time for retries.
         # Preparation can outlive this short observation; the next call
         # resumes the session's existing attempt.
-        last_claim = worker.claim_next(wait=1)
+        last_claim = (worker.claim(fixtures[0], wait=1) if targeted
+                      else worker.claim_next(wait=1))
         if last_claim.get("result") == "no_ready_work":
             return None
+        if (targeted and last_claim.get("result") == "claim_conflict"
+                and not last_claim.get("reason")):
+            # A targeted SKIP LOCKED miss is a conflict, not an empty frontier.
+            # Retry only while the fixture still proves ready and unclaimed.
+            task = task_show(fixtures[0])
+            if (task["status"] == "READY" and not task.get("assigned_agent")
+                    and not task.get("claimed_by") and not task.get("is_blocked")):
+                return None
         if last_claim.get("result") == "claim_in_progress":
             check(last_claim.get("task_id") in fixtures,
                   f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
@@ -1928,15 +1951,17 @@ def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
 
 
 def set_failover_policy_enabled(enabled: bool) -> None:
-    """Keep S16's operator-driven sweeps isolated from the automatic policy."""
-    result = aq(
-        "playbook",
-        "set-enabled",
-        "--playbook-id",
-        FAILOVER_PLAYBOOK,
-        "--enabled" if enabled else "--no-enabled",
-    )
-    check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
+    """Isolate manual sweeps from failover and unavailable-route recovery."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    for playbook in (FAILOVER_PLAYBOOK, project["assignment_playbook_id"]):
+        result = aq(
+            "playbook", "set-enabled", "--playbook-id", playbook,
+            "--enabled" if enabled else "--no-enabled",
+        )
+        check(result.get("enabled") is enabled, f"could not set {playbook}: {result}")
+    if not enabled:
+        # Router readiness is cached until the cascade observes the activation.
+        observe_scheduler_cycles(lambda: None)
 
 
 def wait_for_restored_readiness() -> None:
@@ -2086,9 +2111,11 @@ def _run_failover_phase(state: dict, phase) -> str:
     # shipped provider-failover playbook would otherwise consume S16's state
     # change and move the first task before this scenario can inspect the full
     # held set and exercise the operator's dry-run/live commands itself.
+    # The ready router's unavailable-route recovery would also clear those
+    # deliberately stranded routes, so pause its activation for this phase.
     try:
         set_failover_policy_enabled(False)
-        note("paused the automatic provider-failover playbook for manual sweep coverage")
+        note("paused automatic failover and routing recovery for manual sweep coverage")
         return phase(state)
     finally:
         try:
@@ -2219,7 +2246,8 @@ def _s16_outage(state: dict) -> dict:
         _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
     )
     worker = Worker.adopt(sess["id"])
-    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}")
+    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}",
+                  targeted=True)
     worker.close(summary="S16 moved task done on provb")
     worker.drain_ack()
     note(f"provb session {sess['id']} claimed and closed {pref[0]}")
@@ -2289,7 +2317,10 @@ def _claim_probation_canary(pinned: str, solo: str) -> tuple[Worker, dict, str]:
     )
     expected = pinned if canary["profile_id"] == STD_A else solo
     worker = Worker.adopt(canary["id"])
-    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}")
+    # Other prova work remains queued. SKIP LOCKED may bypass this fixture
+    # while a sweep holds its row, so request it by ID rather than by priority.
+    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}",
+                  targeted=True)
     return worker, canary, expected
 
 
@@ -2323,7 +2354,8 @@ def _s16_recovery(outage: dict) -> str:
             profile_id=STD_A,
         )
         worker_p = Worker.adopt(sess_a["id"])
-        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}")
+        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}",
+                      targeted=True)
         worker_p.close(summary="S16 pinned task done on prova")
         worker_p.drain_ack()
         note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")
@@ -2644,8 +2676,7 @@ def s20_train_delivery(state: dict) -> str:
               for record in records), f"S20 provenance does not bind the immutable close: {records}")
     status = aq("integration", "status", project_id)
     check(status["effective_mode"] == "train", f"S20 project is not in train mode: {status}")
-    if status.get("projection_kind") != "train":
-        return "train-mode close retained its source; delivery explicitly untested (git_first needs active)"
+    check(status.get("projection_kind") == "train", f"S20 default engine is not the train: {status}")
 
     def delivered():
         current = aq("integration", "status", project_id, "--control-only")
@@ -3177,6 +3208,95 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
 
+def s21_held_ingestion(state: dict) -> str:
+    """Replay committed commands as a restarted client against the real daemon."""
+    del state
+    worker = fresh_workers(1)[0]
+    home = Path(os.environ["AQ_E2E_HOME"])
+    path = home / "vault/projects/e2e/specs/s21-held-ingestion.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nspec_kind: implementation\n---\n# S21\n"
+                    "## Delivery\nImplement src/s21.py and verify its acceptance.\n")
+    approval = api_checked("spec_approve", {"project_id": PROJECT, "spec_path": str(path)})
+    dispatched = api_checked("ensure_spec_ingest", {
+        "project_id": PROJECT, "decision_id": approval["decision_id"],
+        "packet_sha256": approval["packet_sha256"],
+    })
+
+    def assigned_session(profile, task_id):
+        return wait_for(
+            lambda: next((s for s in collection_rows(api_checked("session_list", {}), "sessions")
+                          if s.get("profile_id") == profile and s.get("task_id") == task_id
+                          and s.get("state") == "running"), None),
+            what=f"S21 {profile} assignment for {task_id}",
+        )
+
+    ingester = assigned_session("spec-ingest", dispatched["task_id"])
+    token = session_token(ingester["id"])
+    graph = {
+        "project_id": PROJECT, "source": f"spec:decision:{approval['decision_id']}",
+        "tasks": [
+            {"tempId": key, "title": f"S21 {key}", "description": f"{path}: {key}",
+             "section_anchor": f"S21 / {key}", "primary_outcome": f"Deliver {key}",
+             "acceptance": [f"Verify {key}"], "constraints": ["Preserve held isolation"],
+             "size": "s", "owned_modules": [f"src/s21_{key}.py"],
+             **({"task_type": "feature", "intelligence_class": "standard-high"}
+                if key == "leaf" else {})}
+            for key in ("epic", "leaf")
+        ],
+        "edges": [{"from": "leaf", "to": "epic", "dep_type": "parent-child"}],
+    }
+    batch = api("task_batch_propose", graph, token=token)
+    check(batch.get("success") and batch.get("state") == "held", f"S21 propose: {batch}")
+    # Lose the first response locally, then reconstruct authentication and retry.
+    replay = api("task_batch_propose", graph, token=session_token(ingester["id"]))
+    check(replay.get("replayed") and replay.get("members") == batch["members"],
+          f"S21 materialization replay duplicated work: {replay}")
+    leaf_id = batch["members"]["leaf"]
+    route_task(leaf_id, POOL_PROFILE, POOL_CLASS)
+    claim = worker.claim_next()
+    check(claim.get("result") == "no_ready_work", f"S21 held leaf was claimable: {claim}")
+    # The project admits two live sessions: the idle pool worker and one role.
+    # Finish ingestion after its receipt replay, as the real ingester does,
+    # so the fidelity reviewer can take that role's execution slot.
+    closed_ingester = api("task_close", {
+        "task_id": dispatched["task_id"], "session_id": ingester["id"],
+        "outcome": "pass", "work_outcome": "no-op",
+        "summary": f"S21 materialized held batch {batch['batch_id']}; replay verified",
+    }, token=token)
+    check(closed_ingester.get("success"), f"S21 ingester close: {closed_ingester}")
+    ensure_args = {"project_id": PROJECT, "batch_id": batch["batch_id"],
+                   "structure_revision": batch["structure_revision"]}
+    reviewer = api_checked("ensure_fidelity_review", ensure_args)
+    again = api_checked("ensure_fidelity_review", ensure_args)
+    check(again.get("task_id") == reviewer.get("task_id") and not again.get("created"),
+          f"S21 reviewer replay duplicated assignment: {again}")
+    review_session = assigned_session("fidelity-reviewer", reviewer["task_id"])
+    review_token = session_token(review_session["id"])
+    validation = api("task_batch_validate", {"project_id": PROJECT,
+                     "batch_id": batch["batch_id"], "expected_revision": 1}, token=review_token)
+    check(validation.get("success") and validation.get("passed"), f"S21 validation: {validation}")
+    recorded = api("task_batch_review_record", {
+        "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+        "expected_digest": batch["structure_digest"],
+        "section_verdicts": {f"S21 / {key}": "faithful" for key in ("epic", "leaf")},
+        "reverse_coverage_verdict": "faithful", "walkthrough_verdict": "faithful",
+        "structural_findings": [],
+    }, token=review_token)
+    check(recorded.get("success") and recorded.get("passing"), f"S21 attestation: {recorded}")
+    release_args = {"batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+                    "expected_digest": batch["structure_digest"]}
+    released = api_checked("task_batch_release", release_args)
+    repeated = api_checked("task_batch_release", release_args)
+    check(repeated.get("already_released")
+          and repeated.get("release_receipt") == released.get("release_receipt"),
+          f"S21 release replay changed evidence: {repeated}")
+    claim_fixture(worker, leaf_id, what="S21 released leaf claim")
+    worker.close(summary="S21 held leaf released by fidelity receipt")
+    worker.drain_ack()
+    return f"batch {batch['batch_id']} held until assigned review; materialization, dispatch and release replayed"
+
+
 @dataclass
 class Scenario:
     key: str
@@ -3217,10 +3337,11 @@ SCENARIOS: list[Scenario] = [
     Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
     Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
     Scenario("S20", "train-mode delivery", s20_train_delivery, ("integration/train/provenance",)),
+    Scenario("S21", "held ingestion and replay", s21_held_ingestion, ("ingestion/recovery/fidelity",)),
 ]
 
 # Selecting these IDs replaces S16's serial transcript with independent worlds.
-# The default developer run executes all twenty scenarios.
+# The default developer run executes all twenty-one scenarios.
 FAILOVER_PHASES = [
     Scenario("S16a", "provider outage and rerouting", s16a_provider_outage, ("provider availability/failover",)),
     Scenario("S16b", "provider recovery and all-down", s16b_provider_recovery, ("provider availability/failover",)),

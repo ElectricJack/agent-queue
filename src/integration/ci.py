@@ -30,7 +30,6 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
     task_integration_checkpoints,
-    tasks,
 )
 from src.git.github_contracts import (
     GitHubCredentialMode,
@@ -502,15 +501,6 @@ def failed_run_verdict(
     return "red" if "failure" in runs else "infra"
 
 
-class ParentCISubject(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    operation_id: str = Field(min_length=1)
-    parent_task_id: str = Field(min_length=1)
-    generation: StrictInt = Field(ge=0)
-    head_sha: str = Field(pattern=_SHA_PATTERN)
-
-
 class CandidateCISubject(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -646,34 +636,6 @@ class CIService:
         self.clock = clock
         self.adapter = IntegrationCIEvidenceAdapter()
 
-    async def observe_parent(self, subject: ParentCISubject) -> dict[str, Any]:
-        if not isinstance(subject, ParentCISubject):
-            raise TypeError("observe_parent requires ParentCISubject")
-        async with self.db.immediate() as conn:
-            declared_trust = await self._lock_parent_subject_on(conn, subject)
-        if declared_trust is None:
-            return {"outcome": "stale_subject", "evidence_ids": []}
-        try:
-            observation = await self.observer.observe(declared_trust, subject.head_sha)
-        except AttestationError:
-            outcome = (
-                "full_suite_required"
-                if declared_trust.required_checks != self.trust.required_checks
-                else "not_green"
-            )
-            return {"outcome": outcome, "evidence_ids": []}
-        async with self.db.immediate() as conn:
-            rechecked_trust = await self._lock_parent_subject_on(conn, subject)
-            if rechecked_trust != declared_trust:
-                return {"outcome": "stale_subject", "evidence_ids": []}
-            evidence_ids = await self._append_observation_on(
-                conn, subject, observation, trust=declared_trust
-            )
-            return {
-                "outcome": "green" if isinstance(observation, TrustedCIObservation) else "red",
-                "evidence_ids": evidence_ids,
-            }
-
     async def observe_candidate(self, subject: CandidateCISubject) -> dict[str, Any]:
         if not isinstance(subject, CandidateCISubject):
             raise TypeError("observe_candidate requires CandidateCISubject")
@@ -789,58 +751,6 @@ class CIService:
         )
         return aggregate_id
 
-    async def _lock_parent_subject_on(
-        self, conn: Any, subject: ParentCISubject
-    ) -> IntegrationTrustManifest | IntegrationCITrust | None:
-        parent = await select_row(conn, tasks, tasks.c.id == subject.parent_task_id)
-        project = None
-        if parent is not None:
-            project = await select_row(conn, projects, projects.c.id == parent["project_id"])
-        if not self._enabled_project_repository(project):
-            return None
-        await self.db.lock_hierarchy_project(conn, project["id"])
-        project = await select_row(conn, projects, projects.c.id == project["id"], lock=True)
-        parent = await select_row(conn, tasks, tasks.c.id == subject.parent_task_id, lock=True)
-        if (
-            not self._enabled_project_repository(project)
-            or parent is None
-            or parent["project_id"] != project["id"]
-        ):
-            return None
-        checkpoint = await select_row(
-            conn,
-            task_integration_checkpoints,
-            task_integration_checkpoints.c.task_id == subject.parent_task_id,
-            lock=True,
-        )
-        operation = None
-        if checkpoint is not None and checkpoint["episode_id"] is not None:
-            operation = await select_row(
-                conn,
-                integration_repair_operations,
-                integration_repair_operations.c.parent_task_id == subject.parent_task_id,
-                integration_repair_operations.c.episode_id == checkpoint["episode_id"],
-                lock=True,
-            )
-        declared_trust = self._operation_trust(operation, "parent")
-        if (
-            operation is None
-            or checkpoint is None
-            or parent["repo_id"] != self.trust.canonical_repository_id
-            or checkpoint["repository_id"] != self.trust.canonical_repository_id
-            or checkpoint["state"] != "verifying"
-            or operation["target_kind"] != "parent"
-            or operation["id"] != subject.operation_id
-            or operation["parent_task_id"] != subject.parent_task_id
-            or operation["episode_id"] != checkpoint["episode_id"]
-            or operation["state"] not in {"active", "escalated"}
-            or declared_trust is None
-            or checkpoint["generation"] != subject.generation
-            or checkpoint["checkpoint_sha"] != subject.head_sha
-        ):
-            return None
-        return declared_trust
-
     async def _lock_candidate_subject_on(
         self, conn: Any, subject: CandidateCISubject
     ) -> bool:
@@ -905,14 +815,12 @@ class CIService:
     async def _append_observation_on(
         self,
         conn: Any,
-        subject: ParentCISubject | CandidateCISubject,
+        subject: CandidateCISubject,
         observation: TrustedCIObservation | FailedCIObservation,
         *,
         trust: IntegrationTrustManifest | IntegrationCITrust,
     ) -> list[str]:
-        expected_head = (
-            subject.head_sha if isinstance(subject, ParentCISubject) else subject.candidate_sha
-        )
+        expected_head = subject.candidate_sha
         if isinstance(observation, TrustedCIObservation):
             payload = observation.payload
             _require_payload_matches_trust(payload, trust, expected_head)
@@ -949,23 +857,6 @@ class CIService:
             evidence_id = "ci-" + hashlib.sha256(
                 json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
-            subject_values = (
-                {
-                    "batch_id": None,
-                    "candidate_revision": None,
-                    "parent_task_id": subject.parent_task_id,
-                    "parent_generation": subject.generation,
-                    "parent_head_sha": subject.head_sha,
-                }
-                if isinstance(subject, ParentCISubject)
-                else {
-                    "batch_id": subject.batch_id,
-                    "candidate_revision": subject.revision,
-                    "parent_task_id": None,
-                    "parent_generation": None,
-                    "parent_head_sha": None,
-                }
-            )
             evidence = IntegrationCIEvidence(
                 id=evidence_id,
                 operation_id=subject.operation_id,
@@ -978,7 +869,8 @@ class CIService:
                 conclusion=overall_conclusion,
                 classification="conclusive",
                 observed_at=self.clock(),
-                **subject_values,
+                batch_id=subject.batch_id,
+                candidate_revision=subject.revision,
             )
             evidence_ids.append(await self.adapter.append_on(conn, evidence))
         return sorted(evidence_ids)
