@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/install/steps.py::StepContext": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/steps.py::StepSpec": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
