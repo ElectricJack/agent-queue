@@ -162,7 +162,7 @@ Project document reads do not depend on knowledge-record activation.
 | `aq session nudge` | `<session_id> <text>` | H | `{submitted: bool}` |
 | `aq session logs` | `<session_id> [-f]` | H | transcript entries (follow via SSE) |
 | `aq session kill` | `<session_id> [-y]` | H | `{killed: true}` |
-| `aq task list` | `[--project] [--status] [--label] [--brief]` | A/H | list of tasks |
+| `aq task list` | `[--project\|--all-projects] [--status] [--limit N] [--label] [--brief]` | A/H | list of tasks |
 | `aq task explain` | `<task_id>` | H | blocker analysis per [work-graph](work-graph.md) |
 | `aq task graph` | `[--project] [--format ascii\|dot\|json]` | H | dependency graph |
 | `aq project ready` | `[<project_id>]` | H | ready tasks + not-ready reasons |
@@ -174,6 +174,16 @@ Project document reads do not depend on knowledge-record activation.
 | `aq doctor` | `[--fix]` | H | system health findings (G.1) |
 | `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([supervisor-agent](supervisor-agent.md)) |
 | `aq schema` | — | A/H | enum catalog (§4.3) |
+
+`aq task list --all-projects` explicitly omits the project filter; it is mutually
+exclusive with `--project`. Local operators and global supervisors can list across
+projects; a project supervisor remains pinned to its token's project. Omitting both
+options preserves the existing scope behavior. `--limit N` accepts a positive integer
+and caps the flat live list after status and completion filtering, including active
+tasks. The matching `total` remains uncapped, so JSON pagination reports truncation.
+Without a limit, the existing active-task and finished-task cap behavior is preserved.
+The `list_tasks` command contract also accepts `limit` for flat live reads; tree and
+compact reads reject it, and snapshot reads use `page_size` instead.
 
 ### 3.3 Preserved existing commands
 

@@ -515,7 +515,7 @@ class DiscordConfig:
     #: single-channel model binds durable delivery to an ID that survives a
     #: rename (§1, §9).  Empty means "not configured yet".
     channel_id: str = ""
-    #: Conversation destination; inferred only when there is exactly one project.
+    #: Shared ask intake/admission scope and fingerprint; chat always belongs to global.
     project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
