@@ -156,7 +156,7 @@ def stacked_policy(project) -> bool:
     return choice in {None, "stacked"}
 
 
-async def _inputs(conn, project_id, task_id=None):
+async def _inputs(conn, project_id, task_id=None, *, task_ids=None, source_ids=None):
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
@@ -227,6 +227,10 @@ async def _inputs(conn, project_id, task_id=None):
     )
     if task_id is not None:
         query = query.where(dependent.c.id == task_id)
+    if task_ids is not None:
+        query = query.where(dependent.c.id.in_(task_ids))
+    if source_ids is not None:
+        query = query.where(source.c.id.in_(source_ids))
     rows = tuple(dict(row) for row in (await conn.execute(query)).mappings())
     blocked = await _unauthorized_sources(conn, {row["task_id"] for row in rows})
     result = []
@@ -543,9 +547,18 @@ class StackView:
         return StackCurrentness("current")
 
     async def verified_on(self, conn, ids=None):
+        wanted = set(self.proofs) if ids is None else set(self.proofs).intersection(ids)
+        if not wanted:
+            return {}
+        # A display read must not re-authorize every historical stack in the
+        # project to validate a handful of current proofs. Scheduler passes
+        # retain their explicitly shared snapshot; other callers load only
+        # the sources whose identities they are actually checking.
+        rows = (await _project_inputs(conn, self.project_id) if _SHARED_INPUTS.get() is not None
+                else await _inputs(conn, self.project_id, source_ids=wanted))
         current = {
             _identity(row)["task_id"]: _identity(row)
-            for row in await _project_inputs(conn, self.project_id)
+            for row in rows
         }
         return {
             tid: proof
@@ -558,10 +571,11 @@ class StackView:
 
 
 async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
-                         cached_only=False, require_snapshot=False):
+                         cached_only=False, require_snapshot=False, task_ids=None):
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
-        rows = await _inputs(conn, project_id, task_id)
+        rows = await _inputs(conn, project_id, task_id,
+                             **({"task_ids": task_ids} if task_ids is not None else {}))
         repository_query = select(repos).join(
             projects, projects.c.integration_repository_id == repos.c.id,
         ).where(projects.c.id == project_id)
@@ -763,7 +777,13 @@ class StackedBranches:
         ids = view.required(task_id)
         if not ids and parent_base is None:
             return None
-        if not await view.fresh():
+        if any(not row["authorized"] for row in view.rows):
+            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
+        currentness = await view.currentness()
+        if currentness.state == "unavailable":
+            # Unknown delivery cannot veto a worker: no overlay; the agent merges via Git.
+            return None
+        if not currentness.current:
             raise StackPreparationChanged("prerequisite stack changed during preparation")
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
@@ -775,8 +795,6 @@ class StackedBranches:
                     tasks.c.id == task.parent_task_id,
                 )
             )
-        if any(not row["authorized"] for row in view.rows):
-            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
         if set(proofs) != ids:
             # Delivered sources may have had their task refs cleaned up. The
             # established parent proof remains a valid preparation route.
