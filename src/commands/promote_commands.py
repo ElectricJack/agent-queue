@@ -52,6 +52,7 @@ from src.integration.promotion_steps import (
     FlowSchema,
     PromotionSourceRefusal,
     check_source_green,
+    fail_stranded_promotion_tasks_on,
     promotion_ref,
     promotion_task_defect,
 )
@@ -889,6 +890,12 @@ class PromoteCommandsMixin:
                 # Held only for the writes: a flow edit waits for this intent or
                 # this intent sees the edit and rolls back.
                 await _check_flow(conn, project.id, raw, repository.id, lock=True)
+                # An aborted or failed intent never settles its task. The next
+                # intent on this target supersedes it rather than running beside it.
+                superseded = await fail_stranded_promotion_tasks_on(
+                    self.db, conn, now=now, project_id=project.id,
+                    repository_id=repository.id, target_ref=target_ref,
+                )
                 await conn.execute(
                     insert(tasks).values(
                         id=member.task_id,
@@ -939,6 +946,7 @@ class PromoteCommandsMixin:
                     "intent": "open",
                     "promotion": meta,
                     "pr_url": pr_url,
+                    **({"superseded_task_ids": superseded} if superseded else {}),
                 }, project.id, repository.id, target_ref)
         except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
             return {"success": False, "outcome": exc.outcome, "error": str(exc),
@@ -1109,7 +1117,7 @@ class PromoteCommandsMixin:
                 )
             if row["intent"] == "aborted":
                 return _intent_response("already_cancelled", row)
-            lane, ops, repo, client = await self._promotion_runtime(
+            _lane, ops, repo, client = await self._promotion_runtime(
                 project, repository, meta["step"]
             )
             async with self.db.immediate() as conn:
@@ -1142,21 +1150,13 @@ class PromoteCommandsMixin:
                     )
                 await _check_pull(client, repo.binding, meta, allow_closed=True)
                 await client.close_pull_request(number=meta["pr_number"])
-                members = await lane.service.store.members(row["id"])
                 now = time.time()
                 await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id == row["id"]).values(
                     intent="aborted", lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
                     updated_at=now))
-                failed = await execute_task_status_mutation(conn, update(tasks)
-                    .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
-                    .values(status="FAILED", updated_at=now)
-                )
-                if failed.rowcount:
-                    await self.db._record_recovery_failure_generation_on(
-                        conn, members[0].task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now,
-                    )
+                await fail_stranded_promotion_tasks_on(self.db, conn, now=now, batch_id=row["id"])
             return self._woken({
                 "success": True, "outcome": "cancelled", "project_id": project.id,
                 "request_id": request.request_id, "batch_id": row["id"], "pr_url": meta["pr_url"],

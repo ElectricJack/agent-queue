@@ -4,6 +4,12 @@ tags: [guide, agents, waits]
 
 # Verified agent waits
 
+Prime follows the effective project `wait_policy.v2_enabled` setting. When it is
+disabled, report a blocker once, preserve the held claim and end the turn awaiting
+supervisor inbox delivery. Do not retry registration or poll inboxes. Run tests in
+the foreground with `aq test`. Existing persisted waits retain their recovery and
+acknowledgement paths during a rollback.
+
 Register a condition once, then end the turn. AQ verifies the source, chooses
 whether to retain the process or hibernate, and delivers a durable outcome.
 Agents do not choose sleep mode, maintain a polling heartbeat, or choose an
@@ -73,8 +79,27 @@ aq wait ack --wait-id WAIT_ID --continuation-id CONTINUATION_ID --generation GEN
 
 For an in-place outcome, `aq wait show WAIT_ID --consume` acknowledges its
 notification. Receipt replay preserves the original registration identity.
+Named supervisors can register, cancel and acknowledge their own in-place waits.
+Cancellation resolves the wait but holds routine mail until the owner acknowledges
+the outcome with `aq wait ack --wait-id WAIT_ID` (or `show --consume`). The
+acknowledgement returns held mail and records its delivery atomically; subsequent
+mail appears in the ordinary inbox. Supervisor elevation does not permit
+acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
+
+Transient resume workspace failures get up to three attempts with backoff while
+retaining the checkout. For a repaired workspace or launch hold, a supervisor can requeue
+the exact continuation generation without changing the resolved wait:
+
+```bash
+aq wait decide --wait-id WAIT_ID --decision requeue \
+  --continuation-id CONTINUATION_ID --expected-generation GENERATION \
+  --note 'Infrastructure repaired; retry this saved continuation'
+```
+
+Pause and uncertain-stop holds require their own recovery. Requeue is audited;
+the hold incident resolves when the fresh session receives its resume context.
 
 ## Deadlines and human input
 
@@ -86,6 +111,17 @@ registration cannot reset the age. Human waits have no automatic deadline and
 require hibernation support. The supervisor resolves one with verified human
 evidence or an explicit `aq wait lift --response ...`; a worker cannot lift it.
 
+Operational wait and continuation incidents remain internal during Discord
+reconciliation and delivery retries. Only a committed `escalate_to_human` decision
+authorizes a wait incident's human delivery. Unread supervisor notices follow the
+message delivery engine's existing global-supervisor fallback.
+
+The wait service periodically refreshes pending CI subscriptions independently of
+train visits, including after activation is disabled for new waits. GitHub quota
+failures retain the subscription and retry after the provider's backoff; they are
+not source-unavailable outcomes. Remote verification is bounded so a stalled
+GitHub request cannot indefinitely retain the wait graph fence.
+
 Managed job admission remains opt-in (`resources.jobs.enabled`). Job results and
 logs remain under the job owner; inspect `aq job result JOB_ID --json`. Matter
 capture and editor pinning are documented in the [object-loop guide](object-loop.md).
@@ -96,6 +132,15 @@ During cutover, check the atomic submit-with-wait readiness item in the
 
 Continuation recovery runs independently of source draining and the main
 orchestration cycle. A slow resume attempt does not block other continuations.
+A slow hibernation attempt also runs independently; maintenance inspects persisted
+suspension intents even when their transition deadline has not fired. After the
+stop budget expires, AQ makes one read-only proof attempt before holding ownership.
+A `stop_uncertain` hold receives up to five total proof attempts, each bounded to
+five seconds, with persisted delays of 5, 10, 20 and 40 seconds. Successful proof
+withdraws the operational escalation and continues saving and parking; exhausted
+retries preserve the hold for supervisor recovery. An absent instance token never
+authorizes a stop signal. A same-named successor, live process or unavailable proof
+retains the checkout.
 If a resolved wait remains `RESUME_PENDING` for five minutes, the project
 supervisor receives one durable stall notice per continuation generation.
 Set `wait_policy.resume_stall_seconds` globally or in a project override to
@@ -106,6 +151,13 @@ ordinary admission retries continue until an explicit hold or acknowledgement.
 `aq doctor --check waits.orphans` reports orphan ownership. Repair is conservative:
 live ownership and missing checkpoint/head evidence remain held. Fixes retain
 continuations, summaries, saved heads and resolved outcomes.
+
+When a task becomes terminal its waits and deadlines are retired without waking
+it. A permanently refused deadline is quarantined with a recorded refusal and a
+project-supervisor notice, allowing later deadlines to proceed. A supervisor can
+use `aq wait cancel <wait-id>` to cancel an orphaned task wait before escalation;
+this clears its old execution state without changing a replacement claim or
+resuming its task.
 
 The Metrics page shows pending waits, observed slot time, wake causes and resume
 costs. Missing measurements remain null. Released slot time starts at proven

@@ -66,6 +66,9 @@ def _session(name, project_id, task_id):
 
 
 def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra_env=None):
+    responses.setdefault("aq", {}).setdefault(
+        "playbook activation-health", {"success": True, "activations": [], "count": 0},
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = tmp_path / "fake.py"
@@ -142,6 +145,56 @@ def _scoped_responses(task_response):
                                "claim_epoch": 1} if agent else None,
             }
     return responses
+
+
+def _activation_row(health="stale_contract", **extra):
+    return {
+        "playbook_id": "default-pipeline", "scope": "system", "scope_identifier": "",
+        "health": health, "enabled": True, "activated_at": time.time() - 7200,
+        "active_artifact_sha256": "sha256:" + "a" * 64,
+        "reasons": [{"code": "command_contract_changed", "message": "Command changed",
+                     "subject": "gate_create"}], **extra,
+    }
+
+
+@pytest.mark.parametrize("health", ["stale_contract", "invalid", "unavailable", "ready"])
+def test_global_sweep_reports_nonready_activations_without_work(tmp_path, health):
+    responses = {"aq": {
+        "project list": [], "pool status": [], "session list": [],
+        "playbook activation-health": {"activations": [_activation_row(health)], "count": 1},
+    }}
+    proc, calls = _run(tmp_path, responses)
+    assert proc.returncode == 0, proc.stderr
+    if health == "ready":
+        assert proc.stdout.strip() == "OK: nothing stalled"
+    else:
+        assert "PLAYBOOK-NOT-READY default-pipeline (system:-)" in proc.stdout
+        assert f"[{health}," in proc.stdout
+        assert "gate_create" in proc.stdout and "activated 2.0h ago" in proc.stdout
+    assert calls.count(["aq", "playbook", "activation-health"]) == 1
+
+
+@pytest.mark.parametrize("response", [
+    {"activations": [], "count": 1},
+    {"activations": [], "count": 0, "truncated": True},
+    {"activations": [_activation_row(activated_at="yesterday")], "count": 1},
+    {"activations": [_activation_row(reasons=None)], "count": 1},
+    {"success": False, "error": "unavailable"},
+])
+def test_failed_activation_observation_never_reports_ok(tmp_path, response):
+    proc, _ = _run(tmp_path, {"aq": {
+        "project list": [], "pool status": [], "session list": [],
+        "playbook activation-health": response,
+    }})
+    assert proc.returncode == 0, proc.stderr
+    assert "SWEEP-ERROR aq playbook activation-health" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+def test_scoped_sweep_skips_system_activation_read(tmp_path):
+    proc, calls = _run(tmp_path, _scoped_responses([]), "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert ["aq", "playbook", "activation-health"] not in calls
 
 
 @pytest.mark.parametrize("status", ["READY", "DEFINED"])
@@ -1031,3 +1084,23 @@ def test_auto_deploy_escalates_consecutive_dirty_skips_once(tmp_path):
     _git(live, "merge", "-q", "--ff-only", "origin/dev")
     run()
     assert not state.exists()
+
+
+@pytest.mark.parametrize("sample,age,alarm", [
+    ({"unhealthy": True, "reason": "turn_timeout", "pending_count": 2, "attempts": 2}, 0,
+     "SUPERVISOR-UNHEALTHY"),
+    ({"unhealthy": False}, 300, "SUPERVISOR-UNKNOWN"),
+    ({}, None, "SUPERVISOR-UNKNOWN"),
+])
+def test_supervisor_turn_health_ignores_recent_process_activity(tmp_path, sample, age, alarm):
+    # Stamp at run time: collection can precede this test by minutes under xdist.
+    if age is not None:
+        sample = {**sample, "checked_at": time.time() - age}
+    responses = _scoped_responses([])
+    row = _session("n-supervisor--rom", "rom", None)
+    row.update(lifecycle="named", profile_id="supervisor", last_activity=time.time(),
+               stalled=False, idle_seconds=0, supervisor_health=sample)
+    responses["aq"]["session list"] = [row]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert f"{alarm} n-supervisor--rom" in proc.stdout
