@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -28,12 +29,66 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     SubjectTrustError,
 )
-from src.integration.main_promotion import RootAttestationSubject
+from src.integration.promotion_contracts import RootAttestationSubject
+from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
 
 SHA = "a" * 40
 BASE = "0" * 40
+
+
+async def test_train_publish_without_legacy_rows_reads_back_and_retries_idempotently(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, IntegrationTrustManifest.model_validate_json(trust_document()))
+    target = subject(operation_id="train-batch", batch_id="train-batch", revision=3)
+    for _ in range(2):
+        result = await service.publish(target, producer=producer)
+        assert result.outcome in {"published", "already_published"}
+        assert result.proof.subject() == target
+        assert result.proof.check_run_id == client.records[0]["id"]
+    assert client.published == 1
+
+
+@pytest.mark.parametrize("failure", ["local", "login", "wrong_app", "version", "red", "write", "readback"])
+async def test_train_publish_refuses_invalid_identity_or_provider_failure(tmp_path, failure):
+    client = ProviderClient()
+    trust = IntegrationTrustManifest.model_validate_json(trust_document())
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, trust)
+    target = subject()
+    if failure == "local":
+        producer = object.__new__(LocalCIProducer)
+    elif failure == "login":
+        client.credential_identity = GitHubCredentialIdentity.existing_login()
+    elif failure == "wrong_app":
+        client.credential_identity = GitHubCredentialIdentity.app(999, 202)
+    elif failure == "version":
+        target = subject(required_check_version="wrong-version")
+    elif failure == "red":
+        client._required = lambda *args: {**ProviderClient._required(*args), "conclusion": "failure"}
+    elif failure == "write":
+        client.request_json = AsyncMock(side_effect=OSError("write unavailable"))
+    elif failure == "readback":
+        original = client.paged_items
+
+        async def unreadable(path, *, key):
+            if client.published and "check_name=Agent%20Queue" in path:
+                return []
+            return await original(path, key=key)
+
+        client.paged_items = unreadable
+    result = await service.publish(target, producer=producer)
+    assert result.outcome == {"version": "stale", "red": "not_green"}.get(
+        failure, "configuration_blocked",
+    )
+    assert result.proof is None
+    assert client.published == (1 if failure == "readback" else 0)
 
 
 def trust_document(**changes) -> bytes:
@@ -327,6 +382,11 @@ class ProviderClient:
                     "head_repository": {"id": 303, "full_name": "acme/widgets"},
                 },
             ]
+        if key == "check_runs" and "check_name=" not in path:
+            return [
+                self._required("Tests (default)", 11, 21),
+                self._required("Tests (postgres-integration)", 12, 22),
+            ]
         if "check_name=Tests%20%28default%29" in path:
             return [self._required("Tests (default)", 11, 21)]
         if "check_name=Tests%20%28postgres-integration%29" in path:
@@ -419,7 +479,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def pending(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             rows = await original(path, key=key)
             if key == "workflow_runs":
@@ -431,7 +491,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def missing(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             return await original(path, key=key)
 
@@ -441,8 +501,11 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
 
         async def red(path, *, key):
             rows = await original(path, key=key)
-            if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-                rows[0] = {**rows[0], "conclusion": "failure"}
+            if key == "check_runs" and "check_name=" not in path:
+                rows = [
+                    {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                    for row in rows
+                ]
             return rows
 
         client.paged_items = red
@@ -534,8 +597,11 @@ async def test_red_candidate_regular_failure_folds_dossier_dedup(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -599,8 +665,11 @@ async def test_red_candidate_double_observation_dedup_dossier(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -659,9 +728,10 @@ async def test_existing_login_candidate_missing_check_emits_red_continuation(
     original = client.paged_items
 
     async def missing(path, *, key):
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
-            return []
-        return await original(path, key=key)
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=" not in path:
+            return [row for row in rows if row["name"] != "Tests (postgres-integration)"]
+        return rows
 
     client.paged_items = missing
     service = IntegrationAttestationService(
@@ -837,13 +907,13 @@ SNAPSHOT_CHECKS = ("Tests (default)", "Tests (postgres-integration)")
 
 
 def _recording(client):
-    """Record every required-check name the observer asks the provider for."""
+    """Record every required-check listing the observer asks the provider for."""
     asked: list[str] = []
     original = client.paged_items
 
     async def paged_items(path, *, key):
-        if key == "check_runs" and "check_name=" in path and "Attestation" not in path:
-            asked.append(path.split("check_name=", 1)[1].split("&", 1)[0])
+        if key == "check_runs" and "check_name=" not in path:
+            asked.append(path)
         return await original(path, key=key)
 
     client.paged_items = paged_items
@@ -881,8 +951,9 @@ async def test_subject_check_set_is_informational_and_the_snapshot_decides(
     result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
 
     assert result["outcome"] == "published"
-    # Observation and publication each read exactly the snapshot's names.
-    assert asked == ["Tests%20%28default%29", "Tests%20%28postgres-integration%29"] * 2
+    # Observation and publication each read one listing; the snapshot's names
+    # select from it (asserted on the published checks below).
+    assert len(asked) == 2
     published = json.loads(client.records[0]["output"]["text"])
     assert published["required_check_set_version"] == "checks-v1"
     assert tuple(check["name"] for check in published["checks"]) == SNAPSHOT_CHECKS
@@ -908,10 +979,14 @@ async def test_subject_check_set_cannot_lower_the_snapshot_bar(
 
     async def dropped(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
+        if key == "check_runs" and "check_name=" not in path:
+            postgres = "Tests (postgres-integration)"
             if provider_kind == "missing":
-                return []
-            rows[0] = {**rows[0], "conclusion": "failure"}
+                return [row for row in rows if row["name"] != postgres]
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == postgres else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = dropped
@@ -1062,6 +1137,40 @@ async def test_subject_producer_is_compared_with_the_snapshot_boundary(tmp_path)
     assert (refused.value.cause, refused.value.fields) == (
         "identity_mismatch",
         ("ci_producer_app_id",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_parent_boundary_batch_subject_is_refused_as_its_batch(tmp_path):
+    """The train reads an epic head's parent checks under a batch identity, not a parent's."""
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(None),
+        github_client_factory=lambda binding: ProviderClient(),
+    )
+    required = {"version": "checks-v1", "names": list(SNAPSHOT_CHECKS), "producer_id": "404"}
+    state = {
+        "project_id": "p",
+        "operation_id": "epic-readiness-epic",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"parent": {"required_checks": required}},
+        "batch_id": "epic-readiness-epic",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(SubjectTrustError) as refused:
+        await service._load_trust(state, boundary="parent")
+
+    assert refused.value.cause == "missing"
+    failure = service._subject_trust["epic-readiness-epic"]
+    assert (failure["target_kind"], failure["subject"], failure["head_sha"]) == (
+        "batch",
+        {"batch_id": "epic-readiness-epic", "revision": 0},
+        SHA,
     )
 
 

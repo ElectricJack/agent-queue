@@ -140,7 +140,7 @@ class DigestCommandsMixin:
         open_escalations = len(
             await self.db.list_escalations(
                 project_ids=list(scope) if scope is not None else None,
-                states=["needs_human", "reply_received"],
+                states=["needs_human"],
                 limit=500,
             )
         )
@@ -417,7 +417,8 @@ class DigestCommandsMixin:
             link = await resolver.resolve()
             dashboard_url, dashboard_notice = link.url, link.unavailable_notice
         try:
-            text = render_authored_digest(body, base_url=dashboard_url, notice=dashboard_notice)
+            text = render_authored_digest(body, base_url=dashboard_url, notice=dashboard_notice,
+                                          facts=dict(request["brief"] or {}))
         except ValueError as exc:
             return _error("digest.invalid", str(exc))
         changed = await self.db.submit_digest_post(request["id"], text=text, now=time.time())
