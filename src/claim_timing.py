@@ -26,6 +26,8 @@ class ClaimTiming:
     started: float = field(default_factory=time.monotonic)
     task_id: str | None = None
     deadline: float | None = None
+    #: After this the caller has given up on the request, so it takes no task.
+    limit: float | None = None
     claim_epoch: int | None = None
     phases: dict[str, float] = field(default_factory=lambda: dict.fromkeys(
         ("frontier_select", "owner_lease", "fetch", "checkout", "reset", "setup"), 0.0,
