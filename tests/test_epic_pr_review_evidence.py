@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -31,12 +30,14 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
+from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+from src.integration.git_truth import GitTruth
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.repository_git import RepositoryGit
 from src.integration.reviews import ReviewEvidenceProducer
 from src.integration.source_ci import RUNNER_NOT_ACQUIRED
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, TaskType
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, TaskType
 from tests.db_fixtures import lease_dsn
 from src.integration.models import IntegrationBoundaryPolicy, RequiredCheckSet, RepairPolicy, PlaybookRoute
 from src.integration.models import ArtifactSnapshot
@@ -165,34 +166,27 @@ async def test_source_ci_container_requests_owner_instead_of_unclaimable_reopen(
 
 
 @pytest.mark.parametrize("earlier", ["Source CI Repair", "Root PR check failure"])
-async def test_source_ci_budget_survives_changed_head_and_notifies_once(case, tmp_path, earlier):
-    from src.database.tables import messages, task_context
+async def test_source_ci_changed_head_can_reopen_after_prior_repair(case, tmp_path, earlier):
+    from src.database.tables import messages
 
+    await _leaf_source(case)
     handler, filing = await _source_handler(case, tmp_path)
-    source, observation = await _red_observation(case)
-    # The prior repair was on a different source identity. Its feedback is
-    # retained when the worker completes a changed head; no fresh budget.
     await case["db"].add_task_context("e1", type="reopen_feedback",
         label=earlier, content="previous exact source head")
-    for _ in range(2):
-        result = await handler._cmd_observe_integration_source_ci(observation)
-        assert result["outcome"] == "supervisor_notified"
-        assert result["blocker"] == "source_ci_repair_exhausted"
+    _, observation = await _red_observation(case)
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "reopened"
+    assert (await case["db"].get_task("e1")).status is TaskStatus.READY
     async with case["db"]._engine.connect() as conn:
-        notifications = (await conn.execute(select(messages).where(
-            messages.c.body_kind == "integration_source_ci"))).mappings().all()
-        assert await conn.scalar(select(task_context.c.id).where(
-            task_context.c.label == earlier))
-    assert len(notifications) == 1
-    assert notifications[0]["to_id"] == "supervisor-p"
-    assert source["head"] in notifications[0]["body"]
-    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
+        assert not (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_source_ci"))).all()
     filing.assert_not_called()
 
 
-async def test_red_legacy_source_ci_delegate_never_gets_its_own_repair(case, tmp_path):
+async def test_red_legacy_source_ci_delegate_reopens_its_existing_branch(case, tmp_path):
+    await _leaf_source(case)
     handler, filing = await _source_handler(case, tmp_path)
-    source, observation = await _red_observation(case)
+    _, observation = await _red_observation(case)
     await case["db"].create_task(Task(id="older-source", project_id="p",
         title="Original", description="", status=TaskStatus.COMPLETED))
     async with case["db"].immediate() as conn:
@@ -202,8 +196,8 @@ async def test_red_legacy_source_ci_delegate_never_gets_its_own_repair(case, tmp
             state="red", evidence={}, repair_task_id="e1", repair_attempt=1,
             observed_at=1000.0))
     result = await handler._cmd_observe_integration_source_ci(observation)
-    assert result["blocker"] == "source_ci_repair_exhausted"
-    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
+    assert result["outcome"] == "reopened"
+    assert (await case["db"].get_task("e1")).status is TaskStatus.READY
     filing.assert_not_called()
 
 
@@ -242,8 +236,15 @@ async def _retain_completion(case, *, close_id, commits):
     store = GitProvenance(
         GitManager(), str(case["work"]), repository_url=case["remote"]
     )
+    checkpoint = await case["db"].get_integration_checkpoint("e1")
+    identity = "parent:verification-e1"
+    if checkpoint["current_verification_id"] is None:
+        identity = close_id
+        await case["db"].save_task_completion(TaskCompletion(
+            id=close_id, task_id="e1", outcome="pass", commits=[case["first"]], completed_at=2.0,
+        ))
     source = CompletedSource(
-        CompletionIdentity("p", "repo", "e1", "parent:verification-e1"),
+        CompletionIdentity("p", "repo", "e1", identity),
         case["first"],
     )
     await store.write_completion(source)
@@ -311,13 +312,19 @@ async def _legacy_repair(case, observation, repair_id="source-repair-0"):
     return repair_id
 
 
-async def _leaf_source(case):
+async def _leaf_source(case, *, retain=True):
     """Use the same real source branch with a childless completion checkpoint."""
     async with case["db"].immediate() as conn:
         await conn.execute(delete(tasks).where(tasks.c.id == "c1"))
         await conn.execute(update(task_integration_checkpoints).where(
             task_integration_checkpoints.c.task_id == "e1",
         ).values(episode_id=None, current_verification_id=None))
+    if retain:
+        await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
+    case["db"].set_prerequisite_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=case["work"].parent / "prerequisite-observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
 
 
 async def _red_observation(case):
@@ -446,23 +453,23 @@ async def test_source_covered_by_an_explicit_adoption_is_not_repaired(case, tmp_
     assert filing.await_count == 0
 
 
-async def test_a_source_git_cannot_place_is_still_repaired(case, tmp_path):
-    await _leaf_source(case)
+async def test_a_source_without_retained_completion_cannot_reopen(case, tmp_path):
+    await _leaf_source(case, retain=False)
     handler, filing = await _source_handler(case, tmp_path)
     case["db"].set_delivery_observer(DeliveryObserver(
         case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
     _source, observation = await _red_observation(case)
     # A real branch, no completion generation retained: nothing stands in for
     # this generation's final artifact, so delivery stays unknown.
-    result = await handler._cmd_observe_integration_source_ci(observation)
-    assert result["outcome"] == "reopened", result
+    with pytest.raises(HierarchyError, match="delivery_unknown"):
+        await handler._cmd_observe_integration_source_ci(observation)
+    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
     assert filing.await_count == 0
     assert (await _observed_proof(case))["state"] == "undelivered"
 
 
 async def test_a_genuinely_undelivered_source_is_still_repaired(case, tmp_path):
     await _leaf_source(case)
-    await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
     case["db"].set_delivery_observer(DeliveryObserver(
         case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
     handler, filing = await _source_handler(case, tmp_path)
@@ -475,17 +482,19 @@ async def test_a_genuinely_undelivered_source_is_still_repaired(case, tmp_path):
     assert await _withheld(case, tmp_path) == {}
 
 
-async def test_unknown_delivery_evidence_still_reopens_original(case, tmp_path):
+async def test_unknown_delivery_evidence_preserves_original_completion(case, tmp_path):
     await _leaf_source(case)
     class _Broken:
         async def observe(self, task_ids, *, max_age=0.0):
             raise OSError("no route to host")
 
     handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_prerequisite_observer(None)
     case["db"].set_delivery_observer(_Broken())
     _source, observation = await _red_observation(case)
     result = await handler._cmd_observe_integration_source_ci(observation)
-    assert result["outcome"] == "reopened", result
+    assert result["success"] is False and result["outcome"] == "delivery_unknown", result
+    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
     assert filing.await_count == 0
     assert (await _observed_proof(case))["state"] == "unknown"
 
@@ -561,10 +570,10 @@ async def test_claim_retires_a_ready_repair_superseded_by_source_delivery(case, 
     assert await handler._delivered_source_repairs("p") == {}
     assert (await handler._cmd_observe_integration_source_ci(observation))["outcome"] == "source_delivered"
     assert filing.await_count == 0
-    # A later rewind exhausts the historical repair budget instead of spawning a successor.
+    # A later rewind of the repaired head stays refused without a successor.
     _publish(case, "main", case["base"])
     again = await handler._cmd_observe_integration_source_ci(observation)
-    assert again["blocker"] == "source_ci_repair_exhausted"
+    assert again["blocker"] == "source_ci_repair_unchanged"
     assert filing.await_count == 0
 
 
@@ -1176,7 +1185,7 @@ async def test_source_ci_infra_policy_is_ordered_and_bounded():
     assert (policy.source_ci_infra_attempts, policy.source_ci_infra_backoff_seconds,
             policy.source_ci_infra_backoff_max_seconds) == (3, 300.0, 3600.0)
     with pytest.raises(ValidationError):
-        RepairPolicy(debug_intelligence_class="standard-high", source_ci_infra_attempts=0)
+        RepairPolicy(debug_intelligence_class="standard-high", source_ci_infra_attempts=-1)
     with pytest.raises(ValidationError, match="backoff_max_seconds"):
         RepairPolicy(debug_intelligence_class="standard-high",
                      source_ci_infra_backoff_seconds=600.0,
@@ -1263,10 +1272,9 @@ def _git(*args: str, cwd=None) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def review_git_template(tmp_path_factory):
-    """Build the immutable starting history once; every case gets private copies."""
-    tmp_path = tmp_path_factory.mktemp("review-git-template")
+@pytest.fixture
+def review_git_template(tmp_path):
+    """Build fresh repositories and starting history for this case."""
     remote = tmp_path / "origin.git"
     work = tmp_path / "work"
     init_bare_seed(remote)
@@ -1293,12 +1301,7 @@ def review_git_template(tmp_path_factory):
 
 @pytest.fixture
 async def case(tmp_path, reuse_database, review_git_template):
-    source_remote, source_work, base, first, tree, second = review_git_template
-    remote = tmp_path / "origin.git"
-    work = tmp_path / "work"
-    shutil.copytree(source_remote, remote)
-    shutil.copytree(source_work, work)
-    _git("remote", "set-url", "origin", str(remote), cwd=work)
+    remote, work, base, first, tree, second = review_git_template
 
     db = await reuse_database("epic-pr-review-evidence.db")
     await db.create_project(Project(id="p", name="PR review project"))
@@ -1634,7 +1637,11 @@ class _PollClient:
         self.calls.append("open")
         if self.open_error is not None:
             raise self.open_error
-        return [{"number": 7, "state": "open"}] if self.state == "open" else []
+        return [{
+            "number": 7, "state": "open", "updated_at": self.updated_at,
+            "head": {"sha": self.head, "ref": "aq/epic/retire-the-publisher", "repo": {"id": 7}},
+            "base": {"ref": "main", "repo": {"id": 7}},
+        }] if self.state == "open" else []
 
     async def commit_check_runs(self, _sha):
         self.calls.append("checks")
@@ -1691,9 +1698,8 @@ async def test_poller_rereads_reviews_only_when_the_pull_request_changes(case):
     await poller.tick(1000.0)
     await poller.tick(1031.0)
     await poller.tick(1062.0)
-    # The unchanged PR is fetched on each visit; its reviews and the stored
-    # approval are not read or proven against Git again.
-    assert client.calls == ["pull", "reviews", "pull", "pull"]
+    # One repository inventory replaces both per-PR reads for unchanged roots.
+    assert client.calls == ["pull", "reviews", "open", "open"]
     assert producer.calls == [("review", 2)]
 
     # A rejection moves updated_at: only the new verdict is proven and stored.
@@ -1866,6 +1872,7 @@ async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
     await poller.tick(1155.0)
     assert caplog.text.count("does not show its exact source head (head moved)") == 1
     client.pull_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    client.updated_at = "2026-10-02T00:10:00Z"
     await poller.tick(1186.0)
     assert caplog.text.count("GitHub PR review poll failed for epic e1") == 2
     assert caplog.text.count("Completed train root legacy has PR") == 1
@@ -1917,7 +1924,8 @@ async def test_poller_binds_each_repository_once_per_tick(case, caplog):
     # Success resumes both roots and resets backoff for the next failure.
     git.error = None
     await poller.tick(1214.0)
-    assert (git.binds, client.calls.count("pull")) == (4, 4)
+    # The unchanged first root reuses its cached detail after the bind recovers.
+    assert (git.binds, client.calls.count("pull")) == (4, 3)
     git.error = GitHubAccessError("permission", "gh: forbidden (HTTP 403)")
     await poller.tick(1245.0)
     assert git.binds == 5
@@ -2071,11 +2079,15 @@ async def test_approval_of_moved_head_is_not_reused(case):
                 last_completed_verification_id="verification-e1-next",
             )
         )
-    async with case["db"].immediate() as conn:
-        candidates = await case["db"].eligible_root_page_on(
-            conn, project_id="p", repository_id="repo", after=None, limit=10
-        )
-        assert await case["db"].latest_exact_reviews_on(conn, candidates) == {}
+    from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
+
+    requirements = ReviewRequirements(required=True, reviewers=frozenset({"github:jkern"}))
+    reviews = TreeReviews(case["db"])
+    moved_tree = _git("rev-parse", f"{case['second']}^{{tree}}", cwd=case["work"])
+    assert (await reviews.verdict(
+        ReviewSubject("p", "repo", "e1", case["tree"]), requirements)).state == "approved"
+    assert (await reviews.verdict(
+        ReviewSubject("p", "repo", "e1", moved_tree), requirements)).state == "missing"
     second = await case["producer"].snapshot_from_pull_request(
         "e1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["second"]
     )
@@ -2184,3 +2196,54 @@ def _policy() -> dict:
         branchless_parent="verifier",
         on_failed_child="block",
     ).model_dump(mode="json")
+
+
+async def test_unlimited_source_ci_infra_preserves_backoff_after_many_reruns(case, tmp_path):
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    raw = await _continuous_policy(case)
+    raw["root"]["repair"]["source_ci_infra_attempts"] = 0
+    await case["db"].update_project("p", hierarchical_integration_policy=raw)
+    policy = HierarchicalIntegrationPolicy.model_validate(raw)
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    state, evidence = classify_source_checks(
+        _cancelled_checks(source, required, annotated=True), head=source["head"], required=required,
+    )
+    observation = SourceCIObservation("e1", source, 0, state, evidence)
+    await handler._cmd_observe_integration_source_ci(observation)
+    async with case["db"].immediate() as conn:
+        await conn.execute(update(integration_source_ci).values(
+            infra_observations=2000, infra_reruns=2000, infra_rerun_at=0))
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["rerun_requested"] and "blocker" not in result
+    again = await handler._cmd_observe_integration_source_ci(observation)
+    assert not again["rerun_requested"] and "blocker" not in again
+    async with case["db"]._engine.connect() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["infra_observations"] == 2002 and record["infra_reruns"] == 2001
+
+
+@pytest.mark.parametrize("earlier", ["source", "root"])
+async def test_source_ci_same_head_repair_is_not_reopened(case, tmp_path, earlier):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    await _leaf_source(case)
+    handler, filing = await _source_handler(case, tmp_path)
+    source, observation = await _red_observation(case)
+    if earlier == "root":
+        await case["db"].set_task_meta("e1", RECOVERY_KEY, {"heads": [source["head"]]})
+    else:
+        async with case["db"].immediate() as conn:
+            await conn.execute(insert(integration_source_ci).values(
+                task_id="e1", repository_id="repo", source_base=source["base"],
+                source_head=source["head"], generation=source["generation"],
+                policy_generation=0, state="red", evidence={}, repair_attempt=1,
+                observed_at=1000.0,
+            ))
+    for _ in range(2):
+        result = await handler._cmd_observe_integration_source_ci(observation)
+        assert result["blocker"] == "source_ci_repair_unchanged"
+    assert (await case["db"].get_task("e1")).status is TaskStatus.COMPLETED
+    filing.assert_not_called()
