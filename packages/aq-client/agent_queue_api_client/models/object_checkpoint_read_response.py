@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.object_checkpoint_read_response_evidence import ObjectCheckpointReadResponseEvidence
     from ..models.object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
 
 
@@ -23,6 +24,7 @@ class ObjectCheckpointReadResponse:
         version (int):
         state (ObjectCheckpointReadResponseState):
         approved (bool):
+        evidence (ObjectCheckpointReadResponseEvidence):
         success (bool | Unset):  Default: True.
     """
 
@@ -30,6 +32,7 @@ class ObjectCheckpointReadResponse:
     version: int
     state: ObjectCheckpointReadResponseState
     approved: bool
+    evidence: ObjectCheckpointReadResponseEvidence
     success: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -42,6 +45,8 @@ class ObjectCheckpointReadResponse:
 
         approved = self.approved
 
+        evidence = self.evidence.to_dict()
+
         success = self.success
 
         field_dict: dict[str, Any] = {}
@@ -52,6 +57,7 @@ class ObjectCheckpointReadResponse:
                 "version": version,
                 "state": state,
                 "approved": approved,
+                "evidence": evidence,
             }
         )
         if success is not UNSET:
@@ -61,6 +67,7 @@ class ObjectCheckpointReadResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.object_checkpoint_read_response_evidence import ObjectCheckpointReadResponseEvidence
         from ..models.object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
 
         d = dict(src_dict)
@@ -72,6 +79,8 @@ class ObjectCheckpointReadResponse:
 
         approved = d.pop("approved")
 
+        evidence = ObjectCheckpointReadResponseEvidence.from_dict(d.pop("evidence"))
+
         success = d.pop("success", UNSET)
 
         object_checkpoint_read_response = cls(
@@ -79,6 +88,7 @@ class ObjectCheckpointReadResponse:
             version=version,
             state=state,
             approved=approved,
+            evidence=evidence,
             success=success,
         )
 

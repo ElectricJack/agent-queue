@@ -16,23 +16,29 @@ class RecordSearchRequest:
     """
     Attributes:
         project_id (None | str | Unset):
-        query (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
+        kind (str | Unset):  Default: 'knowledge'.
+        query (str | Unset):  Default: ''.
         category (None | str | Unset):
+        lifecycle (None | str | Unset):
+        verification (None | str | Unset):
         include_retired (bool | Unset):  Default: False.
         include_disputed (bool | Unset):  Default: False.
         limit (int | Unset):  Default: 25.
         cursor (None | str | Unset):
-        global_scope (bool | Unset):  Default: False.
     """
 
     project_id: None | str | Unset = UNSET
-    query: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
+    kind: str | Unset = "knowledge"
+    query: str | Unset = ""
     category: None | str | Unset = UNSET
+    lifecycle: None | str | Unset = UNSET
+    verification: None | str | Unset = UNSET
     include_retired: bool | Unset = False
     include_disputed: bool | Unset = False
     limit: int | Unset = 25
     cursor: None | str | Unset = UNSET
-    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,17 +48,29 @@ class RecordSearchRequest:
         else:
             project_id = self.project_id
 
-        query: None | str | Unset
-        if isinstance(self.query, Unset):
-            query = UNSET
-        else:
-            query = self.query
+        global_scope = self.global_scope
+
+        kind = self.kind
+
+        query = self.query
 
         category: None | str | Unset
         if isinstance(self.category, Unset):
             category = UNSET
         else:
             category = self.category
+
+        lifecycle: None | str | Unset
+        if isinstance(self.lifecycle, Unset):
+            lifecycle = UNSET
+        else:
+            lifecycle = self.lifecycle
+
+        verification: None | str | Unset
+        if isinstance(self.verification, Unset):
+            verification = UNSET
+        else:
+            verification = self.verification
 
         include_retired = self.include_retired
 
@@ -66,17 +84,23 @@ class RecordSearchRequest:
         else:
             cursor = self.cursor
 
-        global_scope = self.global_scope
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
+        if kind is not UNSET:
+            field_dict["kind"] = kind
         if query is not UNSET:
             field_dict["query"] = query
         if category is not UNSET:
             field_dict["category"] = category
+        if lifecycle is not UNSET:
+            field_dict["lifecycle"] = lifecycle
+        if verification is not UNSET:
+            field_dict["verification"] = verification
         if include_retired is not UNSET:
             field_dict["include_retired"] = include_retired
         if include_disputed is not UNSET:
@@ -85,8 +109,6 @@ class RecordSearchRequest:
             field_dict["limit"] = limit
         if cursor is not UNSET:
             field_dict["cursor"] = cursor
-        if global_scope is not UNSET:
-            field_dict["global_scope"] = global_scope
 
         return field_dict
 
@@ -103,14 +125,11 @@ class RecordSearchRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
-        def _parse_query(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
+        global_scope = d.pop("global_scope", UNSET)
 
-        query = _parse_query(d.pop("query", UNSET))
+        kind = d.pop("kind", UNSET)
+
+        query = d.pop("query", UNSET)
 
         def _parse_category(data: object) -> None | str | Unset:
             if data is None:
@@ -120,6 +139,24 @@ class RecordSearchRequest:
             return cast(None | str | Unset, data)
 
         category = _parse_category(d.pop("category", UNSET))
+
+        def _parse_lifecycle(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        lifecycle = _parse_lifecycle(d.pop("lifecycle", UNSET))
+
+        def _parse_verification(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        verification = _parse_verification(d.pop("verification", UNSET))
 
         include_retired = d.pop("include_retired", UNSET)
 
@@ -136,17 +173,18 @@ class RecordSearchRequest:
 
         cursor = _parse_cursor(d.pop("cursor", UNSET))
 
-        global_scope = d.pop("global_scope", UNSET)
-
         record_search_request = cls(
             project_id=project_id,
+            global_scope=global_scope,
+            kind=kind,
             query=query,
             category=category,
+            lifecycle=lifecycle,
+            verification=verification,
             include_retired=include_retired,
             include_disputed=include_disputed,
             limit=limit,
             cursor=cursor,
-            global_scope=global_scope,
         )
 
         record_search_request.additional_properties = d

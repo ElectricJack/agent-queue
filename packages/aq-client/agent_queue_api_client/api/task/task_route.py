@@ -66,16 +66,18 @@ def sync_detailed(
     body: TaskRouteRequest,
 ) -> Response[TaskRouteResponse | TaskRouteResponse422]:
     """Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
      Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -105,16 +107,18 @@ def sync(
     body: TaskRouteRequest,
 ) -> TaskRouteResponse | TaskRouteResponse422 | None:
     """Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
      Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -139,16 +143,18 @@ async def asyncio_detailed(
     body: TaskRouteRequest,
 ) -> Response[TaskRouteResponse | TaskRouteResponse422]:
     """Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
      Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -176,16 +182,18 @@ async def asyncio(
     body: TaskRouteRequest,
 ) -> TaskRouteResponse | TaskRouteResponse422 | None:
     """Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
      Send a task back to its project's router, which picks the route again. Never picks a profile:
-    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
-    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
-    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
-    operator, the supervisor, and a worker for a task it filed.
+    optionally set new hints (an intelligence class and a kind) and the routing preference the router
+    weighs before scoring, then clear the task's profile, class and route record so the next cascade
+    asks the router. Also clears an emergency override. Refused on a claimed, running or finished task
+    (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for
+    a task it filed.
 
     Args:
         body (TaskRouteRequest):

@@ -34,6 +34,43 @@ mutations, missing failure evidence, missing fixes and manual holds. Live
 deployment, recovery and Phase 1 verification belong to the operator because
 pool workers cannot restart the daemon or mutate tasks they do not hold.
 
+## Held verifiers with trusted red CI
+
+A completed additional fix may also reopen collection while the old verifier
+still holds its task. Require a unique immutable verifier handoff matching the
+current episode, generation and head, plus conclusive failed CI from the frozen
+parent check producer and version, naming a failed required check. The CI must
+postdate that handoff. Stale generations, infrastructure failures and untrusted
+producers cannot authorize settlement.
+
+Dry run reports the evidence and required handoff without stopping or writing.
+Apply repeats all facts under the project lock before asking the existing fenced
+provider stop/detach protocol to release an attached verifier. Missing stop proof
+or an unpublished/dirty checkout remains a refusal; never discard its work.
+Repeat diagnosis and remote proof after handoff. Only a detached verifier with
+no remaining session/claim/workspace hold can be settled FAILED in the reopen
+transaction. Append a completion naming the immutable head and CI evidence;
+keep all historical completions, CI evidence, receipts and consumed budgets.
+The recovery audit retains the original attachment as well as the final fence.
+The parent observer treats exact trusted red as verifier failure so the existing
+policy can collect the new fix; existing manual holds and human gates still bind.
+
+## Durably refused reopens reach a human gate
+
+A reopen refusal no retry can satisfy — an ambiguous verifier subject, a manual
+hold, a dirty checkout — is not an unknown answer forever. `blocked` and
+`ambiguous` are durable; `changed`, `not_eligible` and every other refusal still
+retries, because re-diagnosing can still succeed and a false human gate is worse
+than a retry. The adapter records a durable refusal as `integration_reopen_refused`
+metadata naming the episode, operation, head and generation, with its refusal and
+reason, and the merge primitive still answers `unknown` — it cannot merge. The
+observer reports `reopen_refused` only for that exact identity, so a later
+generation or a malformed marker never holds a parent, and the pinned policy's
+`blocked-reopen` case routes it, together with a failed verifier, to the existing
+no-default `red` gate: the same human gate a held red verifier reached before
+trusted red counted as a failure. A successful reopen clears the marker, and the
+refusal never settles, skips or discards anything.
+
 ## Legacy failures with an empty commit list
 
 An otherwise settled failed completion with exactly `commits=[]` may use the
