@@ -1,0 +1,4 @@
+Integration withdrew this source {{found}}: {{observation_details}}. The train merges `recorded base..head` onto main, so a head that does not descend from its recorded base can never be built; the history on this branch dropped the base it was created from.
+
+Repair on {{branch}} without discarding the reviewed commits: fetch origin and merge the recorded base `{{source_base}}` into the branch (`git merge {{source_base}}`; merging the current default branch also works, because it contains the base). Do not rebase, squash away or force-push the existing history. Resolve conflicts, regenerate generated files, re-run the focused checks with `aq test`, publish with `aq git push` and close again; the new head is a new source identity and is admitted normally once `merge-base --is-ancestor` holds.
+Withdrawn identity: base {{source_base}}, head {{source_head}}, generation {{source_generation}}, PR {{pr_url}}, evidence {{evidence_id}}.
