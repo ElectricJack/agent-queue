@@ -19,7 +19,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig, IntegrationConfig
-from src.database import Database
 from src.git import ci_gate
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import Project, RepoSourceType, Workspace
@@ -197,9 +196,8 @@ async def test_apr_check_rollup_maps_null_to_an_empty_list(monkeypatch):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("cg.db"))
-    await d.initialize()
+async def db(tmp_path, reuse_database):
+    d = await reuse_database("cg.db")
     await d.create_project(Project(id="p1", name="P1", repo_url="https://github.com/o/r.git"))
     await d.create_workspace(
         Workspace(
@@ -210,7 +208,6 @@ async def db(tmp_path):
         )
     )
     yield d
-    await d.close()
 
 
 def _config(tmp_path, **integration) -> AppConfig:
@@ -370,7 +367,7 @@ def test_integration_config_defaults():
     integ = IntegrationConfig()
     assert integ.merge_ci_policy == "warn"
     assert integ.merge_required_checks == []
-    assert integ.owner_recovery_sweep is False
+    assert integ.owner_recovery_sweep is True
     assert integ.validate() == []
 
 
@@ -638,3 +635,38 @@ def test_loader_reads_owner_recovery_sweep(tmp_path):
         "  owner_recovery_sweep: true\n"
     )
     assert load_config(str(path)).integration.owner_recovery_sweep is True
+
+
+def _owner_recovery_sweep(tmp_path, integration: str) -> bool:
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n"
+        "  bot_token: t\n"
+        "  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        + integration
+    )
+    return load_config(str(path)).integration.owner_recovery_sweep
+
+
+def test_owner_recovery_sweep_is_on_when_the_config_does_not_name_it(tmp_path):
+    assert _owner_recovery_sweep(tmp_path, "") is True
+    assert _owner_recovery_sweep(tmp_path, "integration:\n  default_mode: pull_request\n")
+
+
+@pytest.mark.parametrize(
+    "value", ["false", "no", "off", "'false'", "'False'", "'off'", "'0'", "''", "~", "0"]
+)
+def test_an_explicit_owner_recovery_sweep_off_stays_off(tmp_path, value):
+    assert _owner_recovery_sweep(
+        tmp_path, f"integration:\n  owner_recovery_sweep: {value}\n"
+    ) is False
+
+
+def test_an_owner_recovery_sweep_off_from_the_environment_stays_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("AQ_TEST_OWNER_RECOVERY_SWEEP", "false")
+    assert _owner_recovery_sweep(
+        tmp_path, "integration:\n  owner_recovery_sweep: ${AQ_TEST_OWNER_RECOVERY_SWEEP}\n"
+    ) is False
