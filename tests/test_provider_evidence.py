@@ -42,6 +42,34 @@ T0 = 1_789_958_640.0
 REAL_LOGIN_PROBE = ProviderAvailabilityService._login_probe
 
 
+async def test_login_probe_boundary_preserves_provider_timeout_and_result():
+    answer = ("authenticated", {"method": "fake"})
+    calls = []
+
+    class ProbeOwner:
+        async def _perform_login_probe(self, provider, timeout):
+            calls.append((provider, timeout))
+            return answer
+
+    assert await REAL_LOGIN_PROBE(ProbeOwner(), "claude", 2.5) is answer
+    assert calls == [("claude", 2.5)]
+
+
+def test_login_probe_boundary_does_not_import_application_services():
+    import sys
+
+    script = """
+import sys
+from src.providers.login_probe import LoginProbeMixin
+for prefix in ("src.cli", "src.install", "src.providers.availability_service"):
+    assert not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+
+
 class Clock:
     def __init__(self) -> None:
         self.now = T0

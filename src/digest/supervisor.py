@@ -21,9 +21,9 @@ Four rules, and each one exists because the channel is append-only:
   written the body by then, the deterministic digest for the same facts goes out
   instead: the cadence never silently stops because the supervisor was busy.
 * **§3.2 the size budget.**  The body is rendered here, inside
-  :data:`~src.discord.render_budget.DIGEST` -- three lines, 600 characters, one
-  link, appended by the daemon.  An author cannot post a link, a mention or a
-  wall of text through this path, because it is a renderer and not a channel.
+  :data:`~src.discord.render_budget.DIGEST` -- three prose lines, 600 characters,
+  and a dashboard link appended by the daemon. Authored links survive prose
+  trimming; mentions are neutralised.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 from src.config import ReportQuietHoursConfig
 from src.dashboard_paths import inbox_path
 from src.digest.render import sanitise
+from src.discord.links import links_in
 from src.discord.render_budget import (
     DIGEST,
     GLYPH_DIGEST,
@@ -229,7 +230,7 @@ def render_authored_digest(
     # spends, so that is the cap here and ``section_lines`` stays the renderer
     # rule for the sections it was written for.
     reminder = waiting_on_you_text(facts or {})
-    body = clip_section(body, (DIGEST.body_lines or 0) - bool(reminder))
+    authored_links = links_in(sanitise(body))
     sections = [clean for raw in body.splitlines() if (clean := sanitise(raw))]
     if not sections:
         raise ValueError("digest body is empty after sanitizing")
@@ -240,7 +241,7 @@ def render_authored_digest(
         footer = link_line(base_url, inbox_path(), notice=notice)
         reserved = len(reminder) + len(footer) + len(marker) + 3
         prose = compose(sections, DIGEST, chars=max(0, DIGEST.chars - reserved))
-        sections = [*prose.splitlines()[:2], reminder]
+        sections = [*prose.splitlines()[:2], reminder, *authored_links]
     return compose(
         sections,
         DIGEST,
@@ -266,7 +267,7 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
     if deterministic.strip():
         if waiting_on_you_text(facts):
             lines = deterministic.strip().splitlines()
-            footer = lines.pop() if lines[-1].startswith("<http") else ""
+            footer = lines.pop() if links_in(lines[-1]) == [lines[-1]] else ""
             reminder = waiting_on_you_text(facts)
             prose = compose(lines[:2], DIGEST,
                             chars=DIGEST.chars - len(footer) - len(reminder) - 2)

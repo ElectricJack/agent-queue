@@ -289,8 +289,12 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     # the progress cadence and must not immediately repeat those provider reads.
     await case.service.listener.tick()
     observe.assert_not_awaited()
+    case.now[0] += case.service.listener.safety_seconds - 1
+    await case.service.listener.tick()
+    observe.assert_not_awaited()
     assert all(row["outcome"] == "pending" for row in await rows(world))
-    case.now[0] += case.service.listener.safety_seconds + 1
+    # Cross the same deadline once; recovery now gets one bounded source read.
+    case.now[0] += 2
     await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
