@@ -31,6 +31,17 @@ class ObjectScoreRecordResponse(ObjectLoopResponse):
 
 class ObjectCheckpointReadResponse(ObjectLoopResponse):
     approved: bool
+    evidence: dict[str, Any]
+
+
+class ArtifactVerifyResponse(BaseModel):
+    success: bool = True
+    uri: str
+    sha256: str
+    bytes: int
+    verified: bool
+    path: str
+    kind: str | None = None
 
 
 class ObjectLoopInputsResponse(BaseModel):
@@ -45,4 +56,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "object_loop_reconcile": ObjectLoopReconcileResponse,
     "object_score_record": ObjectScoreRecordResponse,
     "object_checkpoint_read": ObjectCheckpointReadResponse,
+    "artifact_verify": ArtifactVerifyResponse,
 }

@@ -17,18 +17,22 @@ result is ``unknown_command`` / ``unknown_profile`` / ``unknown_event``, never
 
 from __future__ import annotations
 
+import re
+
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 from src.playbooks.definition import (
+    loop_body as _loop_body,
     LLM_RESERVED_OUTCOMES,
     RESERVED_OUTCOMES,
     RUNTIME_ERROR_KEY,
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     ForEachStep,
     LlmStep,
     PlaybookDefinition,
@@ -48,6 +52,10 @@ from src.playbooks.expressions import (
     LOOP_ONLY_CONTEXT_PATHS,
     BindingRef,
     CoalesceValue,
+    FilterValue,
+    MapValue,
+    LenValue,
+    DiffValue,
     ContextRef,
     EventRef,
     ListValue,
@@ -142,6 +150,7 @@ VALIDATOR_CODES: Final[frozenset[str]] = frozenset(
         "capability_not_subset",
         "delegation_runtime_checked",
         "stale_contract",
+        "unsupported_feature",
     }
 )
 
@@ -209,6 +218,10 @@ class ContractInfo:
     outcomes: frozenset[str]
     execution_fingerprint: str
     outcome_classes: Mapping[str, str] = dataclass_field(default_factory=dict)
+    # Generic JSON-object models expose document properties, never a "root"
+    # parameter. Full JSON Schema validation remains the runtime boundary.
+    argument_schema: Mapping[str, Any] | None = None
+    required_features: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -310,6 +323,14 @@ class RegistryContractLookup:
             )
             for field_name, field in execution.args_model.model_fields.items()
         }
+        argument_schema = None
+        if execution.argument_mode == "json_object":
+            argument_schema = execution.args_model.model_json_schema()
+            arguments = {
+                name: ArgumentSpec(name=name, type=type_from_schema(schema),
+                                   required=name in argument_schema.get("required", []))
+                for name, schema in argument_schema.get("properties", {}).items()
+            }
         return ContractInfo(
             name=name,
             arguments=arguments,
@@ -320,6 +341,8 @@ class RegistryContractLookup:
                 outcome.name: str(outcome.classification.value)
                 for outcome in execution.outcomes
             },
+            argument_schema=argument_schema,
+            required_features=("generated_commands_v1",) if execution.schema_generation == 2 else (),
         )
 
 
@@ -593,6 +616,8 @@ def event_field_type(schema: Mapping[str, Any], path: str) -> ValueType | None:
     kind = _JSON_TYPE_NAMES.get(str(spec.get("type")))
     if kind is None:
         return UNKNOWN
+    if kind == "array":
+        return type_from_schema(spec)
     if kind == "object":
         nested = spec.get("fields")
         properties = (
@@ -664,38 +689,6 @@ def _loop_exits(loop: Any) -> set[str]:
     return exits
 
 
-def _loop_body(definition: PlaybookDefinition, loop_id: str) -> set[str]:
-    """§6.3 — the steps that are *inside* the loop.
-
-    The plan states this as "BFS from ``body_entry``, stopping at ``f`` itself".
-    Taken literally that is a plain forward closure, which swallows every target
-    a body step has — including the loop's own failure terminal — and makes
-    ``loop_body_escapes`` vacuous, because a step's target is in its own closure
-    by construction.  The body is therefore the closure restricted to the steps
-    that can reach ``f`` again: exactly the nodes on a path from ``body_entry``
-    back to the loop node, which is what "inside the loop" means.  Recorded as
-    an amendment in the child plan's §20.
-    """
-    loop = definition.steps[loop_id]
-    forward: set[str] = set()
-    queue: deque[str] = deque([loop.body_entry])
-    while queue:
-        step_id = queue.popleft()
-        if step_id == loop_id or step_id in forward or step_id not in definition.steps:
-            continue
-        forward.add(step_id)
-        queue.extend(step_targets(definition.steps[step_id]).values())
-
-    inside: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for step_id in forward - inside:
-            targets = set(step_targets(definition.steps[step_id]).values())
-            if loop_id in targets or targets & inside:
-                inside.add(step_id)
-                changed = True
-    return inside
 
 
 ENTER = "enter"
@@ -723,7 +716,7 @@ def _cfg(definition: PlaybookDefinition, rule: Rule, closure: set[str],
         step = definition.steps[step_id]
         if isinstance(step, ForEachStep):
             successors[f"{step_id}#{ENTER}"] = [
-                node_in(step.body_entry, from_step=step_id)
+                node_in(step.body_entry, from_step=step_id), f"{step_id}#{EXIT}",
             ]
             outgoing = list(step.transitions.values())
             if step.continuation is not None:
@@ -748,6 +741,7 @@ def _must_analysis(
     successors: Mapping[str, list[str]],
     entry: str,
     gen: Mapping[str, frozenset[str]],
+    kill: Mapping[str, frozenset[str]] | None = None,
 ) -> dict[str, frozenset[str]]:
     """§6.4 steps 3-5 — the optimistic must-analysis fixpoint.
 
@@ -756,6 +750,7 @@ def _must_analysis(
     converges; ``MAX_FIXPOINT_ITERATIONS`` is a trip-wire, not the termination
     argument.
     """
+    kill = kill or {}
     universe = frozenset().union(*gen.values()) if gen else frozenset()
     predecessors: dict[str, list[str]] = {node: [] for node in successors}
     for node, targets in successors.items():
@@ -766,7 +761,7 @@ def _must_analysis(
         node: (frozenset() if node == entry else universe) for node in successors
     }
     outgoing: dict[str, frozenset[str]] = {
-        node: incoming[node] | gen.get(node, frozenset()) for node in successors
+        node: (incoming[node] - kill.get(node, frozenset())) | gen.get(node, frozenset()) for node in successors
     }
     for _ in range(MAX_FIXPOINT_ITERATIONS):
         changed = False
@@ -779,7 +774,7 @@ def _must_analysis(
             if nxt != incoming[node]:
                 incoming[node] = nxt
                 changed = True
-            out = nxt | gen.get(node, frozenset())
+            out = (nxt - kill.get(node, frozenset())) | gen.get(node, frozenset())
             if out != outgoing[node]:
                 outgoing[node] = out
                 changed = True
@@ -892,6 +887,20 @@ def validate_definition(
         events=events if events is not None else RegisteredEventLookup(),
         inventory=inventory,
     )
+    from src.playbooks.features import unsupported_feature_message, unsupported_features
+
+    for feature in unsupported_features(definition, contracts=context.contracts):
+        context.emit("unsupported_feature", unsupported_feature_message(feature),
+                     field="/required_features")
+    scripts = {key: step for key, step in definition.steps.items() if isinstance(step, ScriptStep)}
+    pins = definition.trusted_execution.scripts if definition.trusted_execution else {}
+    if set(scripts) != set(pins):
+        context.emit("script_pin_invalid", "Every script requires exactly one trusted source pin",
+                     field="/trusted_execution/scripts")
+    for step_id, step in scripts.items():
+        if step_id in pins and pins[step_id].program != step.program:
+            context.emit("script_pin_invalid", "Script program differs from its trusted source pin",
+                         step_id=step_id, field=f"/steps/{step_id}/program")
     _structure_and_closure(context)
     _loops(context)
     _definite_assignment(context)
@@ -1054,14 +1063,26 @@ def _loops(context: _Context) -> None:
         body = context.bodies[loop_id]
         enclosing = [other for other, other_body in context.bodies.items()
                      if other != loop_id and loop_id in other_body]
-        if enclosing:
-            context.emit(
-                "nested_loop",
-                f"loop {loop_id!r} sits inside the body of {min(enclosing)!r}; "
-                f"V2 rejects nested loops",
-                rule_id=loop.rule,
-                step_id=loop_id,
-            )
+        if len(enclosing) >= 4:
+            context.emit("nested_loop", "loop depth exceeds 4", rule_id=loop.rule, step_id=loop_id)
+        for other, other_body in context.bodies.items():
+            if other == loop_id:
+                continue
+            if body & other_body and not (
+                body | {loop_id} <= other_body or other_body | {other} <= body
+            ):
+                context.emit("loop_body_escapes", "loop bodies overlap across frames",
+                             rule_id=loop.rule, step_id=loop_id)
+        # Only the owning foreach may enter its body from outside.
+        for source_id, source in definition.steps.items():
+            if source_id == loop_id or source_id in body:
+                continue
+            if set(step_targets(source).values()) & body:
+                context.emit("loop_body_escapes", "loop body has an external entry",
+                             rule_id=source.rule, step_id=source_id)
+        if any(rule.entry_step in body for rule in definition.rules):
+            context.emit("loop_body_escapes", "rule entry bypasses foreach",
+                         rule_id=loop.rule, step_id=loop_id)
 
         exits = _loop_exits(loop)
         for body_step_id in sorted(body):
@@ -1121,22 +1142,24 @@ def _loops(context: _Context) -> None:
     by_item: dict[str, list[str]] = {}
     for loop_id, loop in loops.items():
         by_item.setdefault(loop.item_binding, []).append(loop_id)
-    for step_id, step in sorted(definition.steps.items()):
-        for value in step_values(step):
-            if not isinstance(value, LoopRef):
+    for rule_id, step_id, values in _expression_sites(definition):
+        for value, binders in values:
+            if not isinstance(value, LoopRef) or any(
+                binder.item_binding == value.binding for binder in binders
+            ):
                 continue
             owners = by_item.get(value.binding, [])
             inside = any(
                 step_id in context.bodies.get(owner, set())
                 for owner in owners
-                if definition.steps[owner].rule == step.rule
+                if definition.steps[owner].rule == rule_id
             )
             if not inside:
                 context.emit(
                     "loop_ref_outside_loop",
                     f"step {step_id!r} reads loop variable {value.binding!r} outside the "
                     f"body of its loop",
-                    rule_id=step.rule,
+                    rule_id=rule_id,
                     step_id=step_id,
                 )
 
@@ -1201,9 +1224,19 @@ def _definite_assignment(context: _Context) -> None:
                 gen[f"{step_id}#{EXIT}"] = produced
             else:
                 gen[step_id] = produced
-        incoming = _must_analysis(successors, entry, gen)
+        kill: dict[str, frozenset[str]] = {}
+        for loop_id, body in context.bodies.items():
+            names = frozenset(
+                name for item in body
+                if (name := getattr(definition.steps[item], "save_result_as", None))
+            )
+            own = getattr(definition.steps[loop_id], "save_result_as", None)
+            kill[f"{loop_id}#{ENTER}"] = names | (frozenset({own}) if own else frozenset())
+            kill[f"{loop_id}#{EXIT}"] = names
+        incoming = _must_analysis(successors, entry, gen, kill)
         outgoing = {
-            node: incoming.get(node, frozenset()) | gen.get(node, frozenset())
+            node: (incoming.get(node, frozenset()) - kill.get(node, frozenset()))
+                  | gen.get(node, frozenset())
             for node in successors
         }
         context.assigned[rule.id] = incoming
@@ -1328,6 +1361,15 @@ def _value_type(context: _Context, scope: _TypeScope, value: Any) -> ValueType:
                 name: _value_type(context, scope, item) for name, item in value.fields.items()
             },
         )
+    if isinstance(value, LenValue):
+        return INTEGER
+    if isinstance(value, (FilterValue, DiffValue)):
+        collection = value.collection if isinstance(value, FilterValue) else value.left
+        kind = _value_type(context, scope, collection)
+        return ValueType("array", item_type=kind.item_type or UNKNOWN)
+    if isinstance(value, MapValue):
+        local = _expression_scope(context, scope, (value,))
+        return ValueType("array", item_type=_value_type(context, local, value.value))
     if isinstance(value, CoalesceValue):
         options = [_value_type(context, scope, option) for option in value.options]
         joined = join_types(options)
@@ -1335,6 +1377,15 @@ def _value_type(context: _Context, scope: _TypeScope, value: Any) -> ValueType:
             return joined.with_nullable(False)
         return joined.with_nullable(True)
     return UNKNOWN
+
+
+def _expression_scope(context: _Context, scope: _TypeScope, binders: tuple) -> _TypeScope:
+    for binder in binders:
+        collection = _value_type(context, scope, binder.collection)
+        scope = replace(scope, loop_items={
+            **scope.loop_items, binder.item_binding: collection.item_type or UNKNOWN,
+        })
+    return scope
 
 
 def _is_total(value: Any, value_type: ValueType) -> bool:
@@ -1346,6 +1397,15 @@ def _is_total(value: Any, value_type: ValueType) -> bool:
     if value_type.is_unknown:
         return False
     return not value_type.nullable and value_type.kind != "null"
+
+
+def _expression_sites(definition: PlaybookDefinition):
+    """Scoped value occurrences in guards and steps, including nested predicates."""
+    for rule in definition.rules:
+        if rule.guard is not None:
+            yield rule.id, None, condition_values(rule.guard, scoped=True)
+    for step_id, step in sorted(definition.steps.items()):
+        yield step.rule, step_id, step_values(step, scoped=True)
 
 
 def _values_and_types(context: _Context) -> None:
@@ -1375,18 +1435,19 @@ def _values_and_types(context: _Context) -> None:
                         field=f"/trigger/filter/{key}",
                     )
 
-    for step_id, step in sorted(definition.steps.items()):
-        scope = scopes.get(step.rule)
-        if scope is None:
+    for rule_id, step_id, values in _expression_sites(definition):
+        outer_scope = scopes.get(rule_id)
+        if outer_scope is None:
             continue
         in_loop = any(step_id in body for body in context.bodies.values())
-        for value in step_values(step):
+        for value, binders in values:
+            scope = _expression_scope(context, outer_scope, binders)
             if isinstance(value, EventRef) and scope.event_schema is not None:
                 if event_field_type(scope.event_schema, value.path) is None:
                     context.emit(
                         "unknown_event_field",
                         f"{value.path!r} is not a field of {scope.rule.trigger.event_type!r}",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
             elif isinstance(value, ContextRef):
@@ -1394,16 +1455,35 @@ def _values_and_types(context: _Context) -> None:
                     context.emit(
                         "unknown_context_path",
                         f"{value.path!r} is not part of the engine context",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
                 elif value.path in LOOP_ONLY_CONTEXT_PATHS and not in_loop:
                     context.emit(
                         "unknown_context_path",
                         f"{value.path!r} exists only inside a loop body",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
+            elif isinstance(value, (FilterValue, MapValue, LenValue, DiffValue)):
+                collections = (
+                    [value.left, value.right] if isinstance(value, DiffValue)
+                    else [value.collection]
+                )
+                for collection in collections:
+                    kind = _value_type(context, scope, collection)
+                    if not kind.is_unknown and (kind.kind != "array" or kind.nullable):
+                        context.emit(
+                            "type_mismatch", f"{value.type} requires a non-null array",
+                            rule_id=rule_id, step_id=step_id,
+                        )
+                    if isinstance(value, DiffValue) and value.key_path and kind.item_type:
+                        identity = walk_type_path(kind.item_type, value.key_path)
+                        if identity.kind in {"array", "object"}:
+                            context.emit(
+                                "type_mismatch", "diff key_path must identify a scalar",
+                                rule_id=rule_id, step_id=step_id,
+                            )
             elif isinstance(value, CoalesceValue):
                 last = value.options[-1]
                 last_type = _value_type(context, scope, last)
@@ -1414,7 +1494,7 @@ def _values_and_types(context: _Context) -> None:
                         "type_unknown",
                         "the last coalesce option has no statically known type, so its "
                         "totality could not be checked",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
                 elif not _is_total(last, last_type):
@@ -1422,7 +1502,7 @@ def _values_and_types(context: _Context) -> None:
                         "coalesce_not_total",
                         "the last coalesce option can still be null, so this chain does "
                         "not make the value total",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
     context.scopes.update(scopes)
@@ -1512,7 +1592,27 @@ def _contracts_and_outcomes(context: _Context) -> None:
         info: ContractInfo | None = None
         resolved = True
 
+        if isinstance(step, ScriptStep) and scope is not None:
+            nodes = [*(step.program.argv[1:] if step.program.argv else step.program.arguments),
+                     *step.environment.values()]
+            if step.program.stdin is not None:
+                nodes.append(step.program.stdin)
+            for node in nodes:
+                kind = _value_type(context, scope, node)
+                if not kind.is_unknown and (kind.kind != "string" or kind.nullable):
+                    context.emit("type_mismatch", "script inputs must resolve to strings",
+                                 rule_id=step.rule, step_id=step_id, field="/program")
+
         if isinstance(step, CommandStep):
+            from src.commands.descriptors import PLAYBOOK_DENIALS
+            from src.commands.principal import SERVER_OWNED_ARG_KEYS
+
+            if step.command in PLAYBOOK_DENIALS:
+                context.emit("unauthorized", "command is forbidden in playbooks",
+                             rule_id=step.rule, step_id=step_id, field="/command")
+            if set(step.inputs).intersection(SERVER_OWNED_ARG_KEYS):
+                context.emit("invalid_argument", "server-owned arguments are forbidden",
+                             rule_id=step.rule, step_id=step_id, field="/inputs")
             info = context.contracts.get(step.command)
             if info is None:
                 resolved = False
@@ -1541,6 +1641,11 @@ def _contracts_and_outcomes(context: _Context) -> None:
             _check_output_schema(context, step_id, step)
             _check_llm_outcomes(context, step_id, step)
             for tool_name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+                from src.commands.descriptors import PLAYBOOK_DENIALS
+
+                if tool_name in PLAYBOOK_DENIALS:
+                    context.emit("unauthorized", "LLM tool is forbidden in playbooks",
+                                 rule_id=step.rule, step_id=step_id, field="/tool_use")
                 tool_contract = context.contracts.get(tool_name)
                 if tool_contract is None:
                     context.emit(
@@ -1609,6 +1714,20 @@ def _check_command_arguments(
     scope: Any,
 ) -> None:
     for name in sorted(set(step.inputs) - set(info.arguments)):
+        if info.argument_schema is not None:
+            schema = info.argument_schema
+            if schema.get("additionalProperties", True) is not False:
+                continue
+            try:
+                matches_pattern = any(
+                    re.search(pattern, name) for pattern in schema.get("patternProperties", {})
+                )
+            except re.error:
+                # An invalid plugin schema is rejected by its runtime model;
+                # it must not crash static inspection of the catalogue.
+                continue
+            if matches_pattern:
+                continue
         context.emit(
             "argument_unknown",
             f"{name!r} is not an argument of {step.command!r}",
@@ -1957,11 +2076,18 @@ def _inventory_names(definition: PlaybookDefinition) -> list[tuple[str, str | No
         binding = getattr(step, "save_result_as", None)
         if binding:
             names.append((binding, step.rule, step_id))
-        for value in step_values(step):
+    for rule_id, step_id, values in _expression_sites(definition):
+        for value, binders in values:
+            if binders and isinstance(value, (BindingRef, LoopRef)) and value.path:
+                names.append((value.path, rule_id, step_id))
+            if isinstance(value, (FilterValue, MapValue)):
+                names.append((value.item_binding, rule_id, step_id))
+            if isinstance(value, DiffValue) and value.key_path:
+                names.append((value.key_path, rule_id, step_id))
             if isinstance(value, (BindingRef, LoopRef)):
-                names.append((value.binding, step.rule, step_id))
+                names.append((value.binding, rule_id, step_id))
             elif isinstance(value, EventRef):
-                names.append((value.path, step.rule, step_id))
+                names.append((value.path, rule_id, step_id))
     return names
 
 

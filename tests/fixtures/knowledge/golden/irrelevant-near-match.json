@@ -1,0 +1,119 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-irrelevant-near-match",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-irrelevant-near-match",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-irrelevant-near-match:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-irrelevant-near-match",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-irrelevant-near-match",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-irrelevant-near-match:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-procedure-nearmatch@rev-0001:procedure": "not-current-eligible"
+    },
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "irrelevant-near-match",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "f5854a554857b7c59c2ea8b21cc1443d329f20797868a05f042400b423b40cc7",
+    "expected": "a887afe42087caf23262f99bb679a8f27aab3ffdbecec69b0dc750f28435a05f",
+    "fixture_id": "e378fb6a0358043a7320bc8a4ccc6544ae2fc7e1344aef8bcab8cec25611dcf8",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "6a1017ab53e72e7570eb697b5a53ad6a3839fd1fa144fc26b32cf7ae737e3064",
+    "records": "e850d4ea84e6b25ede4ab9dc7131863377b0a02894790b9eb44635ed08b7ebd8",
+    "scenario": "8b03daea7239ffbdcd62e32c4814cff11db327b3f606c025fcd78d1325f45190",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-irrelevant-near-match",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-irrelevant-near-match:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [
+      {
+        "identity": "rec-procedure-nearmatch@rev-0001:procedure",
+        "reason": "not-current-eligible"
+      }
+    ],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-irrelevant-near-match",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "",
+    "rendered_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "selected": [],
+    "usage": {
+      "bytes": 64,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 64
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Deploy to the production rail: run the health gate, then release."
+      },
+      "freshness": "current",
+      "kind": "procedure",
+      "record_id": "rec-procedure-nearmatch",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Empty or relevant small bundle, no minimum filler, no new task or paid call",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

@@ -160,6 +160,8 @@ export const routes = {
   "GET /api/providers/availability": () => availability,
   "POST /api/review/list": () => ({ success: true, reviews: [] }),
   "POST /api/task/gate-list": () => ({ success: true, gates: [] }),
+  "POST /api/record/capabilities": () => ({ success: true, capabilities: { enabled: false, ui_enabled: false } }),
+  "POST /api/collaboration/list": () => ({ success: true, collaborations: [] }),
   [`GET /api/projects/${PROJECT}/graph`]: () => graph,
   "GET /api/projects/second/graph": () => ({ tasks: [], edges: [], gates: [], agents: [] }),
 };

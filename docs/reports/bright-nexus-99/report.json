@@ -1,0 +1,11 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "epic-activity",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 4763
+    }
+  ]
+}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -33,6 +35,8 @@ class TestGroupRegistration:
         expected = {
             "create", "list", "show", "update",
             "history", "diff", "retire", "restore", "export",
+            "propose", "proposal-show", "proposal-decide", "verify", "authority-grant",
+            "authority-revoke", "share", "redact",
         }
         missing = expected - set(kgroup.commands.keys())
         assert not missing, f"knowledge group is missing: {missing}"
@@ -171,3 +175,59 @@ class TestForwarding:
         args = mock.execute.await_args.args[1]
         assert args["project_id"] == "proj"
         assert args["identity"] == "record:abc"
+
+
+@pytest.mark.parametrize("explicit, expected", [(None, 7), (3, 3)])
+def test_proposal_resolves_claim_file_epoch_without_overriding_explicit(runner, explicit, expected):
+    from src.cli.app import cli
+
+    captured = {}
+    mock = _mock_client({"knowledge_propose": {"proposal_id": "p-1"}}, captured)
+    args = ["knowledge", "propose", "--project-id", "proj", "--snapshot",
+            '{"title":"Correction","body":"Evidence","category":"note"}',
+            "--idempotency-key", "propose"]
+    if explicit is not None:
+        args += ["--claim-epoch", str(explicit)]
+    with patch("src.cli.app._get_client", return_value=mock), patch(
+        "src.cli.claim_epoch.resolve_claim_epoch", return_value=7,
+    ):
+        result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert captured["claim_epoch"] == expected
+    assert captured["snapshot"]["title"] == "Correction"
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "src/skills/aq-knowledge/SKILL.md",
+        "docs/guides/knowledge-records.md",
+    ],
+)
+def test_documented_reference_create_passes_cli_and_snapshot_contracts(runner, document):
+    """Run the published command against a fake daemon, then validate its source."""
+    from src.cli.app import cli
+    from src.commands.contracts.knowledge import KnowledgeCreateArgs
+    from src.knowledge.models import Snapshot
+
+    text = (Path(__file__).resolve().parents[1] / document).read_text(encoding="utf-8")
+    commands = [
+        shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
+        for block in text.split("```bash\n")[1:]
+    ]
+    command = next(args for args in commands if ["knowledge", "create"] == args[2:4])
+    captured = {}
+    mock = _mock_client({"knowledge_create": {"record_id": "r-1"}}, captured)
+    with patch("src.cli.app._get_client", return_value=mock):
+        result = runner.invoke(cli, command[1:])
+    assert result.exit_code == 0, result.output
+    assert mock.execute.await_args.args[0] == "knowledge_create"
+    args = KnowledgeCreateArgs.model_validate(captured)
+    snapshot = Snapshot.model_validate(
+        {key: getattr(args, key) for key in ("title", "body", "category", "tags", "sources")}
+    )
+    assert args.project_id == "agent-queue"
+    assert snapshot.category == "reference"
+    assert snapshot.sources[0].kind == "url"
+    assert snapshot.sources[0].retained is False
+    assert snapshot.sources[0].observed_at.endswith("Z")

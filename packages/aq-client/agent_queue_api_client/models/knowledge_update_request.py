@@ -19,9 +19,9 @@ T = TypeVar("T", bound="KnowledgeUpdateRequest")
 class KnowledgeUpdateRequest:
     """
     Attributes:
-        project_id (str):
         identity (str):
         idempotency_key (str):
+        project_id (None | str | Unset):
         if_revision (None | str | Unset):
         claim_epoch (int | None | Unset):
         title (None | str | Unset):
@@ -36,11 +36,12 @@ class KnowledgeUpdateRequest:
         valid_until (None | str | Unset):
         recheck_at (None | str | Unset):
         summary_of_revision (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     identity: str
     idempotency_key: str
+    project_id: None | str | Unset = UNSET
     if_revision: None | str | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
     title: None | str | Unset = UNSET
@@ -55,16 +56,21 @@ class KnowledgeUpdateRequest:
     valid_until: None | str | Unset = UNSET
     recheck_at: None | str | Unset = UNSET
     summary_of_revision: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
 
-        project_id = self.project_id
-
         identity = self.identity
 
         idempotency_key = self.idempotency_key
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         if_revision: None | str | Unset
         if isinstance(self.if_revision, Unset):
@@ -158,15 +164,18 @@ class KnowledgeUpdateRequest:
         else:
             summary_of_revision = self.summary_of_revision
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "identity": identity,
                 "idempotency_key": idempotency_key,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if if_revision is not UNSET:
             field_dict["if_revision"] = if_revision
         if claim_epoch is not UNSET:
@@ -195,6 +204,8 @@ class KnowledgeUpdateRequest:
             field_dict["recheck_at"] = recheck_at
         if summary_of_revision is not UNSET:
             field_dict["summary_of_revision"] = summary_of_revision
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
@@ -203,11 +214,18 @@ class KnowledgeUpdateRequest:
         from ..models.knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
 
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         identity = d.pop("identity")
 
         idempotency_key = d.pop("idempotency_key")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_if_revision(data: object) -> None | str | Unset:
             if data is None:
@@ -359,10 +377,12 @@ class KnowledgeUpdateRequest:
 
         summary_of_revision = _parse_summary_of_revision(d.pop("summary_of_revision", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         knowledge_update_request = cls(
-            project_id=project_id,
             identity=identity,
             idempotency_key=idempotency_key,
+            project_id=project_id,
             if_revision=if_revision,
             claim_epoch=claim_epoch,
             title=title,
@@ -377,6 +397,7 @@ class KnowledgeUpdateRequest:
             valid_until=valid_until,
             recheck_at=recheck_at,
             summary_of_revision=summary_of_revision,
+            global_scope=global_scope,
         )
 
         knowledge_update_request.additional_properties = d
