@@ -65,6 +65,12 @@ RETIRED = {
         r"placed as your sibling|sibling under that same parent|siblings? of the gate"
     ),
     "worker-owned exit PR": r"owns opening the",
+    # Fast-smooth integration: Git containment is the only delivery proof and
+    # root dispatch follows lane occupancy, not a cadence timer.
+    "receipt delivery authority": (
+        r"trusts the delivery receipt|receipts? (proves?|is proof|grants?)|receipt fallback"
+    ),
+    "timed root sealing": r"seals? after (a|the) quiet period|settling window",
 }
 
 #: Roles whose instructions must apply the policy rather than restate workflow.
@@ -169,3 +175,27 @@ def test_no_shipped_playbook_schedules_a_merge_sweep():
     assert not (REPO / "tests" / "fixtures" / "playbooks" / "v2" / "pr-merge-sweep").exists()
     for source in sorted(prompts.rglob("*.md")):
         assert "pr-merger" not in source.read_text(encoding="utf-8"), _rel(source)
+
+
+def test_synced_worker_templates_grant_only_scoped_integration_workflows():
+    """Capability sync merges these grants into every installed worker template.
+
+    A worker writes integration state only through its own close's parent
+    candidate (``continue-close``) or as a task-free batch fixer; both are
+    session-scoped in ``src/api/scope.py``. Everything else is publisher or
+    operator authority.
+    """
+    from src.api.scope import AGENT_COMMAND_SET
+    from src.profiles.capability_sync import DEFAULT_SYNCED_PROFILE_IDS
+
+    scoped = {"integration_continue_close", "integration_batch_fix"}
+    workers = sorted(pid for pid in DEFAULT_SYNCED_PROFILE_IDS if pid.startswith("worker-"))
+    assert workers
+    for profile_id in workers:
+        parsed = parse_profile((DEFAULTS / profile_id / "profile.md").read_text(encoding="utf-8"))
+        grants = {name for name in parsed.capabilities.get("aq_commands", [])
+                  if name.startswith("integration_")}
+        assert grants == scoped, profile_id
+    agent_writes = {name for name in AGENT_COMMAND_SET
+                    if name.startswith("integration_") and name != "integration_status"}
+    assert agent_writes == scoped
