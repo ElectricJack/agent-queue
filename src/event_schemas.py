@@ -326,7 +326,7 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # Committed command edits: refresh dashboard snapshots without re-routing.
     "task.updated": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["seq"],
+        "optional": ["seq", "status", "edited_fields"],
     },
     "task.deleted": {
         "required": ["task_id", "project_id", "title"],
@@ -577,7 +577,7 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 # ---------------------------------------------------------------------------
 
 _PROFILE_SCHEMAS: dict[str, EventSchema] = {
-    # A synced profile's vault copy (the supervisor by default) gained the
+    # A shipped system profile's vault copy (unless it opted out) gained the
     # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
     # capability namespace to the appended names; ``trigger`` is ``startup``,
     # ``reload`` or ``doctor``.
@@ -1029,6 +1029,28 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "workspace_id", "slot", "path", "reason"],
         "optional": [],
     },
+    # A slot's leftover .aq/claim.json whose holder provably let go was
+    # retired at claim preparation or by ``workspace_retire_claim``.
+    "worktree.stale_claim_retired": {
+        "required": ["project_id", "workspace_id", "path", "holder_task_id", "reason", "actor"],
+        "optional": ["holder_claim_epoch", "holder_session_id", "claimant_task_id"],
+    },
+    # A slot's sentinel still naming a terminal task was returned to the free
+    # form by ``workspace_clear_sentinel``.
+    "worktree.sentinel_cleared": {
+        "required": ["project_id", "workspace_id", "path", "holder_task_id", "reason"],
+        "optional": ["branch"],
+    },
+    # Slot reconciler (src.orchestrator.slot_restore): a disabled in-cap slot
+    # came back into service, or was held out because it carries changes.
+    "worktree.restored": {
+        "required": ["project_id", "workspace_id", "slot", "path", "action"],
+        "optional": ["previous_reason"],
+    },
+    "worktree.quarantined": {
+        "required": ["project_id", "workspace_id", "slot", "path", "reason"],
+        "optional": ["dirty_paths"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1187,6 +1209,10 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     "session.claim_timeout": {
         "required": ["session_id"],
         "optional": ["task_id"],
+    },
+    "session.claim_file_missing": {
+        "required": ["session_id", "task_id", "claim_epoch"],
+        "optional": ["project_id"],
     },
     # A session that had nothing left to do -- a recorded stop intent
     # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
@@ -1361,13 +1387,39 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 # Spec + proposal events (Phase 6 — spec ingestion §8)
 # ---------------------------------------------------------------------------
 
-_SPEC_SCHEMAS: dict[str, EventSchema] = {
-    "spec.approved": {
-        "required": ["project_id", "spec_path"],
+_BATCH_SCHEMAS: dict[str, EventSchema] = {
+    event_type: {
+        "required": ["project_id", "batch_id", "structure_revision", "structure_digest",
+                     "reviewer_task_id"],
         "optional": [],
+        "types": {"project_id": str, "batch_id": str, "structure_revision": int,
+                  "structure_digest": str, "reviewer_task_id": (str, type(None))},
         "fields": {
             "project_id": {"type": "string", "description": "project"},
-            "spec_path": {"type": "string", "description": "specification path"},
+            "batch_id": {"type": "string", "description": "held ingestion batch"},
+            "structure_revision": {"type": "integer", "description": "batch structure revision"},
+            "structure_digest": {"type": "string", "description": "batch structure digest"},
+            "reviewer_task_id": {"type": "string", "description": "assigned reviewer or null"},
+        },
+    }
+    for event_type in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+}
+
+_SPEC_SCHEMAS: dict[str, EventSchema] = {
+    "spec.approved": {
+        "required": ["project_id", "decision_id", "packet_sha256", "review_id", "revision",
+                     "spec_kind"],
+        "optional": ["spec_path", "operation_key", "seq"],
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "decision_id": {"type": "string", "description": "immutable approval decision"},
+            "packet_sha256": {"type": "string", "description": "approved packet hash"},
+            "review_id": {"type": "string", "description": "review or null for standalone"},
+            "revision": {"type": "integer", "description": "review revision or null"},
+            "spec_kind": {"type": "string", "description": "design or implementation"},
+            "spec_path": {"type": "string", "description": "display mirror only"},
+            "operation_key": {"type": "string", "description": "durable dispatch identity"},
+            "seq": {"type": "integer", "description": "persisted event sequence"},
         },
     },
     "proposal.ready": {
@@ -1533,6 +1585,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         # sizer alone never had one.
         "optional": ["placement_reason"],
     },
+    "pool.scaler_stalled": {
+        "required": ["profile_id", "desired", "live", "ready", "ticks", "recovery"],
+        "optional": [],
+    },
     # Sizing authorised a start and no project could take it — the condition
     # that was invisible before placement became explicit (§6.3).  ``reasons``
     # maps project id to the predicate that excluded it: ``quarantined``,
@@ -1568,7 +1624,7 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.prepare_failed": {
         "required": ["project_id", "profile_id", "session_id", "task_id", "reason"],
-        "optional": [],
+        "optional": ["error_type", "stage", "defect", "target_ref"],
     },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
@@ -1599,6 +1655,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.renamed": {
         "required": ["profile_id", "old_name", "name", "backup_path"],
+        "optional": ["seq"],
+    },
+    "pool.deleted": {
+        "required": ["profile_id", "depth", "sessions", "warnings"],
         "optional": ["seq"],
     },
 }
@@ -1717,6 +1777,30 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
 # New sealed events identify both the lifecycle batch and its distinct repair
 # operation. Keep batch_id optional at validation so durable pre-Task-8b events
 # remain readable during replay/upgrades.
+_INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
+    "required": ["project_id", "repository_id", "reason"],
+    "optional": ["head_sha"],
+    "types": {"project_id": str},
+    "fields": {"project_id": {"type": "string", "description": "project"}},
+}
+# A verified ref write is an observation wakeup, independent of the legacy
+# promotion/receipt lifecycle and its frozen operation routes.
+_PUBLICATION_FIELDS = {
+    "project_id": (str, "string", "project"),
+    "batch_id": (str, "string", "integration batch"),
+    "revision": (int, "integer", "candidate revision"),
+    "repository_id": (str, "string", "published repository"),
+    "target_ref": (str, "string", "published ref"),
+    "head_sha": (str, "string", "verified published head"),
+    "candidate_sha": (str, "string", "tested candidate head"),
+    "publication_verified": (bool, "boolean", "ref write verified"),
+}
+_INTEGRATION_SCHEMAS["integration.publication_verified"] = {
+    "required": list(_PUBLICATION_FIELDS), "optional": [],
+    "types": {name: spec[0] for name, spec in _PUBLICATION_FIELDS.items()},
+    "fields": {name: {"type": spec[1], "description": spec[2]}
+               for name, spec in _PUBLICATION_FIELDS.items()},
+}
 _INTEGRATION_SCHEMAS["integration.sealed"] = {
     "required": ["project_id", "operation_id"],
     "optional": ["batch_id"],
@@ -1752,6 +1836,11 @@ _FENCE_EVENT_FIELD: EventFieldSpec = {
 _INTEGRATION_PAYLOAD_FIELDS: dict[
     str, dict[str, tuple[type | tuple[type, ...], EventFieldSpec]]
 ] = {
+    "integration.readiness_changed": {
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "head_sha": (str, {"type": "string", "description": "observed exact head"}),
+        "reason": (str, {"type": "string", "description": "readiness invalidation"}),
+    },
     "task.child_added": {
         "parent_id": (str, {"type": "string", "description": "immediate parent task"}),
         "children": (
@@ -1990,7 +2079,67 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
     }
 }
 
+# Verified waits and continuation events are declared before runtime activation.
+_WAIT_EVENT_NAMES = (
+    "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable", "wait.escalated",
+    "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+)
+_CONTINUATION_EVENT_NAMES = (
+    "continuation.suspended", "continuation.queued", "continuation.launched",
+    "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+)
+_WAIT_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["wait_id", "project_id"],
+        "optional": ["task_id", "owner_kind", "owner_id", "session_id", "claim_epoch",
+                     "generation", "condition_kind", "condition", "source_key",
+                     "source_generation", "source_revision", "evidence_ref", "verified_at",
+                     "claimed", "decision", "decision_reason", "decision_inputs", "outcome",
+                     "result_ref", "escalation_id", "continuation_id", "escalate_at",
+                     "ceiling_at", "reason", "supervisor_session_id", "message_id",
+                     "registrations", "occurred_at"],
+        "types": {"wait_id": str, "project_id": str, "generation": int,
+                  "source_generation": int, "condition": dict, "decision_inputs": dict},
+    }
+    for name in _WAIT_EVENT_NAMES
+}
+_CONTINUATION_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["continuation_id", "project_id", "task_id", "generation"],
+        "optional": ["wait_id", "session_id", "claim_epoch", "state", "reason",
+                     "outcome", "result_ref", "head_sha", "registrations", "occurred_at"],
+        "types": {"continuation_id": str, "project_id": str, "task_id": str,
+                  "generation": int},
+    }
+    for name in _CONTINUATION_EVENT_NAMES
+}
+# Loop detection accepts a registration before checkpoint creates a continuation.
+# A later suspended/queued event identifies the actual continuation generation.
+_CONTINUATION_SCHEMAS["continuation.loop_detected"] = {
+    "required": ["wait_id", "project_id", "task_id", "registrations"],
+    "optional": ["continuation_id", "generation", "reason", "occurred_at"],
+    "types": {"wait_id": str, "project_id": str, "task_id": str, "registrations": list},
+}
+
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "integration.completed_container_checkpoint_recovered": {
+        "required": ["id", "operator_id", "reason", "task_id", "project_id", "repository_id",
+                     "branch", "head_sha", "completion_id", "origin_sha256", "snapshot_sha256",
+                     "generation", "version", "old_head_sha", "tree_sha", "remote_head_sha",
+                     "before", "after", "before_snapshot_sha256", "after_snapshot_sha256",
+                     "owner", "origin_id", "children", "observed_at", "delivery"],
+        "optional": [],
+        "types": {"id": str, "operator_id": str, "reason": str, "before": dict, "after": dict,
+                  "owner": dict, "children": list, "observed_at": (float, int), "delivery": bool},
+    },
+    "ask.input_received": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
+    "ask.discussion_replied": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
     "conversation.reply_queued.v1": {
         "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
         "optional": [],
@@ -2007,6 +2156,8 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_WAIT_SCHEMAS,
+    **_CONTINUATION_SCHEMAS,
     **_REPORT_SCHEMAS,
     **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
@@ -2030,6 +2181,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_BATCH_SCHEMAS,
     **_PROJECT_SCHEMAS,
     **_SWARM_SCHEMAS,
     **_PROVIDER_SCHEMAS,

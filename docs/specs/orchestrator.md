@@ -11,6 +11,9 @@ tags: [spec, orchestrator, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 This document describes the design and behaviour of the orchestrator subsystem in sufficient
 detail to reimplement it from scratch.  It covers the event bus, task-name generation,
@@ -231,6 +234,22 @@ the error handler attempts whichever reconciler was not reached, independently, 
 failure cannot strand pool starts or session teardown. A cycle logs at most one traceback
 for its original error and one for each failed reconciler.
 
+Pool convergence also has a backstop independent of the scheduling cycle. Every
+30 seconds it observes claimable demand and uses the same sizing and placement
+rules to check for an eligible start. After three consecutive observations with
+no successful start and no launch in flight, it logs and persists
+`pool.scaler_stalled` once per continuous condition and retries normal pool
+reconciliation. Capacity limits, disabled profiles, provider suppression and
+quarantine remain authoritative; lack of eligible capacity is not a scaler stall.
+Successful starts or disappearance of eligible demand reset the observation.
+
+Pool reconciliation is serialized with this backstop and bounded to 30 seconds,
+including measurement and audit writes. A timeout logs the stalled pass, releases
+the reconciliation lock and allows a later pass to retry. Background launches
+retain their capacity reservations and session ownership; they are not cancelled
+by a reconciliation timeout. Completed launch bookkeeping is reaped before
+measurement. The backstop ends with the scheduler on shutdown.
+
 ```
 Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
 Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed; also recovers tasks wedged in PAUSED with no resume_after and no operator hold
@@ -346,8 +365,9 @@ Collects all state needed by `Scheduler.schedule` and delegates to it:
 2. For each project, compute token usage in the rolling window:
    `window_start = now - (config.scheduling.rolling_window_hours * 3600)`
    `project_usage[p.id] = db.get_project_token_usage(p.id, since=window_start)`
-3. Count active agents per project by iterating agents whose state is `BUSY` or `STARTING`
-   and looking up their `current_task_id`.
+3. Count live sessions (`starting`, `running`, `draining`) by `session.project_id`,
+   including idle pool workers and unconfirmed stops. Historical agent task pointers
+   do not consume project capacity. The agent reconciler uses the same count.
 4. Sum all per-project usage to get `total_used`.
 5. Build a `SchedulerState` dataclass and call `Scheduler.schedule(state)`.
 
@@ -473,10 +493,10 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see [specs/prompt-builder](prompt-builder.md)).
-The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
-to compose system metadata, execution rules, upstream dependency summaries, agent role
-instructions, and the task description into a single prompt string.
+Workers receive their task context from `aq prime` (`src/prime/`), not from an
+orchestrator-assembled prompt. The orchestrator's PromptBuilder assembly path
+(`_build_task_context_with_prompt_builder()` and `_get_execution_rules()`) had no caller
+after 2026-09-01 and was removed with the retired integration adapters (azure-ridge-72).
 
 **Step 9 — Start adapter.**
 Build `TaskContext(description=full_description, checkout_path=workspace, branch_name=...)`.
@@ -1009,6 +1029,15 @@ close uses the held claim and checkout proof; task-lifecycle close additionally
 requires the provider to confirm the writer stopped. Missing proof retains the
 attachment, regardless of harness or model.
 
+Retry preparation reclaims only the owner fence it observed. A newer attachment
+must remain untouched even when it belongs to the same task. An attachment already
+bound to the preparing session and workspace is reused; a pending handoff for that
+same preparation stays fenced and never initiates its own detach. A stopped pool
+session whose task binding was cleared can still prove its old handoff through its
+ended attempt and fresh provider confirmation. Recovery holds the owner, session,
+agent and workspace rows through checkout verification and detach, refuses reused
+identities, and accepts a fully unlocked slot and an idle or retired unbound agent.
+
 For a stranded `BLOCKED/session_close_hard_failure`, a project supervisor may
 preview `aq integration release-owner --task-id TASK_ID --dry-run`, then apply
 without `--dry-run`. The command requires a stopped session and fresh provider
@@ -1037,6 +1066,60 @@ No counter, gate or origin is reset.
 Incident `retry_allowed` and its next action reflect the execution-end and routing
 guards as well as the attention reason and remaining budgets. Provider liveness
 is always freshly confirmed when executing a recovery decision.
+
+A recovery incident identifies one failure generation: the stopped attempt (or,
+with no attempt, the durable failure transition) of one claim epoch. A later
+diagnosis of the **same** stopped attempt, such as a vetoed stale-binding unwind
+relabelling `context_thrash` as `claim_binding_stale`, is a *reclassification*,
+not a new failure. The scan keeps the incident id (hashed from the stored
+`identity_reason`), its pending or `hold` decision, `decided_at` and the
+provenance comment that proves it, and every budget and counter. It updates
+`reason`, appends one `{from, to, at}` entry to `reason_history`, writes one
+audit comment, and sends no new notification. Repeated scans of an unchanged
+diagnosis are idempotent. Automatic retry requires every diagnosis the incident
+ever recorded to be retryable, so a non-retryable failure is never relabelled as
+automatically recoverable. A recovery decision against a diagnosis the scan has
+not yet recorded is refused, and a prepared human packet pins the live diagnosis,
+so it goes stale (`ask.stale_source`) instead of transferring approval. An
+incident whose `retry` or `release` decision is already recorded is closed; a
+later diagnosis opens a new, undecided incident rather than inheriting it. A new
+attempt, a new claim epoch or a new no-attempt failure transition opens a new
+incident. Legacy incidents without `identity_reason` use their `reason`; no
+migration or hold clearing is needed.
+
+A recovery incident whose current decision is `hold` excludes its task from
+the pool claim frontier, named claims, and pool demand even if the task is
+otherwise `READY`. Claims, demand, and frontier diagnostics share this check.
+The hold remains effective until explicitly released through the recovery
+controls above. A recorded `retry` decision permits a new claim even though
+its incident's `retry_allowed` is false: that flag describes whether another
+recovery decision is allowed, not whether an approved attempt can run.
+
+An operator or live named **global** supervisor can explicitly release a held
+incident with `aq task recover --operator-release --decision release
+--task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT --reason WHY`.
+This command records the previous decision and the releasing principal without
+changing task state, routing, counters, resources or integration ownership.
+It also handles a stale hold on a task already resumed to READY. Incident and
+hold timestamp must both still match; active or completed tasks cannot be released.
+An integration delegate must use this release-only form and continue through
+its operation's controls. Project supervisors and workers cannot authorize it.
+
+For an ordinary BLOCKED task, the same flag with `--decision retry` authorizes
+an intentional retry of a reviewed failure even when its attention or session
+exit reason is not automatically retryable. It still requires a current incident,
+a freshly confirmed stopped worker, unchanged routing, remaining recovery and
+worker budgets, an active project, satisfied dependencies/gates, and no held
+resources, manual pauses, questions or integration owner. No counter is reset.
+
+Supervisor-authored holds on active train repair delegates or `slot_reset_failed`
+incidents have a 15-minute deadline. The failure scan reconciles older holds too.
+At expiry it preserves the hold and sends one durable escalation notice to both
+the project and global supervisors, naming the exact incident, hold timestamp,
+owner and available controls. Expiry ends the silent wait, never authorizes
+execution. Repeated scans do not resend the notice. Human/operator holds remain
+explicit and do not expire. A project supervisor must escalate a held train
+repair promptly: it blocks every delivery through that train.
 
 ---
 
