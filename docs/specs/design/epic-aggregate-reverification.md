@@ -27,6 +27,12 @@ certifies the epic itself. An open batch, paused or aborted refresh, missing Git
 evidence or a hold retains its existing authority. Verification resumes on the
 refreshed head and still requires its current checks and tree review. No root PR
 or successful old-head trust lookup is needed to start the refresh.
+Before freezing a new refresh, a completed container with no open or undelivered
+required descendants skips it when its private tip has an empty three-dot tree
+diff against its delivery target. The train records `refresh skipped: delivered`
+with both observed heads. Missing delivery or Git proof preserves refresh behavior;
+existing batches retain their authority. An aborted refresh cannot force another
+batch for a now-delivered subtree, even after the default branch advances.
 Conclusive failing aggregate checks retain the existing bounded baseline-sync
 and repair path rather than starting a second repair through a refresh batch.
 Observe current hosted results before choosing that path; a cached green result

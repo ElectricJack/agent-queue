@@ -111,7 +111,7 @@ Read-back requires the target to contain S and the tag to peel to S. A target
 write with a missing tag is incomplete; a later visit finishes the tag without
 moving a conflicting immutable tag. Source:
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
-(`PromotionPublisher`).
+(`PromotionVisit`).
 
 Reviewed promotion policies drive publication and post-publication backmerge.
 Hotfixes use the same tag gate and send the published commit down the chain through

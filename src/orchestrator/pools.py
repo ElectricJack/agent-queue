@@ -298,7 +298,9 @@ class PoolsMixin:
             for p in system_profiles
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
-        measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        measurement.pool_sessions = await self.db.list_sessions(
+            lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
+        )
         from src.waits.occupancy import continuation_occupancy, evictable_sessions
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)
@@ -1554,6 +1556,15 @@ class PoolsMixin:
             await self.db.update_session(
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
+        if not other_live and still_owned:
+            slot = await self._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().detach_idle_slot_branch(slot)
+                except Exception:
+                    logger.warning(
+                        "pool session %s: branch release deferred", session.id, exc_info=True,
+                    )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/asks/batch_scope.py::scope_ask": "Looks up the batch-scope ask by its source identity; it neither evaluates integration evidence nor changes refs.",
+    "src/asks/batch_scope.py::scope_source": "Builds the ask source identity from project, ingestion batch and structure revision; it contains no branch or delivery state."
+  }
+}

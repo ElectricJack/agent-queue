@@ -14,6 +14,8 @@ from sqlalchemy.dialects.postgresql import insert
 from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner
 from src.database.tables import sessions, wait_listener_cursors, wait_records, wait_source_events
 from src.waits.conditions import Condition, Scope, WaitError
+from src.waits.admission import admission_pass
+from src.waits.graph import track_graph_lock
 from src.waits.resource_sources import (
     reobserve_resource_candidates,
     resource_invalidation_candidates,
@@ -154,11 +156,18 @@ class WaitSourceListener:
         if not isinstance(result, dict) or result.get("success") is not True:
             raise ListenerUnavailable(f"wait dispatch refused: {result}")
 
+    @admission_pass("service.scheduler.reader")
     async def drain(self, watermark):
         """Called only at the command boundary, with a prefetched fenced bound."""
         count = 0
         while True:
             async with self.db._engine.begin() as conn:
+                from src.waits.loops import prepare_progress
+
+                owners = (await conn.execute(select(wait_records).where(
+                    wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
+                ).order_by(wait_records.c.id).limit(self.batch_size))).mappings().all()
+                await prepare_progress(conn, owners)
                 # Scheduler reconciliation can hold the graph fence longer than
                 # one renewal interval. Yield without locking the lease row so
                 # renewal stays live; the durable cursor remains replayable.
@@ -166,6 +175,7 @@ class WaitSourceListener:
                     func.pg_try_advisory_xact_lock(REGISTRATION_LOCK)))
                 if self._graph_busy:
                     return count
+                track_graph_lock(conn)
                 cursor = await self.locked_lease(conn)
                 started_at = self.clock()
                 # Renewal cadence is not a query deadline. The cursor row lock

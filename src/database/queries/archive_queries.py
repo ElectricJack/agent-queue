@@ -983,7 +983,8 @@ class ArchiveQueryMixin:
         stmt = stmt.order_by(archived_tasks.c.archived_at.desc()).limit(limit)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_archived_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return [self._row_to_archived_task(r) for r in rows]
 
     async def get_archived_task(self, task_id: str) -> dict | None:
         """Return a single archived task as a dict, or *None* if not found."""
@@ -992,9 +993,7 @@ class ArchiveQueryMixin:
                 select(archived_tasks).where(archived_tasks.c.id == task_id)
             )
             row = result.mappings().fetchone()
-            if not row:
-                return None
-            return self._row_to_archived_task(row)
+        return self._row_to_archived_task(row) if row else None
 
     async def list_archived_tasks_by_dedup_prefix(
         self, project_id: str, prefix: str
