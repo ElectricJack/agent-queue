@@ -30,13 +30,14 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from src.database.tables import (
     integration_branch_owners,
     projects,
     task_branch_origins,
     task_integration_checkpoints,
+    task_session_attempts,
     tasks,
 )
 
@@ -55,6 +56,7 @@ class BranchMaterializationService:
         db: Any,
         *,
         hierarchy_service_factory: Any,
+        legacy_container_collection: bool = True,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -62,9 +64,30 @@ class BranchMaterializationService:
         #: factory rather than an instance because the daemon builds that
         #: service lazily, from the command handler's repository closures.
         self.hierarchy_service_factory = hierarchy_service_factory
+        #: Whether a released code-bearing container may be given a *legacy*
+        #: collection episode (:meth:`_drain`'s second pass).  It is the parent
+        #: runtime's own entry point, so it is only true while that engine
+        #: exists: ``integration.git_first: active`` replaces every subject
+        #: runtime with the train, which collects a container's children into
+        #: its own branch and never reads the episode.  Reserving one there
+        #: pauses a container that nothing can settle — orphan reconciliation
+        #: cancels the reserved operation and no collector ever runs
+        #: (grand-lantern-78, quick-current-13, 2026-10-07).  Branch
+        #: materialization itself is unaffected: a reservation is still cut.
+        self.legacy_container_collection = legacy_container_collection
         self.clock = clock
+        #: Two loops drive this drain: ``Orchestrator.run_one_cycle`` (so a
+        #: freshly filed child is materialized before the same cycle schedules)
+        #: and ``IntegrationService.tick`` (so the reconciliation survives a
+        #: cycle that never reaches step 3a).  Both are idempotent, but there
+        #: is no value in two passes over the same page of reservations, and a
+        #: pushing pass can outlive a tick interval.  Skip rather than queue:
+        #: whichever loop arrives second has nothing to add, and the next tick
+        #: retries anyway.  Mirrors ``IntegrationService._tick_lock``.
+        self._drain_lock = asyncio.Lock()
+        self._after_origin = None
 
-    async def pending_origins(self, *, limit: int = DEFAULT_LIMIT) -> list[dict]:
+    async def pending_origins(self, *, limit: int = DEFAULT_LIMIT, after=None) -> list[dict]:
         """Live reservations with no branch, oldest first, in enabled projects."""
         async with self.db._engine.connect() as conn:
             rows = (
@@ -74,6 +97,7 @@ class BranchMaterializationService:
                             task_branch_origins.c.id,
                             task_branch_origins.c.task_id,
                             task_branch_origins.c.repository_id,
+                            task_branch_origins.c.created_at,
                         )
                         .select_from(
                             task_branch_origins.join(
@@ -87,8 +111,10 @@ class BranchMaterializationService:
                             projects.c.hierarchical_integration_mode.in_(
                                 ("hierarchy", "train")
                             ),
+                            *([tuple_(task_branch_origins.c.created_at, task_branch_origins.c.id) > after]
+                              if after else []),
                         )
-                        .order_by(task_branch_origins.c.created_at)
+                        .order_by(task_branch_origins.c.created_at, task_branch_origins.c.id)
                         .limit(limit)
                     )
                 )
@@ -105,9 +131,24 @@ class BranchMaterializationService:
         One reservation's failure (a repository that will not resolve, a lost
         branch ownership) must not stop the rest: the tasks behind them are
         unrelated, and the next tick retries this one anyway.
+
+        Re-entrant calls return ``[]`` immediately rather than waiting: this is
+        a reconciliation pass, so a concurrent driver is already doing the work
+        the caller wanted done.
         """
         _ = now
-        pending = await self.pending_origins(limit=limit)
+        if self._drain_lock.locked():
+            return []
+        async with self._drain_lock:
+            return await self._drain(limit=limit)
+
+    async def _drain(self, *, limit: int) -> list[dict]:
+        pending = await self.pending_origins(limit=limit, after=self._after_origin)
+        if not pending and self._after_origin is not None:
+            self._after_origin = None
+            pending = await self.pending_origins(limit=limit, after=None)
+        if pending:
+            self._after_origin = (pending[-1]["created_at"], pending[-1]["id"])
         service = self.hierarchy_service_factory()
         if service is None:
             logger.debug("branch materialization: no hierarchy service available")
@@ -138,7 +179,13 @@ class BranchMaterializationService:
                     "Branch materialization for aq/%s failed: %s", row["task_id"], exc
                 )
         # A code-bearing epic can be a container with no producer session.
-        # Its untouched materialized origin is its initial checkpoint.
+        # Its untouched materialized origin is its initial checkpoint — but
+        # only for a runtime that collects it.  Under git_first the train is
+        # that collector, so no episode is reserved here (see
+        # ``legacy_container_collection``).
+        if not self.legacy_container_collection:
+            logger.debug("Legacy container collection is off; the train collects containers")
+            return results
         async with self.db._engine.connect() as conn:
             containers = (await conn.execute(
                 select(tasks.c.id).join(task_integration_checkpoints,
@@ -146,10 +193,18 @@ class BranchMaterializationService:
                 .join(integration_branch_owners,
                     (integration_branch_owners.c.owner_id == tasks.c.id)
                     & (integration_branch_owners.c.ref == tasks.c.branch_name))
-                .where(tasks.c.claim_epoch == 0,
-                       tasks.c.status.in_(("IN_PROGRESS", "PAUSED")),
+                .where(tasks.c.status.in_(("IN_PROGRESS", "PAUSED")),
                        integration_branch_owners.c.owner_role == "worker",
-                       integration_branch_owners.c.handoff_state == "reserved")
+                       integration_branch_owners.c.handoff_state == "reserved",
+                       # ``claim_epoch`` advances when a graph container is
+                       # released without a worker.  It is a fence, not proof
+                       # that this incarnation ever had a writer.  Conversely,
+                       # an attempt from a deleted older task with this id is
+                       # not evidence about the current task row.
+                       ~select(task_session_attempts.c.id).where(
+                           task_session_attempts.c.task_id == tasks.c.id,
+                           task_session_attempts.c.started_at >= tasks.c.created_at,
+                       ).exists())
                 .order_by(tasks.c.created_at, tasks.c.id).limit(limit)
             )).scalars().all()
         for task_id in containers:

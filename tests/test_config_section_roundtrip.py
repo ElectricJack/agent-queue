@@ -19,7 +19,7 @@ import re
 import pytest
 import yaml
 
-from src.config import AppConfig, ConfigValidationError, load_config
+from src.config import AppConfig, ConfigValidationError, WaitPolicyConfig, load_config
 
 # YAML key for sections whose ``AppConfig`` attribute is spelled differently.
 SECTION_YAML_KEY = {"agents_config": "agents"}
@@ -34,6 +34,14 @@ NON_DEFAULT_VALUES = {
     # ``"ollama-probe"`` is not one of the five accepted providers, and the
     # probe sets ``enabled: true``, which is when that check applies.
     ("memory", "embedding_provider"): "openai",
+    ("provider_failover", "mode"): "observe",
+    ("provider_failover", "default_policy"): "hold",
+    ("wait_policy", "v1_bodies"): "translate",
+    # An IP literal or ``localhost`` only; a name DNS could re-point is refused.
+    ("dashboard_server", "host"): "0.0.0.0",
+    ("test_selection", "api_key_env"): "CUSTOM_TYPESAFE_KEY",
+    # A name/email pair: both or neither, and the email must be an address.
+    ("git_identity", "email"): "probe@example.com",
 }
 
 # Sections that do not read every field they declare.
@@ -126,6 +134,50 @@ def test_playbooks_section_reads_every_field_it_declares(tmp_path):
     dropped, unchecked = _round_trip(tmp_path, "playbooks", AppConfig().playbooks)
     assert dropped == []
     assert unchecked == []
+
+
+def test_test_selection_section_reads_every_field_it_declares(tmp_path):
+    dropped, unchecked = _round_trip(tmp_path, "test_selection", AppConfig().test_selection)
+    assert dropped == []
+    assert unchecked == []
+
+
+def test_wait_policy_section_reads_every_scalar_field(tmp_path):
+    dropped, unchecked = _round_trip(tmp_path, "wait_policy", AppConfig().wait_policy)
+    assert dropped == []
+    assert unchecked == []
+
+
+def test_wait_policy_nested_dataclass_round_trip(tmp_path):
+    path = tmp_path / "config.yaml"
+    values = dataclasses.asdict(WaitPolicyConfig())
+    values["resume_stall_seconds"] = 600
+    values["kinds"]["task"]["expected_duration_seconds"] = 4500
+    values["projects"] = {
+        "p": {
+            "in_place_ceiling_seconds": 3600,
+            "resume_cost_minutes": 40,
+            "resume_stall_seconds": 120,
+            "hibernate_margin": 3.0,
+            "v2_enabled": True,
+            "hibernation_enabled": False,
+            "scheduler_waits_enabled": True,
+            "kinds": {"task": {"escalate_after_seconds": 18000}},
+        },
+    }
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/test"},
+        "wait_policy": values,
+    }))
+    loaded = load_config(str(path)).wait_policy
+    assert loaded.resume_stall_seconds == 600
+    assert dataclasses.asdict(loaded)["kinds"] == values["kinds"]
+    assert loaded.projects["p"].kinds["task"].expected_duration_seconds is None
+    expected = values["projects"]["p"]
+    expected["kinds"]["task"]["expected_duration_seconds"] = None
+    assert dataclasses.asdict(loaded.projects["p"]) == expected
+    assert loaded.resolve_project("p").kinds["task"].expected_duration_seconds == 4500
 
 
 

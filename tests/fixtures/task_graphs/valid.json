@@ -5,14 +5,13 @@
     "base": "main"
   },
   "defaults": {
-    "profile": "coding",
+    "intelligence_class": "standard-high",
     "labels": [
       "overhaul-b"
     ]
   },
   "parent": {
-    "title": "Messages table + delivery engine",
-    "profile": "planner"
+    "title": "Messages table + delivery engine"
   },
   "nodes": [
     {
@@ -69,7 +68,7 @@
       "needs": [
         "queries"
       ],
-      "profile": "coding"
+      "intelligence_class": "deep-high"
     }
   ]
 }

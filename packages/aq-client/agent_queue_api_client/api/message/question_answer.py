@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: QuestionAnswerRequest,
 ) -> Response[AgentQuestionDetail | QuestionAnswerResponse422]:
-    """Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+    """Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
-     Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+     Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
     Args:
         body (QuestionAnswerRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: QuestionAnswerRequest,
 ) -> AgentQuestionDetail | QuestionAnswerResponse422 | None:
-    """Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+    """Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
-     Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+     Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
     Args:
         body (QuestionAnswerRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: QuestionAnswerRequest,
 ) -> Response[AgentQuestionDetail | QuestionAnswerResponse422]:
-    """Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+    """Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
-     Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+     Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
     Args:
         body (QuestionAnswerRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: QuestionAnswerRequest,
 ) -> AgentQuestionDetail | QuestionAnswerResponse422 | None:
-    """Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+    """Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
-     Answer a pending worker question in its original live session. Human approval cannot be supplied by
-    supervisors.
+     Let the owning supervisor answer a narrow factual worker question in its original claim-fenced
+    session. Direct human replies use escalation_reply and escalation_apply_reply.
 
     Args:
         body (QuestionAnswerRequest):

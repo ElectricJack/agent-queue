@@ -75,7 +75,7 @@ def test_one_edge_per_transition_record():
     }
     actual = [edge["id"] for edge in _project(definition)["edges"]]
     assert set(actual) == expected
-    assert len(actual) == len(set(actual)) == 34
+    assert len(actual) == len(set(actual)) == 35
 
 
 def test_timeout_edge_survives_when_it_shares_a_target():
@@ -136,9 +136,7 @@ def test_event_graphs_are_arranged_in_columns_from_left_to_right():
             assert left > previous_right
         previous_right = right
 
-    task_rules = event_rule_ids["task.completed"]
-    first, second = (bounds[rule_id] for rule_id in task_rules)
-    assert second["y"] >= first["y"] + first["height"] + 1
+    assert "task.completed" not in event_rule_ids
 
 
 def test_saved_positions_override_compiler_layout_and_resize_the_rule_cluster():
@@ -152,6 +150,7 @@ def test_saved_positions_override_compiler_layout_and_resize_the_rule_cluster():
 
 def test_explanation_is_copied_not_rederived(monkeypatch):
     from src.playbooks.validation import RegistryContractLookup
+    from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
     sentinel = {
         "title": "sentinel",
@@ -161,6 +160,7 @@ def test_explanation_is_copied_not_rederived(monkeypatch):
         "result": None,
         "outcomes": [],
         "contract_fingerprint": None,
+        "docs_url": command_docs_url(DEFAULT_DOCS_BASE_URL, "ensure_task"),
         "renderer": "canonical",
     }
     monkeypatch.setattr(
@@ -169,6 +169,20 @@ def test_explanation_is_copied_not_rederived(monkeypatch):
     graph = _project(contracts=RegistryContractLookup())
     command = next(node for node in graph["nodes"] if node["id"] == "ensure-review-task")
     assert command["explanation"] == sentinel
+
+
+def test_command_explanations_carry_docs_urls_and_other_step_kinds_do_not():
+    from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
+    from src.playbooks.validation import RegistryContractLookup
+
+    graph = _project(contracts=RegistryContractLookup())
+    command = _node(graph, "ensure-review-task")
+    wait = _node(graph, "await-approval")
+
+    assert command["explanation"]["docs_url"] == command_docs_url(
+        DEFAULT_DOCS_BASE_URL, "ensure_task"
+    )
+    assert wait["explanation"]["docs_url"] is None
 
 
 def test_missing_contract_yields_canonical_renderer_and_error_diagnostic():
@@ -403,6 +417,25 @@ def test_agent_task_step_explains_its_objective_and_its_delegation():
     }
     assert explanation["result"]["label"] == "escalation"
     assert [item["kind"] for item in explanation["effects"]] == ["delegates", "binds"]
+
+
+def test_hint_only_agent_task_projects_an_unresolved_route_and_hints():
+    from src.api.models.playbook_v2 import GraphNodeDTO
+    from src.playbooks.definition import PlaybookDefinition
+
+    payload = _definition().model_dump(mode="json")
+    step = payload["steps"]["escalate"]
+    step.pop("profile_id")
+    step.update(intelligence_class="deep-high", task_type="design")
+    graph = _project(PlaybookDefinition.model_validate(payload))
+    node = _node(graph, "escalate")
+    parsed = GraphNodeDTO.model_validate(node)
+    assert parsed.ai.profile_id is None
+    assert parsed.ai.delegation.child_profile_id is None
+    assert "project router" in node["explanation"]["effect_summary"]
+    assert "None" not in node["explanation"]["effect_summary"]
+    assert _inputs(graph, "escalate")["Class hint"][0] == "deep-high"
+    assert _inputs(graph, "escalate")["Kind hint"][0] == "design"
 
 
 def test_agent_task_step_badges_whether_a_cancel_takes_the_child_with_it():
@@ -766,3 +799,21 @@ def test_an_llm_card_degrades_on_a_lookup_that_only_knows_the_session_surface():
     cards = {node["id"]: node["ai"] for node in graph["nodes"] if node["ai"]}
     assert (cards["classify-risk"]["provider"], cards["classify-risk"]["model"]) == (None, None)
     assert cards["escalate"]["provider"] == "openai"
+
+
+def test_graph_exposes_reviewed_execution_requirements_and_loop_limits():
+    from src.playbooks.definition import TrustedExecutionMetadata
+
+    definition = _definition().model_copy(update={
+        "required_features": ("state_v1",),
+        "trusted_execution": TrustedExecutionMetadata(
+            state_schema_version=2, required_capabilities=("playbook_state_notify", "message_send")),
+    })
+    graph = _project(definition)
+    assert graph["execution_requirements"] == {
+        "required_features": ["state_v1"], "state_schema_version": 2,
+        "required_capabilities": ["playbook_state_notify", "message_send"],
+    }
+    for node in graph["nodes"]:
+        if node["loop"]:
+            assert node["loop"]["max_iterations"] == definition.steps[node["id"]].max_iterations
