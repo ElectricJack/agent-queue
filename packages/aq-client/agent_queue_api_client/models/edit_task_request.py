@@ -21,11 +21,11 @@ class EditTaskRequest:
         description (None | str | Unset): New description (optional)
         priority (int | None | Unset): New priority (optional)
         task_type (None | str | Unset): New task type (optional, set to null to clear)
-        status (None | str | Unset): New status — admin override, bypasses state machine (optional)
+        status (None | str | Unset): New lifecycle status (optional); suspended states require wait controls
         max_retries (int | None | Unset): Max retry attempts (optional)
         verification_type (None | str | Unset): How to verify task output (optional)
-        profile_id (None | str | Unset): Agent profile ID (optional, set to null to clear)
-        intelligence_class (None | str | Unset): Intelligence class id; change only while unassigned. Null clears it.
+        intelligence_class (None | str | Unset): Intelligence-class hint for the router; change only while unassigned.
+            Null clears it. On a queued task, editing the class hint or task_type sends the task back to its router.
         integration_mode (None | str | Unset): Integration-policy override ('direct' | 'pull_request'). Null clears the
             override so the task inherits the project/system policy (optional)
         skip_verification (bool | None | Unset): If true, skip git verification on task completion (optional)
@@ -34,6 +34,8 @@ class EditTaskRequest:
         affinity_reason (None | str | Unset): Why this agent is preferred. Set to null to clear (optional)
         workspace_mode (None | str | Unset): Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is
             DEPRECATED and behaves as 'exclusive' — see create_task.
+        after_review (None | str | Unset): Attach this task to the named document review's gate until the review is
+            approved.
         needs_attention (None | str | Unset): Set the operator attention code (optional)
         clear_needs_attention (bool | None | Unset): Clear the operator attention code (optional)
     """
@@ -47,13 +49,13 @@ class EditTaskRequest:
     status: None | str | Unset = UNSET
     max_retries: int | None | Unset = UNSET
     verification_type: None | str | Unset = UNSET
-    profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     integration_mode: None | str | Unset = UNSET
     skip_verification: bool | None | Unset = UNSET
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
     workspace_mode: None | str | Unset = UNSET
+    after_review: None | str | Unset = UNSET
     needs_attention: None | str | Unset = UNSET
     clear_needs_attention: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -109,12 +111,6 @@ class EditTaskRequest:
         else:
             verification_type = self.verification_type
 
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
-
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
             intelligence_class = UNSET
@@ -151,6 +147,12 @@ class EditTaskRequest:
         else:
             workspace_mode = self.workspace_mode
 
+        after_review: None | str | Unset
+        if isinstance(self.after_review, Unset):
+            after_review = UNSET
+        else:
+            after_review = self.after_review
+
         needs_attention: None | str | Unset
         if isinstance(self.needs_attention, Unset):
             needs_attention = UNSET
@@ -186,8 +188,6 @@ class EditTaskRequest:
             field_dict["max_retries"] = max_retries
         if verification_type is not UNSET:
             field_dict["verification_type"] = verification_type
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if integration_mode is not UNSET:
@@ -200,6 +200,8 @@ class EditTaskRequest:
             field_dict["affinity_reason"] = affinity_reason
         if workspace_mode is not UNSET:
             field_dict["workspace_mode"] = workspace_mode
+        if after_review is not UNSET:
+            field_dict["after_review"] = after_review
         if needs_attention is not UNSET:
             field_dict["needs_attention"] = needs_attention
         if clear_needs_attention is not UNSET:
@@ -284,15 +286,6 @@ class EditTaskRequest:
 
         verification_type = _parse_verification_type(d.pop("verification_type", UNSET))
 
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
-
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -347,6 +340,15 @@ class EditTaskRequest:
 
         workspace_mode = _parse_workspace_mode(d.pop("workspace_mode", UNSET))
 
+        def _parse_after_review(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        after_review = _parse_after_review(d.pop("after_review", UNSET))
+
         def _parse_needs_attention(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -375,13 +377,13 @@ class EditTaskRequest:
             status=status,
             max_retries=max_retries,
             verification_type=verification_type,
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
             integration_mode=integration_mode,
             skip_verification=skip_verification,
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
+            after_review=after_review,
             needs_attention=needs_attention,
             clear_needs_attention=clear_needs_attention,
         )

@@ -1,6 +1,7 @@
 {
   "name": "agent-queue",
   "private": true,
+  "license": "MIT",
   "workspaces": ["packages/aq-ts-client", "dashboard"],
   "scripts": {
     "dev": "npm -w dashboard run dev",
