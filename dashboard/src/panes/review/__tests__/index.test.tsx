@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router-dom";
 
 import ReviewPaneView from "../index";
+import { askData, preview } from "../../../testUtils/asks";
 import { reviewMarkdownFilename } from "../download";
 
 const hooks = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ const hooks = vi.hoisted(() => ({
   attach: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   reopen: { mutateAsync: vi.fn().mockResolvedValue({ revision: 3 }), isPending: false },
   withdraw: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
+  prepare: { mutateAsync: vi.fn(), isPending: false },
   listener: null as ((event: { event_type: string; review_id?: string }) => void) | null,
 }));
 
@@ -25,6 +27,14 @@ vi.mock("../../../api/reviews", () => ({
   useReopenReview: () => hooks.reopen,
   useWithdrawReview: () => hooks.withdraw,
 }));
+vi.mock("../../../api/asks", () => ({
+  useAsk: () => ({ data: askData() }),
+  useReplyAsk: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePrepareAsk: () => hooks.prepare,
+  useDecideAsk: () => hooks.decide,
+  askKeys: { all: ["asks"], detail: (id: string) => ["asks", "detail", id] },
+}));
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: vi.fn(), fetchQuery: async () => askData() }) }));
 vi.mock("../../../api/hooks", () => ({
   useIntelligenceClasses: () => ({ data: { classes: [
     { id: "fast-high" }, { id: "standard-high" },
@@ -34,7 +44,10 @@ vi.mock("../../../api/hooks", () => ({
   ] }),
 }));
 vi.mock("../../../ws/useEventStream", () => ({
-  useRawEventSubscription: (listener: typeof hooks.listener) => { hooks.listener = listener; },
+  useRawEventSubscription: (listener: typeof hooks.listener) => {
+    // Keep the reader listener; decision invalidation has its own focused tests.
+    if (!hooks.listener) hooks.listener = listener;
+  },
 }));
 
 const response = {
@@ -49,6 +62,7 @@ const response = {
       "standard-high": "Request changes → new revision task, routed by the project's router (class hint standard-high); Approve → sent to the supervisor.",
     },
   },
+  ask: { id: "ask-one" },
   comments: [],
   diff: [{ op: "removed", text: "old paragraph" }, { op: "added", text: "new paragraph" }],
 };
@@ -63,6 +77,7 @@ function renderPane() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hooks.prepare.mutateAsync.mockResolvedValue({ preview: preview() });
   hooks.listener = null;
   hooks.useReview.mockImplementation((_id: string, opts?: { diffFrom?: number }) => ({
     data: opts?.diffFrom === 1 ? response : { ...response, diff: undefined },
@@ -165,7 +180,7 @@ describe("review pane", () => {
       renderPane();
       fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
       expect(screen.getByText("Only in revision one.")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Prepare Approve" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
       expect(await downloadedText()).toBe(historical);
       expect(downloads[0]?.filename).toBe("Review title-rev-1.md");
@@ -337,11 +352,12 @@ describe("review pane", () => {
     await waitFor(() => expect(hooks.comment.mutateAsync).toHaveBeenCalledWith({
       review_id: "rev-x", revision: 2, quote: null, heading_path: ["Goal"], body: "Clarify this.",
     }));
-    fireEvent.change(screen.getByLabelText("Decision note"), { target: { value: "Looks good" } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
-      review_id: "rev-x", revision: 2, decision: "approve", note: "Looks good",
-    }));
+    fireEvent.change(screen.getByLabelText("Overall decision note"), { target: { value: "Looks good" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare Approve" }));
+    await waitFor(() => expect(hooks.prepare.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      ask_id: "ask-one", expected: askData().expected, option_key: "approve", overall_note: "Looks good",
+    })));
+    expect(hooks.decide.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("keeps a draft and its opening revision when the viewed revision changes", async () => {
@@ -386,35 +402,24 @@ describe("review pane", () => {
     expect(button).toHaveFocus();
   });
 
-  it("submits the selected response route with requested changes", async () => {
+  it("prepares requested changes with the selected revision class", async () => {
     renderPane();
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("routed by the project's router (no class hint)");
-    expect(screen.queryByLabelText("Revision intelligence class")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
-    expect(screen.getByText("Who revises this after your feedback?")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Revision intelligence class"), {
-      target: { value: "standard-high" },
-    });
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("(class hint standard-high)");
-    expect(screen.queryByLabelText("Revision profile")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Send changes request" }));
-    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
-      review_id: "rev-x", revision: 2, decision: "request_changes",
-      responder_class: "standard-high",
-    }));
+    fireEvent.change(screen.getByLabelText("Revision intelligence class"), { target: { value: "standard-high" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare Request changes" }));
+    await waitFor(() => expect(hooks.prepare.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      option_key: "request_changes", responder_class: "standard-high", expected: askData().expected,
+    })));
+    expect(hooks.decide.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("requires a note when rejecting and submits a distinct reject decision", async () => {
+  it("requires a note for a decline and prepares its distinct intent", async () => {
     renderPane();
-    const reject = screen.getByRole("button", { name: "Reject" });
-    expect(reject).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Decision note"), {
-      target: { value: "Use the smaller fix approach." },
-    });
-    fireEvent.click(reject);
-    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
-      review_id: "rev-x", revision: 2, decision: "reject", note: "Use the smaller fix approach.",
-    }));
+    expect(screen.getByRole("button", { name: "Prepare Decline" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Overall decision note"), { target: { value: "Use the smaller fix" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare Decline" }));
+    await waitFor(() => expect(hooks.prepare.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      option_key: "decline", overall_note: "Use the smaller fix",
+    })));
   });
 
   it("shows the route saved on a decided revision beside the decision controls", () => {
@@ -431,16 +436,12 @@ describe("review pane", () => {
     expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on standard-high (explicit)");
   });
 
-  it("keeps approval separate from the revision selector", async () => {
+  it("keeps approval separate from the revision class selector", async () => {
     renderPane();
-    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
-    fireEvent.change(screen.getByLabelText("Revision intelligence class"), {
-      target: { value: "standard-high" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
-      review_id: "rev-x", revision: 2, decision: "approve",
-    }));
+    fireEvent.change(screen.getByLabelText("Revision intelligence class"), { target: { value: "standard-high" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare Approve" }));
+    await waitFor(() => expect(hooks.prepare.mutateAsync).toHaveBeenCalled());
+    expect(hooks.prepare.mutateAsync.mock.calls[0]![0]).not.toHaveProperty("responder_class");
   });
 
   it("shows the live revision banner", async () => {
@@ -459,19 +460,18 @@ describe("review pane", () => {
     expect(screen.getByText("This file was edited outside the review")).toBeInTheDocument();
   });
 
-  it("explains why decisions are disabled for delegated and stale views", async () => {
+  it("allows delegated human decisions and disables stale views", async () => {
     hooks.useReview.mockImplementation(() => ({
       data: { ...response, review: { ...response.review, decider: "user_or_supervisor" } }, isLoading: false, error: null,
     }));
     const { rerender } = renderPane();
-    expect(screen.getByText("delegated to supervisor")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Prepare Approve" })).toBeEnabled();
     hooks.useReview.mockImplementation((_id: string, opts?: { revision?: number }) => ({
       data: { ...response, revision: { ...response.revision, revision: opts?.revision ?? 2 } }, isLoading: false, error: null,
     }));
     rerender(<MemoryRouter><ReviewPaneView args={{ reviewId: "rev-x" }} close={vi.fn()} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} /></MemoryRouter>);
     fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
     await waitFor(() => expect(screen.getByText("revised since you opened it — reload")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Request changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Prepare Request changes" })).toBeDisabled();
   });
 });

@@ -31,7 +31,7 @@ page adds to it.
 
 | Term | Meaning here |
 |---|---|
-| **Provider** | A model vendor: `anthropic`, `google` or `openai`. Not to be confused with a *session provider* (`tmux`), which hosts terminals. |
+| **Provider** | For availability and quota, a harness login (`claude`, `codex`, `gemini`), plus `llm` for the direct API credential. For SDK model resolution, a vendor (`anthropic`, `openai`, `google`). A *session provider* (`tmux`) hosts terminals. |
 | **Harness** | The description of which coding-agent CLI to run (`claude`, `codex`, `gemini`). Each harness implies one vendor. |
 | **Direct LLM path** | The daemon calling a vendor SDK itself, in-process, with no CLI and no terminal. |
 | **Intelligence class** | A named tier (`fast-low`, `standard-high`, …) that maps to one model per provider. Vault markdown, not code. |
@@ -69,16 +69,24 @@ Sessions are explained in [Sessions](sessions.md).
 **The direct LLM path** ([`src/llm/`](../../src/llm/)) is the daemon making its
 own API calls, with no CLI involved. Its callers are all internal:
 
-* `llm` steps and transitions inside playbooks
+* API-transport `llm` steps inside playbooks
   ([`src/playbooks/executors/llm.py`](../../src/playbooks/executors/llm.py)),
 * a plugin calling `invoke_llm`,
 * the reference-stub enricher,
 * `aq vault rebuild-index --with-summaries`.
 
-The two paths do not share credentials, model selection or accounting, and
+Playbook `llm` steps also support `transport: cli`: a one-shot, tool-free call
+through a logged-in Claude, Codex or Gemini CLI, in an empty temporary directory.
+It creates no AQ task or tmux session. Its profile supplies the harness and
+`default_class`; it uses neither `llm.api_key` nor `llm.fallback`. Reported usage
+is checked against the step budget, but these calls do not enter the session
+ledger or the direct API JSONL log. See [the setup guide](../guides/llm-providers.md#use-a-subscription-login-for-a-playbook-step).
+
+The session and direct API paths do not share model selection or accounting, and
 mixing them up is the source of most confusion here. A profile's `harness`
 picks the CLI for a *session*; it has no effect on the direct path, which
-always uses the provider named by the `llm:` config block. That is deliberate:
+uses the provider named by the `llm:` config block, or its explicit
+`llm.fallback` credential during an outage. That is deliberate:
 `llm:` carries a single `api_key`/`base_url` pair bound to one provider, so
 honouring a profile's harness there would hand one vendor's credentials to
 another vendor's adapter
@@ -101,15 +109,17 @@ slice. This is the shipped `standard-high`
 
 ```json
 {
-  "anthropic": {"model": "claude-opus-5", "thinking": "high"},
-  "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
-  "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
+  "anthropic": {"model": "claude-opus-5", "thinking": "xhigh"},
+  "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
+  "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
   "google":    {"model": "gemini-2.5-flash", "thinking_budget": 24576}
 }
 ```
 
-Twelve classes ship, on two axes: a capability tier (`fast`, `standard`,
-`deep`) and a reasoning level (`off`, `low`, `medium`, `high`). The `codex`
+Seven classes ship: `fast-low`, `fast-high`, `standard-high`, `deep-low`,
+`deep-high`, `astra-low`, `astra-high`. Their tiers are `fast`, `standard`,
+`deep` and `astra`; the high classes request `xhigh` reasoning. Astra has only
+OpenAI/Codex slices; deep and Astra have no Google slice. The `codex`
 slice is a fourth key rather than a fourth provider: it overrides the OpenAI
 slice **only** for the Codex CLI, whose account models are a separate namespace
 from the OpenAI API's.
@@ -124,7 +134,8 @@ Which class applies, in order:
 | Path | Source of the class | Source of the provider |
 |---|---|---|
 | Session | The worker's own class, else the task's `intelligence_class`, else the profile's `default_class` ([`src/sessions/spec.py`](../../src/sessions/spec.py), `_resolve_class_config`) | The harness's declared `provider`, else inferred from its id: `claude`→`anthropic`, `codex`→`openai`, `gemini`→`google` |
-| Direct | The step profile's `default_class`, else `llm.default_class` ([`src/llm/spec.py`](../../src/llm/spec.py), `resolve_call`) | `llm.provider` — always |
+| Direct API | The step profile's `default_class`, else `llm.default_class` ([`src/llm/spec.py`](../../src/llm/spec.py), `resolve_call`) | `llm.provider`; while unavailable, `llm.fallback.provider` if configured and compatible |
+| Headless CLI step | The step profile's `default_class` (required) | The profile's harness; Codex prefers the class's `codex` slice |
 
 On the direct path an explicit `model` beats the class, the class beats
 `llm.model`, and `llm.model` beats the adapter's own fallback. An unknown class
@@ -179,6 +190,9 @@ spells them differently: Anthropic takes a `thinking` level that the factory
 turns into a token budget, Google takes an explicit `thinking_budget`, OpenAI
 takes a `reasoning_effort` string
 ([`src/llm/providers/__init__.py`](../../src/llm/providers/__init__.py)).
+The Anthropic API mapping currently recognizes only `off`, `low`, `medium`,
+`high` and integer budgets: the shipped `xhigh` value falls through to zero.
+This is a known adapter mismatch; the CLI path passes the effort through.
 
 ### Which model actually did the work
 
@@ -230,8 +244,9 @@ flowchart LR
 
 The **transcript watcher**
 ([`src/sessions/transcripts/watcher.py`](../../src/sessions/transcripts/watcher.py))
-is the only routine writer of the token ledger. Note what that implies:
-**direct-path calls are not ledgered at all.** A playbook's `llm` step is
+is the routine writer of the token ledger. The sync-workflow merge path also
+records a total-only row when its output reports tokens. Note what that implies:
+**direct-path calls are not ledgered at all.** An API playbook `llm` step is
 budgeted and logged, but its tokens never reach `token_ledger`, so they never
 appear in `aq costs` or the metrics token chart. Those surfaces measure agent
 sessions. For each assistant entry it has
@@ -275,7 +290,7 @@ code follows that split rather than papering over it:
 | Provider | Mechanism | Cost | Cadence |
 |---|---|---|---|
 | `codex` | Passive. Codex publishes a `rate_limits` block on the `token_count` transcript lines the watcher already reads. | None | Only while a Codex session is running |
-| `claude` | Active. `claude -p "/usage" --output-format json` is run and its prose parsed. | None — a live probe reports `num_turns: 0` and `total_cost_usd: 0` | Every 10 minutes, if the probe playbook is activated |
+| `claude` | Active. `claude -p "/usage" --output-format json` is run and its prose parsed. | None — verified probe output reports `num_turns: 0` and `total_cost_usd: 0` | Every 10 minutes through the required system playbook, activated at startup; configurable opt-out |
 
 Both land as the same
 [`ProviderUsageSnapshot`](../../src/providers/snapshot.py) and nothing
@@ -352,7 +367,7 @@ number; a number labelled stale beats a blank card.
 
 ## Budgets, retries and errors
 
-### Playbook `llm` steps are the only hard budget
+### Playbook `llm` step budgets
 
 Every `llm` step in a playbook must declare a budget — the schema has no
 unbounded option ([`src/playbooks/definition.py`](../../src/playbooks/definition.py),
@@ -362,15 +377,15 @@ outcome* the playbook author can branch on rather than an exception:
 
 | Outcome | Cause |
 |---|---|
-| `budget_exceeded` | Call count, output tokens or total tokens exceeded — **or** the provider does not report usage at all, checked before the first call |
+| `budget_exceeded` | Call count, output tokens or total tokens exceeded — **or** the provider does not report usage (checked before an API call, after a CLI call) |
 | `timed_out` | The step exceeded `timeout_seconds` |
 | `invalid_output` | The response did not parse or validate against the step's schema after its retries |
 | `provider_error` | The adapter raised: credentials, network, vendor error |
 | `unavailable` / `unauthorized` | The step's profile could not be resolved, or the principal may not use it |
 | `cancelled` / `operator_decision_required` | The run was cancelled, or an interrupted tool turn needs a human |
 
-The fail-closed rule is worth stating twice: a step with `max_total_tokens`
-against an adapter whose `reports_usage` is false returns `budget_exceeded`
+On the API transport, a step against an adapter whose `reports_usage` is
+false returns `budget_exceeded`
 *without calling the provider*, and a step whose call returned unreported usage
 returns `budget_exceeded` after it. A budget that cannot be measured is not a
 budget. New adapters are ineligible by default —
@@ -388,11 +403,12 @@ that can stop work outright. Both are compared against `token_ledger` totals in
 the scheduler's rolling window (24 hours by default), so both measure session
 spend and neither can be exhausted by direct-path calls. When either is
 reached, the scheduler assigns nothing and `aq task claim` answers
-`not_admissible` with reason `budget_exhausted` — a worker should report that
-and exit rather than poll. Both are unset by default. See
+`not_admissible` with reason `budget_exhausted`. Workers follow the returned
+cooldown and instructions; repeated identical refusals are reported once to
+the supervisor, preserving any retained claim or preparation. Both are unset by default. See
 [the reference](../reference/usage-accounting.md#fleet-and-project-token-budgets).
 
-### Sessions back off instead
+### Session failures and provider handoff
 
 A coding-agent session has no such budget: the CLI spends what it spends. What
 AQ does watch for is the CLI *dying* on a rate limit. The final pane capture is
@@ -407,9 +423,12 @@ provider evidence. Under `provider_failover.mode: enforce` (the default) it is
 the provider's failure, not the task's
 ([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py),
 [provider failover](../specs/provider-failover.md) D13): before the workspace is
-released the daemon commits uncommitted work as `aq-wip: provider failover
-checkpoint`, pushes the task branch and leaves a hand-off note the next
-worker's `aq prime` shows; no retry is spent and no pool key is quarantined.
+released the daemon checkpoints and pushes uncommitted work and leaves a
+hand-off note the next worker's `aq prime` shows; no retry is spent and no
+pool key is quarantined. Ordinary task branches use `aq-wip: provider failover
+checkpoint`; train/hierarchy branches preserve the task's own writer with
+`WIP saved by AQ: …` and a resume point. See the
+[outage guide](../guides/provider-outage.md#what-aq-does-on-its-own).
 The first such exit pauses the task 30 s (`provider_suspect`); once the provider
 trips, the task returns to `READY` and the failover sweep moves it to another
 provider or holds it. If the push fails the task is held in place instead
@@ -442,7 +461,8 @@ launchable; `exhausted`, `unauthenticated`, `failing` and an operator's
 ([`src/providers/availability.py`](../../src/providers/availability.py)). In
 `enforce` mode nothing launches against an unavailable provider, queued work on
 it holds with a reason, and the shipped `provider-failover` playbook moves what
-it can to the same intelligence class on an available provider; at the reset
+it can among the task's recorded route candidates on an available provider
+(normally the same class); at the reset
 time, or when the login probe says signed in, the provider goes on probation and
 the next successful launch brings it back. Direct-path calls fail fast while the
 `llm` key is unavailable, or use [`llm.fallback`](../reference/configuration.md#llmfallback)
@@ -484,14 +504,14 @@ This replaced an older `provider_cooldowns` map that nothing ever wrote.
 | Model per tier | Operator (shipped defaults seeded once) | `vault/intelligence-classes/<id>.md` | Until edited; hot-reloaded |
 | Price table | Operator | `~/.agent-queue/config.yaml`, `pricing:` | Until edited; empty by default |
 | Probe on/off, binary, staleness horizons | Operator | `~/.agent-queue/config.yaml`, `providers:` | Until edited |
-| Observed token spend | Transcript watcher | `token_ledger` table | Durable |
+| Observed token spend | Transcript watcher; legacy sync workflow totals | `token_ledger` table | Durable |
 | Transcript read offsets | Transcript watcher | Checkpoint table, keyed by transcript path | Durable — this is what stops double-charging |
 | Quota snapshots | Watcher (`codex`), probe command (`claude`) | `provider_usage_snapshots` table | Durable, append-only |
 | Probe verdict | `provider_usage_probe` | `system_config`, key `providers.claude_usage.last_probe` | One row, overwritten each probe |
 | Provider availability (state, evidence ring, override) and its transition log | `ProviderAvailabilityService`; overrides by `aq provider set-state` | `provider_availability`, `provider_availability_transitions` tables, mirrored in daemon memory | Durable; the log is append-only |
 | Direct-call log | `LLMLogger` | `<data_dir>/logs/llm/<date>/` | `llm_logging.retention_days`, swept hourly |
 | Prompt analytics | `LLMLogger` | Memory, flushed hourly to `prompt_analytics.jsonl` | Lost on restart between flushes |
-| Adapter instances | `LLMClient` | Memory, cached by provider/model/base-url/extras | Process lifetime |
+| Adapter instances | `LLMClient` | Memory, cached by credential block/provider/model/base-url/extras | Process lifetime |
 
 Nothing in this subsystem is stored in the vault as *results*: the vault holds
 policy (classes), the database holds evidence (ledger, snapshots), and the log
@@ -503,10 +523,10 @@ directory holds debugging material.
 |---|---|---|
 | A quota card reads `stale · last seen 4h ago` | Nothing has confirmed that series inside its horizon. For `codex` this usually just means no Codex session ran. | For Claude, `aq doctor --check providers.claude_usage`. For Codex, nothing — it is honest, not broken. |
 | Doctor: *"the CLI's wording moved"* | `/usage` answered with text no limit-line regex matched. Percentages are unchanged; our reading of them broke. | A human updates the regex in [`src/providers/claude_usage.py`](../../src/providers/claude_usage.py). Report-only by design — there is no `--fix`. |
-| Doctor: *"no claude /usage probe has run"* | The `provider-usage-probe` playbook is not activated, or its timer is not firing. | Activate it — see [the setup guide](../guides/llm-providers.md#turn-on-the-claude-quota-probe). |
+| Doctor: *"no claude /usage probe has run"* | The required `provider-usage-probe` activation or its timer is unhealthy, or the first tick has not arrived. | Check activation health — see [the setup guide](../guides/llm-providers.md#turn-on-the-claude-quota-probe). |
 | Doctor INFO: *"no subscription window to report"* | An API-key account is billed per token and has no window. | Nothing. This is a fact about the account. |
 | `aq costs` shows a large `unpriced` figure | Rows carry no matching `pricing:` entry, or no input/output split (older rows, and rows written by paths that only knew a total). | Add or widen a `pricing:` glob. AQ will not guess a rate. |
-| A playbook step returns `budget_exceeded` immediately | `max_total_tokens` is set and the resolved adapter's `reports_usage` is false. | Use a provider that reports usage, or drop `max_total_tokens` from the step. |
+| A playbook step returns `budget_exceeded` immediately | The resolved API adapter's `reports_usage` is false. | Use a provider that reports usage; `max_total_tokens` is required. A CLI step checks reported usage after the call. |
 | Metrics show a large `unattributed` token rate | Ledger rows whose four columns do not add up to `tokens_used` — typically written by a path that knew only a total. | Nothing to repair; it is the honest residue. Investigate the writer if it grows. |
 | A task keeps pausing with `reason: rate_limit` or `provider_suspect` | A session died with rate-limit text in its final pane (`rate_limit` outside enforce mode). | `aq provider status`; under enforce mode a second such exit trips the provider and the task is re-routed. See [session troubleshooting](../guides/session-troubleshooting.md). |
 | A task is paused with `needs_attention: provider_failover_push_failed` | Its session died on its provider and the WIP checkpoint could not be pushed, so it is held rather than moved. | Fix the push (network, credentials), then `aq task resume --task-id <id>`: the next slot restores the saved checkpoint. |

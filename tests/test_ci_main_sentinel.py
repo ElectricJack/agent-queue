@@ -17,6 +17,7 @@ from src.playbooks.definition import (
     load_definition_json,
     source_digest,
 )
+from tests._private_values_helper import ReadyPrivateValues
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/ci-main-sentinel")
 SHIPPED = Path("src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md")
@@ -210,7 +211,8 @@ async def test_a_red_tick_files_the_repair_then_records_what_it_owns() -> None:
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
-            contracts=registry, clock=lambda: 1_000.0, artifact_store=store, bus=RecordingBus()
+            contracts=registry, clock=lambda: 1_000.0, artifact_store=store, bus=RecordingBus(),
+            private_values=ReadyPrivateValues(),
         ),
         runs=runs,
         waits=None,

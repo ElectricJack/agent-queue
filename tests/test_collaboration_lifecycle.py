@@ -37,9 +37,12 @@ from tests.test_collaboration_queries import NOW, accept, count, create, env as 
 
 @pytest.fixture
 def commands(env):
+    # The wait reconciler reads scheduler policy from the orchestrator's config.
+    config = AppConfig()
     return CommandHandler(
-        SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None),
-        AppConfig(),
+        SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,
+                        config=config),
+        config,
     )
 
 
@@ -248,6 +251,7 @@ def test_command_is_internal_with_fallback_schema():
 @pytest.mark.parametrize("failure", [None, "refused", "exception"])
 async def test_orchestrator_expires_before_waits_even_on_failure(monkeypatch, failure):
     from src.agent_waits import AgentWaitReconciler
+    from src.wait_runtime.cycle import CycleWaitMaintenance
 
     seen = []
 
@@ -273,6 +277,7 @@ async def test_orchestrator_expires_before_waits_even_on_failure(monkeypatch, fa
         agent_questions=SimpleNamespace(tick=AsyncMock()),
         session_reconciler=SimpleNamespace(tick=AsyncMock()),
     )
+    orch.cycle_waits = CycleWaitMaintenance(orch)
     orch.config.sessions.enabled = True
     await Orchestrator._reconcile_sessions(orch)
     assert seen == ["collaboration", "waits"]
