@@ -1,6 +1,6 @@
 ---
 name: aq-bazel-upgrade
-description: Add reproducible Bazel test support to an existing AQ-managed Python or JS/TS repository, with generated targets, deterministic shards, parity evidence and AQ runner/train integration. Use for a requested Bazel upgrade; excludes CI cutover and AQ feature development.
+description: Adds reproducible Bazel test support to an existing AQ-managed Python or JS/TS (or C++) repository — pinned toolchains and locks, generated BUILD targets and a test-suite manifest, hermetic and deterministically sharded targets, legacy-vs-Bazel parity evidence, and connection to `aq test --aq-backend bazel` and integration-train target signatures. Use when a task explicitly requests a Bazel upgrade, Bazel test targets or Bazel parity for a managed project. Not for switching CI or required checks to Bazel, or for developing AQ features.
 allowed-tools:
   - Bash
 ---
@@ -11,6 +11,19 @@ Build an additive, reproducible test graph that AQ can consume. Keep the project
 existing pytest/npm commands working as the fallback. Complete the repository
 work and report integration readiness; do not switch CI, required checks,
 attestations, branch protections or installed train policy in this workflow.
+
+Work through the steps in order and keep this checklist in the task; each item
+is a gate for the next:
+
+```
+- [ ] 1. Inventory every test obligation; confirm the installed AQ consumers and schema
+- [ ] 2. Pin Bazel, rulesets, interpreters and locks; smoke-run in two clean roots
+- [ ] 3. Generate targets + manifest; prove inventory completeness and idempotence
+- [ ] 4. Isolate each target (env allowlist, no network, private services), then shard
+- [ ] 5. Connect `aq test --aq-backend bazel` under AQ admission; legacy still works
+- [ ] 6. Prove parity (identities and outcomes), cache hits and invalidation
+- [ ] 7. Prepare train signatures; report prepared / verified / awaiting rollout
+```
 
 ## 1. Establish the contract before BUILD authoring
 
@@ -32,17 +45,16 @@ If a required consumer is absent or hard-coded to AQ, finish the portable graph,
 retain legacy execution and report the missing integration separately. Do not
 implement a new AQ feature or fabricate a config key to make this skill pass.
 
-Provenance for maintainers with an AQ checkout/vault: this follows H
-(`bold-rapids-18`), B (`amber-summit-41`), V (`crisp-cascade-23`) and T
-(`bright-bridge-75`) in
-`projects/agent-queue/specs/2026-10-23-bazel-for-aq-hermetic-tests-parity-measured-cutover-and-trai.md`.
-H's reference files are `MODULE.bazel`, `tools/bazel/README.md`,
-`ENVIRONMENT.md` and `runtime-contract.md`; when absent from dev, inspect with
-`git show origin/aq/epic/bazel-h-pinned-toolchains-and-hermetic-test-substrate:MODULE.bazel`
-and the corresponding paths. B's contract includes `generate_targets.py`,
-`pytest.bzl`, `pytest_main.py` and `test_suites.json`; V adds `impact.py` and
-`compare_results.py`; T's signature contract is in `src/integration/signatures.py`.
-These are reference contracts, not proof that every component is installed.
+The letters below name the stages of AQ's own Bazel rollout, whose files in the
+agent-queue repository are the reference contracts: **H**, the pinned toolchains
+and hermetic substrate (`MODULE.bazel`, `tools/bazel/README.md`,
+`tools/bazel/ENVIRONMENT.md`, `tools/bazel/runtime-contract.md`); **B**, the
+generated targets (`scripts/bazel/generate_targets.py`, `tools/bazel/pytest.bzl`,
+`tools/bazel/pytest_main.py`, `tools/bazel/test_suites.json`); **V**, parity
+verification (`impact.py`, `compare_results.py`); and **T**, train target
+signatures (`src/integration/signatures.py`). Check which of them your AQ
+checkout actually contains — V's and T's files may not have landed — and treat
+each as a contract to follow, not proof that a component is installed.
 
 ## 2. Pin resolution and execution tools
 

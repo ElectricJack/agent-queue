@@ -166,13 +166,15 @@ class WaitLiftArgs(CommandArgs):
 
 class WaitSourceRedispatchArgs(CommandArgs):
     project_id: str = Field(min_length=1)
-    source_seq: int = Field(ge=1, strict=True)
-    note: str = Field(min_length=1, max_length=4000)
+    action: Literal["redispatch", "blockers", "retire"] = "redispatch"
+    source_seq: int | None = Field(default=None, ge=1, strict=True)
+    note: str | None = Field(default=None, min_length=1, max_length=4000)
+    limit: int = Field(default=100, ge=1, le=200, strict=True)
 
     @model_validator(mode="after")
     def note_nonblank(self):
-        if not self.note.strip():
-            raise ValueError("note must not be blank")
+        if self.action != "blockers" and (self.source_seq is None or not (self.note or "").strip()):
+            raise ValueError("source_seq and a nonblank note are required")
         return self
 
 

@@ -36,6 +36,9 @@ TERMINAL = frozenset({Conclusion.SUCCESS, Conclusion.FAILURE, Conclusion.MISSING
 # Registration may read under the graph fence; listener dispatch prepares reads
 # before taking it. Bound remote work below the listener renewal interval.
 OBSERVATION_TIMEOUT_SECONDS = 5.0
+# The listener's complete transaction has a five second budget. Leave room for
+# source/owner locks and committing the observed outcome or durable retry.
+DISPATCH_OBSERVATION_TIMEOUT_SECONDS = 3.0
 
 
 def wait_source_handlers():
@@ -217,7 +220,8 @@ class CheckWatcher:
             raise WaitError("wait.unavailable", "CI observation is backing off",
                             retry_after=self._backoff[repo_id] - self.clock())
         try:
-            async with asyncio.timeout(OBSERVATION_TIMEOUT_SECONDS):
+            async with asyncio.timeout(min(OBSERVATION_TIMEOUT_SECONDS,
+                                           DISPATCH_OBSERVATION_TIMEOUT_SECONDS)):
                 prepared = await self._prepare(conn, cond)
                 if prepared is None:
                     return None

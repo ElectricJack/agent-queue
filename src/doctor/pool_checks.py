@@ -1345,8 +1345,9 @@ async def _find_dangling_current_task(ctx: DoctorContext):
     ``state``, so a stale pointer on an IDLE row still dangles a marker.  An
     agent is flagged when its task is missing, or is not ``ASSIGNED``/
     ``IN_PROGRESS``, *and* it has no live attempt (``live_attempt_predicate``,
-    B1) -- an agent still mid-write-up on a task that just transitioned to
-    COMPLETED is a race, not a dangling pointer.
+    B1) or retained continuation grant -- an agent still mid-write-up on a
+    task that just transitioned to COMPLETED, or preparing a fresh resume,
+    is not a dangling pointer.
 
     Returns a list of ``(agent, task)`` pairs, ``task`` being ``None`` when
     the row is missing entirely. ``agents.current_task_id`` carries
@@ -1358,6 +1359,9 @@ async def _find_dangling_current_task(ctx: DoctorContext):
     written around it.
     """
     live_agent_ids = await ctx.db.list_live_attempt_agent_ids()
+    from src.waits.occupancy import continuation_agent_ids
+
+    live_agent_ids.update(await continuation_agent_ids(ctx.db))
     bad: list[tuple] = []
     for agent in await ctx.db.list_agents():
         if not agent.current_task_id:
@@ -1386,7 +1390,7 @@ async def _check_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult
         severity=Severity.WARN,
         detail=(
             f"{len(bad)} agent(s) have a current_task_id naming a task that is missing or "
-            "not ASSIGNED/IN_PROGRESS, with no live attempt"
+            "not ASSIGNED/IN_PROGRESS, with no live attempt or retained continuation grant"
         ),
         data={
             "count": len(bad),

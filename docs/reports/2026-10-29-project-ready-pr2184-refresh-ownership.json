@@ -1,0 +1,52 @@
+{
+  "base_revision": "f908361f5eb535287bdf1fe7333822ac8eb844b3",
+  "charged_files": {
+    "src/commands/task_commands.py": 36
+  },
+  "delta": {
+    "groups": {
+      "companions": 0,
+      "engine": 0,
+      "guards": 0,
+      "policy": 0,
+      "policy_sources": 0,
+      "shared": 36,
+      "ui": 0
+    },
+    "table_count": 0,
+    "total": 36
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64103,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161769,
+    "unknown_count": 66,
+    "unknown_sinks_count": 59
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64139,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161805,
+    "unknown_count": 66,
+    "unknown_sinks_count": 59
+  },
+  "method": "Complete origin/dev archive and merged tree scored with the incoming dev scanner and unchanged merged classifications, including the already-approved extracted _explain_task ownership. Preserve every dev grant, original project_ready_observation_batching approval, baseline and classification; exactly +36 shared owned, +0 engine, +0 tables, zero remaining headroom.",
+  "source_revision": "af3d35ca3eabb71ddeda1858c0d9b0ddbe5358b9",
+  "task_id": "sound-vault-14"
+}

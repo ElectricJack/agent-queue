@@ -203,3 +203,58 @@ AQ_BAZEL_ISOLATION=1 AQ_BAZEL_POSTGRES_RUNTIME=/absolute/path/to/native/runtime 
 The outer legacy harness still needs a separate disposable POSTGRES_TEST_DSN.
 The marker override includes the substrate's `slow` arm. Without the runtime
 setting, real PostgreSQL lifecycle cases visibly skip and do not prove acceptance.
+
+## Pinned Bazel executable for worker boxes
+
+`aq test --aq-backend bazel` runs `AQ_BAZEL_EXECUTABLE`, falling back to the first
+`bazel` on PATH (`src/cli/test_runner.py`). On a worker box, set it explicitly to
+the checksum-verified pin and do not rely on PATH discovery. Install it once per
+box as the operator:
+
+```bash
+python tools/bazel/provision.py            # --data-dir defaults to ~/.agent-queue
+```
+
+The script downloads the URL in `toolchains.lock.json` (`bazel` entry; it must
+match `.bazelversion`). It checks the lock's SHA-256, which is the reviewed pin,
+not a checksum fetched next to the download. It then publishes the binary
+atomically and read-only at:
+
+```
+~/.agent-queue/toolchain/bazel-8.3.1-linux-x86_64/bin/bazel
+sha256 17247e8a84245f59d3bc633d0cfe0a840992a7760a11af1a30012d03da31604c
+```
+
+The install root and `bin/` are mode 0555, the binary 0555, and `.aq-verified`
+(holding the digest) 0444. A rerun reuses the install only when both the marker and
+the binary's bytes match the pin. A mismatch installs nothing. An altered or partial
+root is refused and must be inspected and removed by hand. The release is also
+signed: `bazel-8.3.1-linux-x86_64.sig` verifies against the Bazel release key
+`71A1 D0EF CFEB 6281 FD04 37C9 3D59 19B4 4845 7EE0`
+(https://bazel.build/bazel-release.pub.gpg). Checking the signature is an optional
+cross-check; the lock digest is the gate.
+
+Wire the path into worker sessions through each harness's explicit `env` map, in
+the `## Config` block of `~/.agent-queue/vault/harnesses/<harness>.md`:
+
+```json
+"env": {
+  "AQ_BAZEL_EXECUTABLE": "/home/<user>/.agent-queue/toolchain/bazel-8.3.1-linux-x86_64/bin/bazel"
+}
+```
+
+That map is merged last into the session environment and is never scrubbed
+(`src/sessions/env.py`). The other places are wrong for this:
+
+- **The daemon's environment.** `build_session_env` drops inherited `AQ_*` keys,
+  so a value exported there never reaches a session.
+- **`security.env_scrub`.** It only removes variables; it cannot supply one.
+
+This is an operator edit to the harness file. From then on,
+`aq doctor --check harness.drift` reports the file as edited, the daemon stops
+refreshing it from the shipped copy, and `aq vault reset-harness` drops the map.
+Re-add the entry after a reset. Sessions started after the edit see the
+variable; running sessions keep the environment they started with. Inside a
+session, check it with `aq test --aq-backend bazel tests/test_env_scrub.py`, a
+pure target with no PostgreSQL reservation. The first run on a box fetches the
+locked repositories into `~/.cache/aq/bazel/v1`.
