@@ -99,6 +99,18 @@ accepts the grant in place of the kind allowlist, so the GitHub review poller
 writes ordinary `authorized_task` evidence, tagged with the current policy
 generation, on its next pass.
 
+A root with no verified exact source goes to `_train_root_state`. The
+integration train collects an epic itself (`EpicCompletions`) and never verifies
+the hierarchy checkpoint the grant is keyed on, so its roots land here. Those
+roots need no grant: the train admits any completed root once its PR passes the
+root gate (`RootPullRequestGate`). The command checks, in order, that the task is
+a root, COMPLETED, in `train` mode, on the integration repository, with a branch,
+a PR and a live branch origin, and names the first one that fails. A root that
+passes them all answers `already_authorized` with no `authorized_by` under
+`admission: authorized`, or `blocked` under any other admission. Either way the
+reason quotes what the train is waiting on (`IntegrationStatusService.train_task_blockers`),
+including `queued_behind_open_batch` when another batch holds the root's target.
+
 ## Side effects and persistence
 
 Apply inserts one immutable `integration_root_authorizations` row and logs an
@@ -111,13 +123,18 @@ every refusal write nothing. Nothing is ever updated or deleted.
 - `blocked`: the task carries a `hold:*` label or waits on an open gate, a
   reviewer rejected this exact head, or root admission is not `authorized`.
   Report it; the grant never overrides these.
-- `not_eligible`: the task is not a COMPLETED train root with a PR on the
-  designated repository and a verified exact source. Missing original identity
-  remains ineligible; authorization never reconstructs a historical checkpoint.
+- `not_eligible`: the reason names the condition that failed: not a root, not
+  COMPLETED, not in `train` mode, another repository, no branch, no PR (`aq
+  integration redrive-root` opens it) or no live branch origin. Without the
+  integration train only a verified exact source is admitted. Missing original
+  identity remains ineligible; authorization never reconstructs a historical
+  checkpoint.
 - `changed`: the head moved after the dry run. Dry-run again and review the new
   head.
 - `already_authorized`: `authorized_by` says why (`policy_kind`,
-  `policy_allowlist` or an existing `grant`).
+  `policy_allowlist` or an existing `grant`). With no `authorized_by` the root is
+  a train root: the reason lists the train's blockers for it, and an empty list
+  says the train has nothing recorded against it.
 
 ## Example step
 

@@ -62,7 +62,7 @@ async def test_baseline_candidate_mutation_claims_schema():
 
 
 async def test_candidate_supersession_migration_replays_and_preserves_downgrade_evidence():
-    migration = import_module("migrations.versions.a00000000077_candidate_mutation_reclaim")
+    migration = import_module("migrations.versions.a00000000078_candidate_mutation_reclaim")
     engine = create_postgres_engine(await create_scratch_database("mutation_reclaim"))
 
     def migrate(conn, direction):
