@@ -471,6 +471,11 @@ class RunSnapshot:
     started_at: float = 0.0
     updated_at: float = 0.0
     completed_at: float | None = None
+    #: The authenticated caller a trusted-execution run's effects act for
+    #: (:mod:`src.playbooks.authority`).  Engine-written at creation from the
+    #: principal, never from authored or event data; ``None`` for legacy
+    #: artifacts, whose body therefore carries no ``caller`` key at all.
+    caller: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         stack = self.loop_stack or ((self.loop,) if self.loop is not None else ())
@@ -507,10 +512,13 @@ class RunSnapshot:
 
     def redacted(self) -> RunSnapshot:
         """Drop plaintext sensitive values.  Any projection must use this."""
+        from src.playbooks.authority import public_caller
         from src.playbooks.private_values import public_value
 
         body = self.to_body(protect=public_value)
         body["sensitive"] = {}
+        if "caller" in body:
+            body["caller"] = public_caller(body["caller"])
         return replace(RunSnapshot.from_body(body), private_bindings={})
 
     def to_body(self, *, protect: Callable[[Any], Any] | None = None) -> dict[str, Any]:
@@ -565,6 +573,8 @@ class RunSnapshot:
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
         }
+        if self.caller is not None:
+            body["caller"] = dict(self.caller)
         for frame in body["loop_stack"]:
             frame["partial"] = list(frame["partial"])
             frame["body_step_ids"] = list(frame["body_step_ids"])
@@ -679,6 +689,7 @@ class RunSnapshot:
             started_at=float(body.get("started_at") or 0.0),
             updated_at=float(body.get("updated_at") or 0.0),
             completed_at=body.get("completed_at"),
+            caller=dict(body["caller"]) if body.get("caller") is not None else None,
         )
 
 

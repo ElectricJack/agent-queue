@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/profiles/catalog.py::derive_rungs_from_vault": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
