@@ -1,0 +1,11 @@
+{
+  "generic_dependencies": {
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore._normalize_fresh_install_modes": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore._path_for_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore.scan": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.models import KIND_MODE_EXCLUSIVE_CLONE, KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.profiles.workspace_kind_parser import parse_workspace_kind_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.vault_index import is_generated_hub_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
