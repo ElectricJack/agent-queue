@@ -444,3 +444,63 @@ async def test_claim_release_releases_managed_authority_without_workspace_proof(
     async with env.db.immediate() as conn:
         await release_session_leases_on(env.db, conn, "s", "task")
     assert (await env.lock.get(TARGET)).grant() == next_grant
+
+
+async def test_expired_exclusion_names_its_bound_and_ref(env, monkeypatch):
+    from src.integration import lock as lock_module
+    from src.integration.lock import BranchLockTimeout
+    from src.preparation_failure import describe_preparation_failure
+
+    fence = await env.lock.acquire(TARGET, "worker")
+    # Only the hanging section runs under the short bound; ``acquire`` and the
+    # re-entry below read the same constant and must not race a loaded box.
+    with monkeypatch.context() as patched:
+        patched.setattr(lock_module, "CRITICAL_SECTION_SECONDS", 0.05)
+        with pytest.raises(BranchLockTimeout) as raised:
+            async with env.lock.exclusion(fence):
+                await asyncio.Event().wait()
+    exc = raised.value
+    assert isinstance(exc, TimeoutError)
+    assert str(exc) == "branch fence critical section exceeded 0.05s on repo:aq/epic"
+    assert type(exc.__cause__) is TimeoutError
+    reason = describe_preparation_failure(exc, "slot_reset").reason
+    assert reason.startswith(
+        "slot_reset: BranchLockTimeout: branch fence critical section exceeded 0.05s"
+        " on repo:aq/epic; caused by TimeoutError (no message) at "
+    )
+    # The section is released: the same holder re-enters at once.
+    async with env.lock.exclusion(fence):
+        pass
+
+
+async def test_body_timeout_inside_exclusion_is_not_relabelled(env):
+    from src.integration.lock import BranchLockTimeout
+
+    fence = await env.lock.acquire(TARGET, "worker")
+    with pytest.raises(TimeoutError) as raised:
+        async with env.lock.exclusion(fence):
+            raise TimeoutError("git fetch timed out")
+    assert not isinstance(raised.value, BranchLockTimeout)
+    assert str(raised.value) == "git fetch timed out"
+
+
+@pytest.mark.parametrize("connection_owned", [False, True])
+async def test_repair_exclusion_budget_is_bounded_by_lease(env, connection_owned):
+    from src.integration.lock import BranchLockTimeout
+
+    fence = await env.lock.acquire(TARGET, "repair", ttl_seconds=0.05, role="repair")
+    ownership = BranchOwnership(env.db, clock=lambda: env.now)
+    with pytest.raises(BranchLockTimeout) as raised:
+        if connection_owned:
+            async with env.db.immediate() as conn:
+                async with ownership.mutation_exclusion_on(
+                    conn, fence, expected_role="repair", timeout_seconds=1,
+                ):
+                    await asyncio.Event().wait()
+        else:
+            async with ownership.mutation_exclusion(
+                fence, expected_role="repair", timeout_seconds=1,
+            ):
+                await asyncio.Event().wait()
+    assert raised.value.seconds < 0.1
+    assert (await env.lock.get(TARGET)).grant() == fence
