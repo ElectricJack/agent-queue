@@ -26,12 +26,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.config import DiscordConfig, DiscordEscalationConfig, DiscordEscalationsConfig
-from src.database import Database
 from src.database.queries.escalation_queries import ESCALATION_OUTCOMES
-from src.database.tables import escalation_deliveries, messages
+from src.database.tables import (
+    continuations, escalation_deliveries, escalations, gates, messages, wait_escalations,
+    wait_records,
+)
 from src.escalations import (
     AUTO_OBSOLETE_TASK_STATUSES,
     STALE_OBSOLETE_SECONDS,
@@ -50,23 +52,20 @@ from src.escalations import (
 from src.escalations.dispatch import EDIT_COALESCE_SECONDS
 from src.escalations.plan import DEFER_SECONDS, MAX_ATTEMPTS
 from src.escalations.render import render_collapsed_root, render_state_root
-from src.models import Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
+from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
 
 BASE_URL = "https://queue.example.test"
 CHANNEL = "424242424242424242"
 
 
 @pytest.fixture
-async def env():
-    db = Database(lease_dsn("escalation_state"))
-    await db.initialize()
+async def env(reuse_database):
+    db = await reuse_database("escalation_state")
     for project in ("p", "other"):
-        await db.create_project(Project(id=project, name=project))
+        await db.create_project(Project(id=project, name=project, supervisor_enabled=True))
     bus = SimpleNamespace(emit=AsyncMock())
     config = SimpleNamespace(discord=DiscordConfig())
     yield SimpleNamespace(db=db, bus=bus, config=config)
-    await db.close()
 
 
 async def notice(env, *, body_kind="task_recovery", project="p", created_at=100, thread_id=None):
@@ -109,6 +108,99 @@ async def supervisor(env, *, started_at, desired_state="running"):
 
 def watchdog(env):
     return SupervisorDeliveryWatchdog(env.db, env.bus, env.config)
+
+
+async def answered_for_owner(env):
+    await env.db.create_escalation(
+        id="answered", project_id="p", source_kind="supervisor_decision",
+        source_identity="authorization", incident_key="authorization",
+        supervisor_owner="supervisor-p", summary="Authorization needed",
+        task_title="Authorize the deployment",
+        investigation="Inspected policy", decision_requested="Authorize?", severity="high", now=100,
+    )
+    reply = await env.db.accept_escalation_reply(
+        "answered", transport="dashboard", external_message_id="answer",
+        verified_actor="human:jack", text="Authorization granted", received_at=110,
+    )
+    await env.db.mark_delivered(reply["reply"]["supervisor_message_id"])
+    return reply
+
+
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_unresolved_answers_remind_only_the_owner_at_the_configured_interval(env, state):
+    reply = await answered_for_owner(env)
+    if state == "resolving":
+        await env.db.transition_escalation(
+            "answered", expected_revision=1, new_state=state, now=120,
+        )
+    before = await env.db.get_escalation("answered")
+    before_deliveries = await env.db.list_escalation_deliveries("answered")
+    env.config.discord.escalation.supervisor_delivery_timeout_minutes = 5
+    env.config.discord.escalation.enabled = False  # core reminders don't depend on Discord
+    await watchdog(env).tick(409)
+    assert await env.db.get_pending_messages("session", "supervisor-p") == []
+    await watchdog(env).tick(410)
+    pending = await env.db.get_pending_messages("session", "supervisor-p")
+    assert len(pending) == 1
+    reminder = pending[0]
+    assert reminder.from_kind == "system" and reminder.body_kind == "escalation_owner_reminder"
+    assert reminder.project_id == "p" and reminder.thread_id == "answered"
+    assert reply["reply"]["id"] in reminder.body
+    assert "do not ask or notify the human again" in reminder.body
+    # A new watchdog after restart cannot duplicate the pending reminder.
+    await watchdog(env).tick(700)
+    assert len(await env.db.get_pending_messages("session", "supervisor-p")) == 1
+    await env.db.mark_delivered(reminder.id)
+    await watchdog(env).tick(709)
+    assert await env.db.get_pending_messages("session", "supervisor-p") == []
+    await watchdog(env).tick(710)
+    assert len(await env.db.get_pending_messages("session", "supervisor-p")) == 1
+    assert await env.db.get_escalation("answered") == before
+    assert len(await env.db.list_escalation_messages("answered")) == 1
+    # Creation owns the initial root intent; owner reminders add no deliveries.
+    assert await env.db.list_escalation_deliveries("answered") == before_deliveries
+
+
+async def test_owner_reminder_ticks_serialize_and_stop_after_a_new_answer_or_terminal_state(env):
+    await answered_for_owner(env)
+    results = await asyncio.gather(*[
+        env.db.queue_escalation_owner_reminder("answered", now=1010, interval_seconds=900)
+        for _ in range(2)
+    ])
+    assert sum(results) == 1
+    reminder = (await env.db.get_pending_messages("session", "supervisor-p"))[0]
+    await env.db.mark_delivered(reminder.id)
+    await env.db.accept_escalation_reply(
+        "answered", transport="dashboard", external_message_id="answer-2",
+        verified_actor="human:jack", text="Additional context", received_at=1900,
+    )
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=2000, interval_seconds=900,
+    )
+    incident = await env.db.get_escalation("answered")
+    await env.db.transition_escalation(
+        "answered", expected_revision=incident["revision"], new_state="cancelled",
+        terminal_outcome="No further action", now=2001,
+    )
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=3000, interval_seconds=900,
+    )
+
+
+async def test_undelivered_answers_and_paused_projects_do_not_accumulate_owner_reminders(env):
+    reply = await answered_for_owner(env)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(messages).where(
+            messages.c.id == reply["reply"]["supervisor_message_id"]
+        ).values(delivered_at=None))
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=1010, interval_seconds=900,
+    )
+    await env.db.mark_delivered(reply["reply"]["supervisor_message_id"])
+    await env.db.update_project("p", status=ProjectStatus.PAUSED)
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=1010, interval_seconds=900,
+    )
 
 
 async def test_delivery_notices_coalesce_by_project_and_body_kind_and_reach_inboxes(env):
@@ -381,9 +473,8 @@ class Clock:
 
 
 @pytest.fixture
-async def world():
-    db = Database(lease_dsn("escalation_stateful"))
-    await db.initialize()
+async def world(reuse_database):
+    db = await reuse_database("escalation_stateful")
     await db.create_project(Project(id="p", name="Project"))
     transport = SinkTransport()
     clock = Clock()
@@ -407,7 +498,6 @@ async def world():
         )
 
     yield SimpleNamespace(db=db, transport=transport, clock=clock, config=config, service=service)
-    await db.close()
 
 
 async def incident(world, **overrides):
@@ -925,11 +1015,101 @@ async def test_an_open_gate_leaves_its_incident_alone(world):
     assert (await world.db.get_escalation(row["id"]))["state"] == "needs_human"
 
 
-async def test_a_completed_task_obsoletes_the_question_asked_about_it(world):
+async def test_cancelled_gate_closes_on_the_next_periodic_scan(world):
+    gate_id = await open_gate(world)
+    row = await incident(world, source_kind="gate", source_identity=gate_id)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(gates).where(gates.c.id == gate_id).values(status="cancelled"))
+    assert (await resolver(world).tick()).closed == 1
+    closed = await world.db.get_escalation(row["id"])
+    assert closed["state"] == "cancelled" and closed["outcome"] == "sweep"
+    assert closed["terminal_evidence"]["automatic_rule"] == "gate_cancelled"
+
+
+async def seed_operational_wait(world, *, outcome="pending", inputs=None, origin="agent"):
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(wait_records).values(
+            id="operational-wait", project_id="p", owner_kind="task", owner_id="owner",
+            origin=origin, condition_kind="timer", condition={}, source_key="timer",
+            source_generation=1, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="timer:1", verified_at=10, created_at=10, request_hash="hash",
+            outcome=outcome, decision_inputs=inputs or {},
+        ))
+
+
+@pytest.mark.parametrize("outcome", ["pending", "satisfied", "cancelled", "source_unavailable"])
+async def test_bound_wait_settlement_retires_old_incidents(world, outcome):
+    await seed_operational_wait(world, outcome=outcome)
+    row = await incident(world, source_kind="wait", source_identity="operational-wait:1")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(wait_escalations).values(
+            id="binding", wait_id="operational-wait", generation=1, escalation_id=row["id"],
+            raised_at=10, original_age_seconds=0,
+        ))
+    assert (await resolver(world).tick()).closed == int(outcome != "pending")
+    closed = await world.db.get_escalation(row["id"])
+    if outcome != "pending":
+        assert closed["outcome"] == "sweep"
+        assert closed["terminal_evidence"]["wait_outcomes"] == [outcome]
+
+
+@pytest.mark.parametrize("state", ["held", "queued", "acknowledged", "cancelled"])
+async def test_released_continuation_retires_its_own_hold_incident(world, state):
+    await seed_operational_wait(world)
+    await world.db.create_task(Task(id="owner", project_id="p", title="Owner", description=""))
+    await incident(world, source_kind="continuation", task_id="owner",
+                   source_identity="continuation:intent:1:stop_uncertain")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(continuations).values(
+            id="intent", task_id="owner", wait_id="operational-wait", suspension_generation=1,
+            facts={}, branch="aq/owner", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state=state, hold_reason="stop_uncertain" if state == "held" else None,
+        ))
+    assert (await resolver(world).tick()).closed == int(state != "held")
+
+
+async def test_delivery_requires_bound_containment_even_after_task_completion(world):
+    await world.db.create_task(Task(id="owner", project_id="p", title="Ship", description="",
+                                    status=TaskStatus.COMPLETED))
+    row = await incident(world, source_kind="integration_delivery_stuck", task_id="owner")
+    assert (await resolver(world).tick()).closed == 0
+    await seed_operational_wait(world, outcome="satisfied", origin="integration", inputs={
+        "incident_id": "other", "delivery_watchdog_projection": True,
+    })
+    assert (await resolver(world).tick()).closed == 0
+    async with world.db.immediate() as conn:
+        await conn.execute(update(wait_records).where(wait_records.c.id == "operational-wait").values(
+            decision_inputs={"incident_id": row["id"], "head": "saved-head",
+                             "delivery_watchdog_projection": True},
+        ))
+    assert (await resolver(world).tick()).closed == 1
+    assert (await world.db.get_escalation(row["id"]))["terminal_evidence"]["head"] == "saved-head"
+
+
+async def test_periodic_scan_does_not_starve_old_incidents_behind_two_hundred_live_ones(world):
+    old = await incident(world, id="old-batch", source_kind="integration_train_stall",
+                         source_identity="removed-batch")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(escalations), [
+            {"id": f"live-{index}", "project_id": "p", "source_kind": "core",
+             "source_identity": f"live-{index}", "incident_key": f"live-{index}",
+             "supervisor_owner": "supervisor-p", "summary": "Live", "investigation": "Live",
+             "decision_requested": "Decide", "severity": "medium", "state": "needs_human",
+             "revision": 0, "created_at": 900, "updated_at": 900}
+            for index in range(205)
+        ])
+    report = await resolver(world).tick()
+    assert report.inspected == 206 and report.closed_ids == (old["id"],)
+
+
+@pytest.mark.parametrize("source_kind", [
+    "question", "task", "task_attempt", "task_recovery", "wait", "continuation",
+])
+async def test_a_completed_task_obsoletes_the_question_asked_about_it(world, source_kind):
     await world.db.create_task(
         Task(id="t-1", project_id="p", title="Ship", description="d", status=TaskStatus.COMPLETED)
     )
-    row = await incident(world, id="esc-task", task_id="t-1")
+    row = await incident(world, id="esc-task", task_id="t-1", source_kind=source_kind)
     assert (await resolver(world).tick()).closed == 1
 
     closed = await world.db.get_escalation(row["id"])
@@ -1110,13 +1290,13 @@ def test_the_flag_off_plan_is_byte_for_byte_the_pre_phase_plan():
                 ["state"] if live_edit else []
             )
 
-    # An unposted incident gets the same plan either way: the root post carries
-    # whatever form the incident is in when it is first created.
+    # An answer overtaking an unposted incident suppresses the human question
+    # independently of the stateful display flag.
     for stateful in (False, True):
         plan = plan_deliveries(
             facts_for("reply_received"), deliveries=[], messages=[], stateful=stateful
         )
-        assert [row.kind for row in plan.deliveries] == ["root"]
+        assert plan.deliveries == ()
 
 
 async def test_with_the_flag_off_no_post_is_edited_in_place_and_nothing_closes(world):

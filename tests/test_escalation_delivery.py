@@ -60,12 +60,10 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("escalation_delivery"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("escalation_delivery")
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 async def make_incident(db: Database, **overrides):
@@ -125,6 +123,115 @@ async def test_old_incident_is_delivered_even_outside_the_newest_hundred_scan(db
 
 def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
+
+
+@pytest.mark.parametrize("stateful", [False, True])
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_answer_overtakes_queued_initial_post_and_never_reposts_a_question(db, stateful, state):
+    await make_incident(db)
+    sink = SinkTransport()
+    config = make_config()
+    config.escalations.stateful = stateful
+    service = make_service(db, sink, config)
+    await service.reconcile("esc-1")
+    reply = await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answer-before-post",
+        verified_actor="human:jack", text="Authorization granted", received_at=100,
+    )
+    if state == "resolving":
+        await db.transition_escalation("esc-1", expected_revision=1, new_state=state, now=110)
+    await service.pump()
+    assert sink.calls == []
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+    facts = facts_for(await db.get_escalation("esc-1"))
+    assert not plan_deliveries(facts, deliveries=[], messages=[reply["reply"]]).deliveries
+    assert plan_replacement(facts, []) is None
+    assert await service.reconcile("esc-1") == []
+    rendered = render_root(
+        facts, mentions=MentionPolicy(user_ids=(MENTION_USER,)), base_url=BASE_URL,
+        dedup_key="test",
+    )
+    assert "Answered" in rendered and "needs a decision" not in rendered
+    assert f"<@{MENTION_USER}>" not in rendered
+
+
+async def test_reply_at_root_write_boundary_suppresses_the_pending_human_notification(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    before_write = service._before_write
+
+    async def answer_at_boundary(row):
+        await before_write(row)
+        await db.accept_escalation_reply(
+            "esc-1", transport="dashboard", external_message_id="racing-answer",
+            verified_actor="human:jack", text="Authorization granted", received_at=100,
+        )
+
+    service._before_write = answer_at_boundary
+    await service.tick()
+    assert sink.calls == []
+
+
+@pytest.mark.parametrize("boundary", ["opener", "state_edit"])
+async def test_reply_at_later_write_boundaries_suppresses_the_old_question(db, boundary):
+    await make_incident(db)
+    sink = SinkTransport()
+    # Begin before the reminder deadline so the later tick produces the
+    # state edit where the reply is injected, rather than an earlier tick.
+    clock = Clock(now=10.0)
+    config = make_config()
+    config.escalations.stateful = True
+    config.escalation.reminder_minutes = 5
+    service = make_service(db, sink, config, clock=clock)
+    if boundary == "state_edit":
+        await service.tick()
+        clock.advance(360)
+    before_write = service._before_write
+
+    async def answer_at_boundary(row):
+        await before_write(row)
+        ready = row["kind"] == "state" if boundary == "state_edit" else (
+            row["kind"] == "root" and "ensure_thread" in sink.calls
+        )
+        if ready:
+            await db.accept_escalation_reply(
+                "esc-1", transport="dashboard", external_message_id="late-answer",
+                verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+            )
+
+    service._before_write = answer_at_boundary
+    await service.tick()
+    service._before_write = before_write
+    if boundary == "opener":
+        clock.advance(60)
+        await service.tick()
+        thread_text = [item.content for item in sink.messages.values() if item.thread_id]
+        assert len(thread_text) == 1
+        assert "Options:" not in thread_text[0] and "Decision needed" not in thread_text[0]
+    else:
+        root = next(item for item in sink.messages.values() if not item.thread_id)
+        assert "Answered" in root.content
+        assert "Still open" not in root.content
+
+
+async def test_answered_incident_repairs_partial_thread_without_repeating_the_question(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    sink.faults.append(("ensure_thread", TransportRetryable("thread temporarily unavailable")))
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answer-after-root",
+        verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+    )
+    clock.advance(60)
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    assert sink.calls.count("post_root") == 1
+    thread_text = [item.content for item in sink.messages.values() if item.thread_id]
+    assert len(thread_text) == 1
+    assert all("Decision needed" not in text and "Options:" not in text for text in thread_text)
 
 
 async def test_terminal_incident_with_an_unattempted_atomic_root_stays_silent(db):
@@ -299,19 +406,27 @@ async def test_pause_does_not_spend_retries_or_reclaim_expired_leases(db, expire
 
 
 @pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])
-def test_supervisor_delivery_plans_never_post_or_replace_a_human_notice(state):
+@pytest.mark.parametrize("source_kind", [
+    "supervisor_delivery", "wait", "continuation", "integration_train_stall",
+    "integration_delivery_stuck",
+])
+def test_operational_plans_never_post_or_replace_a_human_notice(state, source_kind):
     facts = EscalationFacts(
         id="internal", project_id="p", state=state, revision=0, severity="high",
         summary="Supervisor offline", investigation="Internal delivery delay",
-        decision_requested="Restore delivery", source_kind="supervisor_delivery",
+        decision_requested="Restore delivery", source_kind=source_kind,
     )
     assert not plan_deliveries(facts, deliveries=[], messages=[]).deliveries
     assert plan_replacement(facts, []) is None
 
 
 @pytest.mark.parametrize("kind", ["root", "ack", "relay", "resolution"])
-async def test_legacy_supervisor_delivery_rows_never_call_the_human_transport(db, kind):
-    incident = await make_incident(db, source_kind="supervisor_delivery")
+@pytest.mark.parametrize("source_kind", [
+    "supervisor_delivery", "wait", "continuation", "integration_train_stall",
+    "integration_delivery_stuck",
+])
+async def test_legacy_operational_rows_never_call_the_human_transport(db, kind, source_kind):
+    incident = await make_incident(db, source_kind=source_kind)
     await db.enqueue_escalation_delivery(
         incident["id"], dedup_key=f"legacy:{kind}", kind=kind, payload={}, available_at=10,
     )
@@ -958,7 +1073,7 @@ async def test_resolution_posts_the_outcome_then_edits_the_root_then_archives(db
     assert sink.calls == calls
 
 
-async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
+async def test_an_unanswered_deleted_root_earns_exactly_one_replacement_generation(db):
     await make_incident(db)
     sink = SinkTransport()
     clock = Clock()
@@ -969,12 +1084,12 @@ async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
     # Somebody deleted the post; a follow-up now has nowhere to go.
     sink.delete(str(first["root_message_id"]))
     sink.delete_thread(str(first["thread_id"]))
-    await db.accept_escalation_reply(
+    await db.append_escalation_message(
         "esc-1",
-        transport="discord",
-        external_message_id="discord-msg-1",
-        verified_actor="human:discord:1",
-        text="please repost",
+        direction="outbound",
+        transport="core",
+        verified_actor="session:supervisor-p",
+        text="The decision is still needed",
         received_at=clock.now,
     )
     clock.advance(60.0)
@@ -989,6 +1104,27 @@ async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
     roots = [row for row in await db.list_escalation_deliveries("esc-1") if row["kind"] == "root"]
     assert len(roots) == 2
     assert sink.calls.count("post_root") == 2  # exactly one repost
+
+
+async def test_an_answered_deleted_root_never_earns_a_replacement_generation(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    first = (await db.list_escalation_deliveries("esc-1"))[0]
+    sink.delete(str(first["root_message_id"]))
+    sink.delete_thread(str(first["thread_id"]))
+    await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answered-deleted",
+        verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+    )
+    for _ in range(3):
+        clock.advance(120)
+        await make_service(db, sink, clock=clock, owner="restarted").tick()
+    roots = [row for row in await db.list_escalation_deliveries("esc-1") if row["kind"] == "root"]
+    assert len(roots) == 1
+    assert sink.calls.count("post_root") == 1
 
 
 async def test_a_resolved_incident_is_never_reposted_when_its_thread_disappears(db):
