@@ -422,6 +422,28 @@ async def load_v2_snapshot(db: Any, run_id: str) -> Any | None:
     return snapshot if isinstance(snapshot, RunSnapshot) else None
 
 
+async def run_project_id(db: Any, snapshot: Any, *, conn: Any = None) -> str:
+    """Read only a run's routing identifier; callers must still authorize its source.
+
+    Bound results protect derived event fields too. This daemon-owned lookup
+    never decrypts the run's bindings or returns private data in a projection.
+    """
+    from src.commands.principal import ExecutionPrincipal
+    from src.playbooks.private_values import PrivateValueError, is_reference
+
+    project = snapshot.event.get("project_id")
+    if is_reference(project):
+        project = await db.playbook_private_values().read(
+            project, owner=await db.private_run_owner(snapshot),
+            principal=ExecutionPrincipal.service("playbook-run-routing"), conn=conn,
+        )
+    if project is None:
+        return ""
+    if not isinstance(project, str):
+        raise PrivateValueError("private_run_project_invalid")
+    return project
+
+
 @dataclass
 class PlaybookServices:
     llm: "LLMClient"
