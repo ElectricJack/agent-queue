@@ -40,7 +40,7 @@ reports the named blocker while keeping the pinned policy's bounded revisit.
 This exposes missing stop/remote proof without adding a new human approval gate.
 
 The schema permits `superseded` for candidate mutations while requiring a null
-remote SHA. Revision `a00000000077` follows `a00000000076`; it is idempotent for
+remote SHA. Revision `a00000000078` follows `a00000000077`; it is idempotent for
 databases built from current metadata and refuses downgrade while non-root
 superseded evidence exists.
 

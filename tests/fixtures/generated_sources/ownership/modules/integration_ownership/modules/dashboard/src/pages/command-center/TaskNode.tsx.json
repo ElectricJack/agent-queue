@@ -1,0 +1,37 @@
+{
+  "shared": {
+    "dashboard/src/pages/command-center/TaskNode.tsx::export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {": {
+      "baseline_span": [
+        41,
+        180
+      ],
+      "landing_span": [
+        41,
+        180
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/command-center/TaskNode.tsx::import { EpicDeliveryBadge } from \"../../components/EpicDelivery\";": {
+      "baseline_span": [
+        8,
+        8
+      ],
+      "landing_span": [
+        8,
+        8
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/command-center/TaskNode.tsx::import { deliveryCardStatus } from \"../../components/epicDeliveryFormat\";": {
+      "baseline_span": [
+        9,
+        9
+      ],
+      "landing_span": [
+        9,
+        9
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
