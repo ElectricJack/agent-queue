@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/asks/buttons.py::authorize_button_actor": "Generic external button actor evidence and audience checks; no integration subject or publication policy is interpreted.",
+    "src/asks/buttons.py::decide": "Generic opaque-token, root, mode and version fences for external human decisions. Source effects are delegated through the shared decision handler; IntegrationAdapter and authorize_source remain independently charged."
+  }
+}
