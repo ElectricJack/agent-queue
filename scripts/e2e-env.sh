@@ -389,6 +389,28 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 - On `session_exhausted` or `drain_requested`, run `aq session drain-ack`.
 MD
 
+# S21 impersonates the assigned role reviewer through its real session token.
+mkdir -p "$E2E_VAULT/agent-types/fidelity-reviewer"
+cat > "$E2E_VAULT/agent-types/fidelity-reviewer/profile.md" <<'MD'
+---
+id: fidelity-reviewer
+name: "E2E Fidelity Reviewer"
+---
+
+## Role
+Review the pinned ingestion batch. The Tier 1 runner supplies the judgments.
+
+## Config
+```json
+{"harness":"claude","lifecycle":"task","default_class":"deep-high","needs_workspace":false}
+```
+
+## Capabilities
+```json
+{"harness_tools":["Bash"],"plugin_tools":[],"aq_commands":["approved_spec_packet","task_batch_validate","task_batch_review_record","task_show","task_heartbeat","task_close"]}
+```
+MD
+
 # S19 exercises the scoped graph capability through a session token. The
 # production planner is task-lifecycle, while the fake-provider kit needs a
 # pullable session for its CLI runner to impersonate, so this fixture keeps
@@ -549,6 +571,20 @@ fi
 # path by default.
 PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
 
+# Protected playbook values (command results saved with save_result_as, LLM
+# transcripts) need an encryption key in the daemon's environment; without
+# one, S18's shipped triage step refuses with private_storage_key_unavailable.
+# The daemon loads .env beside its config, as an operator install does.  The
+# key is disposable but kept for this world's lifetime, so a non-reset rerun
+# can still decrypt values the database already holds.
+E2E_ENV_FILE="$AQ_E2E_HOME/.env"
+if ! grep -q '^AQ_E2E_PLAYBOOK_PRIVATE_KEY=' "$E2E_ENV_FILE" 2>/dev/null; then
+    ( umask 077
+      printf 'AQ_E2E_PLAYBOOK_PRIVATE_KEY=%s\n' "$(python3 -c \
+          'import base64, os; print(base64.b64encode(os.urandom(32)).decode())')" \
+          >> "$E2E_ENV_FILE" )
+fi
+
 # Both fake providers start healthy; S16 rewrites this file mid-run.
 printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
 
@@ -658,6 +694,9 @@ state_machine:
 # database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
   enabled: $PLAYBOOKS_ENABLED
+  private_value_active_key_id: e2e
+  private_value_key_env:
+    e2e: AQ_E2E_PLAYBOOK_PRIVATE_KEY
 
 messages:
   enabled: true

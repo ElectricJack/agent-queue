@@ -4,6 +4,7 @@ name: Morning report
 version: 1
 scope: system
 enabled: false
+required_capabilities: []
 triggers:
   - report.morning_due
 ---
@@ -28,6 +29,26 @@ The full report is readable at `/reports/:id` before any delivery link is emitte
 Discord delivery is daemon-owned and transport retries never create another
 author request. Config disable retains readable content and cancels unsent work.
 
+## Building-block policy
+
+Use the typed `morning_report_tick` result directly, with no generic result
+wrapper. The command step itself supplies this graph's only command grant.
+The empty `required_capabilities` declaration enables strict source-policy
+alignment without adding trusted execution metadata. A nonempty declaration
+changes the invocation principal and would allow a supervisor manual run that
+this policy currently rejects; preserve the existing caller checks.
+For both `report` and `retried`, compare `report_id` to the event's `report_id`;
+the pending predicate is `state` `in` `["building", "failed", "ready", "authoring"]`.
+Both durable timer steps use `timeout_seconds` = `60`.
+
+The typed command already owns the atomic daily reservation, frozen evidence,
+visibility checks, author request and finalization. Keep that domain state there:
+playbook state/notify would introduce a second reservation or delivery ledger.
+There is no collection scan or ad-hoc agent/script step to replace. Snapshot
+pages, foreach, doctor checks and scripts would add work without preserving this
+command's transaction and delivery guarantees, so none are required. No
+`state_schema_version` or script manifest is declared for this stateless graph.
+
 ## Rule: reconcile-morning
 
 1. Call `morning_report_tick` with no arguments and bind its result as `report`.
@@ -43,7 +64,8 @@ author request. Config disable retains readable content and cancels unsent work.
 5. Call `morning_report_tick` again and bind its result as `retried`. The
    `completed` outcome continues at step 6. A second `rejected` or
    `runtime_error` outcome fails the rule.
-6. If `retried` is still pending for the event's `report_id`, as in step 2,
+6. If `retried.report_id` matches the event's `report_id` and `retried.state`
+   is still pending, as in step 2,
    wait at step 3. Otherwise end successfully.
 
 ## Failure handling, uniformly

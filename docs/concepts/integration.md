@@ -2,31 +2,31 @@
 
 A successful task close means the worker pushed its branch and recorded its
 result. Delivery means the completed work reached the configured target branch.
-The daemon reconciles that work through durable integration Subjects.
+The daemon delivers that work through the Git-first integration train.
 
-## Durable work and ownership
+## Batches and ownership
 
-A Subject identifies a source, parent assembly, root batch or promotion. It pins
-a reviewed policy artifact and records its phase, exact revisions, writer lease,
-branch fence, last decision and next visit time. The reconciler observes current
-facts, evaluates the pinned policy and invokes one bounded primitive. Its next
-visit resumes from durable state after a restart.
+A train target identifies a project, repository and target branch. Each visit
+reads current Git, completion provenance, checks, reviews and batch intent. It
+freezes eligible sources into a batch, merges a candidate, tests that exact
+commit and publishes it. An idle lane dispatches immediately; a busy lane
+accumulates the next batch. Restarts re-observe the retained sources and candidate.
 
-There is one publication owner per repository. Root mutations require the active
-Subject's authority and a matching branch fence. Publication checks the expected
+There is one configured publisher per delivery branch. Mutations require a matching
+branch lease and fence. Publication checks the expected
 target revision and exact CI evidence before pushing. A moved target, unresolved
 remote write or human hold causes a recorded wait or gate; it does not authorize
 another publisher.
 
 ```mermaid
 flowchart LR
-    A[Completed source branches] --> B[Durable Subject]
-    B --> C[Observe exact revisions and evidence]
-    C --> D[Evaluate pinned policy]
-    D --> E[Run one bounded primitive]
-    E --> F[Record result and next visit]
-    F --> C
-    E --> G[Publish with fence and target compare]
+    A[Retained completion sources] --> B[Freeze batch]
+    B --> C[Merge candidate]
+    C --> D[Check exact candidate]
+    D --> E[Publish with branch fence and target compare]
+    D --> F[Retained batch fixer]
+    F --> D
+    E --> G[Separate cleanup]
 ```
 
 ## Read current state
@@ -37,43 +37,57 @@ aq task show <task-id>
 ```
 
 Project status reports current mode, configuration generation, designated
-repository and live Subjects with their last journal records. Development
-projects also report Git delivery evidence for completed work that holds open
+repository, target visits, batches, checks, repairs and blockers. It uses
+`projection_kind: train` when the train is selected. It also reports Git delivery
+evidence for completed work that holds open
 successors or containers. Unknown delivery includes its cause; a task close,
 historical operation or branch tip is not proof of delivery.
 
 Task blockers show the specific prerequisite, revision or resource that still
-holds the task. Use these facts to resolve the Subject's policy gate or producer
-failure. Durable visits retry eligible work; the retired manual sweep, flush,
+holds the task. Use these facts to resolve the named policy gate or producer
+failure. Bounded visits retry eligible work; the retired manual sweep, flush,
 adopt and legacy recovery controls are unavailable.
 
 ## Modes and policy
 
 The project's `hierarchical_integration_mode` selects development, hierarchy,
-train or disabled integration. All active modes use the reconciler. This setting
+train, observe or disabled integration. The train serves development, hierarchy
+and train; observe and disabled have no delivery writer. This setting
 is distinct from the task's direct or pull-request delivery preference.
 
 ## Git-first train
 
-The daemon-wide `integration.git_first` selector chooses the protocol. `shadow`,
-the default, runs the Subject runtimes above and logs Git-first comparisons
-beside them. `active` replaces every Subject runtime with one train: each target
+The daemon-wide `integration.git_first` selector must be `active` for delivery.
+The code default remains `shadow`, but the Subject runtimes were retired:
+`shadow` constructs no delivery engine. It is not a rollback or fallback path.
+The `integration.delivery_engine` doctor check diagnoses unavailable delivery.
+With `active`, each target
 branch (a project default branch, a parent branch, or an open batch's target) is
 visited by its own bounded task. A visit fetches once, freezes completed sources
 that Git does not yet contain into a batch, merges them onto the target, pushes
 the candidate under `aq/batches/`, requires the exact candidate's checks and
 reviews, and fast-forwards the target with an expected-old push under the
-target's branch lease. A red or conflicting candidate files one ordinary repair
-task. No journal, outbox event or continuation carries progress: Git, cached
+target's branch lease. A red or conflicting candidate uses one task-free fixer
+session on the retained candidate. Its publication uses `aq integration batch-fix
+--action push`; later failures reuse the session and checkout. Existing ordinary
+repair tasks retain their completion protocol. Git, cached
 check and review evidence, and batch intent are read again on every visit, so a
 restart or missed notification costs one visit. Status reports `projection_kind:
 train` with per-target visits, open batches and blockers. See the
 [activation runbook](../guides/git-first-train-runbook.md).
 
-Configure reviewed policy routes through the existing project configuration
+The project-scoped `fast-smooth-train` playbook activation controls admission and
+fenced writes once installed. A renamed copy binds through `train.playbook_id`.
+Disabling it preserves candidates and lets workers publish and close source work;
+re-enabling resumes delivery. Existing projects with no activation or explicit
+binding keep their pre-install behavior. Current playbook check settings apply to
+pending candidates. Epic checks are advisory unless an enabled project playbook
+explicitly requires `tables.parent_episode.required_checks`.
+
+Configure reviewed policy through the existing project configuration
 command with its expected generation and operator reason. Repository changes are
-refused while a live Subject owns that repository; changing configuration does
-not rewrite the policy pinned by an existing Subject. See the
+refused while live owners or unresolved publication intents retain that repository; changing configuration does
+not rewrite historical Subject policy records. See the
 [current integration guide](../guides/hierarchical-integration-trains.md).
 
 ## Delivery proof and cleanup

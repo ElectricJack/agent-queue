@@ -10,10 +10,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
-    gates,
     integration_history_waiver_consumptions,
     integration_history_waivers,
-    integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_rollout_transitions,
     projects,
@@ -227,50 +225,6 @@ class IntegrationControlQueriesMixin:
         async with self.immediate() as conn:
             return await self.consume_integration_history_waiver_on(conn, **values)
 
-    async def append_integration_legacy_gate_applicability_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        project_id: str,
-        gate_id: str,
-        waiver_id: str,
-        transition_id: str,
-        blocker_digest: str,
-        applicable: bool,
-        now: float,
-    ) -> None:
-        """Append waiver applicability without resolving or deleting the gate."""
-        _digest(blocker_digest)
-        match = (
-            await conn.execute(
-                select(integration_history_waiver_consumptions.c.waiver_id)
-                .select_from(
-                    integration_history_waiver_consumptions.join(gates, gates.c.id == gate_id)
-                )
-                .where(
-                    integration_history_waiver_consumptions.c.waiver_id == waiver_id,
-                    integration_history_waiver_consumptions.c.transition_id == transition_id,
-                    integration_history_waiver_consumptions.c.project_id == project_id,
-                    integration_history_waiver_consumptions.c.blocker_digest == blocker_digest,
-                    gates.c.project_id == project_id,
-                    gates.c.gate_type == "pr-merged",
-                )
-            )
-        ).scalar_one_or_none()
-        if match is None:
-            raise ValueError("gate applicability requires a consumed matching history waiver")
-        await conn.execute(
-            insert(integration_legacy_gate_applicability).values(
-                project_id=project_id,
-                gate_id=gate_id,
-                waiver_id=waiver_id,
-                transition_id=transition_id,
-                blocker_digest=blocker_digest,
-                applicable=bool(applicable),
-                created_at=now,
-            )
-        )
-
     async def set_integration_legacy_suppression_on(
         self,
         conn: AsyncConnection,
@@ -326,19 +280,3 @@ class IntegrationControlQueriesMixin:
                 .one_or_none()
             )
         return dict(row) if row is not None else None
-
-    async def list_integration_legacy_suppressions(self) -> list[dict]:
-        """Return the small per-project routing predicate snapshot."""
-        async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(integration_legacy_suppression).order_by(
-                            integration_legacy_suppression.c.project_id
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [dict(row) for row in rows]
