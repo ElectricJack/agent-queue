@@ -57,9 +57,10 @@ async def test_hung_review_and_lost_event_do_not_stop_auditable_outbox_drain(env
             cancelled.set()
 
     drain = AsyncMock()
+    page_size = 3
     try:
         await runtime.refresh()
-        outbox = IntegrationOutbox(db, lost_acceptance, page_size=3, clock=lambda: now[0])
+        outbox = IntegrationOutbox(db, lost_acceptance, page_size=page_size, clock=lambda: now[0])
         service = IntegrationService(
             db, outbox,
             maintenance={"GitHub PR reviews": hung_review, "maintenance": drain}, clock=lambda: now[0],
@@ -68,16 +69,21 @@ async def test_hung_review_and_lost_event_do_not_stop_auditable_outbox_drain(env
         await asyncio.wait_for(service.tick(now[0]), timeout=5)
         assert cancelled.is_set()
         assert drain.await_count == 1
-        [lost] = [row for row in await _outbox_rows(db) if row["id"] == "lost-event"]
+        first_page = await _outbox_rows(db)
+        assert sum(row["delivered_at"] is not None for row in first_page) == page_size - 1
+        [lost] = [row for row in first_page if row["id"] == "lost-event"]
         assert lost["delivered_at"] is None and lost["attempts"] == 1
         assert "ConnectionError" in lost["last_error"]
 
         # New service and outbox instances have no in-memory cursor or event.
         restarted = IntegrationService(
-            db, IntegrationOutbox(db, lost_acceptance, page_size=3, clock=lambda: now[0]),
+            db, IntegrationOutbox(db, lost_acceptance, page_size=page_size, clock=lambda: now[0]),
             clock=lambda: now[0],
         )
-        for _ in range(4):
+        # Include every pending notification and the deferred retry as the
+        # optional event catalogue grows, keeping each tick bounded to one page.
+        remaining = sum(row["delivered_at"] is None for row in first_page)
+        for _ in range(0, remaining, page_size):
             now[0] += 2
             await asyncio.wait_for(restarted.tick(now[0]), timeout=5)
         await _wait_for_pending_resolution(db, "lost-event")

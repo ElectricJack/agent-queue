@@ -1,4 +1,6 @@
-# Optional supervisor hourly reports
+# Supervisor hourly and morning reports
+
+## Optional hourly authoring
 
 The deterministic digest remains the default. Narrative authoring requires both
 `reports.hourly.enabled: true` and a healthy system activation of the reviewed
@@ -77,3 +79,77 @@ receipts are separate from report content and evidence coverage.
 The new schema is Alembic revision `a00000000032`. Its create is idempotent and
 rollback preserves the ledger. Operator upgrades use the normal daemon migration
 path; workers never migrate the operator database.
+
+## Optional morning reports
+
+Morning reporting is separate from both hourly authoring and the P3
+`discord.digest.supervisor_authored` switch. It defaults to disabled. These are
+the shipped settings; the example leaves sending disabled:
+
+```yaml
+reports:
+  timezone: UTC
+  morning:
+    enabled: false
+    time: "07:00"
+    late_cutoff_minutes: 120
+    max_lookback_hours: 72
+    author_deadline_minutes: 15
+    project_ids: []
+    destination: ""
+    full_fleet_visibility: false
+```
+
+Use an IANA timezone for local scheduling. An empty destination uses
+`discord.channel_id`; an explicit destination is `discord:<channel id>`.
+`project_ids` restricts collection before evidence is read. Supervisor authoring
+requires `full_fleet_visibility: true`, no project filter and the live global
+supervisor. Restricted destinations use scoped deterministic fallback. Do not
+represent a restricted or failed collection as complete fleet coverage.
+
+The shipped morning-report playbook consumes `report.morning_due` and drives
+`morning_report_tick`; inspect its installed activation alongside configuration.
+The emitter fires at the planned local time once per local day in a running
+process, with a stable event identity so restart replay cannot reserve a second
+report. The tick reserves the day using DST-safe boundaries, collects database
+and frozen-SHA git evidence read-only, and freezes a brief plus deterministic
+fallback before requesting an author turn. The 15-minute author deadline and
+120-minute late cutoff bound publishing. Disabling the feature lets the tick
+cancel pending work; the due event alone is not permission to send.
+
+Preview from an operator shell without reserving a report, waking an author,
+writing state or sending anything:
+
+```bash
+aq report morning --dry-run --project-id PROJECT --max-lookback-hours 72 --json
+aq report morning --dry-run --since 1792623600 --until 1792710000 --json
+aq report list --limit 50 --offset 0 --json
+aq report show REPORT_ID --json
+```
+
+`--since` and `--until` are UTC epoch seconds. Preview defaults to the preceding
+24 hours ending at the last zoned 07:00; explicit bounds allow reproducible
+inspection. Check source coverage, truncation and read failures as well as the
+summary. Missing evidence is a gap, not proof that nothing happened.
+
+For an already reserved author request, the live global supervisor reads the
+bounded pages and submits the brief hash and version it actually read:
+
+```bash
+aq report brief REQUEST_ID --offset 0 --limit 20 --json
+aq report submit REQUEST_ID --file /tmp/morning-report.json \
+  --brief-hash BRIEF_HASH --expected-version VERSION --evidence-ref EVIDENCE_REF
+```
+
+Morning files contain version-1 JSON, hourly files UTF-8 prose; both are bounded
+to 32 KiB at the CLI. Morning validation requires evidence-grounded project
+content and URL-free author prose; the server supplies coverage and report links.
+`aq report request REQUEST_ID` is service-only and cannot be used by an author to
+select a destination or create an arbitrary request.
+
+The full report and evidence coverage remain in the database and dashboard. Its
+Discord summary is at most 1,500 characters including the stable marker and one
+server-generated report link. Confirmed receipts finish the shared outbox row;
+ambiguous sends reconcile against history or remain `unknown` without automatic
+reposting. Read the stored report separately from delivery status before claiming
+that the report reached its audience.
