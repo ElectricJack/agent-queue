@@ -536,3 +536,26 @@ class TextNotifyEvent(NotifyEvent):
     category: str = "system"
     message: str = ""
     embed_data: dict | None = None  # optional structured data for rich rendering
+
+
+# ---------------------------------------------------------------------------
+# Provider availability (provider-failover D19)
+# ---------------------------------------------------------------------------
+
+
+class ProviderStateEvent(NotifyEvent):
+    """A provider crossed between the launchable and unavailable halves."""
+
+    event_type: str = "notify.provider_state"
+    category: str = "system"
+    provider: str
+    vendor: str = ""
+    from_state: str
+    to_state: str
+    reason_code: str = ""
+    reason: str = ""
+    since: float | None = None
+    until: float | None = None
+    generation: int
+    remediation: str = ""
+    message: str = ""

@@ -28,8 +28,15 @@ import uuid
 from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
+from src.database.queries.result_queries import (
+    PENDING_COMPLETION_KEY,
+    close_identity,
+    completion_draft,
+)
 from src.database.queries.task_queries import StaleClaim
-from src.models import TaskCompletion, TaskStatus
+from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
+from src.git.manager import GitError
+from src.models import ProjectStatus, TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -54,6 +61,9 @@ VALID_WORK_OUTCOMES = ("shipped", "no-op", "blocked", "abandoned")
 #: agent can call close before the orchestrator's own IN_PROGRESS write has
 #: landed; refusing that would make the protocol racy for no benefit.
 _CLOSEABLE = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
+
+#: Strong references to ordinary closes running past a cancelled caller.
+_CLOSE_ATTEMPTS: set[asyncio.Future] = set()
 
 
 class SessionCommandsMixin:
@@ -80,6 +90,18 @@ class SessionCommandsMixin:
             instance_token=session.instance_token,
         )
 
+    #: A shorter prefix is too likely to be a typo that happens to match.
+    _MIN_ID_PREFIX = 4
+
+    async def _session_by_id_prefix(self, prefix: str):
+        """``(session, [])`` for a unique id prefix, ``(None, ids)`` when ambiguous."""
+        if len(prefix) < self._MIN_ID_PREFIX:
+            return None, []
+        matches = [row for row in await self.db.list_sessions() if row.id.startswith(prefix)]
+        if len(matches) == 1:
+            return matches[0], []
+        return None, [row.id for row in matches] if len(matches) > 1 else []
+
     async def _resolve_session(self, args: dict):
         """Resolve a session from ``session_id``, ``name`` or ``task_id``.
 
@@ -97,24 +119,59 @@ class SessionCommandsMixin:
                 # `aq session list` is a confusing error.
                 session = await self.db.get_session_by_name(str(session_id))
             if session is None:
-                return None, {"error": f"No session '{session_id}'"}
+                # `aq session list` prints the first 8 characters of each id,
+                # and an operator pastes what they can see: accept a prefix,
+                # but only when it names exactly one session.
+                session, ambiguous = await self._session_by_id_prefix(str(session_id))
+                if ambiguous:
+                    return None, {
+                        "success": False,
+                        "error": (
+                            f"'{session_id}' matches {len(ambiguous)} sessions "
+                            f"({', '.join(sorted(ambiguous))}); use more of the id"
+                        )
+                    }
+            if session is None:
+                return None, {"success": False, "error": f"No session '{session_id}'"}
             return session, None
 
         name = args.get("name")
         if name:
             session = await self.db.get_session_by_name(str(name))
             if session is None:
-                return None, {"error": f"No session named '{name}'"}
+                return None, {"success": False, "error": f"No session named '{name}'"}
             return session, None
 
         task_id = args.get("task_id")
         if task_id:
             session = await self.db.get_session_for_task(str(task_id))
             if session is None:
-                return None, {"error": f"No session for task '{task_id}'"}
+                return None, {"success": False, "error": f"No session for task '{task_id}'"}
             return session, None
 
-        return None, {"error": "session_id, name, or task_id is required"}
+        return None, {"success": False, "error": "session_id, name, or task_id is required"}
+
+    def _session_project_scope_error(self, session) -> dict | None:
+        """Refuse a session row belonging to another project than the caller's.
+
+        A **per-project** elevated token is trusted for its own project and no
+        further.  ``check_command_scope`` pins ``args["project_id"]`` for such a
+        caller, but these commands address a row by id, unique id prefix, name
+        or task and never read that field, so the pin is vacuous here and the
+        fence has to live in the command.  A supervisor of project A could
+        otherwise stop, read or drain-ack project B's workers by naming their
+        session -- and the names are short prefixes printed by
+        ``aq session list``.
+
+        Local callers (the loopback CLI) and the global supervisor carry no
+        project pin, so both stay unrestricted, as does any caller with no
+        scope at all.  Same answer for every way :meth:`_resolve_session` can
+        name a row, because the fence runs on the resolved session.
+        """
+        scope_project = (self._current_scope or {}).get("project_id")
+        if scope_project is not None and session.project_id != scope_project:
+            return {"success": False, "error": "out of scope: session belongs to another project"}
+        return None
 
     @staticmethod
     def _session_dict(session) -> dict:
@@ -138,6 +195,13 @@ class SessionCommandsMixin:
             "started_at": session.started_at,
             "last_activity": session.last_activity,
             "restarts": session.restarts,
+            "claims": session.claims,
+            "claim_phase": session.claim_phase,
+            "claim_failure_count": session.claim_failure_count,
+            "claim_failure_reason": session.claim_failure_reason,
+            "claim_failure_at": session.claim_failure_at,
+            "failed_preparation": session.failed_preparation,
+            "supervisor_health": session.supervisor_health,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -147,15 +211,78 @@ class SessionCommandsMixin:
     # operator surface
     # ------------------------------------------------------------------
 
+    async def _cmd_supervisor_restart(self, args: dict) -> dict:
+        from src.messages.session_lens import SupervisorRestartError
+
+        name = args.get("name", "supervisor-global")
+        resume = args.get("resume", False)
+        session_id = args.get("session_id")
+        if not isinstance(name, str) or not name.startswith("supervisor-") or name == "supervisor-":
+            return {"success": False, "error": "name must be a supervisor messaging address"}
+        if not isinstance(resume, bool):
+            return {"success": False, "error": "resume must be a boolean"}
+        if session_id is not None and (not isinstance(session_id, str) or not session_id):
+            return {"success": False, "error": "session_id must be a non-empty string"}
+        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and (
+            not scope.get("elevated") or scope.get("project_id") not in (None, project_id)
+        ):
+            return {"success": False, "error": "out of scope: supervisor restart"}
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, error = await operator_or_supervisor(self.db, project_id, subject="supervisor restart")
+        if error:
+            return {"success": False, "error": f"out of scope: {error}"}
+        from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
+
+        principal = current_principal()
+        if principal is not None and principal.kind is PrincipalKind.SESSION:
+            caller = await self.db.get_session(principal.session_id)
+            if caller is None or not matches_session_instance(principal, caller.instance_token):
+                return {"success": False, "error": "out of scope: stale supervisor identity"}
+        lens = getattr(self.orchestrator, "session_lens", None)
+        if lens is None:
+            return {"success": False, "error": "Supervisor session service is unavailable"}
+        try:
+            session = await lens.restart_supervisor(
+                target_id=name, project_id=project_id, resume=resume,
+                expected_session_id=session_id,
+            )
+        except SupervisorRestartError as exc:
+            return {"success": False, "error": str(exc)}
+        await self.orchestrator.bus.emit("session.started", {
+            "session_id": session.id, "name": session.name,
+            "task_id": None, "project_id": session.project_id,
+            "harness": session.harness, "provider": session.provider, "work_dir": session.work_dir,
+        })
+        return {
+            "success": True, "session_id": session.id, "name": name,
+            "state": session.state, "mode": "resume" if resume else "fresh",
+        }
+
     async def _cmd_session_list(self, args: dict) -> dict:
         """List sessions with lifecycle, state, task, harness, activity."""
+        limit = args.get("limit")
+        offset = args.get("offset")
+        if limit is not None and (type(limit) is not int or not 1 <= limit <= 500):
+            return {"success": False, "error": "limit must be an integer from 1 to 500"}
+        if offset is None:
+            offset = 0
+        if type(offset) is not int or offset < 0:
+            return {"success": False, "error": "offset must be a non-negative integer"}
         sessions = await self.db.list_sessions(
             state=args.get("state"),
             desired_state=args.get("desired_state"),
             lifecycle=args.get("lifecycle"),
             project_id=args.get("project_id") or self._active_project_id,
             live_only=bool(args.get("live_only")),
+            limit=limit + 1 if limit is not None else None,
+            offset=offset,
         )
+        has_more = limit is not None and len(sessions) > limit
+        if has_more:
+            sessions = sessions[:limit]
         now = time.time()
         ttl = self.config.sessions.lease_ttl_seconds
         rows = []
@@ -168,13 +295,15 @@ class SessionCommandsMixin:
             row["idle_seconds"] = max(0.0, now - last)
             row["stalled"] = bool(s.state == "running" and ttl > 0 and (now - last) > ttl)
             rows.append(row)
-        return {"success": True, "sessions": rows, "count": len(rows)}
+        return {"success": True, "sessions": rows, "count": len(rows), "has_more": has_more}
 
     async def _cmd_session_show(self, args: dict) -> dict:
         """Full detail for one session."""
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         return {"success": True, "session": self._session_dict(session)}
 
     async def _cmd_session_peek(self, args: dict) -> dict:
@@ -182,9 +311,11 @@ class SessionCommandsMixin:
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         if not provider.supports(Cap.PEEK):
             return {
                 "success": True,
@@ -196,7 +327,7 @@ class SessionCommandsMixin:
         try:
             output = await provider.peek(self._session_handle(session), lines)
         except Exception as exc:
-            return {"error": f"peek failed: {exc}"}
+            return {"success": False, "error": f"peek failed: {exc}"}
         return {"success": True, "session_id": session.id, "output": output}
 
     async def _cmd_session_attach(self, args: dict) -> dict:
@@ -206,13 +337,13 @@ class SessionCommandsMixin:
             return err
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             command = await provider.attach_command(self._session_handle(session))
         except CapabilityUnsupported as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         except Exception as exc:
-            return {"error": f"attach failed: {exc}"}
+            return {"success": False, "error": f"attach failed: {exc}"}
         return {"success": True, "session_id": session.id, "attach_command": command}
 
     async def _cmd_session_input(self, args: dict) -> dict:
@@ -223,30 +354,30 @@ class SessionCommandsMixin:
         if scope and scope.get("kind") != "local" and not (
             scope.get("elevated") and scope.get("project_id") is None
         ):
-            return {"error": "out of scope: direct terminal input requires global admin"}
+            return {"success": False, "error": "out of scope: direct terminal input requires global admin"}
         text, key = args.get("text"), args.get("key")
         try:
             validate_terminal_input(text, key)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         session, err = await self._resolve_session(args)
         if err:
             return err
         if session.state not in {"running", "draining"}:
-            return {"error": "No live terminal; start or resume the agent first"}
+            return {"success": False, "error": "No live terminal; start or resume the agent first"}
         if session.agent_id:
             agent = await self.db.get_agent(session.agent_id)
             if agent is None or agent.deleted_at is not None:
-                return {"error": "This agent is no longer available"}
+                return {"success": False, "error": "This agent is no longer available"}
         provider = self._provider_for_session(session)
         if provider is None or not provider.supports(Cap.INPUT):
-            return {"error": "This session provider does not support terminal input"}
+            return {"success": False, "error": "This session provider does not support terminal input"}
         try:
             await provider.send_input(self._session_handle(session), text=text, key=key)
         except Exception:
             # Provider errors can include argv containing the user's text.
             # Neither return nor log it; failed input must not be auto-retried.
-            return {"error": "Terminal input failed. Refresh the session before typing again."}
+            return {"success": False, "error": "Terminal input failed. Refresh the session before typing again."}
         await self.db.update_session(session.id, last_activity=time.time())
         return {"success": True, "session_id": session.id, "accepted": True}
 
@@ -260,13 +391,13 @@ class SessionCommandsMixin:
         """
         text = str(args.get("text") or args.get("message") or "").strip()
         if not text:
-            return {"error": "text is required"}
+            return {"success": False, "error": "text is required"}
         session, err = await self._resolve_session(args)
         if err:
             return err
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             await provider.nudge(self._session_handle(session), text)
         except NotSubmitted:
@@ -274,7 +405,7 @@ class SessionCommandsMixin:
         except CapabilityUnsupported as exc:
             return {"success": False, "error": str(exc), "session_id": session.id}
         except Exception as exc:
-            return {"error": f"nudge failed: {exc}"}
+            return {"success": False, "error": f"nudge failed: {exc}"}
         return {"success": True, "session_id": session.id, "delivered": True}
 
     async def _cmd_session_logs(self, args: dict) -> dict:
@@ -297,7 +428,7 @@ class SessionCommandsMixin:
         if args.get("attempt_id"):
             attempt = await self.db.get_task_session_attempt(str(args["attempt_id"]))
             if attempt is None:
-                return {"error": "No such task session attempt"}
+                return {"success": False, "error": "No such task session attempt"}
             args = {**args, "session_id": args.get("session_id") or args.get("id") or attempt["session_id"]}
         session, err = await self._resolve_session(args)
         if attempt is None and session is not None and session.task_id and session.state in {"stopped", "sleeping", "quarantined"}:
@@ -311,7 +442,7 @@ class SessionCommandsMixin:
                 or (session is None and args["session_id"] != attempt["session_id"])
                 or (args.get("task_id") and args["task_id"] != attempt["task_id"])
             ):
-                return {"error": "Attempt does not belong to this session/task"}
+                return {"success": False, "error": "Attempt does not belong to this session/task"}
             session = SimpleNamespace(**{
                 **attempt, "id": attempt["session_id"],
                 "started_at": attempt["session_started_at"],
@@ -320,13 +451,13 @@ class SessionCommandsMixin:
             return err
         scope = RequestScope(**self._current_scope) if self._current_scope else LOCAL_SCOPE
         if scope.kind != "local" and scope.project_id is not None and scope.project_id != session.project_id:
-            return {"error": "Session project is out of scope"}
+            return {"success": False, "error": "Session project is out of scope"}
         denied = check_command_scope("session_logs", {
             "session_id": session.id, "project_id": session.project_id,
             "task_id": session.task_id,
         }, scope)
         if denied:
-            return {"error": denied}
+            return {"success": False, "error": denied}
 
         # Default cap of 100 entries per call: rereading a large JSONL and
         # returning every entry over the CLI/MCP boundary produces multi-MB
@@ -403,14 +534,103 @@ class SessionCommandsMixin:
         result["source"] = "peek"
         return result
 
+    async def _cmd_session_prune(self, args: dict) -> dict:
+        """Remove one inactive named row; never signal or forget live work."""
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (session.lifecycle != "named" or session.state not in {"sleeping", "stopped"}
+                or session.task_id or session.claim_phase):
+            return {"success": False, "error": "Only sleeping/stopped named sessions without a task can be pruned"}
+        provider = self._provider_for_session(session)
+        if provider is None:
+            return {"success": False, "error": "Provider unavailable; cannot confirm session is inactive"}
+        try:
+            if not await provider.confirm_instance_stopped(self._session_handle(session)):
+                return {"success": False, "error": "Session still has a live terminal; stop it before pruning"}
+            from src.sessions.proctable import scan_by_env_marker
+
+            if any(process.marker == session.instance_token
+                   for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                return {"success": False, "error": "Session still has live marked processes; stop them before pruning"}
+        except Exception:
+            return {"success": False, "error": "Could not verify session is inactive"}
+        changed = await self.db.update_session_instance(
+            session.id, session.instance_token, require_desired_state=session.desired_state,
+            desired_state="stopped",
+        )
+        if not changed:
+            return {"success": False, "error": "Session changed during cleanup; refresh the flock"}
+        token_store = getattr(self.orchestrator, "token_store", None)
+        if token_store is not None:
+            await token_store.revoke_session(session.id)
+        if not await self.db.prune_named_session(session.id, session.instance_token):
+            return {"success": False, "error": "Session changed during cleanup; refresh the flock"}
+        await self.orchestrator.bus.emit("session.pruned", {
+            "session_id": session.id, "project_id": session.project_id,
+        })
+        return {"success": True, "session_id": session.id}
+
+    async def _cmd_session_cleanup(self, args: dict) -> dict:
+        """Stop and forget taskless sleeping named sessions in one operator action."""
+        project_id = (self._current_scope or {}).get("project_id")
+        requested_project = args.get("project_id")
+        if project_id is not None and requested_project not in (None, project_id):
+            return {"success": False, "error": "out of scope: project mismatch"}
+        rows = await self.db.list_sessions(
+            state="sleeping", lifecycle="named", project_id=project_id or requested_project,
+        )
+        candidates = [row for row in rows if row.desired_state in {"sleeping", "stopped"}
+                      and row.task_id is None and row.claim_phase is None]
+        if args.get("dry_run"):
+            return {"success": True, "dry_run": True, "count": len(candidates),
+                    "sessions": [self._session_dict(row) for row in candidates]}
+
+        pruned = []
+        skipped = []
+        for row in candidates:
+            # The instance and stop intent are fenced before touching the terminal.
+            # A concurrent wake makes this update fail, leaving that session alone.
+            current = await self.db.get_session(row.id)
+            if (current is None or current.instance_token != row.instance_token
+                    or current.state != "sleeping" or current.task_id is not None
+                    or current.claim_phase is not None):
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            provider = self._provider_for_session(current)
+            if provider is None:
+                skipped.append({"session_id": row.id, "reason": "provider unavailable"})
+                continue
+            changed = await self.db.update_session_instance(
+                row.id, row.instance_token, require_desired_state=current.desired_state,
+                desired_state="stopped",
+            )
+            if not changed:
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            try:
+                await provider.stop(self._session_handle(current), grace=2.0)
+            except Exception as exc:  # noqa: BLE001 - report this row and continue the batch
+                skipped.append({"session_id": row.id, "reason": f"stop failed: {exc}"})
+                continue
+            result = await self._cmd_session_prune({"session_id": row.id})
+            if result.get("success"):
+                pruned.append(row.id)
+            else:
+                skipped.append({"session_id": row.id,
+                                "reason": result.get("error", "prune failed")})
+        return {"success": True, "count": len(candidates), "pruned": pruned,
+                "skipped": skipped}
+
     async def _cmd_session_kill(self, args: dict) -> dict:
         """Fenced kill.  The task then goes through the exit classifier.
 
         This deliberately does **not** transition the task, **and does not
         write ``state`` on the row either**: the next reconciler tick sees a
-        dead process and classifies it, so a manual kill and a crash travel
-        the same path — and a human killing a session can never accidentally
-        mark a task complete.
+        dead process and classifies it.  ``desired_state="stopped"`` records
+        that this exit was requested, so a pool kill does not quarantine its
+        project as a rapid crash.  A human killing a session can never
+        accidentally mark a task complete.
 
         Writing ``state="stopped"`` here used to *guarantee* the opposite of
         that docstring.  ``_step_exits`` iterates live rows only, so dropping
@@ -419,25 +639,35 @@ class SessionCommandsMixin:
         workspace locked.  The row is left live and the ``process_alive``
         probe — which is now the *only* thing that decides a session is
         dead — reports what actually happened.
+
+        Isolation is the shared session fence
+        (:meth:`_session_project_scope_error`), and it has to be here:
+        ``check_command_scope`` pins ``args["project_id"]`` for a per-project
+        elevated token, but this command takes the row by id, unique id
+        prefix, name or task and never reads that field, so the pin bought
+        nothing.  ``aq session kill <8-char-prefix>`` — the prefix
+        ``aq session list`` prints — is enough to stop another project's
+        worker.  The fence runs on the resolved session, so every way of
+        naming one is covered, and it runs before the provider is touched.
         """
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
+        # Intent, not observation: state stays live so the exit classifier
+        # can still run.  Persist intent before signalling because a tick can
+        # observe the death while stop() is waiting for the provider.
+        await self.db.update_session(session.id, desired_state="stopped")
         try:
             await provider.stop(
                 self._session_handle(session), grace=float(args.get("grace") or 2.0)
             )
         except Exception as exc:
-            return {"error": f"kill failed: {exc}"}
-        # Intent, not observation.  The docstring above is about ``state``:
-        # writing that would hide the exit from the classifier.  Intent is
-        # the opposite case -- a human killing a session plainly does not
-        # want it back, and without this the reconciler's up-convergence
-        # would restart a named session the operator just killed.
-        await self.db.update_session(session.id, desired_state="stopped")
+            return {"success": False, "error": f"kill failed: {exc}"}
         await self.orchestrator.bus.emit(
             "session.killed",
             {
@@ -477,38 +707,46 @@ class SessionCommandsMixin:
         the same trust level that can already kill the session outright.
 
         A **per-project** elevated token is trusted for its own project and
-        no further.  ``check_command_scope`` pins ``args["project_id"]``
-        for such a caller, but this command addresses a session by id (or
-        name, or task) and never reads ``project_id`` — so without the
-        fence below, ``supervisor-A`` could mint a token for a session in
-        project B and use it to read and write B's work.  A minted token is
-        a durable credential, which makes this a privilege escalation
-        rather than a scoping slip.  Local callers carry no project pin and
-        stay unrestricted, as does the global supervisor.
+        no further.  ``check_command_scope`` pins ``args["project_id"]`` for
+        such a caller, but this command addresses a session by id (or
+        name, or task) and never reads ``project_id`` — so without the fence
+        in :meth:`_session_project_scope_error`, ``supervisor-A`` could mint a
+        token for a session in project B and use it to read and write B's
+        work.  A minted token is a durable credential, which makes this a
+        privilege escalation rather than a scoping slip.  Local callers carry
+        no project pin and stay unrestricted, as does the global supervisor.
 
         The new token carries the session's own scope — ``session_id``,
         ``project_id``, and ``task_id`` **only for a task session**.  A
         pool worker's scope pins no task (its task changes with every
-        claim), matching what ``_launch_pool_session`` mints.
+        claim), matching what ``_launch_pool_session`` mints. A live named
+        supervisor retains its launch elevation and project/global scope;
+        this also supports operator recovery from an expired credential.
         """
         session, err = await self._resolve_session(args)
         if err:
             return err
-        scope_project = (self._current_scope or {}).get("project_id")
-        if scope_project is not None and session.project_id != scope_project:
-            return {
-                "success": False,
-                "error": "out of scope: session belongs to another project",
-            }
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is None:
             return {"success": False, "error": "no token store on this daemon"}
+        supervisor = session.profile_id == "supervisor" and session.lifecycle == "named"
+        if supervisor and (
+            session.state not in {"starting", "running"}
+            or session.desired_state != "running"
+            or session.ended_at is not None
+            or session.task_id is not None
+            or not session.instance_token
+        ):
+            return {"success": False, "error": "a live named supervisor session is required"}
         task_id = session.task_id if session.lifecycle == "task" else None
         token = await token_store.mint(
             session_id=session.id,
             session_instance_token=session.instance_token,
             task_id=task_id,
             project_id=session.project_id,
+            elevated=supervisor,
         )
         return {
             "success": True,
@@ -521,12 +759,49 @@ class SessionCommandsMixin:
     async def _cmd_session_sleep(self, args: dict) -> dict:
         """Record that a session is not wanted running.
 
-        Intent only — this does not signal the process.  The reconciler's
-        idle-drain branch takes it down on a later tick, or ``session kill``
-        does it now.  Setting intent first is what stops the up-convergence
-        branch from restarting it a tick after the kill.
+        This cancels the instance's cron schedules with the intent write.
+        The reconciler stops named sessions on the next tick, independently
+        of idle timeout. Pool sessions drain through their claim lifecycle;
+        stopped pool history stays stopped. Legacy stopped/sleeping pools
+        can normalize only after fresh proof that their exact instance is gone.
         """
-        return await self._set_desired_state(args, "sleeping")
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
+        stopped_confirmed = False
+        if (session.lifecycle == "pool" and session.state == "stopped"
+                and session.desired_state == "sleeping"):
+            if (not session.instance_token or session.task_id is not None
+                    or session.claim_phase is not None or session.failed_preparation is not None):
+                return {"success": False, "error": "Stopped pool session retains work or lacks an instance token"}
+            provider = self._provider_for_session(session)
+            if provider is None:
+                return {"success": False, "error": "Provider unavailable; cannot confirm pool instance is inactive"}
+            try:
+                if not await provider.confirm_instance_stopped(self._session_handle(session)):
+                    return {"success": False, "error": "Pool instance is still live; sleep intent was not changed"}
+                from src.sessions.proctable import scan_by_env_marker
+
+                if any(process.marker == session.instance_token
+                       for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                    return {"success": False, "error": "Pool instance still has live marked processes"}
+                stopped_confirmed = True
+            except Exception:
+                return {"success": False, "error": "Could not verify pool instance is inactive"}
+        try:
+            current = await self.db.request_session_sleep(
+                session, stopped_confirmed=stopped_confirmed,
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        return {
+            "success": True,
+            "session_id": current.id,
+            "desired_state": current.desired_state,
+            "state": current.state,
+        }
 
     async def _cmd_session_wake(self, args: dict) -> dict:
         """Mark a sleeping named session as wanted again.
@@ -547,6 +822,33 @@ class SessionCommandsMixin:
                 ),
                 "session_id": session.id,
             }
+        if session.project_id is not None and session.name == (
+            "n-supervisor--" + session.project_id
+        ):
+            project = await self.db.get_project(session.project_id)
+            if (project is not None and project.status == ProjectStatus.PAUSED):
+                # A paused project's supervisor must not be woken; resume it
+                # with `aq project resume <project>` instead.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' is paused; resume the project "
+                        f"with `aq project resume {session.project_id}` to restart its "
+                        f"supervisor"
+                    ),
+                    "session_id": session.id,
+                }
+            if project is not None and not project.supervisor_enabled:
+                # supervisor_enabled is the authority: its messages route to
+                # supervisor-global and nothing may mark its session wanted.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' has its supervisor disabled; enable "
+                        f"it with `aq project set {session.project_id} supervisor-enabled true`"
+                    ),
+                    "session_id": session.id,
+                }
         # Clear the restart budget: it counts *consecutive* failed starts,
         # and an operator asking for a wake is a fresh intent, not a retry
         # of the one that failed.
@@ -559,18 +861,6 @@ class SessionCommandsMixin:
             "desired_state": "running",
             "state": session.state,
             "note": "the next reconciler tick starts it",
-        }
-
-    async def _set_desired_state(self, args: dict, desired: str) -> dict:
-        session, err = await self._resolve_session(args)
-        if err:
-            return err
-        await self.db.update_session(session.id, desired_state=desired)
-        return {
-            "success": True,
-            "session_id": session.id,
-            "desired_state": desired,
-            "state": session.state,
         }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:
@@ -593,17 +883,27 @@ class SessionCommandsMixin:
         worker there is no further work to come back for
         (``session_exhausted`` / ``drain_requested`` are the only two
         results that tell it to ack).
+
+        An ack is a request to tear a session down, so it is fenced like the
+        other session commands: an elevated per-project supervisor may ack
+        only its own project's sessions
+        (:meth:`_session_project_scope_error`).  A plain session reaches this
+        command at all only with its own ``session_id`` — the scope layer pins
+        that field for ``AGENT_COMMAND_SET`` members — so the fence only
+        closes the elevated path.
         """
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             await provider.set_meta(self._session_handle(session), DRAIN_ACK_KEY, "1")
         except Exception as exc:
-            return {"error": f"could not record drain-ack: {exc}"}
+            return {"success": False, "error": f"could not record drain-ack: {exc}"}
         if session.lifecycle == "pool":
             await self.db.update_session(
                 session.id, state="draining", desired_state="stopped"
@@ -645,6 +945,156 @@ class SessionCommandsMixin:
         session = await self.db.get_session(str(session_id))
         return session.task_id if session is not None else None
 
+    async def _close_task_obsolete(self, args: dict, disposition: str = "obsolete") -> dict:
+        """``aq task close <id> --obsolete|--no-change|--done --reason``: one-shot close.
+
+        An operator or supervisor decision (``integration_operator``), never a
+        worker's.  From any state, in one call: a live writer is stopped
+        through the operator pause (the task goes PAUSED, never READY, so no
+        pool worker can claim it in between), then the close clears the stale
+        claim, workspace locks and agent binding, records the disposition and
+        marks the task COMPLETED, and the cleanup releases its branch owners
+        (:mod:`src.sessions.obsolete`).  No completion pipeline runs and
+        nothing is published.
+        """
+        from src.commands.supervisor_authority import integration_operator
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.sessions.obsolete import (
+            DISPOSITIONS,
+            ObsoleteClose,
+            ObsoleteCloseRefused,
+            obsolete_owner_release_for,
+        )
+
+        flag = "--" + disposition.replace("_", "-")
+        label = DISPOSITIONS[disposition][2]
+        task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return {
+                "success": False,
+                "code": "obsolete.task_required",
+                "error": f"{flag} needs the id of the task to close",
+            }
+        if args.get("outcome"):
+            return {
+                "success": False,
+                "code": "obsolete.outcome_conflict",
+                "error": f"{flag} is its own outcome; drop --outcome",
+            }
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"success": False, "code": "obsolete.not_found", "error": f"No task '{task_id}'"}
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return {
+                "success": False,
+                "code": "obsolete.not_authorized",
+                "error": (
+                    f"closing a task as {label} is an operator or supervisor decision: "
+                    f"{refusal}. A worker closes its own task with --outcome and names the "
+                    "superseding work in its summary."
+                ),
+            }
+        if not str(args.get("reason") or "").strip():
+            return {
+                "success": False,
+                "code": "obsolete.reason_required",
+                "error": f"{flag} requires --reason",
+            }
+        stopped = await self._stop_writer_for_operator_close(task_id)
+        if isinstance(stopped, dict):
+            return stopped
+        service = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await service.close(
+                task_id,
+                reason=str(args.get("reason") or ""),
+                principal=principal,
+                disposition=disposition,
+            )
+        except ObsoleteCloseRefused as exc:
+            return {"success": False, "code": exc.code, "error": exc.detail}
+        except HierarchyError as exc:
+            return {
+                "success": False,
+                "code": f"hierarchy.{exc.code}",
+                "error": f"hierarchy.{exc.code}: {exc.detail}",
+            }
+        result["stopped_writer"] = stopped
+        cleanup = result["cleanup"]
+        if result["outcome"] == "closed":
+            body = (
+                f"Closed as {label} by {principal} (was {result['previous_status']}): "
+                f"{result['reason']}"
+            )
+            try:
+                await self.db.add_task_comment(
+                    task_id,
+                    body,
+                    author_kind="user" if principal.startswith("human:") else "supervisor",
+                    author_id=principal,
+                )
+            except Exception:
+                logger.warning("Could not comment on closed task %s", task_id, exc_info=True)
+            refreshed = await self.db.get_task(task_id)
+            if refreshed is not None:
+                await self._emit_task_graph_change("task.updated", refreshed)
+        pending = cleanup.get("pending") or []
+        if pending:
+            result["note"] = (
+                f"{len(pending)} item(s) still held ({', '.join(sorted({p['reason'] for p in pending}))}); "
+                "the lifecycle sweep retries them"
+            )
+        return {"success": True, **result}
+
+    async def _stop_writer_for_operator_close(self, task_id: str) -> bool | dict:
+        """Stop whatever still writes for *task_id* before the operator close.
+
+        The operator pause is the supported stop: it moves the task to PAUSED
+        (which no claim can take), stops the exact captured sessions, revokes
+        their tokens, checkpoints the workspace and releases the agent.
+        Returns whether a stop ran, or a refusal result when it failed.
+        """
+        from sqlalchemy import select
+
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+        from src.database.tables import sessions, workspaces
+
+        task = await self.db.get_task(task_id)
+        if task is None or task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            return False
+        async with self.db._engine.connect() as conn:
+            live = await conn.scalar(
+                select(sessions.c.id)
+                .where(sessions.c.task_id == task_id, sessions.c.state.in_(LIVE_SESSION_STATES))
+                .limit(1)
+            )
+            locked = await conn.scalar(
+                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+            )
+        in_flight = bool(task.assigned_agent_id) and task.status in (
+            TaskStatus.ASSIGNED,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING,
+        )
+        if not (live or locked or in_flight):
+            return False
+        pause = getattr(self.orchestrator, "pause_task", None)
+        if pause is None:
+            return False  # The close's own refusal names what is still held.
+        try:
+            await pause(task_id)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "code": "obsolete.stop_failed",
+                "error": f"could not stop the writer of {task_id}: {exc}",
+            }
+        return True
+
     async def _cmd_task_close(self, args: dict) -> dict:
         """Close a task with an outcome.  Backs ``aq task close``.
 
@@ -658,6 +1108,37 @@ class SessionCommandsMixin:
         that is either a bug or an agent that wandered, and both should be
         loud rather than silently accepted.
         """
+        dispositions = [
+            name for name in ("obsolete", "no_change", "done") if args.get(name)
+        ]
+        if len(dispositions) > 1:
+            return {
+                "success": False,
+                "code": "obsolete.disposition_conflict",
+                "error": "choose one of --obsolete, --no-change or --done",
+            }
+        if dispositions:
+            return await self._close_task_obsolete(args, dispositions[0])
+        # Once started, an ordinary close runs to its end whatever happens to
+        # its caller.  Its terminal transition can commit before the slow
+        # tail (record, writer handoff, claim release) runs, and an HTTP
+        # client that gives up already leaves the request running; a
+        # cancelled in-process caller (embedded MCP, a test harness) must
+        # not instead strand an accepted close half-finished, holding its
+        # claim until a daemon restart (amber-flare-10).  ``--claim-next``
+        # stays outside: a caller that is gone must not be handed a task.
+        attempt = asyncio.ensure_future(self._close_task_ordinary(args))
+        _CLOSE_ATTEMPTS.add(attempt)
+        attempt.add_done_callback(_CLOSE_ATTEMPTS.discard)
+        response = await asyncio.shield(attempt)
+        if response.get("success") and args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
+
+    async def _close_task_ordinary(self, args: dict) -> dict:
+        """The body of ``task close`` without a disposition or ``--claim-next``."""
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {
@@ -687,7 +1168,31 @@ class SessionCommandsMixin:
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"No task '{task_id}'"}
-        if task.status not in _CLOSEABLE:
+        if task.status in (TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+            return {
+                "success": False,
+                "code": "wait.ack_required",
+                "error": "A suspended task must acknowledge its wake before closing; "
+                "operators may use a one-shot close disposition.",
+            }
+        # A crash may commit accepted repair bookkeeping before releasing its
+        # original claim. The completion service revalidates its durable receipt
+        # and exact held claim; this is not generic permission to re-close tasks.
+        accepted_repair_retry = (
+            task.status == TaskStatus.COMPLETED and outcome == "pass"
+            and task.created_by_kind == "integration_repair"
+            and bool((self._current_scope or {}).get("session_id"))
+        )
+        if accepted_repair_retry:
+            retry_scope = await self.db.get_repair_filing_scope(
+                task.id, session_id=self._current_scope["session_id"]
+            )
+            accepted_repair_retry = bool(
+                retry_scope is not None and retry_scope["target_kind"] == "batch"
+                and retry_scope.get("writer_kind") == "repair_delegate"
+                and not retry_scope["active"]
+            )
+        if task.status not in _CLOSEABLE and not accepted_repair_retry:
             status = getattr(task.status, "value", task.status)
             return {
                 "success": False,
@@ -760,11 +1265,66 @@ class SessionCommandsMixin:
                 ),
             }
 
-        # Deliverables are a worker contract, not a best-effort review hint.
-        # Refuse before any metadata, hierarchy, or pipeline side effect so
-        # the same claim can add evidence or make a visible exception and
-        # retry the close.
-        from src.deliverables import evaluate_deliverables, parse_unmet_reasons
+        # Busy sessions cannot receive terminal nudges. Give queued feedback
+        # a final delivery opportunity before close drains this worker. Do not
+        # consume it here: the worker must retrieve the body and reconsider
+        # its result, then retry with the same claim. Operator closes and
+        # disabled messaging retain their existing behavior.
+        if (
+            session is not None
+            and (scope_session_id or caller_session_id) == session.id
+            and session.state in LIVE_SESSION_STATES
+            and session.task_id == task_id
+            and self.config.messages.enabled
+        ):
+            import shlex
+
+            inbox_commands = []
+            for kind, recipient in (("task", task_id), ("session", session.id)):
+                if await self.db.get_pending_messages(kind, recipient, limit=1):
+                    mailbox = shlex.quote(f"{kind}:{recipient}")
+                    inbox_commands.append(
+                        f"aq message inbox --to {mailbox} --inject --limit 50 --json"
+                    )
+            if inbox_commands:
+                return {
+                    "success": False,
+                    "code": "messages.pending_before_close",
+                    "error": (
+                        "Pending feedback arrived while you were working. Your task and "
+                        "claim remain open. Read and handle the messages before closing: "
+                        + "; ".join(inbox_commands)
+                        + ". Recheck any affected evidence, then retry close with the "
+                        "same claim and an updated summary. If an earlier "
+                        "`--inject` consumed a body you never got to read, "
+                        "`--include-consumed` on the same mailbox returns it."
+                    ),
+                }
+
+        # Refuse unmet deliverables before metadata, hierarchy or pipeline writes
+        # so this claim can add evidence or an explicit exception and retry.
+        # effective_deliverables includes an implicit review for research/design.
+        from src.deliverables import (
+            evaluate_deliverables,
+            parse_unmet_reasons,
+            resolve_task_deliverables,
+            review_revision_guidance,
+            review_submit_guidance,
+        )
+
+        if outcome == "pass":
+            response = await self.db.get_task_meta(task.id, "review_response")
+            if response and not await self.db.has_review_response_submission(
+                task.id, response["review_id"], response["revision"]
+            ):
+                return {
+                    "success": False,
+                    "code": "reviews.revision_unpublished",
+                    "review_id": response["review_id"],
+                    "after_revision": response["revision"],
+                    "error": "close refused: the assigned review revision is unpublished. "
+                    + review_revision_guidance(response),
+                }
 
         def _string_list(value) -> list[str]:
             if value is None:
@@ -773,15 +1333,22 @@ class SessionCommandsMixin:
                 return [value] if value.strip() else []
             return [str(item) for item in value if str(item).strip()]
 
-        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), task.deliverables)
+        deliverables = await resolve_task_deliverables(self.db, task)
+        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), deliverables)
         if waiver_error:
             return {"success": False, "code": "deliverables.invalid_waiver", "error": waiver_error}
         work_dir = getattr(session, "work_dir", None) if session is not None else None
+        submitted_reviews = (
+            await self.db.list_reviews_submitted_by_task(task.id)
+            if any(item["kind"] == "review" for item in deliverables)
+            else []
+        )
         deliverable_results = evaluate_deliverables(
-            task.deliverables,
+            deliverables,
             root=Path(work_dir) if work_dir else Path.cwd(),
             tests=_string_list(args.get("tests")),
             commands=_string_list(args.get("commands")),
+            reviews=submitted_reviews,
         )
         unmet = [item for item in deliverable_results if not item["met"]]
         for item in unmet:
@@ -791,15 +1358,84 @@ class SessionCommandsMixin:
             listed = ", ".join(
                 f"{item['id']} ({item['kind']}: {item['target']})" for item in unwaived
             )
+            error = (
+                f"close refused: declared deliverables are unmet: {listed}. "
+                "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
+            )
+            if guidance := review_submit_guidance(task.id, unwaived):
+                error = f"{error} {guidance}"
             return {
                 "success": False,
                 "code": "deliverables.unmet",
                 "unmet_deliverables": unwaived,
-                "error": (
-                    f"close refused: declared deliverables are unmet: {listed}. "
-                    "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
-                ),
+                "error": error,
             }
+
+        if outcome == "pass" and work_dir:
+            from src.integration.stacked_branches import StackedBranches
+
+            blocker = await StackedBranches(self.db).running_blocker(task.id, workspace=work_dir)
+            if blocker:
+                return {"success": False, **blocker}
+
+        # Gate passing closes on the worker's subtask checklist before writes;
+        # failing closes must not be blocked on housekeeping. Decide here whether
+        # to skip open subtasks, but write only after the final refusal point
+        # (children, descendants, review evidence, claim and git verification).
+        # Skipping earlier erased notes even when close was refused; see
+        # skip_open_subtasks_at_close below for the deferred write.
+        skip_open_subtasks_at_close = False
+        if outcome == "pass":
+            if feedback_error := await self._review_feedback_close_error(task_id):
+                return feedback_error
+            subtasks = await self.db.list_task_subtasks(task_id)
+            open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
+            if open_subtasks:
+                if args.get("skip_open_subtasks"):
+                    skip_open_subtasks_at_close = True
+                else:
+                    listed = ", ".join(str(item["ordinal"]) for item in open_subtasks)
+                    return {
+                        "success": False,
+                        "code": "subtasks.open",
+                        "error": (
+                            f"{len(open_subtasks)} subtask(s) are still open: {listed}. "
+                            "Mark each with `aq task subtask-done N` / "
+                            "`aq task subtask-skip N --note …`, or close with "
+                            "--skip-open-subtasks."
+                        ),
+                        "open_subtasks": [item["ordinal"] for item in open_subtasks],
+                    }
+
+        # Capture the verification subject before any close side effect, including
+        # an authorised descendant abandonment. The pending draft below must keep
+        # it even if the daemon dies after accepting the terminal transition.
+        failed_subject_head = None
+        if outcome == "fail" and task.repo_id and task.branch_name:
+            operation = await self.db.get_integration_verifier_operation(task_id)
+            if operation is not None:
+                from src.integration.verifier_subject import verifier_subject_on
+
+                checkpoint = await self.db.get_integration_checkpoint(operation["parent_task_id"])
+                try:
+                    if checkpoint is None:
+                        raise ValueError("aggregate verifier has no parent checkpoint")
+                    if (task.repo_id, task.branch_name) != (
+                        checkpoint["repository_id"], checkpoint["branch"],
+                    ):
+                        raise ValueError("aggregate verifier branch identity differs from its subject")
+                    async with self.db._engine.connect() as conn:
+                        subject = await verifier_subject_on(
+                            conn, verifier_id=task_id, project_id=task.project_id,
+                            operation=operation, checkpoint=checkpoint,
+                        )
+                    if subject is None:
+                        raise ValueError("aggregate verifier has no immutable verification subject")
+                    failed_subject_head = subject["subject"]["head_sha"]
+                    if args.get("commit") and str(args["commit"]).strip() != failed_subject_head:
+                        raise ValueError("failure commit differs from the immutable verification head")
+                except ValueError as exc:
+                    return {"success": False, "result": "verification_failed", "error": str(exc)}
 
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)
@@ -810,6 +1446,25 @@ class SessionCommandsMixin:
             in {"hierarchy", "train"}
             and await self.db.get_children(task_id, limit=1)
         )
+        if outcome == "pass":
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
+
+            ci = await verify_completion_ci(
+                self.db, getattr(self.orchestrator, "git", None), self.config, task, project,
+                commit=args.get("commit"),
+            )
+            if ci is not None and ci["state"] != "green":
+                return {
+                    "success": False, "result": "verification_failed",
+                    "code": "completion.required_ci", "ci": ci,
+                    "error": (
+                        f"{describe_completion_ci(ci)} Keep this claim, resolve the named "
+                        "stage or checks or wait for CI, then retry close."
+                    ),
+                }
         abandoned: list[str] = []
         if open_children and not managed_parent_close:
             if not args.get("abandon_children"):
@@ -883,8 +1538,8 @@ class SessionCommandsMixin:
         # pipeline explodes, because it is the record of what the agent
         # claimed happened.
         await self.db.set_task_meta(task_id, "outcome", outcome)
-        if failure_class:
-            await self.db.set_task_meta(task_id, "failure_class", failure_class)
+        # This describes this close, not a previous attempt's transient error.
+        await self.db.set_task_meta(task_id, "failure_class", failure_class or None)
         if work_outcome:
             await self.db.set_task_meta(task_id, "work_outcome", work_outcome)
         if args.get("commit"):
@@ -913,14 +1568,15 @@ class SessionCommandsMixin:
         # not revoke.
         stale = False
         retry_in_session = False
+        claim_release_declined = False
         review_evidence_snapshot = None
         if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
             from src.database.queries.hierarchy_queries import HierarchyError
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             try:
                 review_evidence_snapshot = await ReviewEvidenceProducer(
-                    self.db, self._integration_promotion_service()
+                    self.db, self._integration_repository_git()
                 ).snapshot(
                     task,
                     session,
@@ -933,29 +1589,110 @@ class SessionCommandsMixin:
                     "result": exc.code,
                     "error": f"integration review evidence refused: {exc}",
                 }
+        completion_id = str(uuid.uuid4())
+        from src.integration.close_runtime import proposal as close_merge_proposal
+
         try:
-            expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
+            close_proposal = await close_merge_proposal(self, task, session, args)
+        except (ValueError, OSError, GitError) as exc:
+            return {"success": False, "error": str(exc), "code": "completion.source_invalid"}
+        if close_proposal is not None:
+            completion_id = close_proposal["id"]
+        expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
+        # The terminal transition commits inside ``complete_session_task`` and
+        # the completion record is saved only after it returns.  Draft the
+        # agent's account first so a restart in that window cannot lose it
+        # (fair-ridge-26), bound to this attempt's identity.  The transition
+        # that accepts this close records the same identity in its own
+        # transaction (``accepted_close``); ``recover_pending_completions``
+        # saves the draft at daemon start only on that exact proof, never
+        # from the task's status (smart-cascade).  Fields computed after the
+        # transition (auto-captured commit, unmerged-work note) are absent
+        # from a recovered record rather than guessed.
+        accepted_close = close_identity(
+            completion_id,
+            session_id=session.id if session is not None else None,
+            claim_epoch=(
+                expect_claim_epoch if expect_claim_epoch is not None else task.claim_epoch
+            ),
+        )
+        explicit_commit = str(args.get("commit") or "").strip()
+        await self.db.set_task_meta(
+            task_id,
+            PENDING_COMPLETION_KEY,
+            completion_draft(
+                TaskCompletion(
+                    id=completion_id,
+                    task_id=task_id,
+                    outcome=outcome,
+                    work_outcome=work_outcome or None,
+                    failure_class=failure_class or None,
+                    changes=str(args.get("changes") or summary).strip(),
+                    verification=str(args.get("verification") or "").strip(),
+                    tests=_string_list(args.get("tests")),
+                    commands=_string_list(args.get("commands")),
+                    branch=task.branch_name,
+                    commits=[failed_subject_head or explicit_commit]
+                    if failed_subject_head or explicit_commit else [],
+                    pr_url=task.pr_url,
+                    summary=summary,
+                    notes=str(args.get("notes") or "").strip(),
+                    deliverables=deliverable_results,
+                    completed_at=time.time(),
+                ),
+                accepted_close,
+            ),
+        )
+        try:
             result = await self.orchestrator.complete_session_task(
                 task,
                 outcome=outcome,
                 work_outcome=work_outcome,
                 failure_class=failure_class,
                 commit=str(args.get("commit") or ""),
+                completion_id=completion_id,
                 notes=str(args.get("notes") or ""),
                 expect_claim_epoch=expect_claim_epoch,
                 pool=is_pool,
                 session_live=session_live,
                 session_id=session.id if session is not None else None,
                 review_evidence_snapshot=review_evidence_snapshot,
+                skip_open_subtasks=skip_open_subtasks_at_close,
+                accepted_close=accepted_close,
             )
             retry_in_session = bool(result.get("verification_retry"))
+        except SubtasksOpenError as exc:
+            await self.db.discard_pending_completion(task_id, completion_id)
+            return {
+                "success": False,
+                "code": "subtasks.open",
+                "error": (
+                    f"{len(exc.ordinals)} subtask(s) are still open: "
+                    f"{', '.join(map(str, exc.ordinals))}. Mark each with "
+                    "`aq task subtask-done N` / `aq task subtask-skip N --note …`, "
+                    "or close with --skip-open-subtasks."
+                ),
+                "open_subtasks": exc.ordinals,
+            }
         except StaleClaim as exc:
             # The up-front fence (``_assert_session_owns``) makes this a
             # narrow race — only a concurrent claim between that check and
             # this call reaches it. The session is still live and holds
             # nothing to clean up, so it keeps its token.
             stale = True
+            await self.db.discard_pending_completion(task_id, completion_id)
             return {"success": False, "result": "stale_claim", "error": str(exc)}
+        except Exception:
+            # Whether the transition committed is unknown here; only its own
+            # recorded identity can say.  A rejected attempt's draft goes, an
+            # accepted one stays for recovery -- its record is what was lost.
+            try:
+                await self.db.discard_pending_completion(task_id, completion_id)
+            except Exception:
+                logger.warning(
+                    "Could not discard the completion draft of %s", task_id, exc_info=True
+                )
+            raise
         finally:
             # Pool sessions keep their instance token — the workflow keeps
             # going (``claim_next``) so revoking here would kill it mid-loop.
@@ -971,38 +1708,125 @@ class SessionCommandsMixin:
                         pass
 
         if retry_in_session:
+            await self.db.discard_pending_completion(task_id, completion_id)
+            if result.get("close_merge"):
+                operation = result["close_merge"]
+                condition = operation["evidence"].get("condition")
+                if condition:
+                    operation["wait"] = await self._cmd_wait_register({
+                        "schema_version": 2, "condition": condition,
+                        "idempotency_key": "close-check:" + operation["operation_id"] + ":"
+                        + str(condition.get("job_id") or condition.get("head_sha")) + ":"
+                        + str(condition.get("check_name", "")),
+                        "claim_epoch": task.claim_epoch,
+                    })
+                    if (not operation["wait"].get("success")
+                            and operation["wait"].get("code") != "wait.already_satisfied"):
+                        from src.integration.close_merge import CloseMerge
+                        from src.integration.close_runtime import DaemonClose
+
+                        runtime = DaemonClose(self.orchestrator)
+                        async with runtime.store.visit(operation["operation_id"]):
+                            row = await runtime.store.get(operation["operation_id"])
+                            await CloseMerge(runtime.store, runtime).defer(
+                                row, "candidate_wait_registration_unavailable")
+                        # Re-enter ordinary validation with the same retained
+                        # source; the deferred operation hands delivery back.
+                        return await self._cmd_task_close(args)
+                    operation["next_step"] = (
+                        f"Candidate check wait {operation['wait']['wait_id']}: "
+                        f"{operation['wait']['next_step']}. Then "
+                        + operation["next_step"])
+                return {"success": False, "result": "close_in_progress", "task_id": task_id,
+                        "close_merge": operation, "error": operation["next_step"]}
             # Not a close: the task is still IN_PROGRESS under this session's
             # claim, and the agent has to fix the listed git issues and call
             # ``aq task close`` again.  No completion record, no claim
             # release, no token revoke — nothing about the run ended.
             issues = result.get("issues") or []
+            escalated = bool(result.get("escalated"))
+            retired = result.get("retired")
             bullets = "\n".join(f"- {msg}" for msg in issues)
-            lead = (
-                "close refused: this workspace holds commits no remote branch has"
-                if result.get("unmerged")
-                else "close refused: git verification found issues you can still "
-                "fix from this workspace"
-            )
+            if result.get("close_deferred"):
+                lead = "close deferred: the workspace is still in use by a managed job"
+                tail = (
+                    "Your task, claim and repair reservation remain open. Wait for the job "
+                    "to settle, then retry close with the same claim."
+                )
+            elif retired:
+                # The integration operation no longer needs this delegate:
+                # nothing in this workspace can make the close acceptable,
+                # and "fix these and close again" is what kept a worker
+                # retrying (bold-impact-53).
+                lead = "close refused: this integration delegate is retired"
+                tail = (
+                    "Do not retry the close and do not close --outcome fail. Run "
+                    "`aq session drain-ack`: the session reconciler stops this "
+                    "session, and owner recovery preserves its checkout before "
+                    "releasing the branch."
+                )
+            elif escalated:
+                # A precondition no agent command can satisfy.  Saying "you
+                # can still fix this from this workspace" here is what sends
+                # a worker into a retry loop or into closing --outcome fail
+                # over passing work.
+                lead = (
+                    "close refused: delivery is blocked on daemon state this "
+                    "workspace cannot change"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim) and has been "
+                    "flagged for an operator. Do not retry blindly and do not close "
+                    "--outcome fail to escape it: report the blocker with "
+                    "`aq message send --to user:dashboard`."
+                )
+            else:
+                lead = (
+                    "close refused: workspace commit preservation could not be proved"
+                    if (result.get("unmerged") or {}).get("status") == "unknown"
+                    else "close refused: this workspace holds commits no remote branch has"
+                    if result.get("unmerged")
+                    else "close refused: git verification found issues you can still "
+                    "fix from this workspace"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
+                    "then run `aq task close` again."
+                )
             return {
                 "success": False,
-                "result": "verification_failed",
+                "result": result.get("close_deferred") or "verification_failed",
                 "task_id": task_id,
                 "status": result.get("status"),
+                "escalated": escalated,
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
                 "unmerged": result.get("unmerged"),
-                "error": (
-                    f"{lead}:\n{bullets}\n"
-                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
-                    "then run `aq task close` again."
-                ),
+                **({"code": "completion.required_ci", "ci": result["ci"]}
+                   if result.get("ci") is not None else {}),
+                **({"retired": retired, "next_step": "aq session drain-ack"} if retired else {}),
+                "error": f"{lead}:\n{bullets}\n{tail}",
             }
 
         final_task = await self.db.get_task(task_id)
+        # The terminal transition performed an authorised checklist skip in
+        # its own transaction.  Emit its refresh event only after that commit;
+        # this is deliberately not a second checklist write.
+        if (
+            skip_open_subtasks_at_close
+            and final_task is not None
+            and final_task.status == TaskStatus.COMPLETED
+        ):
+            counts = await self.db.count_task_subtasks([task_id])
+            total, settled = counts.get(task_id, (0, 0))
+            await self._emit_task_subtasks_updated(task, total, settled)
         # Capture the final branch tip after verification/integration. The
         # pipeline may auto-commit dirty work, so a pre-pipeline SHA describes
         # the input state rather than the commit that actually closed the task.
-        if needs_ws and not args.get("commit") and final_task and final_task.branch_name:
+        if (
+            "completion_source" not in result and needs_ws and not args.get("commit")
+            and final_task and final_task.branch_name
+        ):
             checkout = await self.db.get_project_workspace_path(task.project_id)
             if checkout:
                 sha = await self.orchestrator.git.arev_parse(
@@ -1029,15 +1853,24 @@ class SessionCommandsMixin:
             summary = f"{summary}\n\n{note}" if summary else note
             await self.db.set_task_meta(task_id, "summary", summary)
 
-        explicit_commit = str(args.get("commit") or "").strip()
         auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
         commit = explicit_commit or str(auto_commit or "").strip()
+        if "completion_source" in result:
+            commit = result["completion_source"] or ""
+        if failed_subject_head is not None:
+            commit = failed_subject_head
 
+        # Accepted repair retries reuse the reservation's durable close identity.
+        # A crash after the task transition but before claim release must not
+        # append a second completion record or rewrite terminal transition timing.
+        completion_record_id = result.get("completion_record_id")
+        if completion_record_id:
+            completion_id = completion_record_id
         # Append only: a reopened task may be closed again, and both accounts
         # remain available while task detail shows the latest one.
         await self.db.save_task_completion(
             TaskCompletion(
-                id=str(uuid.uuid4()),
+                id=completion_id,
                 task_id=task_id,
                 outcome=outcome,
                 work_outcome=work_outcome or None,
@@ -1047,7 +1880,7 @@ class SessionCommandsMixin:
                 tests=_string_list(args.get("tests")),
                 commands=_string_list(args.get("commands")),
                 branch=(final_task.branch_name if final_task else task.branch_name),
-                commits=[commit] if commit else [],
+                commits=result.get("completion_commits", [commit] if commit else []),
                 pr_url=(
                     (final_task.pr_url if final_task else None)
                     or result.get("pr_url")
@@ -1057,7 +1890,11 @@ class SessionCommandsMixin:
                 notes=str(args.get("notes") or "").strip(),
                 deliverables=deliverable_results,
                 completed_at=time.time(),
-            )
+            ),
+            **({"idempotent": True} if completion_record_id else {}),
+        )
+        await self.db.discard_pending_completion(
+            task_id, accepted_close["completion_id"], keep_accepted=False
         )
 
         await self.db.record_task_session_outcome(
@@ -1085,17 +1922,24 @@ class SessionCommandsMixin:
             # Return a clean, pushed branch to detached HEAD before dropping
             # the task lock; unpushed work intentionally remains pinned for
             # the forensic retry path (worktree-execution §3.4).
-            slot = await self.orchestrator._slot_workspace_at(session.work_dir)
-            if slot is not None:
-                try:
-                    await self.orchestrator._worktree_slots().restore_slot_after_task(
-                        slot, task_id=task_id
-                    )
-                except Exception:
-                    logger.warning("Could not restore pool slot for %s", task_id, exc_info=True)
+            #
+            # A failing close has already been restored, by the failing-writer
+            # release inside ``complete_session_task`` -- that release needs a
+            # clean tree to prove its handoff, so it cannot wait for this call.
+            if not result.get("slot_restored"):
+                slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                if slot is not None:
+                    try:
+                        await self.orchestrator._worktree_slots().restore_slot_after_task(
+                            slot, task_id=task_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not restore pool slot for %s", task_id, exc_info=True
+                        )
             # The workspace agent-lock is retained (``terminate_pool_session``
             # is the only path that drops it); only the task-hold is released.
-            await self.db.release_claim(
+            release = await self.db.release_claim(
                 session.id,
                 task_status=TaskStatus(result["status"]),
                 context="session_close",
@@ -1103,8 +1947,56 @@ class SessionCommandsMixin:
                 expected_task_id=task_id,
                 expected_claim_epoch=expect_claim_epoch,
                 drain_after_release=self.config.swarm.fresh_context_per_task,
+                **({"preserve_terminal_task": True} if result.get("preserve_terminal_task") else {}),
             )
-            remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+            if release.released:
+                remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+                # A detached, published slot no longer belongs to this task;
+                # a sentinel still naming it refuses the next preparation once
+                # its branch is deleted (amber-bridge-75).
+                try:
+                    slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                    if slot is not None:
+                        await self.orchestrator._worktree_slots().release_task_sentinel(
+                            slot, task_id
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not release slot sentinel for %s", task_id, exc_info=True
+                    )
+            else:
+                # ``_release_claim_on`` declines silently in two very
+                # different situations, and only one of them is a problem.
+                #
+                # Benign: a pool reconciler already released the hold and the
+                # session claimed again, so the guarded write skipped an old
+                # close -- exactly what it is there for.  The session no
+                # longer holds this task; say nothing.
+                #
+                # Stuck: an integration owner is still attached to this
+                # session, so the protected-owner guard returned before
+                # clearing anything.  Reporting ``success: true`` over that
+                # left ``sessions.task_id`` and ``claim_phase='active'`` set
+                # on a task already back on the frontier, with the claim file
+                # deleted and no surface saying so (brisk-delta).  Keep the
+                # claim file -- the session really does still hold the task --
+                # and make the stall visible instead.
+                current = await self.db.get_session(session.id)
+                if current is not None and current.task_id == task_id:
+                    claim_release_declined = True
+                    logger.error(
+                        "Pool session %s closed %s but its claim was not released; "
+                        "the session still holds the task",
+                        session.id,
+                        task_id,
+                    )
+                    await self.db.set_task_meta(
+                        task_id, "needs_attention", "claim_release_declined"
+                    )
+                else:
+                    remove_claim_file_if_matches(
+                        session.work_dir, task_id, expect_claim_epoch
+                    )
         elif session is not None and session.lifecycle == "task" and session.work_dir:
             # Push launches join the claim fence too (execution.py) and
             # write the same claim file — clean it up on a task-session
@@ -1120,10 +2012,9 @@ class SessionCommandsMixin:
             "next_step": "run `aq session drain-ack` to release this session",
             **result,
         }
-        if args.get("claim_next"):
-            response["next"] = await self._cmd_task_claim(
-                {"next": True, "wait": int(args.get("wait") or 0)}
-            )
+        if claim_release_declined:
+            response["claim_released"] = False
+            response["needs_attention"] = "claim_release_declined"
         return response
 
     async def _cmd_task_heartbeat(self, args: dict) -> dict:
@@ -1156,12 +2047,16 @@ class SessionCommandsMixin:
 
         task = await self.db.get_task(str(task_id))
         if task is None:
-            return {"error": f"No task '{task_id}'"}
+            return {"success": False, "error": f"No task '{task_id}'"}
 
         now = time.time()
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
         if session is not None:
+            from src.waits.holding import active_wait_for
+
+            if await active_wait_for(self.db, session) is not None:
+                return {"success": True, "ignored": "wait_active"}
             await self.db.touch_session_activity(session.id, now)
         if task.assigned_agent_id:
             try:
@@ -1169,6 +2064,9 @@ class SessionCommandsMixin:
             except Exception:
                 logger.debug("heartbeat: agent update failed", exc_info=True)
 
+        from src.integration.stacked_branches import StackedBranches
+
+        blocker = await StackedBranches(self.db).running_blocker(task.id)
         ttl = self.config.sessions.lease_ttl_seconds
         return {
             "success": True,
@@ -1176,4 +2074,5 @@ class SessionCommandsMixin:
             "session_id": session.id if session else None,
             "heartbeat_at": now,
             "lease_expires_at": now + ttl if ttl > 0 else None,
+            **({"blockers": [blocker]} if blocker else {}),
         }
