@@ -109,6 +109,14 @@ SUCCESS_PAYLOAD = {
     "samples": [],
     "classes": [],
     "triggers": [],
+    "count": 0,
+    "source_health": "complete",
+    "snapshot_at": 0,
+    "next_cursor": None,
+    "ask": {"id": "x", "context": {}},
+    "expected": {},
+    "actions": [],
+    "preview": {"id": "x", "packet": {}, "packet_sha256": "sha"},
 }
 
 
