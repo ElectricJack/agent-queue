@@ -1,0 +1,71 @@
+{
+  "cli_catalogue_sha256": "468e30721893c160e591ef116159339a6e8d4720e8de3b1266baac51701eced6",
+  "contract_fingerprint": "sha256:d1e846c988d5b5d453e416c2d70b32c7752bfcdea3fd75e62a3bbd5c41229e6d",
+  "previous_cli_catalogue_sha256": "5eb568f689a5bdf4abf1198e9a94320593f9823b878efe9de4feba8b8c756a24",
+  "review_notes": [
+    "The newer dev input adds exactly one fallback CLI definition: integration_release_withheld_source. Removing it recovers the prior catalogue bytes; historical recordings remain unchanged.",
+    "The typed adapter retains integration_operator authorization and TrainControls.release_withheld_source human apply authority, exact source/target fences, reason requirement, writer/hold/acceptance checks and carried repair budget. Preview defaults true; apply is idempotent.",
+    "explain_task only appends an available next action to integration blocker detail. Its return branches, task scope and read authority are unchanged."
+  ],
+  "source_base": "35d58eee0183bcc25252931ae5958072983606d6",
+  "source_commit": "ff25a7d7150a9dccb44d19cf7b9c95762ad02909",
+  "transport_definition": {
+    "description": "Authenticated hierarchical integration operational control.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "dry_run": {
+          "default": true,
+          "title": "Dry Run",
+          "type": "boolean"
+        },
+        "expected_source_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Source Sha"
+        },
+        "expected_target_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Target Sha"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "batch_id",
+        "task_id"
+      ],
+      "title": "IntegrationReleaseWithheldSourceArgs",
+      "type": "object"
+    },
+    "name": "integration_release_withheld_source"
+  }
+}

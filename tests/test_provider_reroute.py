@@ -20,14 +20,16 @@ No LLM, no CLI.
 
 from __future__ import annotations
 
-import random
+import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus, WorkspaceKind
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.providers.reroute import (
@@ -39,6 +41,7 @@ from src.providers.reroute import (
     provider_order,
 )
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 
 # -- the pure planner -------------------------------------------------------------
 
@@ -50,7 +53,6 @@ def _ctx(
     backlog=None,
     stats=None,
     config=None,
-    default_providers=None,
     now=10_000.0,
 ) -> PlanContext:
     rungs = rungs or {
@@ -69,7 +71,6 @@ def _ctx(
         generations={"codex": 3, "claude": 1},
         backlog=backlog or {},
         stats=stats or {},
-        default_providers=default_providers or {},
         session_providers=frozenset({r.provider for r in rungs.values()}),
         config=config or ProviderFailoverConfig(),
         now=now,
@@ -103,6 +104,50 @@ def test_preferred_moves_to_the_equivalent_rung_on_an_available_provider():
 def test_class_only_fails_over_like_preferred():
     [d] = plan_sweep([_cand("t1", intent=CLASS_ONLY)], _ctx())
     assert d.action == "move" and d.to_profile_id == "std-high-claude"
+
+
+@pytest.mark.parametrize("operator", [False, True])
+@pytest.mark.parametrize("mode", ["legacy", "routed", "forced"])
+def test_failover_cannot_cross_operator_roles(operator, mode):
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", operator=operator),
+        "target": Rung("target", "claude", "deep-high", "claude", operator=not operator),
+    }
+    candidate = _cand("t", "source", route_candidates=(
+        (("target", "deep-high"),) if mode == "routed" else ()
+    ))
+    options = {"to_profile": "target", "force": True} if mode == "forced" else {}
+    [decision] = plan_sweep([candidate], _ctx(rungs=rungs), **options)
+    assert (decision.action, decision.kind) == ("hold", "no_equivalent_rung")
+
+
+@pytest.mark.parametrize("harness, class_id", [("local", "deep-high"), ("claude", "cheap")])
+def test_forced_operator_failover_preserves_frontier(harness, class_id):
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", operator=True),
+        "target": Rung("target", harness, class_id, "claude", operator=True),
+    }
+    [decision] = plan_sweep([_cand("t", "source")], _ctx(rungs=rungs),
+                            to_profile="target", force=True)
+    assert (decision.action, decision.kind) == ("hold", "no_equivalent_rung")
+
+
+@pytest.mark.parametrize("routed", [False, True])
+def test_spill_keeps_operator_and_ordinary_capacity_separate(routed):
+    from src.providers.spill import CapacityView, PoolCapacity, _target_rungs
+
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", lifecycle="pool", operator=True),
+        "ordinary": Rung("ordinary", "claude", "deep-high", "claude", lifecycle="pool"),
+        "operator": Rung("operator", "claude", "deep-high", "claude", lifecycle="pool", operator=True),
+    }
+    context = _ctx(rungs=rungs, states={"codex": AVAILABLE, "claude": AVAILABLE})
+    view = CapacityView(pools={name: PoolCapacity(name) for name in rungs})
+    targets = _target_rungs(context, view, class_id="deep-high", source_id="source",
+                           project_id="p", providers=["claude"], route_candidates=(
+                               (("ordinary", "deep-high"), ("operator", "deep-high")) if routed else ()
+                           ))
+    assert [target.profile_id for target in targets] == ["operator"]
 
 
 def test_pinned_holds_with_provider_pinned():
@@ -147,6 +192,30 @@ def test_a_disabled_target_pool_is_not_a_target():
     }
     [d] = plan_sweep([_cand("t1")], _ctx(rungs=rungs))
     assert (d.action, d.kind) == ("hold", "no_equivalent_rung")
+
+
+@given(enabled=st.booleans(),
+       target_state=st.sampled_from([AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED]),
+       source_state=st.sampled_from([DISABLED, EXHAUSTED, UNAUTHENTICATED]),
+       intent=st.sampled_from([PREFERRED, CLASS_ONLY, PINNED]), force=st.booleans())
+def test_property_failover_never_moves_to_a_disabled_profile_or_provider(
+    enabled, target_state, source_state, intent, force,
+):
+    rungs = {
+        "std-high-codex": Rung("std-high-codex", "codex", "std-high", "codex", "pool", True, 2),
+        "std-high-claude": Rung(
+            "std-high-claude", "claude", "std-high", "claude", "pool", enabled, 2,
+        ),
+    }
+    context = _ctx(rungs=rungs, states={"codex": source_state, "claude": target_state})
+    [decision] = plan_sweep([_cand("t", intent=intent)], context, force=force)
+    should_move = enabled and (target_state == AVAILABLE or (force and target_state == DEGRADED))
+    should_move = should_move and (intent != PINNED or force)
+    assert (decision.action == "move") == should_move
+    if decision.action == "move":
+        assert rungs[decision.to_profile_id].enabled
+        assert decision.to_provider == "claude"
+        assert target_state in {AVAILABLE, DEGRADED}
 
 
 def test_every_provider_down_holds_everything_and_moves_nothing():
@@ -281,46 +350,126 @@ def test_an_explicit_move_off_a_healthy_provider_needs_to_profile():
     assert d.action == "move"
 
 
-def test_provider_order_config_and_project_default():
-    ctx = _ctx(default_providers={"p": "claude"})
-    assert provider_order(ctx, "p")[0] == "claude"
+def test_provider_order_config_and_no_project_default():
+    """No project default comes first (mandatory routing §6.8)."""
+    from src.profiles.catalog import WORKER_PROVIDERS
+
+    shipped = [harness for harness, _title, _vendor in WORKER_PROVIDERS]
+    assert provider_order(_ctx(), "p")[: len(shipped)] == shipped
     cfg = ProviderFailoverConfig(order=["codex", "claude"])
     assert provider_order(_ctx(config=cfg), "p")[:2] == ["codex", "claude"]
+
+
+# -- mandatory routing §6.8: moves stay inside the router's candidates ---------------
+
+
+def test_a_routed_task_fails_over_to_its_next_candidate_in_the_routers_order():
+    rungs = {
+        "std-high-codex": Rung("std-high-codex", "codex", "std-high", "codex", "pool", True, 2),
+        "std-high-claude": Rung("std-high-claude", "claude", "std-high", "claude", "pool", True, 2),
+        "std-high-gemini": Rung("std-high-gemini", "gemini", "std-high", "gemini", "pool", True, 2),
+    }
+    ctx = _ctx(rungs=rungs, states={"codex": UNAUTHENTICATED, "claude": AVAILABLE,
+                                    "gemini": AVAILABLE})
+    routed = (("std-high-codex", "std-high"), ("std-high-gemini", "std-high"),
+              ("std-high-claude", "std-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.to_profile_id, d.to_class) == ("move", "std-high-gemini", None)
+
+
+def test_a_routed_task_never_leaves_its_candidates_even_with_a_rung_elsewhere():
+    """An equivalent rung on claude exists, but the router recorded only codex."""
+    [d] = plan_sweep([_cand("t1", route_candidates=(("std-high-codex", "std-high"),))], _ctx())
+    assert (d.action, d.kind) == ("hold", "no_equivalent_rung")
+    assert d.to_profile_id is None
+
+
+def test_a_candidate_move_writes_the_candidates_class_and_skips_disabled_profiles():
+    ctx = _ctx()
+    ctx = PlanContext(
+        **{**ctx.__dict__, "disabled_profiles": frozenset({"std-high-claude"}),
+           "profile_providers": {**ctx.profile_providers, "generic-claude": "claude"},
+           "profile_lifecycles": {"generic-claude": "task"},
+           "profile_harnesses": {"generic-claude": "claude"}},
+    )
+    routed = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"),
+              ("generic-claude", "deep-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.to_profile_id, d.to_class) == ("move", "generic-claude", "deep-high")
+
+
+def test_a_candidate_on_an_unavailable_provider_holds_no_available_target():
+    ctx = _ctx(states={"codex": UNAUTHENTICATED, "claude": DEGRADED})
+    routed = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.kind) == ("hold", "no_available_target")
+
+
+def test_an_operator_move_outside_the_candidates_is_refused_even_forced():
+    routed = (("std-high-codex", "std-high"),)
+    for force in (False, True):
+        [d] = plan_sweep(
+            [_cand("t1", route_candidates=routed)], _ctx(), explicit=True,
+            to_profile="std-high-claude", force=force,
+        )
+        assert (d.action, d.kind) == ("hold", "no_available_target"), force
+        assert "override" in d.detail
+    inside = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"))
+    [d] = plan_sweep(
+        [_cand("t1", route_candidates=inside)], _ctx(), explicit=True,
+        to_profile="std-high-claude",
+    )
+    assert (d.action, d.to_profile_id) == ("move", "std-high-claude")
+
+
+def test_route_candidates_are_read_from_the_route_record():
+    from src.providers.reroute import route_candidates_of
+
+    record = {"candidates": [
+        {"profile_id": "a", "intelligence_class": "x", "tier": "preferred"},
+        {"profile_id": "b", "intelligence_class": "y"},
+        {"profile_id": "a", "intelligence_class": "x"},
+        {"intelligence_class": "z"},
+    ]}
+    assert route_candidates_of(record) == (("a", "x"), ("b", "y"))
+    assert route_candidates_of(None) == () == route_candidates_of({"rule": "k"})
 
 
 def test_batch_id_is_one_outage():
     assert batch_id_for("codex", 7) == "prb-codex-7"
 
 
-def test_property_no_sweep_sequence_exceeds_the_trickle_or_touches_a_bound():
+@given(cap=st.integers(1, 4), source_cap=st.integers(1, 4),
+       max_per_sweep=st.integers(1, 6),
+       priorities=st.lists(st.integers(1, 200), min_size=1, max_size=12),
+       claims=st.lists(st.integers(0, 4), min_size=1, max_size=12))
+def test_property_no_sweep_sequence_exceeds_the_trickle_or_touches_a_bound(
+    cap, source_cap, max_per_sweep, priorities, claims,
+):
     """After any sequence of sweeps and claims, moved-and-queued work on every
     rung stays within its trickle, and the planner never changes a rung's
     bounds (D14: failover raises no ceiling; claims are what run the work, and
     they are bounded by ``max_active`` unchanged)."""
-    rng = random.Random(20260920)
-    for _trial in range(60):
-        cap = rng.randint(1, 3)
-        rungs = {
-            "a-codex": Rung("a-codex", "codex", "a", "codex", "pool", True, rng.randint(1, 3)),
-            "a-claude": Rung("a-claude", "claude", "a", "claude", "pool", True, cap),
-        }
-        before = dict(rungs)
-        cfg = ProviderFailoverConfig()
-        cfg.reroute.max_per_sweep = rng.randint(1, 5)
-        queue = [_cand(f"t{i}", "a-codex", priority=rng.randint(1, 200)) for i in range(12)]
-        backlog = 0
-        for _sweep in range(8):
-            decisions = plan_sweep(
-                queue, _ctx(rungs=rungs, backlog={"a-claude": backlog}, config=cfg)
-            )
-            moved = [d for d in decisions if d.action == "move"]
-            assert len(moved) <= cfg.reroute.max_per_sweep
-            backlog += len(moved)
-            assert backlog <= max(1, cap)
-            moved_ids = {d.task_id for d in moved}
-            queue = [c for c in queue if c.task_id not in moved_ids]
-            # Some of the moved work is claimed (never more than max_active).
-            backlog -= rng.randint(0, min(backlog, cap))
+    rungs = {
+        "a-codex": Rung("a-codex", "codex", "a", "codex", "pool", True, source_cap),
+        "a-claude": Rung("a-claude", "claude", "a", "claude", "pool", True, cap),
+    }
+    before = dict(rungs)
+    cfg = ProviderFailoverConfig()
+    cfg.reroute.max_per_sweep = max_per_sweep
+    queue = [_cand(f"t{i}", "a-codex", priority=p) for i, p in enumerate(priorities)]
+    backlog = 0
+    for claimed in claims:
+        decisions = plan_sweep(
+            queue, _ctx(rungs=rungs, backlog={"a-claude": backlog}, config=cfg)
+        )
+        moved = [d for d in decisions if d.action == "move"]
+        assert len(moved) <= max_per_sweep
+        backlog += len(moved)
+        assert backlog <= cap
+        moved_ids = {d.task_id for d in moved}
+        queue = [c for c in queue if c.task_id not in moved_ids]
+        backlog -= min(claimed, backlog, cap)
         assert rungs == before
 
 
@@ -383,7 +532,7 @@ async def _task(orch, task_id, profile, *, intent=PREFERRED, cls="standard-high"
             description="d",
             status=status,
             priority=priority,
-            profile_id=profile,
+            profile_id=profile, route_source=route_source_for(profile),
             intelligence_class=cls,
             provider_intent=intent,
         )
@@ -397,10 +546,94 @@ async def _codex_down(orch):
     assert orch.provider_availability.suppresses("codex")
 
 
+async def test_provider_close_stops_half_change_notification_writes(orch, monkeypatch):
+    """A notification must not keep writing after the fixture resets identities."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    notifications = []
+
+    async def notify(provider, generation=None):
+        notifications.append(asyncio.current_task())
+        started.set()
+        await release.wait()
+        await orch.db.wait_source_commit(
+            source_key="notification:late", generation=0, revision="1",
+            outcome_ref="notification:late", payload={},
+        )
+
+    monkeypatch.setattr(orch.provider_availability, "notify_state_change", notify)
+    await _codex_down(orch)
+    await asyncio.wait_for(started.wait(), timeout=5)
+    try:
+        await orch.provider_availability.close()
+        assert all(task.done() for task in notifications)
+    finally:
+        for task in notifications:
+            task.cancel()
+        await asyncio.gather(*notifications, return_exceptions=True)
+
+
 def _handler(orch):
     from src.commands.handler import CommandHandler
 
     return CommandHandler(orch, orch.config)
+
+
+@settings(max_examples=max(6, settings.default.max_examples // 10),
+          suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(home=st.sampled_from(["codex", "claude"]),
+       intent=st.sampled_from([PREFERRED, CLASS_ONLY, PINNED]),
+       priority=st.integers(0, 200), cycles=st.integers(1, 2), by_batch=st.booleans())
+async def test_property_reroute_undo_round_trips_route_and_intent(
+    orch, home, intent, priority, cycles, by_batch,
+):
+    """Each example owns a task and removes it, including its audit rows."""
+    away = "claude" if home == "codex" else "codex"
+    home_profile = f"standard-high-{home}"
+    away_profile = f"standard-high-{away}"
+    tid = "property-round-trip"
+    await _task(orch, tid, home_profile, intent=intent, priority=priority)
+    route = {"candidates": [
+        {"profile_id": home_profile, "intelligence_class": "standard-high"},
+        {"profile_id": away_profile, "intelligence_class": "standard-high"},
+    ]}
+    await orch.db.update_task(tid, route=route, route_source="router")
+    handler = _handler(orch)
+    try:
+        for _ in range(cycles):
+            await orch.provider_availability.set_state(
+                away, AVAILABLE, by="human:test", reason="target available",
+                until=time.time() + 3600,
+            )
+            await orch.provider_availability.set_state(
+                home, DISABLED, by="human:test", reason="source unavailable", until=None,
+            )
+            moved = await handler.execute("provider_reroute", {
+                "task_id": [tid], "to_profile": away_profile, "force": intent == PINNED,
+            })
+            assert moved["success"] and len(moved["moved"]) == 1, moved
+            task = await orch.db.get_task(tid)
+            assert (task.profile_id, task.rerouted_from) == (away_profile, home_profile)
+            assert task.provider_intent == intent
+            await orch.provider_availability.set_state(
+                home, AVAILABLE, by="human:test", reason="source recovered",
+                until=time.time() + 3600,
+            )
+            args = {"batch_id": moved["batch_ids"][0]} if by_batch else {"task_id": [tid]}
+            undone = await handler.execute("provider_reroute_undo", args)
+            assert undone["success"] and len(undone["undone"]) == 1, undone
+            restored = await orch.db.get_task(tid)
+            assert (restored.profile_id, restored.rerouted_from) == (home_profile, None)
+            assert restored.intelligence_class == "standard-high"
+            assert restored.provider_intent == intent
+            assert restored.route == route and restored.route_source == "router"
+            assert restored.status == TaskStatus.READY and restored.priority == priority
+            rows = await orch.db.list_task_reroutes(task_id=tid)
+            assert rows[0]["reason_code"] == "operator_undo"
+            assert all(row["undone_at"] is not None for row in rows
+                       if row["reason_code"] != "operator_undo")
+    finally:
+        await orch.db.delete_task(tid)
 
 
 async def test_capacity_spill_counts_as_automatic_without_blacklisting_source(orch):
@@ -461,9 +694,11 @@ async def test_capacity_spill_counts_as_automatic_without_blacklisting_source(or
     assert await orch.db.task_reroute_stats([]) == {}
 
 
-async def test_acceptance_codex_unavailable(orch):
+@pytest.mark.parametrize("supervisor_enabled", [False, True])
+async def test_acceptance_codex_unavailable(orch, supervisor_enabled):
     """The epic's criterion: preferred moves, pinned holds with a reason, astra
     holds, and every move is recorded and reversible."""
+    await orch.db.update_project("p-1", supervisor_enabled=supervisor_enabled)
     await _task(orch, "pref", "standard-high-codex", intent=PREFERRED, priority=10)
     await _task(orch, "pin", "standard-high-codex", intent=PINNED)
     await _task(orch, "astra", "astra-high-codex", cls="astra-high")
@@ -500,11 +735,22 @@ async def test_acceptance_codex_unavailable(orch):
     assert codex["rerouted"] == 1 and codex["batch_id"] == result["batch_ids"][0]
 
     # One supervisor notice for the project, once per batch.
-    notices = await orch.db.list_messages(to_kind="session", to_id="supervisor-p-1")
+    recipient = "supervisor-p-1" if supervisor_enabled else "supervisor-global"
+    thread = f"reroute:{result['batch_ids'][0]}:p-1"
+    notices = await orch.db.list_messages(thread_id=thread)
     assert len(notices) == 1 and "pref" in notices[0].body and "pin" in notices[0].body
+    assert (notices[0].to_kind, notices[0].to_id, notices[0].project_id) == (
+        "session", recipient, "p-1",
+    )
     again = await handler.execute("provider_reroute", {})
     assert again["outcome"] == "held" and again["notices"] == []
-    assert len(await orch.db.list_messages(to_kind="session", to_id="supervisor-p-1")) == 1
+    # A changed recipient and archived history still refer to this one notice.
+    await orch.db.update_project("p-1", supervisor_enabled=not supervisor_enabled)
+    await orch.db.redirect_disabled_supervisor_messages()
+    await orch.db.archive_messages([notices[0].id])
+    again = await handler.execute("provider_reroute", {})
+    assert again["outcome"] == "held" and again["notices"] == []
+    assert len(await orch.db.list_messages(thread_id=thread, include_archived=True)) == 1
 
     # The pinned task explains itself (D18).
     hold = await orch.provider_availability.hold_for(await orch.db.get_task("pin"))
@@ -523,6 +769,65 @@ async def test_acceptance_codex_unavailable(orch):
     rows = await orch.db.list_task_reroutes(task_id="pref")
     assert [r["reason_code"] for r in rows] == ["operator_undo", "provider_unavailable"]
     assert rows[1]["undone_at"] is not None
+
+
+async def test_batch_notices_remain_project_scoped_at_the_global_supervisor(orch):
+    await orch.db.create_project(Project(id="p-2", name="P2"))
+    await _task(orch, "first", "standard-high-codex", priority=10)
+    await _task(orch, "second", "standard-high-codex", priority=20)
+    await orch.db.update_task("second", project_id="p-2")
+    await _codex_down(orch)
+    handler = _handler(orch)
+
+    result = await handler.execute("provider_reroute", {})
+    assert {item["task_id"] for item in result["moved"]} == {"first", "second"}
+    [batch] = result["batch_ids"]
+    notices = await orch.db.list_messages(to_kind="session", to_id="supervisor-global")
+    notices = [notice for notice in notices if notice.thread_id in {
+        f"reroute:{batch}:p-1", f"reroute:{batch}:p-2",
+    }]
+    assert len(notices) == 2
+    assert {notice.id for notice in notices} == set(result["notices"])
+    by_project = {notice.project_id: notice for notice in notices}
+    assert set(by_project) == {"p-1", "p-2"}
+    assert "first" in by_project["p-1"].body and "second" not in by_project["p-1"].body
+    assert "second" in by_project["p-2"].body and "first" not in by_project["p-2"].body
+
+    again = await handler.execute("provider_reroute", {})
+    assert again["notices"] == []
+
+
+async def test_failover_and_undo_stay_inside_a_routed_tasks_candidates(orch):
+    """Spec §6.8 through the service: the sweep reads ``tasks.route.candidates``
+    and undo returns a task only to a candidate."""
+    candidates = [
+        {"profile_id": "standard-high-codex", "intelligence_class": "standard-high"},
+        {"profile_id": "standard-high-claude", "intelligence_class": "standard-high"},
+    ]
+    for task_id, route in (
+        ("routed", {"candidates": candidates}),
+        ("lane", {"candidates": candidates[:1]}),
+    ):
+        await orch.db.create_task(Task(
+            id=task_id, project_id="p-1", title=task_id, description="d",
+            status=TaskStatus.READY, profile_id="standard-high-codex", route_source="router",
+            intelligence_class="standard-high", provider_intent=PREFERRED, route=route,
+        ))
+    await _codex_down(orch)
+    handler = _handler(orch)
+    result = await handler.execute("provider_reroute", {})
+    assert [d["task_id"] for d in result["moved"]] == ["routed"]
+    assert {d["task_id"]: d["kind"] for d in result["held"]} == {"lane": "no_equivalent_rung"}
+    moved = await orch.db.get_task("routed")
+    assert (moved.profile_id, moved.route_source) == ("standard-high-claude", "router")
+
+    # The candidates shrink under it: undo may no longer return it to codex.
+    await orch.db.update_task("routed", route={"candidates": candidates[1:]})
+    await orch.provider_availability.set_state("codex", "auto", by="human:test")
+    refused = await handler.execute("provider_reroute_undo", {"task_id": ["routed"],
+                                                              "force": True})
+    assert refused["success"] is False and "route candidates" in refused["error"]
+    assert (await orch.db.get_task("routed")).profile_id == "standard-high-claude"
 
 
 async def test_undo_refuses_a_running_task(orch):
@@ -577,6 +882,202 @@ async def test_worker_token_is_out_of_scope(orch):
     assert result["success"] is False and result["error"].startswith("out of scope")
 
 
+async def test_blocked_failover_preserves_stop_and_graph_blockers(orch):
+    await _task(orch, "stopped", "standard-high-codex")
+    await orch.db.transition_task("stopped", TaskStatus.BLOCKED, context="stop_task")
+    await orch.db.update_task("stopped", retry_count=2, route_source="router", route={
+        "candidates": [
+            {"profile_id": "standard-high-codex", "intelligence_class": "standard-high"},
+            {"profile_id": "standard-high-claude", "intelligence_class": "standard-high"},
+        ],
+    })
+    gate_id, _ = await orch.db.create_gate(
+        "p-1", "human", "Keep stopped", waiter_task_ids=["stopped"],
+    )
+    await _task(orch, "pin", "standard-high-codex", status=TaskStatus.BLOCKED, intent=PINNED)
+    await _codex_down(orch)
+    handler = _handler(orch)
+    plan = await handler.execute("provider_reroute", {"provider": "codex", "dry_run": True})
+    assert [d["task_id"] for d in plan["moved"]] == ["stopped"], plan
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stopped") == []
+    result = await handler.execute("provider_reroute", {"provider": "codex"})
+    assert [d["task_id"] for d in result["moved"]] == ["stopped"], result
+    assert result["resumed"] == []
+    assert {d["task_id"]: d["kind"] for d in result["held"]} == {"pin": "provider_pinned"}
+    task = await orch.db.get_task("stopped")
+    assert (task.status, task.profile_id, task.route_source, task.retry_count, task.is_blocked) == (
+        TaskStatus.BLOCKED, "standard-high-claude", "router", 2, 1,
+    )
+    assert await orch.db.get_task_meta("stopped", "blocked_terminal") == "stop_task"
+    assert (await orch.db.get_gate(gate_id))["status"] == "open"
+    [audit] = await orch.db.list_task_reroutes(task_id="stopped")
+    assert audit["reason_code"] == "provider_unavailable"
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_failover_preview_excludes_blocked_tasks_with_live_sessions(orch, state):
+    await _task(orch, "live", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await orch.db.create_session(SessionRecord(
+        id="writer", project_id="p-1", task_id="live", profile_id="standard-high-codex",
+        harness="codex", provider="fake", name="writer", lifecycle="pool", work_dir="/tmp",
+        epoch="test", instance_token="exact-token", state=state, desired_state="stopped",
+        started_at=time.time(),
+    ))
+    await _codex_down(orch)
+    result = await _handler(orch).execute("provider_reroute", {"dry_run": True})
+    assert result["moved"] == result["held"] == result["lost"] == [], result
+
+
+async def test_failover_guard_rejects_a_claim_that_wins_after_preview(orch, monkeypatch):
+    await _task(orch, "stopped", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await _codex_down(orch)
+    apply = orch.db.apply_task_reroute
+
+    async def claim_before_apply(task_id, **kwargs):
+        await orch.db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
+        return await apply(task_id, **kwargs)
+
+    monkeypatch.setattr(orch.db, "apply_task_reroute", claim_before_apply)
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert result["moved"] == [] and result["lost"] == ["stopped"], result
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stopped") == []
+
+
+async def test_failover_preview_does_not_wait_for_an_applying_sweep(orch):
+    await _task(orch, "stopped", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await _codex_down(orch)
+    service = _handler(orch)._reroute_service()
+    async with service._lock:
+        plan = await asyncio.wait_for(service.sweep(dry_run=True), timeout=5)
+        assert service._lock.locked()
+    assert [d["task_id"] for d in plan["moved"]] == ["stopped"]
+    assert plan["applied"] is False
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
+
+
+# --- A per-project supervisor names only its own tasks (quick-crest-28) ------------
+
+
+def _project_supervisor(handler, project_id="p-1"):
+    handler._current_scope = {
+        "kind": "session", "session_id": "sup", "project_id": project_id, "elevated": True,
+    }
+    return handler
+
+
+async def _two_projects_on_codex(orch):
+    """``own`` in p-1 and ``theirs`` in p-2, both on codex, with codex down."""
+    from src.models import Project
+
+    await orch.db.create_project(Project(id="p-2", name="p-2"))
+    await _task(orch, "own", "standard-high-codex")
+    await orch.db.create_task(
+        Task(
+            id="theirs", project_id="p-2", title="theirs", description="d",
+            status=TaskStatus.READY, profile_id="standard-high-codex",
+            route_source=route_source_for("standard-high-codex"),
+            intelligence_class="standard-high", provider_intent=PREFERRED,
+        )
+    )
+    await _codex_down(orch)
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["theirs,", " theirs", "theirs ", "own theirs", "own,theirs", ["own", "theirs,"]],
+)
+async def test_a_project_supervisor_cannot_move_another_projects_task(orch, task_id):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({"task_id": task_id, "force": True})
+
+    assert result == {
+        "success": False,
+        "error": "out of scope: provider_reroute may only name tasks of project p-1 (theirs)",
+    }
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+    assert (await orch.db.get_task("own")).profile_id == "standard-high-codex"
+
+
+@pytest.mark.parametrize(
+    ("args", "refused"),
+    [
+        ({"task_ids": ["theirs"]}, "task_ids"),
+        ({"task_ids": ["theirs"], "job_id": "made-up"}, "task_ids"),
+        ({"task_id": ["theirs", 5]}, "task_id"),
+    ],
+)
+async def test_reroute_refuses_arguments_its_model_does_not_declare(orch, args, refused):
+    await _two_projects_on_codex(orch)
+
+    result = await _handler(orch)._cmd_provider_reroute(dict(args))
+
+    assert result["success"] is False
+    assert result["error"].startswith("invalid provider_reroute arguments: ")
+    assert f"{refused}:" in result["error"]
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_sweep_is_refused(orch):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({})
+
+    assert result["success"] is False
+    assert "re-routes named tasks only" in result["error"]
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_moves_its_own_task_however_it_is_spelled(orch):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({"task_id": "own,"})
+
+    assert [d["task_id"] for d in result["moved"]] == ["own"], result
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_undoes_only_its_own_projects_moves(orch):
+    await _two_projects_on_codex(orch)
+    handler = _handler(orch)
+    swept = await handler.execute("provider_reroute", {})
+    assert sorted(d["task_id"] for d in swept["moved"]) == ["own", "theirs"], swept
+    [batch_id] = swept["batch_ids"]
+    await orch.provider_availability.set_state("codex", "auto", by="human:test")
+    _project_supervisor(handler)
+
+    for args in ({"task_id": "theirs,"}, {"task_id": [" theirs"]}, {"task_id": "own theirs"}):
+        refused = await handler._cmd_provider_reroute_undo(args)
+        assert refused == {
+            "success": False,
+            "error": (
+                "out of scope: provider_reroute_undo may only name tasks of project p-1 (theirs)"
+            ),
+        }
+    for args in ({"task_ids": ["theirs"]}, {"batch": batch_id}):
+        refused = await handler._cmd_provider_reroute_undo(args)
+        assert refused["success"] is False
+        assert refused["error"].startswith("invalid provider_reroute_undo arguments: ")
+
+    # The batch spans both projects; the injected ``project_id`` is not the
+    # authority, the scope is.
+    undone = await handler._cmd_provider_reroute_undo(
+        {"batch_id": batch_id, "project_id": "p-2"}
+    )
+    assert undone["outcome"] == "undone", undone
+    assert [d["task_id"] for d in undone["undone"]] == ["own"]
+    assert (await orch.db.get_task("own")).profile_id == "standard-high-codex"
+    theirs = await orch.db.get_task("theirs")
+    assert (theirs.profile_id, theirs.rerouted_from) == (
+        "standard-high-claude", "standard-high-codex"
+    )
+
+
 async def test_provider_paused_task_resumes_then_moves(orch):
     await _task(orch, "pp", "standard-high-codex", status=TaskStatus.READY)
     await orch.db.transition_task(
@@ -600,69 +1101,26 @@ async def test_provider_paused_task_resumes_then_moves(orch):
     assert "legacy" in [d["task_id"] for d in result["moved"]]
 
 
-async def test_route_options_exclude_the_unavailable_provider(orch):
-    await _task(orch, "t", None, intent=CLASS_ONLY)
-    await _codex_down(orch)
-    result = await _handler(orch).execute("task_route_options", {"task_id": "t"})
-    assert result["success"], result
-    assert result["outcome"] == "explicit"
-    assert result["explicit_profile_id"] == "standard-high-claude"
-    assert all(o["provider_key"] != "codex" for o in result["options"])
-    assert {o["profile_id"] for o in result["unavailable_options"]} >= {"standard-high-codex"}
-    await _task(orch, "a", None, intent=CLASS_ONLY, cls="astra-high")
-    result = await _handler(orch).execute("task_route_options", {"task_id": "a"})
-    assert result["outcome"] == "held"
-
-
-async def test_project_default_is_derived_never_persisted(orch):
-    await orch.db.update_project("p-1", default_profile_id="standard-high-codex")
+async def test_an_unrouted_task_takes_no_project_default(orch):
+    """Mandatory routing §8: no project default -- preferred or followed to an
+    equivalent rung while its provider is down -- routes a task."""
+    await orch.db.update_project("p-1", preferred_provider="codex")
     project = await orch.db.get_project("p-1")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
-    await _codex_down(orch)
-    assert await orch._effective_default_profile_id(project) == "standard-high-claude"
-    assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-codex"
-    await orch.provider_availability.set_state("codex", "auto", by="human:test")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
-
-
-async def test_project_preference_redirects_default_without_persisting_or_spilling(orch):
-    await orch.db.update_project("p-1", default_profile_id="standard-high-claude",
-                                 preferred_provider="codex")
-    project = await orch.db.get_project("p-1")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
     await _task(orch, "default", None, intent=CLASS_ONLY)
-    assert await _handler(orch)._claim_effective_default(
-        project, project.default_profile_id,
-    ) == "standard-high-codex"
     task = await orch.db.get_task("default")
-    assert (await orch._resolve_profile(task)).id == "standard-high-codex"
-    from src.models import Agent
-
-    agent = Agent(id="codex-worker", name="Codex", profile_id="standard-high-codex")
-    assert await orch._check_agent_routing(task, agent) is None
     profiles = {p.id: p for p in await orch.db.list_profiles()}
-    assert orch.provider_availability.queued_route(
-        task, project=project, profiles=profiles,
-    )[1] == "codex"
-    await _codex_down(orch)
-    assert await orch._effective_default_profile_id(project) is None
-    assert await _handler(orch)._claim_effective_default(project, project.default_profile_id) is None
-    assert await orch._resolve_profile(task) is None
-    assert await orch._check_agent_routing(task, agent) == "preferred_provider_unavailable"
-    assert orch.provider_availability.queued_route(task, project=project, profiles=profiles) is None
-    assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-claude"
-
-
-@pytest.mark.parametrize("cause", ["disabled", "missing_class", "unknown_class"])
-async def test_project_preference_default_needs_an_enabled_equivalent_rung(orch, cause):
-    await orch.db.update_project("p-1", default_profile_id=(
-        "astra-high-codex" if cause == "missing_class" else "standard-high-codex"
-    ), preferred_provider="claude")
-    if cause == "disabled":
-        await orch.db.update_profile("standard-high-claude", enabled=False)
-    elif cause == "unknown_class":
-        orch.session_spec_builder._intelligence_classes.pop("standard-high")
-    assert await orch._effective_default_profile_id(await orch.db.get_project("p-1")) is None
+    for _ in range(2):
+        assert await orch._resolve_profile(task) is None
+        assert orch.provider_availability.queued_route(
+            task, project=project, profiles=profiles,
+        ) is None
+        assert await orch.provider_availability.hold_for(task) is None
+        await _codex_down(orch)
+    for gone in ("_effective_default_profile_id", "_availability_aware_default",
+                 "_backfill_default_profile_id"):
+        assert not hasattr(orch, gone), gone
+    assert not hasattr(orch.provider_reroute, "resolve_default_profile_id")
+    assert not hasattr(project, "default_profile_id")
 
 
 async def test_recovery_leaves_moved_tasks_and_releases_holds(orch):
@@ -1034,6 +1492,25 @@ async def test_spill_candidates_are_the_claim_frontier(orch):
     everything = await orch.db.list_spill_candidates(["standard-high-codex"])
     assert [row["id"] for row in everything] == ["young", "b", "a"]
     assert await orch.db.list_spill_candidates([]) == []
+
+
+async def test_both_reroute_passes_read_the_claim_primary_repository_kind(orch):
+    await orch.db.upsert_workspace_kind(WorkspaceKind(project_id="p-1", id="other-repo"))
+    await _waiting(orch, "default")
+    await _waiting(orch, "other")
+    await orch.db.add_task_workspace_requirements("other", [("other-repo", None), ("vault", None)])
+    profiles = ["standard-high-codex"]
+    for query in (orch.db.list_reroute_candidates, orch.db.list_spill_candidates):
+        rows = await query(profiles)
+        assert {row["id"]: row["workspace_kind"] for row in rows} == {
+            "default": "project-repo", "other": "other-repo",
+        }
+    candidates = await orch.provider_reroute._candidates(
+        await orch.provider_reroute.context(), providers=None, task_ids=["default", "other"],
+    )
+    assert {candidate.task_id: candidate.workspace_kind for candidate in candidates} == {
+        "default": "project-repo", "other": "other-repo",
+    }
 
 
 # -- the direct path fails fast (D13a) ---------------------------------------------

@@ -10,34 +10,49 @@ import {
 import {
   useEditProject,
   usePauseProject,
-  useProfiles,
   useProject,
   useResumeProject,
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
+import PolicyProfiles from "./PolicyProfiles";
+import GitIdentitySection from "./GitIdentitySection";
+import ProjectSupervisorToggle from "./ProjectSupervisorToggle";
+import {
+  GIT_IDENTITY_SECTION_HINT,
+  type GitIdentityFieldErrors,
+  type GitIdentityFormFields,
+  type GitIdentityProjectData,
+  gitIdentityErrors,
+  gitIdentityFormFields,
+  gitIdentityPayload,
+  gitIdentitySaveError,
+  hasGitIdentityErrors,
+} from "./gitIdentity";
 
-export interface FormState {
+export interface FormState extends GitIdentityFormFields {
   name: string;
   repo_default_branch: string;
-  default_profile_id: string;
   max_concurrent_agents: string;
   credit_weight: string;
   budget_limit: string;
+  supervisor_enabled: boolean;
 }
 
 const EMPTY_FORM: FormState = {
   name: "",
   repo_default_branch: "",
-  default_profile_id: "",
   max_concurrent_agents: "",
   credit_weight: "",
   budget_limit: "",
+  supervisor_enabled: false,
+  git_identity_override: false,
+  git_identity_name: "",
+  git_identity_email: "",
 };
 
 export default function ProjectConfig() {
   const { projectId = "" } = useParams();
   const { data: project, isLoading } = useProject(projectId);
-  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const pauseProject = usePauseProject();
   const resumeProject = useResumeProject();
@@ -45,6 +60,7 @@ export default function ProjectConfig() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [identityServerErrors, setIdentityServerErrors] = useState<GitIdentityFieldErrors>({});
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   useEffect(() => {
@@ -54,36 +70,58 @@ export default function ProjectConfig() {
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
-
   const startEdit = () => {
     setForm(projectToForm(project));
     setFatal(null);
+    setIdentityServerErrors({});
     setEditing(true);
   };
 
   const cancel = () => {
     setForm(projectToForm(project));
     setFatal(null);
+    setIdentityServerErrors({});
     setEditing(false);
+  };
+
+  const identityClientErrors = gitIdentityErrors(form);
+  const identityInvalid = hasGitIdentityErrors(identityClientErrors);
+
+  // The identity controls also work from the read-only view: the first
+  // change opens the editor with it staged, so Save / Cancel still decide.
+  const changeIdentity = (next: GitIdentityFormFields) => {
+    setIdentityServerErrors({});
+    if (!editing) {
+      setFatal(null);
+      setForm({ ...projectToForm(project), ...next });
+      setEditing(true);
+    } else {
+      setForm((prev) => ({ ...prev, ...next }));
+    }
   };
 
   const save = async () => {
     setFatal(null);
+    setIdentityServerErrors({});
+    if (identityInvalid) return;
+    const identity = gitIdentityPayload(projectToForm(project), form);
     try {
       const body = {
         project_id: project.id,
         name: form.name.trim() || null,
         repo_default_branch: form.repo_default_branch.trim() || null,
-        default_profile_id: form.default_profile_id.trim() || null,
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
+        ...supervisorEnabledPayload(project, form),
+        ...identity,
       };
       await editProject.mutateAsync(body);
       setEditing(false);
     } catch (err) {
-      setFatal(err instanceof Error ? err.message : String(err));
+      const identityError = "git_identity_name" in identity ? gitIdentitySaveError(err) : null;
+      if (identityError) setIdentityServerErrors(identityError);
+      else setFatal(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -97,6 +135,7 @@ export default function ProjectConfig() {
 
   return (
     <div className="space-y-6">
+      <PolicyProfiles projectId={projectId} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold uppercase text-gray-500">Project</h2>
@@ -164,23 +203,12 @@ export default function ProjectConfig() {
         <Row label="Repo URL" striped>
           <span className="font-mono text-xs text-gray-400">{project.repo_url ?? "—"}</span>
         </Row>
-        <Row label="Default profile" striped={false}>
-          {editing ? (
-            <select
-              value={form.default_profile_id}
-              onChange={(e) => setForm({ ...form, default_profile_id: e.target.value })}
-              className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-            >
-              <option value="">— inherit / none —</option>
-              {profileOptions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.id})
-                </option>
-              ))}
-            </select>
-          ) : (
-            project.default_profile_id ?? "—"
-          )}
+        {/* A project has no default profile: its router routes every task.
+            Re-binding it is local-operator only (aq project set <p> router). */}
+        <Row label="Router" striped={false}>
+          <span className="font-mono text-xs text-gray-400">
+            {project.assignment_playbook_id ?? "—"}
+          </span>
         </Row>
         <Row label="Max concurrent agents" striped>
           {editing ? (
@@ -222,6 +250,35 @@ export default function ProjectConfig() {
         </Row>
       </div>
 
+      <ProjectSupervisorToggle
+        enabled={form.supervisor_enabled}
+        onChange={(enabled) => {
+          if (!editing) {
+            setForm({ ...projectToForm(project), supervisor_enabled: enabled });
+            setEditing(true);
+          } else setForm({ ...form, supervisor_enabled: enabled });
+        }}
+      />
+
+      <section
+        aria-labelledby="project-git-identity-heading"
+        className="space-y-3 rounded-lg border border-gray-800 bg-gray-900 p-4"
+      >
+        <div>
+          <h3 id="project-git-identity-heading" className="text-sm font-semibold text-gray-200">
+            Git commit identity
+          </h3>
+          <p className="mt-0.5 text-xs text-gray-500">{GIT_IDENTITY_SECTION_HINT}</p>
+        </div>
+        <GitIdentitySection
+          identity={project.git_identity}
+          value={form}
+          onChange={changeIdentity}
+          editing={editing}
+          errors={{ ...identityServerErrors, ...identityClientErrors }}
+        />
+      </section>
+
       {editing && (
         <div className="space-y-3">
           {fatal && (
@@ -241,7 +298,7 @@ export default function ProjectConfig() {
             <button
               type="button"
               onClick={save}
-              disabled={editProject.isPending}
+              disabled={editProject.isPending || identityInvalid}
               className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-700"
             >
               {editProject.isPending ? "Saving..." : "Save"}
@@ -347,32 +404,41 @@ function NumberInput({
   );
 }
 
-export interface ProjectData {
+export interface ProjectData extends GitIdentityProjectData {
   name?: string | null;
   repo_default_branch?: string | null;
-  default_profile_id?: string | null;
   max_concurrent_agents?: number | null;
   credit_weight?: number | null;
   budget_limit?: number | null;
-}
-
-/** Agent profiles are global, so the picker is just the deduped profile list. */
-export function dedupeProfileOptions(
-  profiles: { id: string; name: string }[],
-): { id: string; name: string }[] {
-  return profiles.filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
+  supervisor_enabled?: boolean | null;
 }
 
 export function projectToForm(p: ProjectData): FormState {
   return {
     name: p.name ?? "",
     repo_default_branch: p.repo_default_branch ?? "",
-    default_profile_id: p.default_profile_id ?? "",
     max_concurrent_agents:
       p.max_concurrent_agents != null ? String(p.max_concurrent_agents) : "",
     credit_weight: p.credit_weight != null ? String(p.credit_weight) : "",
     budget_limit: p.budget_limit != null ? String(p.budget_limit) : "",
+    supervisor_enabled: p.supervisor_enabled ?? false,
+    ...gitIdentityFormFields(p),
   };
+}
+
+/**
+ * The supervisor switch part of an edit_project body. It is sent only when
+ * the form differs from the server's current value, so saving another field
+ * from a form opened before the switch changed elsewhere (a CLI disable, the
+ * global supervisor) cannot silently flip it back.
+ */
+export function supervisorEnabledPayload(
+  saved: Pick<ProjectData, "supervisor_enabled">,
+  form: Pick<FormState, "supervisor_enabled">,
+): { supervisor_enabled?: boolean } {
+  return form.supervisor_enabled === (saved.supervisor_enabled ?? false)
+    ? {}
+    : { supervisor_enabled: form.supervisor_enabled };
 }
 
 export function parseOptionalInt(v: string): number | null {
