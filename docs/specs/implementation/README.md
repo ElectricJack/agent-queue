@@ -4,6 +4,14 @@ tags: [implementation, overview, index, overhaul]
 
 # Framework Overhaul — Implementation Specs
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 Paired implementation plans for the 2026-08 framework overhaul. Each file here has a
 matching **design spec** in `docs/specs/design/` under the same name; the design spec says
 *what and why*, the implementation spec says *where and how* — exact modules, schema
@@ -20,7 +28,7 @@ Direction source: [../analysis/framework-overhaul-todo.md](../../analysis/framew
 | [work-graph.md](work-graph.md) | D — typed edges, `is_blocked`, gates, labels, outcomes, explain | [design](../design/work-graph.md) |
 | [supervisor-agent.md](supervisor-agent.md) | B — supervisor as configured agent, messages, spec→graph | [design](../design/supervisor-agent.md) |
 | [aq-surface.md](aq-surface.md) | C/G.2 — `aq` CLI, prime/handoff, JSON envelope, tokens, MCP allowlist | [design](../design/aq-surface.md) |
-| [messaging-rework.md](messaging-rework.md) | F — out-of-process Discord adapter, task threads, dashboard | [design](../design/messaging-rework.md) |
+| [messaging-rework.md](messaging-rework.md) | F — historical plan, superseded for Discord by [current spec](../messaging/discord.md) | [design](../design/messaging-rework.md) |
 | [feature-pauses.md](feature-pauses.md) | E/P — memory & playbooks paused, not removed | [design](../design/feature-pauses.md) |
 | [trust-and-ops.md](trust-and-ops.md) | G — trust boundaries, env scrubbing, doctor, costs, invariants | [design](../design/trust-and-ops.md) |
 

@@ -6,6 +6,12 @@ status: v3 — direction locked; specs drafted (see §0b)
 
 # Agent Queue — Framework Overhaul: Pre-Spec Todo
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **What this is.** A working list of changes to make to agent-queue, derived from
 [comparison-gascity-beads.md](comparison-gascity-beads.md) and the direction decisions
 below. It is deliberately *pre-spec*: each workstream states intent, the shape we think is

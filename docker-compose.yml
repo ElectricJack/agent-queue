@@ -21,12 +21,43 @@ services:
     ports:
       - "5533:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 stores PGDATA under /var/lib/postgresql/18/docker.
+      # Migrate any existing anonymous parent volume before recreating the container:
+      # docs/guides/postgres18-volume-migration.md
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent_queue"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # Disposable test cluster. Never point the daemon at this service: it trades
+  # crash durability for speed and keeps test checkpoints off aq-postgres.
+  postgres-test:
+    container_name: aq-postgres-test
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: agent_queue_test
+      POSTGRES_PASSWORD: agent_queue_test_dev
+    ports:
+      - "127.0.0.1:5534:5432"
+    volumes:
+      - pgtestdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_queue_test -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
+  pgtestdata:
