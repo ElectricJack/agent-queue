@@ -413,6 +413,22 @@ discovery, workspace/base fetch, exact PR-diff fetch, recovery/WIP publication,
 parent CI snapshots, promotion and branch deletion. Extend isolated acquisition
 to transfer objects into a credential-free local checkout. Preserve repository
 locks, exact-ref checks, object validation and existing transfer budgets.
+
+Credential-free preparation failures expose only daemon-selected reason fields:
+`lock_wait_timeout`, `git_timeout` (subcommand, elapsed seconds and available
+budget), `git_exit` (subcommand, return code and diagnostic kind), or
+`import_mismatch`. The same safe detail reaches exceptions, fixer blockers and
+integration-train messages, and a structured `git_preparation_failed` log event.
+Never include raw stderr, paths, ref names or credentials in these fields.
+
+Standalone exact-object acquisition has a finite 240-second aggregate budget:
+successful local acquisitions on a busy retained store have taken 115.4 seconds
+against the former 120-second limit. An explicit caller budget always wins,
+including remaining push authority; no phase resets that deadline. A complete,
+integrity-verified local commit is pinned directly with `update-ref`, without
+fetching its graph back from a temporary repository. Retained verification still
+reuses only an unchanged clean store within its existing cache lifetime.
+
 Additional private submodules or LFS services require their own explicit scope;
 do not forward the repository token to arbitrary secondary destinations.
 
@@ -422,6 +438,13 @@ repository, use the same validated delivery policy, and are available to the
 roles that need them. Extend the existing push contract if an explicit expected
 remote OID is needed for the documented squash/lease workflow. Do not grant
 workers integration-owner or main-publication authority as a side effect.
+
+Explicit named integration publication uses the server-owned, single-use
+[publication delegation](design/delegated-integration-publication.md). Its
+issue/revoke controls require operator or live owning supervisor authority;
+workers supply that exact grant to the existing push surface. The grant binds
+the live claim, session instance, designated repository, target OID and managed
+owner fence, and preserves the validated delivery gates.
 
 Update the shipped completion protocol, delivery prompts and relevant AQ Git
 skills to use those commands for network delivery. Keep local commit/history

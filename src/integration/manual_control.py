@@ -38,6 +38,11 @@ async def enabled_train_write(db, repository_id):
         ))
         if enabled is None:
             raise PublishWithdrawn("automatic integration is off")
+        from src.integration.train_policy import train_policy_on
+
+        view = await train_policy_on(conn, enabled)
+        if not view.enabled:
+            raise PublishWithdrawn(view.reason or "train playbook is off")
         yield
 
 
@@ -50,10 +55,13 @@ def train_write(method):
 
 
 def fence_disable(method):
-    """Existing project configuration must serialize disabled mode with writers too."""
+    """Serialize policy/binding changes and disabled mode with fenced writers."""
     @wraps(method)
     async def fenced(self, project_id, **kwargs):
-        if kwargs.get("updates", {}).get("hierarchical_integration_mode") != "disabled":
+        updates = kwargs.get("updates", {})
+        if (updates.get("hierarchical_integration_mode") != "disabled"
+                and not {"hierarchical_integration_policy", "integration_repository",
+                         "integration_repository_id"}.intersection(updates)):
             return await method(self, project_id, **kwargs)
         project = await self.db.get_project(project_id)
         if project is None or not project.integration_repository_id:

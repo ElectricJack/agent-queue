@@ -10,6 +10,8 @@ Worktree-execution implementation spec §6.8 / design §9:
   slot in the caller's project scope.
 * ``workspace_retire_claim`` — remove a slot's leftover claim file when
   its holder provably no longer holds it.
+* ``workspace_clear_sentinel`` — return a slot's ``.aq-worktree.json`` to
+  the free form when the task it names is terminal.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method
 takes a flat ``dict`` of arguments and returns a ``dict`` — domain data
@@ -312,6 +314,45 @@ class WorktreeCommandsMixin:
             "holder_session_id": retired.get("session_id"),
             "reason": retired["reason"],
         }
+
+    async def _cmd_workspace_clear_sentinel(self, args: dict) -> dict:
+        """Clear a slot sentinel that still names a terminal task.
+
+        The supervisor's control for a slot that claim preparation refuses
+        with ``branch disagrees with its source sentinel`` after its task
+        ended.  Clearing is conditional on the named task being terminal
+        (``if_task_terminal``, the only supported mode) and on the proofs in
+        ``WorktreeSlotManager.clear_terminal_sentinel``; otherwise the command
+        refuses, naming the holder and the reason.
+        """
+        from src.jobs.policy import JobError
+
+        ws_id = args.get("workspace_id")
+        if not ws_id:
+            return {"success": False, "error": "workspace_id is required"}
+        if args.get("if_task_terminal", True) is False:
+            return {"success": False, "error": (
+                "only a sentinel naming a terminal task can be cleared; "
+                "if_task_terminal must be true"
+            )}
+        ws = await self.db.get_workspace(ws_id)
+        if ws is None:
+            return {"success": False, "error": f"workspace {ws_id} not found"}
+        if not ws.is_slot:
+            return {"success": False, "error": f"{ws_id} is not a worktree slot"}
+        mgr = getattr(self.orchestrator, "_worktree_slots", None)
+        if mgr is None or not callable(mgr):
+            return {"success": False, "error": "worktree slot manager unavailable"}
+        try:
+            result = await mgr().clear_terminal_sentinel(ws)
+        except JobError as exc:
+            return {"success": False, "workspace_id": ws.id, "error": str(exc)}
+        if refusal := result.pop("refusal", None):
+            return {"success": False, "workspace_id": ws.id, **result, "error": (
+                f"sentinel of {ws.id} naming {result.get('holder_task_id')} "
+                f"was not cleared: {refusal}"
+            )}
+        return {"success": True, "workspace_id": ws.id, **result}
 
     async def _cmd_workspace_reap(self, args: dict) -> dict:
         """Explicit reap of retired slots.  Refuses live slots.

@@ -735,10 +735,15 @@ def s18_surfaces(monkeypatch, request):
             assert args == {"project_id": smoke.PROJECT}
             return {"supervisor_enabled": request.param}
         if command == "list_playbook_runs":
-            return {"runs": [{"run_id": "triage-run"}]}
+            closed = any(args[:2] == ("task", "close") for args, _ in calls)
+            runs = [{"run_id": "previous-run"}]
+            if closed:
+                runs.append({"run_id": "triage-run"})
+            return {"runs": runs}
         if command == "inspect_playbook_run":
+            assert args == {"run_id": "triage-run"}
             return {"run": {
-                "run_id": "triage-run", "event": {"task_id": "triage-task"},
+                "run_id": "triage-run",
                 "lifecycle": "completed",
             }}
         if command == "message_list":
@@ -919,6 +924,50 @@ def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
     assert len(_claims(calls)) > 1
     for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
         assert detail in str(error.value)
+
+
+def test_s16_canary_retries_when_empty_long_poll_consumes_its_wait(
+    s16_canary_surfaces, monkeypatch,
+):
+    smoke, responses, calls, clock, _profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * 2
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 4)
+    original_aq = smoke.aq
+
+    def elapsed_aq(*args, **kwargs):
+        result = original_aq(*args, **kwargs)
+        if result.get("result") == "no_ready_work":
+            clock.now += int(args[-1])
+        return result
+
+    monkeypatch.setattr(smoke, "aq", elapsed_aq)
+
+    worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert held == expected == worker.task_id
+    assert len(_claims(calls)) == 3
+    assert clock.now < smoke.CONVERGE_TIMEOUT
+
+
+@pytest.mark.parametrize("wrong_task", [False, True])
+def test_s16_canary_observes_only_its_fixture_preparation(
+    s16_canary_surfaces, wrong_task,
+):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    responses.insert(0, {
+        "result": "claim_in_progress", "task_id": "foreign-task" if wrong_task else expected,
+        "claim_epoch": 7, "claim_phase": "preparing",
+    })
+
+    if wrong_task:
+        with pytest.raises(smoke.Failure, match=f"{expected}.*foreign-task"):
+            smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert len(_claims(calls)) == 1
+    else:
+        worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+        assert held == expected == worker.task_id
+        assert worker.claim_epoch == 7
+        assert len(_claims(calls)) == 2
 
 
 @pytest.fixture
