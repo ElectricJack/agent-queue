@@ -1,484 +1,240 @@
-"""Streams API tests (spec §8.7). Mirrors tests/test_session_stream_api.py's
-fixture shape."""
+"""Console viewers submit finite jobs and never own process lifetime."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from types import SimpleNamespace
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from src.api.auth import RequestScope
-from src.api.streams import StreamRegistry, build_streams_router
-from src.database import Database
-from src.models import Project
-from tests.db_fixtures import lease_dsn
-
-
-class _FakeStreamsConfig:
-    buffer_max_lines = 100
-    buffer_max_bytes = 1024
-    retention_seconds = 300
-    kill_grace_seconds = 3.0
-    max_concurrent_per_session = 3
-    # Deliberately not the StreamsConfig default (5) so the metadata test
-    # proves the value is read from config rather than hard-coded.
-    client_reconnect_attempts = 7
-
-
-class _FakeAppConfig:
-    def __init__(self):
-        self.streams = _FakeStreamsConfig()
+from src.api.streams import StreamRegistry, build_streams_router, _view_job
+from src.commands import CommandHandler
+from src.config import AppConfig
+from src.jobs.artifacts import OutputStore, job_directory
+from src.jobs.policy import Preset
+from src.models import Workspace, RepoSourceType
+from tests.test_agent_wait_queries import env as env
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("t.db"))
-    await database.initialize()
-    await database.create_project(Project(id="demo", name="Demo"))
-    yield database
-    await database.close()
+async def setup(env, tmp_path, monkeypatch):
+    await env.db.create_workspace(Workspace(
+        id="w", project_id="p", workspace_path=str(tmp_path), source_type=RepoSourceType.LINK,
+        locked_by_agent_id="a", locked_by_task_id="owner",
+    ))
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    config.streams.client_reconnect_attempts = 7
+    monkeypatch.setattr("src.jobs.service.presets", lambda root: {
+        "lint": Preset("lint", (sys.executable, "-c", "print('hello from job')")),
+    })
+    orch = SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    return SimpleNamespace(db=env.db, config=config, handler=handler, cwd=tmp_path,
+                           registry=StreamRegistry(), scope=RequestScope(kind="local"))
 
 
-def _app_with_scope(db, workspace_dir, scope: RequestScope, registry=None) -> FastAPI:
+def app_for(env, *, registry=None):
     app = FastAPI()
-    router = build_streams_router(
-        db=db, config=_FakeAppConfig(), workspace_dir=str(workspace_dir), registry=registry,
-    )
-    app.include_router(router)
+    app.include_router(build_streams_router(
+        db=env.db, config=env.config, workspace_dir=str(env.cwd), command_handler=env.handler,
+        registry=registry if registry is not None else env.registry,
+    ))
 
     @app.middleware("http")
-    async def _inject_scope(request: Request, call_next):
-        request.state.scope = scope
+    async def scope(request: Request, call_next):
+        request.state.scope = env.scope
         return await call_next(request)
-
     return app
 
 
-LOCAL_SCOPE = RequestScope(kind="local")
+def client_for(env, *, registry=None):
+    return AsyncClient(transport=ASGITransport(app=app_for(env, registry=registry)),
+                       base_url="http://test")
 
 
-@pytest.mark.asyncio
-async def test_start_stream_returns_stream_id(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "stream_id" in data
-    assert data["status"] == "running"
+async def start(client, env, **overrides):
+    return await client.post("/api/streams", json={
+        "command": ["ruff", "check", "src"], "cwd": str(env.cwd), "session_id": "s",
+        "project_id": "p", "idempotency_key": "stream-key", **overrides,
+    })
 
 
-@pytest.mark.asyncio
-async def test_start_stream_rejects_non_list_command(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": "echo hi", "cwd": str(tmp_path), "session_id": "s1"},
-        )
-    assert resp.status_code == 400
+async def finish(env, job_id):
+    async def wait():
+        while True:
+            await env.handler._cmd_job_reconcile({})
+            job = await env.db.get_job(job_id)
+            if job["state"] in {"succeeded", "failed", "cancelled", "lost"}:
+                return job
+            await asyncio.sleep(0.02)
+    return await asyncio.wait_for(wait(), 20)
 
 
-@pytest.mark.parametrize("bad_command", [None, 5, {}], ids=["null", "int", "object"])
-@pytest.mark.asyncio
-async def test_start_stream_rejects_non_list_command_shapes(db, tmp_path, bad_command):
-    """Finding 1 regression: ANY non-list command shape must 400, not 422
-    (Pydantic's default request-validation error for a shape it can't
-    coerce). Covers null / int / object in addition to the pre-existing
-    string case above."""
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": bad_command, "cwd": str(tmp_path), "session_id": "s1"},
-        )
-    assert resp.status_code == 400
+async def test_start_is_idempotent_and_stream_id_is_job_id(setup):
+    async with client_for(setup) as client:
+        first = await start(client, setup)
+        second = await start(client, setup)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["stream_id"] == second.json()["stream_id"]
+    jobs = await setup.db.list_jobs(project_id="p")
+    assert len(jobs) == 1 and jobs[0]["id"] == first.json()["stream_id"]
+    assert jobs[0]["submitter_session_id"] == "s"
+    assert await setup.db.workspace_has_job_pin("w")
+    assert not hasattr(setup.registry.get(jobs[0]["id"]), "process")
+    await finish(setup, jobs[0]["id"])
 
 
-class _FakeFailingPipe:
-    """Stdout pipe whose first ``readline`` raises, simulating a pump crash."""
-
-    def __init__(self, *, fail: bool) -> None:
-        self._fail = fail
-        self._raised = False
-
-    async def readline(self) -> bytes:
-        if self._fail and not self._raised:
-            self._raised = True
-            raise RuntimeError("simulated pump failure")
-        return b""
+@pytest.mark.parametrize("command", ["echo hi", None, {}, [], ["sleep", "30"], ["bash", "-c", "true"]])
+async def test_arbitrary_commands_do_not_spawn_or_create_jobs(setup, monkeypatch, command):
+    spawn = AsyncMock(side_effect=AssertionError("adapter spawned a process"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    async with client_for(setup) as client:
+        response = await start(client, setup, command=command)
+    assert response.status_code == 400
+    assert await setup.db.list_jobs(project_id="p") == []
+    spawn.assert_not_awaited()
 
 
-class _FakeProc:
-    """Minimal stand-in for ``asyncio.subprocess.Process`` used to force a
-    pump failure deterministically (Finding 2 regression test)."""
-
-    def __init__(self) -> None:
-        self.stdout = _FakeFailingPipe(fail=True)
-        self.stderr = _FakeFailingPipe(fail=False)
-        self.returncode: int | None = None
-
-    async def wait(self) -> int:
-        self.returncode = 0
-        return 0
-
-    def kill(self) -> None:
-        self.returncode = -9
-
-    def send_signal(self, sig) -> None:  # pragma: no cover - not exercised here
-        pass
+@pytest.mark.parametrize("overrides,code", [
+    ({"cwd": "/"}, 403), ({"project_id": "q"}, 403),
+    ({"session_id": "absent"}, 400), ({"idempotency_key": None}, 400),
+])
+async def test_start_requires_owned_workspace_project_and_replay_key(setup, overrides, code):
+    async with client_for(setup) as client:
+        response = await start(client, setup, **overrides)
+    assert response.status_code == code
+    assert await setup.db.list_jobs(project_id="p") == []
 
 
-@pytest.mark.asyncio
-async def test_pump_failure_reaches_terminal_status_and_frees_concurrency_slot(
-    db, tmp_path, monkeypatch
-):
-    """Finding 2 regression: an exception inside ``_pump``/``asyncio.gather``
-    must not leave the stream stuck "running" nor leak the session's
-    concurrency slot."""
-    registry = StreamRegistry(buffer_max_lines=100)
-
-    async def _fake_create_subprocess_exec(*args, **kwargs):
-        return _FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-    assert resp.status_code == 200
-    stream_id = resp.json()["stream_id"]
-
-    handle = registry.get(stream_id)
-    for _ in range(100):
-        if handle.status != "running":
-            break
-        await asyncio.sleep(0.01)
-
-    assert handle.status in ("exited", "killed")
-    assert registry.concurrent_count("s1") == 0
+async def test_feature_off_refuses_instead_of_falling_back(setup):
+    setup.config.resources.jobs.enabled = False
+    async with client_for(setup) as client:
+        response = await start(client, setup)
+    assert response.status_code == 503
+    assert await setup.db.list_jobs(project_id="p") == []
 
 
-@pytest.mark.asyncio
-async def test_start_stream_rejects_non_local_non_elevated_scope(db, tmp_path):
-    scope = RequestScope(kind="session", session_id="s1", elevated=False)
-    app = _app_with_scope(db, tmp_path, scope)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-    assert resp.status_code == 403
+async def test_restart_reconstructs_viewer_and_replays_output(setup):
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+    await finish(setup, job_id)
+    setup.registry.evict(job_id)
+    restored = StreamRegistry()
+    async with client_for(setup, registry=restored) as client:
+        response = await client.get(f"/api/streams/{job_id}/subscribe")
+        metadata = await client.get(f"/api/streams/{job_id}")
+    frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert "hello from job" in "".join(f.get("text", "") for f in frames)
+    assert frames[-1]["type"] == "exit" and frames[-1]["rc"] == 0
+    assert metadata.json()["status"] == "exited"
+    assert metadata.json()["client_reconnect_attempts"] == 7
+    assert not await setup.db.workspace_has_job_pin("w")
 
 
-@pytest.mark.asyncio
-async def test_start_stream_rejects_cwd_outside_workspace(db, tmp_path):
-    outside = tmp_path.parent / "not-a-workspace"
-    outside.mkdir(exist_ok=True)
-    app = _app_with_scope(db, tmp_path / "workspace", outside, LOCAL_SCOPE) \
-        if False else _app_with_scope(db, tmp_path / "workspace", LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(outside), "session_id": "s1"},
-        )
-    assert resp.status_code == 403
+async def test_foreign_task_cannot_read_or_cancel_cached_or_durable_job(setup):
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+        setup.scope = RequestScope(kind="session", session_id="other", task_id="foreign", project_id="q")
+        for suffix, method in [("", "get"), ("/tail", "get"), ("/subscribe", "get"), ("/kill", "post")]:
+            assert (await getattr(client, method)(f"/api/streams/{job_id}{suffix}")).status_code == 404
+    assert (await setup.db.get_job(job_id))["state"] == "queued"
+    setup.scope = RequestScope(kind="local")
+    await finish(setup, job_id)
 
 
-@pytest.mark.asyncio
-async def test_metadata_returns_running_status_then_exited(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
-        for _ in range(50):
-            resp = await client.get(f"/api/streams/{stream_id}")
-            if resp.json()["status"] == "exited":
-                break
-            await asyncio.sleep(0.05)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "exited"
-        assert data["exit_code"] == 0
-
-
-@pytest.mark.asyncio
-async def test_metadata_serves_configured_client_reconnect_attempts(db, tmp_path):
-    """The pane's SSE backoff budget (streams.client_reconnect_attempts,
-    design §7.2) has no other route into the browser."""
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        resp = await client.get(f"/api/streams/{start.json()['stream_id']}")
-    assert resp.status_code == 200
-    assert resp.json()["client_reconnect_attempts"] == 7
-
-
-def test_registry_built_from_config_carries_both_buffer_caps(db, tmp_path, monkeypatch):
-    """The router factory's own registry must pick up buffer_max_bytes, not
-    just buffer_max_lines — otherwise the byte cap is dead config."""
-    seen: dict = {}
-
-    class _Recorder(StreamRegistry):
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
-            super().__init__(**kwargs)
-
-    monkeypatch.setattr("src.api.streams.StreamRegistry", _Recorder)
-    build_streams_router(
-        db=db, config=_FakeAppConfig(), workspace_dir=str(tmp_path), registry=None,
-    )
-    assert seen == {
-        "buffer_max_lines": _FakeStreamsConfig.buffer_max_lines,
-        "buffer_max_bytes": _FakeStreamsConfig.buffer_max_bytes,
-    }
-
-
-@pytest.mark.asyncio
-async def test_metadata_404_for_unknown_stream(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/streams/does-not-exist")
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_metadata_403_for_wrong_session_ownership(db, tmp_path):
-    registry = StreamRegistry(buffer_max_lines=100)
-    owner_app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
-    async with AsyncClient(transport=ASGITransport(app=owner_app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "owner-session"},
-        )
-        stream_id = start.json()["stream_id"]
-
-    other_scope = RequestScope(kind="session", session_id="other-session", elevated=False)
-    other_app = _app_with_scope(db, tmp_path, other_scope, registry=registry)
-    async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
-        resp = await client.get(f"/api/streams/{stream_id}")
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_subscribe_replays_then_closes_on_exit(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "line one"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
+async def test_cancel_uses_job_cleanup_and_is_idempotent(setup):
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+        response = await client.post(f"/api/streams/{job_id}/kill")
+        assert response.status_code == 200
+        assert (await setup.db.get_job(job_id))["state"] == "cancelled"
         await asyncio.sleep(0.3)
-
-        frames = []
-        async with client.stream("GET", f"/api/streams/{stream_id}/subscribe") as resp:
-            assert resp.status_code == 200
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    frames.append(json.loads(line[len("data: "):]))
-                if frames and frames[-1]["type"] in ("exit", "killed"):
-                    break
-
-    types = [f["type"] for f in frames]
-    assert "line" in types
-    assert types[-1] == "exit"
-    assert frames[-1]["rc"] == 0
+        response = await client.post(f"/api/streams/{job_id}/kill")
+        assert response.json()["status"] == "killed" or response.status_code == 410
+    assert not await setup.db.workspace_has_job_pin("w")
 
 
-@pytest.mark.asyncio
-async def test_subscribe_404_for_unknown_stream(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/streams/does-not-exist/subscribe")
-    assert resp.status_code == 404
+async def test_viewer_eviction_preserves_running_job_and_pin(setup, monkeypatch):
+    marker = setup.cwd / "started"
+    script = f"import pathlib,time; pathlib.Path({str(marker)!r}).write_text('yes'); time.sleep(30)"
+    monkeypatch.setattr("src.jobs.service.presets", lambda root: {
+        "lint": Preset("lint", (sys.executable, "-c", script)),
+    })
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+    await setup.handler._cmd_job_reconcile({})
+    async def started():
+        while not marker.exists():
+            await asyncio.sleep(0.02)
+    await asyncio.wait_for(started(), 15)
+    setup.registry.evict(job_id)
+    assert await setup.db.workspace_has_job_pin("w")
+    assert (await setup.db.get_job(job_id))["state"] not in {"cancelled", "failed", "lost"}
+    await setup.handler._cmd_job_cancel({"job_id": job_id})
+    job = await finish(setup, job_id)
+    assert job["state"] == "cancelled" and not await setup.db.workspace_has_job_pin("w")
 
 
-@pytest.mark.asyncio
-async def test_subscribe_replay_with_after_seq_skips_seen_frames(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
-        await asyncio.sleep(0.3)
-
-        frames = []
-        async with client.stream(
-            "GET", f"/api/streams/{stream_id}/subscribe", params={"after_seq": 0}
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    frames.append(json.loads(line[len("data: "):]))
-                if frames and frames[-1]["type"] in ("exit", "killed"):
-                    break
-
-    assert all(f["seq"] > 0 for f in frames)
-
-
-@pytest.mark.asyncio
-async def test_tail_returns_frames_since_after_seq(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
-        await asyncio.sleep(0.3)
-
-        resp = await client.get(f"/api/streams/{stream_id}/tail", params={"after_seq": -1})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "exited"
-    assert any(f["type"] == "line" for f in data["frames"])
-
-
-@pytest.mark.asyncio
-async def test_kill_terminates_a_long_running_process(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["sleep", "30"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
-        await asyncio.sleep(0.2)
-
-        resp = await client.post(f"/api/streams/{stream_id}/kill")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "killed"
-
-        for _ in range(50):
-            meta = await client.get(f"/api/streams/{stream_id}")
-            if meta.json()["status"] == "killed":
-                break
-            await asyncio.sleep(0.1)
-        assert meta.json()["status"] == "killed"
-
-
-@pytest.mark.asyncio
-async def test_kill_is_idempotent_on_already_exited_stream(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-
-        await asyncio.sleep(0.3)
-
-        resp = await client.post(f"/api/streams/{stream_id}/kill")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "exited"
-
-
-@pytest.mark.asyncio
-async def test_kill_403_for_wrong_session_ownership(db, tmp_path):
-    registry = StreamRegistry(buffer_max_lines=100)
-    owner_app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
-    async with AsyncClient(transport=ASGITransport(app=owner_app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "owner-session"},
-        )
-        stream_id = start.json()["stream_id"]
-
-    other_scope = RequestScope(kind="session", session_id="other-session", elevated=False)
-    other_app = _app_with_scope(db, tmp_path, other_scope, registry=registry)
-    async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
-        resp = await client.post(f"/api/streams/{stream_id}/kill")
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_concurrency_cap_returns_429_on_fourth_stream(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        for _ in range(3):
-            resp = await client.post(
-                "/api/streams",
-                json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "capped"},
-            )
-            assert resp.status_code == 200
-        resp = await client.post(
-            "/api/streams",
-            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "capped"},
-        )
-    assert resp.status_code == 429
-
-
-def test_retention_sweep_evicts_finished_stream_past_cutoff():
+async def test_retained_ranges_emit_explicit_gaps_and_terminal_frame(setup):
+    setup.config.resources.jobs.head_bytes = 8
+    setup.config.resources.jobs.tail_bytes = 16
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+    await finish(setup, job_id)
+    setup.registry.evict(job_id)
+    store = OutputStore(job_directory(Path(setup.config.data_dir), job_id), head_bytes=8, tail_bytes=16)
+    store.append(b"z" * 100)
+    store.close()
     reg = StreamRegistry()
-    handle = reg.create(title="a", session_id="s1", project_id=None, command=["echo"], cwd="/tmp")
-    handle.status = "exited"
-    handle.ended_at = 1.0
-    for stream_id in reg.all_finished_before(1000.0):
-        reg.evict(stream_id)
-    assert reg.get(handle.stream_id) is None
+    handle = reg.create(title="gaps", session_id="s", project_id="p", command=[], cwd=str(setup.cwd), job_id=job_id)
+    await _view_job(handle, reg, db=setup.db, config=setup.config)
+    gap = next(f.to_dict() for f in handle.buffer if f.type == "gap")
+    assert gap["next"] > gap["after"] and handle.truncated
+    assert list(handle.buffer)[-1].type == "exit"
 
 
-@pytest.mark.asyncio
-async def test_subscriber_count_reflects_active_connections(db, tmp_path):
-    registry = StreamRegistry(buffer_max_lines=100)
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
+async def test_unknown_and_expired_logs_are_distinct(setup):
+    from sqlalchemy import update
+    from src.database.tables import jobs
+    async with client_for(setup) as client:
+        assert (await client.get("/api/streams/absent")).status_code == 404
+        job_id = (await start(client, setup)).json()["stream_id"]
+        job = await finish(setup, job_id)
+        async with setup.db._engine.begin() as conn:
+            await conn.execute(update(jobs).where(jobs.c.id == job_id).values(output_retention="expired"))
+        response = await client.get(f"/api/streams/{job_id}/tail")
+    assert response.status_code == 410
+    assert response.json()["detail"]["result"] == job["result"]
+
+
+async def test_job_output_endpoint_resumes_from_retained_offset_after_cache_eviction(setup, monkeypatch):
+    from src.api import dependencies
+    from src.api.streams import router
+    async with client_for(setup) as client:
+        job_id = (await start(client, setup)).json()["stream_id"]
+    await finish(setup, job_id)
+    setup.registry.evict(job_id)
+    monkeypatch.setattr(dependencies, "_orchestrator", SimpleNamespace(
+        db=setup.db, config=setup.config, stream_registry=StreamRegistry(buffer_max_lines=1),
+        _command_handler=setup.handler,
+    ))
+    monkeypatch.setattr(dependencies, "_command_handler", setup.handler)
+    app = app_for(setup)
+    app.include_router(router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["sleep", "2"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-        handle = registry.get(stream_id)
-        assert handle is not None
-        assert len(handle.subscribers) == 0
-
-        async def _consume_a_bit():
-            async with client.stream("GET", f"/api/streams/{stream_id}/subscribe") as resp:
-                async for _line in resp.aiter_lines():
-                    break
-
-        task = asyncio.create_task(_consume_a_bit())
-        await asyncio.sleep(0.3)
-        # A dropped subscriber (task done) does not kill the process.
-        assert handle.status in ("running", "exited")
-        task.cancel()
-
-
-@pytest.mark.asyncio
-async def test_start_and_kill_write_audit_log_rows(db, tmp_path):
-    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        start = await client.post(
-            "/api/streams",
-            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "s1"},
-        )
-        stream_id = start.json()["stream_id"]
-        await client.post(f"/api/streams/{stream_id}/kill")
-
-    started = await db.get_recent_events(event_type="stream.started")
-    assert any(json.loads(e["payload"])["stream_id"] == stream_id for e in started)
-    killed = await db.get_recent_events(event_type="stream.killed")
-    assert any(json.loads(e["payload"])["stream_id"] == stream_id for e in killed)
+        response = await client.get(f"/api/jobs/{job_id}/output?after=0")
+        frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        line = next(f for f in frames if f["type"] == "line")
+        assert line["text"] == "hello from job"
+        response = await client.get(f"/api/jobs/{job_id}/output?after={line['next']}")
+        assert '"type": "line"' not in response.text
+        assert '"type": "exit"' in response.text
+        assert (await client.get(f"/api/jobs/{job_id}/output?after=-1")).status_code == 400

@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.queries.blocked_state import unmet_dependency_predicate
 from src.database.tables import task_dependencies, tasks
 from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+from src.waits.sources import record_dependency_change
 
 
 def _dep_type_filter(dep_types: frozenset[str] | set[str] | None):
@@ -56,6 +57,7 @@ class DependencyQueryMixin:
         dep_type: str = DepType.BLOCKS.value,
         *,
         description: str | None = None,
+        reject_container_target: bool = False,
         conn=None,
     ) -> set[str] | None:
         """Add a typed dependency edge between two tasks.
@@ -69,6 +71,10 @@ class DependencyQueryMixin:
         ``parent-child`` edges are delegated to :meth:`HierarchyQueryMixin.set_parent`,
         the single writer that keeps the edge and the ``tasks.parent_task_id``
         cache in sync (spec Part I §5).
+
+        Worker commands set ``reject_container_target`` for scheduling edges.
+        The hierarchy lock keeps the target's classification stable through
+        the insert; operator fan-in and membership writes remain available.
 
         Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
         filing's ``immediate()`` block). The blocked-state projection is
@@ -97,7 +103,9 @@ class DependencyQueryMixin:
 
         _insert = pg_insert
         if conn is not None:
-            await conn.execute(
+            if reject_container_target:
+                await self._guard_dependency_target(conn, depends_on, dep_type)
+            inserted = await conn.execute(
                 _insert(task_dependencies)
                 .values(
                     task_id=task_id,
@@ -107,11 +115,15 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            if inserted.rowcount:
+                await record_dependency_change(conn, task_id, depends_on, dep_type, "added")
             await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             return await self.recompute_blocked({task_id, depends_on}, conn=conn)
 
         async with self._engine.begin() as owned_conn:
-            await owned_conn.execute(
+            if reject_container_target:
+                await self._guard_dependency_target(owned_conn, depends_on, dep_type)
+            inserted = await owned_conn.execute(
                 _insert(task_dependencies)
                 .values(
                     task_id=task_id,
@@ -121,6 +133,8 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            if inserted.rowcount:
+                await record_dependency_change(owned_conn, task_id, depends_on, dep_type, "added")
             await self._mark_dependency_dirty((task_id, depends_on), conn=owned_conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=owned_conn)
             ready_ids = await self._note_frontier_entry(
@@ -128,6 +142,29 @@ class DependencyQueryMixin:
             )
         await self.log_blocked_flips(flipped)
         await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
+
+    async def _guard_dependency_target(self, conn, depends_on: str, dep_type: str) -> None:
+        """Reject worker scheduling edges to containers before any edge is written."""
+        from src.database.queries.hierarchy_queries import HierarchyError, never_leaseable_container
+
+        if dep_type not in BLOCKING_DEP_TYPES or dep_type == DepType.PARENT_CHILD.value:
+            return
+        project_id = (await conn.execute(
+            select(tasks.c.project_id).where(tasks.c.id == depends_on)
+        )).scalar_one_or_none()
+        if project_id is None:
+            raise HierarchyError("not_found", depends_on)
+        await self.lock_hierarchy_project(conn, project_id)
+        container = (await conn.execute(
+            select(tasks.c.id).where(tasks.c.id == depends_on, never_leaseable_container())
+        )).scalar_one_or_none()
+        if container is not None:
+            raise HierarchyError(
+                "dependency_on_container",
+                f"'{depends_on}' is a container; worker '{dep_type}' dependencies must name "
+                "the concrete leaf task that supplies the prerequisite. Ask the supervisor "
+                "to choose the leaf or confirm intentional container fan-in",
+            )
 
     async def get_dependencies(
         self,
@@ -312,31 +349,15 @@ class DependencyQueryMixin:
         return await self.get_all_dependencies(dep_types=frozenset({DepType.PARENT_CHILD.value}))
 
     async def are_dependencies_met(self, task_id: str) -> bool:
-        """Check whether all upstream *blocking* dependencies are COMPLETED.
+        """Return the canonical persisted readiness projection for one task.
 
-        Legacy readiness scan — retained deliberately through the shadow-mode
-        window so ``_check_defined_tasks`` has an independent oracle to
-        compare the ``is_blocked`` projection against.  It collapses into a
-        shim over ``is_blocked`` once the projection becomes authoritative
-        (implementation spec §4.2).
+        Kept as a compatibility read for callers outside the orchestrator;
+        dependency and gate writes maintain ``is_blocked`` atomically.
         """
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(task_dependencies.c.depends_on_task_id, tasks.c.status)
-                .select_from(
-                    task_dependencies.join(
-                        tasks, tasks.c.id == task_dependencies.c.depends_on_task_id
-                    )
-                )
-                .where(
-                    and_(
-                        task_dependencies.c.task_id == task_id,
-                        _dep_type_filter(None),
-                    )
-                )
-            )
-            rows = result.mappings().fetchall()
-            return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
+            value = await conn.scalar(select(tasks.c.is_blocked).where(tasks.c.id == task_id))
+        # ``tasks.is_blocked`` is an Integer column (0/1), so compare by value.
+        return value is not None and not value
 
     async def get_stuck_active_tasks(
         self,
@@ -394,24 +415,30 @@ class DependencyQueryMixin:
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
-        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency."""
+        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency.
+
+        A semi-join avoids comparing whole task rows in ``SELECT DISTINCT``.
+        That query failed when ``tasks.route`` was a PostgreSQL ``json`` column.
+        """
         async with self._engine.begin() as conn:
             dep_tasks = tasks.alias("dep")
-            result = await conn.execute(
-                select(tasks)
-                .distinct()
+            blocked_upstream = (
+                select(task_dependencies.c.task_id)
                 .select_from(
-                    tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id).join(
+                    task_dependencies.join(
                         dep_tasks, dep_tasks.c.id == task_dependencies.c.depends_on_task_id
                     )
                 )
                 .where(
-                    and_(
-                        tasks.c.status == TaskStatus.DEFINED.value,
-                        _dep_type_filter(None),
-                        dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
-                    )
+                    task_dependencies.c.task_id == tasks.c.id,
+                    _dep_type_filter(None),
+                    dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
                 )
+                .exists()
+            )
+            result = await conn.execute(
+                select(tasks)
+                .where(tasks.c.status == TaskStatus.DEFINED.value, blocked_upstream)
                 .order_by(tasks.c.created_at.asc())
             )
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
@@ -466,6 +493,29 @@ class DependencyQueryMixin:
                 )
             )
             return {r[0] for r in result.fetchall()}
+
+    async def has_waiting_dependents(self, task_id: str) -> bool:
+        """Whether an unfinished task waits on *task_id* through a blocking edge.
+
+        ``parent-child`` is not counted: a child waits on its container's
+        release, which is decomposition rather than one task holding up
+        another.  Archived dependents live in another table and never count.
+        """
+        dependent = tasks.alias("waiting_dependent")
+        stmt = (
+            select(task_dependencies.c.task_id)
+            .join(dependent, dependent.c.id == task_dependencies.c.task_id)
+            .where(
+                task_dependencies.c.depends_on_task_id == task_id,
+                _dep_type_filter(BLOCKING_DEP_TYPES - {DepType.PARENT_CHILD.value}),
+                dependent.c.status.not_in(
+                    [TaskStatus.COMPLETED.value, TaskStatus.FAILED.value]
+                ),
+            )
+            .limit(1)
+        )
+        async with self._engine.connect() as conn:
+            return (await conn.execute(stmt)).first() is not None
 
     async def get_dependency_map_for_tasks(
         self,
@@ -574,13 +624,17 @@ class DependencyQueryMixin:
                     parent_settled = parent_result.settled
                     parent_ready = parent_result.ready
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
-            removed = await conn.execute(delete(task_dependencies).where(and_(*conditions)))
+            removed = await conn.execute(delete(task_dependencies).where(and_(*conditions))
+                .returning(task_dependencies.c.dep_type))
             # ``dep_type=None`` also covers the parent edge, which
             # ``set_parent`` above already marked ``parent.changed``; the
             # DELETE here only ever touches non-parent-child edges, and may
             # well match none.  Mark only when it actually removed an edge,
             # so a pure parent-child removal produces exactly one mark.
-            if (removed.rowcount or 0) > 0:
+            removed_types = list(removed.scalars())
+            for removed_type in removed_types:
+                await record_dependency_change(conn, task_id, depends_on, removed_type, "removed")
+            if removed_types:
                 await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped
@@ -603,6 +657,7 @@ class DependencyQueryMixin:
         result. Terminates on cycles because visited ids are tracked.
         """
         from sqlalchemy import and_, select
+
         from src.database.tables import task_dependencies
 
         found: set[str] = set()

@@ -13,6 +13,10 @@ class SnapTask:
     status: str
     created_at: float
     title: str = ""
+    #: ``task_metadata["phase"]["order"]`` when this task is a declared
+    #: phase, else ``None``. A positive value is both a tidy-seed input and
+    #: the phase's minimum feasible rank.
+    phase_order: int | None = None
 
 
 @dataclass
@@ -55,6 +59,11 @@ class ContainerScope:
     child_sizes: dict[str, tuple[float, float]]  # allocated (w, h) for container children
     stub_ids: frozenset[str] = frozenset()  # container children rendered as stubs
     origin: tuple[float, float] = (0.0, 0.0)  # abs coords of container content origin
+    # Subtree rollups for the children, by task_id. Populated on the TIDY
+    # path only, where they are computed before the first ``lay()`` and are
+    # therefore fresh (§1.6); the incremental path refreshes aggregates
+    # after its pass, so it leaves this empty and never sorts on them.
+    child_aggregates: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -72,3 +81,8 @@ class WriteSet:
     # Allocated size of each re-laid container (task_id or ROOT) so the driver
     # can propagate to the parent scope.
     sizes: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Active scopes whose finished-leaf removal left the normal incremental
+    # pass intentionally aggregate-only.  ``publish_layout`` upserts these
+    # into the separate deferred-reflow ledger in the same transaction as the
+    # leaf deletion, so neither result can survive without the other.
+    reflow_scopes: set[str] = field(default_factory=set)

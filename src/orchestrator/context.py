@@ -20,13 +20,15 @@ class ContextMixin:
         has_remote: bool,
         is_final_subtask: bool,
         integration_mode: str,
+        is_worktree: bool = False,
     ) -> str:
         """Return execution rules tailored to the task type and git context.
 
-        Produces three prompt variants:
-        A) Normal / final subtask, ``direct`` mode — branch, merge to default, push
+        Produces four prompt variants:
+        A) Normal / final subtask, ``direct`` clone — branch, merge to default, push
         B) ``pull_request`` mode — branch, push, create PR
         C) Intermediate subtask — branch, commit, stay on branch
+        D) Normal / final subtask, ``direct`` worktree — commit, push task branch
         """
         from src.models import INTEGRATION_MODE_PULL_REQUEST
 
@@ -101,6 +103,27 @@ class ContextMixin:
                 f"(research, analysis, investigation):\n"
                 f"- Do not create a branch. Stay on `{default_branch}`.\n"
                 f"- Do not create a PR."
+            )
+        elif is_worktree:
+            # The default branch lives in the base checkout; the daemon integrates.
+            push_line = (
+                f"2. Push your task branch: `git push origin {branch_name}`\n"
+                if has_remote else ""
+            )
+            git_rules = (
+                f"\n\n## Important: Git Workflow (Worktree)\n"
+                f"Default branch: `{default_branch}`. "
+                f"Task branch: `{branch_name}`.\n"
+                f"Stay on `{branch_name}` in this worktree throughout the task, "
+                f"including tasks that require no code changes.\n"
+                f"\nWhen you finish (if you made code changes):\n"
+                f"1. Commit all remaining changes on `{branch_name}`\n"
+                f"{push_line}"
+                f"\nThe daemon merges the task branch into `{default_branch}` "
+                f"{'and pushes the default branch ' if has_remote else ''}"
+                f"from the base workspace.\n"
+                f"Do not check out `{default_branch}`, merge into it, push it, "
+                f"or delete `{branch_name}`."
             )
         else:
             # Normal task / final subtask: merge to default + push
@@ -213,7 +236,15 @@ class ContextMixin:
                 task.id, project.integration_repository_id
             )
             if origin is not None and origin.get("parent_ref"):
-                default_branch = origin["parent_ref"]
+                from sqlalchemy import select
+                from src.database.tables import projects
+                from src.integration.promotion_routing import resolve_origin_parent
+
+                async with self.db._engine.connect() as conn:
+                    cutover = await conn.scalar(select(projects.c.default_branch_cutover).where(
+                        projects.c.id == project.id))
+                default_branch = resolve_origin_parent(
+                    default_branch, origin, project.integration_repository_id, cutover)
         if workspace and await self.git.avalidate_checkout(workspace):
             has_remote = await self.git.ahas_remote(workspace)
         else:
@@ -224,6 +255,18 @@ class ContextMixin:
             from src.models import INTEGRATION_MODE_PULL_REQUEST
 
             integration_mode = INTEGRATION_MODE_PULL_REQUEST
+        is_worktree = False
+        if workspace and self._worktrees_enabled():
+            # Match the prompt's cwd: a multi-kind task can lock several workspaces.
+            workspace_row = next(
+                (
+                    ws for ws in await self.db.list_workspaces(task.project_id)
+                    if ws.workspace_path == workspace
+                ),
+                None,
+            )
+            if workspace_row is not None:
+                is_worktree = await self._workspace_is_worktree_mode(workspace_row.id)
         builder.add_context(
             "execution_rules",
             self._get_execution_rules(
@@ -233,6 +276,7 @@ class ContextMixin:
                 has_remote=has_remote,
                 is_final_subtask=is_final,
                 integration_mode=integration_mode,
+                is_worktree=is_worktree,
             ),
         )
 
@@ -298,6 +342,33 @@ class ContextMixin:
         except Exception:
             pass  # Non-fatal — proceed without conversation context
 
+        from src.commands.principal import current_principal
+        from src.knowledge.context import ContextService, context_enabled
+        from src.records.models import RecordError
+
+        if (context_enabled(self.config)
+                and task.project_id in self.config.knowledge.enabled_projects):
+            builder.set_l1_facts("")
+            builder.set_l1_guidance("")
+            builder.set_l2_context("")
+            principal = current_principal()
+            if principal is None:
+                # A pre-session task prompt has no retained attempt yet. It
+                # still receives the hard gate; prime handles later injection.
+                from src.knowledge.budget import ContextBudget
+
+                required, tools = builder.build()
+                ContextBudget.from_config(self.config).enforce(required, tools=tools)
+            else:
+                required, tools = builder.build()
+                bundle = await ContextService(self.db, self.config).prepare(
+                    principal=principal, required=required, query=task.title,
+                    project_ids=[task.project_id], claim_epoch=task.claim_epoch, tools=tools,
+                    task_id=task.id,
+                )
+                if not bundle.budget["fits"]:
+                    raise RecordError(bundle.budget["diagnostic"] or "context.over_budget")
+                builder.set_context_bundle(bundle)
         return builder.build_task_prompt()
 
     async def _load_project_override(
