@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
+from src.commands.task_commands import TaskCommandsMixin
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_revisions,
+    integration_owner_recoveries,
     integration_repair_stages,
     integration_review_evidence,
     playbook_artifacts,
@@ -25,7 +27,7 @@ from src.models import Agent, AgentState, TaskStatus
 from src.orchestrator.core import Orchestrator
 from tests import test_integration_owner_recovery as owner_tests
 from tests.test_integration_owner_recovery import git, remote_sha
-from tests.test_integration_repair import _artifact, _policy
+from tests.test_integration_repair import _artifact, _policy, _restart_command
 
 env = owner_tests.env
 
@@ -216,7 +218,7 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert owner["fence_token"] == case.owner["fence_token"] + 2
 
     # The real origin/fence resolver and checkout-start path must choose the
-    # preservation ref instead of the unchanged partial on canonical origin.
+    # task branch containing the recovered progress instead of the old partial.
     orch = Orchestrator.__new__(Orchestrator)
     orch.db, orch.git = case.db, case.recovery.git
     task = await case.db.get_task(next_id)
@@ -240,7 +242,83 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert len([r for r in await env.audits(case.owner["id"])
                 if r["outcome"] == "preserved_and_released"]) == 1
     assert await _stage(case, 1) == after
-    assert remote_sha(env.origin, case.target.branch) == case.partial
+    assert remote_sha(env.origin, case.target.branch) == tip
+
+
+async def test_rollover_replays_a_snapshot_already_consumed_by_workspace_preparation(env):
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    recovered = await case.recovery.recover(case.owner["id"], principal="sweep")
+    # A divergent recovery uses a temporary ref. Model its consumed audit:
+    # workspace preparation published the commit and deleted that exact ref.
+    ref = f"aq/recovery/{case.owner['id']}/{case.head}"
+    evidence = recovered.evidence | {"preserved_ref": ref}
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_owner_recoveries).where(
+            integration_owner_recoveries.c.owner_row_id == case.owner["id"],
+        ).values(evidence=evidence))
+    assert remote_sha(env.origin, ref) is None
+    assert remote_sha(env.origin, case.target.branch) == case.head
+    result = await case.repair.dispatch(case.operation, 1)
+    assert result["outcome"] == "dispatched"
+    progress = (await _stage(case, 1))["dossier"]["preserved_progress"]
+    assert (progress["ref"], progress["sha"]) == (ref, case.head)
+    assert progress["completed_member_ordinals"] == [0, 1]
+
+
+async def test_restart_of_a_dead_batch_writer_resumes_its_preserved_commits(env):
+    """The 2026-10-05 incident: restart stranded a dead repair writer.
+
+    ``aq task restart`` on the delegate of a stopped batch writer moved it to
+    READY without its exact reserved repair fence, so the pool claim frontier
+    excluded it (``frontier_origin_not_materialized``) and counted zero demand
+    for it — no worker could ever claim it. The restart must hand the branch
+    back, and the resumed repair must continue from the preserved commits
+    rather than the frozen candidate.
+    """
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # A stopped writer with unpublished commits rolls over to the successor.
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    await case.recovery.recover(case.owner["id"], principal="sweep")
+    dispatched = await case.repair.dispatch(case.operation, 1)
+    delegate = dispatched["repair_task_id"]
+    progress = (await _stage(case, 1))["dossier"]["preserved_progress"]
+    tip = progress["sha"]
+    assert remote_sha(env.origin, progress["ref"]) == tip
+
+    # Its writer claimed the branch and died; owner recovery freed the fence.
+    await case.db.update_task(delegate, status=TaskStatus.BLOCKED)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released",
+            fence_token=integration_branch_owners.c.fence_token + 1,
+            session_id=None,
+            workspace_id=None,
+        ))
+
+    command = _restart_command(
+        case.db, RepairService(case.db, owner_recovery=case.recovery, clock=lambda: 440.0)
+    )
+    result = await TaskCommandsMixin._cmd_restart_task(command, {"task_id": delegate})
+
+    assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
+    assert (await case.db.get_task(delegate)).status is TaskStatus.READY
+    owner = await BranchOwnership(case.db).get_owner(case.target)
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        delegate, "repair", "reserved",
+    )
+    assert await case.db.is_hierarchy_task_runnable(delegate)
+    assert await case.db.claim_frontier_exclusions(delegate) == []
+    # The repair resumes from the preserved repair commits, not the frozen base.
+    resumed = await _stage(case, 1)
+    assert resumed["dossier"]["preserved_progress"]["sha"] == tip
+    assert resumed["dossier"]["preserved_progress"]["repair_commits"] == progress["repair_commits"]
+    assert resumed["starting_sha"] == tip
+    assert "Continue at the preserved tip" in (await case.db.get_task(delegate)).description
 
 
 
