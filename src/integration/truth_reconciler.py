@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class GitTruthReconciler:
     """One cursor per source, advanced even when a row cannot yet be repaired."""
 
-    def __init__(self, db, git, *, data_dir, owner_recovery=None, page_size=50):
+    def __init__(self, db, git, *, data_dir, owner_recovery=None, obsolete_close=None, page_size=50):
         if page_size < 1:
             raise ValueError("page size must be positive")
         self.db, self.git = db, git
@@ -40,12 +40,14 @@ class GitTruthReconciler:
             db, git=git, data_dir=Path(data_dir) / "truth-reconciliation", truth=GitTruth(git),
         )
         self.owner_recovery = owner_recovery
+        self.obsolete_close = obsolete_close
         self.page_size = page_size
         self._cursor = ""
         self._slot_cursor = ""
         self._orphan_cursor = ""
         self._origin_cursor = ""
         self._owner_cursor = ""
+        self._repair_cursor = ""
         self._stage = 0
         self._lock = asyncio.Lock()
 
@@ -60,6 +62,7 @@ class GitTruthReconciler:
                 ("sentinels", lambda: self._sentinels(now)),
                 ("orphans", lambda: self._orphans(now)),
                 ("origins", lambda: self._origins(now)),
+                ("repairs", lambda: self._repairs(now)),
             ]
             ordered = stages[self._stage:] + stages[:self._stage]
             self._stage = (self._stage + 1) % len(stages)
@@ -70,6 +73,118 @@ class GitTruthReconciler:
                 except Exception:
                     logger.exception("Git truth %s pass remains retryable", name)
             return counts
+
+    async def _repairs(self, now):
+        """A delivered batch must not leave an unclaimable repair blocking work."""
+        if self.obsolete_close is None:
+            return 0
+        async with self.db._engine.connect() as conn:
+            rows = list((await conn.execute(select(t.tasks).join(
+                t.integration_batches,
+                t.integration_batches.c.id == t.tasks.c.created_by_id,
+            ).where(
+                t.integration_batches.c.lifecycle == "promoted",
+                t.tasks.c.created_by_kind == "system",
+                t.tasks.c.status != "COMPLETED",
+                t.tasks.c.id > self._repair_cursor,
+                t.tasks.c.dedup_key.startswith("repair:", autoescape=True),
+            ).order_by(t.tasks.c.id).limit(self.page_size))).mappings())
+        self._repair_cursor = rows[-1]["id"] if len(rows) == self.page_size else ""
+        changed = 0
+        for row in rows:
+            try:
+                changed += await self._retire_repair(dict(row), now)
+            except Exception:
+                logger.exception("Git truth batch repair remains retryable for %s", row["id"])
+        return changed
+
+    async def _retire_repair(self, task, now):
+        from src.integration.delivery_watchdog import _held_on
+        from src.integration.repair import OrdinaryRepairService
+        from src.operator_decisions import history_on, related_on
+        from src.sessions.obsolete import ObsoleteCloseRefused
+
+        original = await OrdinaryRepairService(self.db).input(task["id"])
+        if not original or original["batch_id"] != task["created_by_id"]:
+            return False
+        batch = await self.db.get_integration_batch(original["batch_id"])
+        repository = await self.db.get_repo(original["repository_id"])
+        if (not batch or batch["lifecycle"] != "promoted" or batch["intent"] != "open"
+                or not batch["final_main_sha"]
+                or repository is None or repository.project_id != task["project_id"]
+                or batch["project_id"] != task["project_id"]
+                or batch["repository_id"] != repository.id or task["repo_id"] != repository.id
+                or task["branch_name"] != original["target_ref"].removeprefix("refs/heads/")):
+            return False
+        snapshot = await self.observer.snapshot(DeliveryTarget(
+            task["project_id"], repository.id, repository.url, batch["target_ref"],
+        ))
+        observed = snapshot.observation
+        if observed.error not in {None, "target_ref_missing"}:
+            return False
+        # Epic batches can be settled by delivery straight to the project branch.
+        if not observed.target_oid or await self.git.ais_ancestor(
+            observed.store, batch["final_main_sha"], observed.target_oid, strict=True,
+        ) is not True:
+            snapshot = snapshot.for_target("refs/heads/" + repository.default_branch)
+            observed = snapshot.observation
+        if observed.error:
+            return False
+        async with self.db._engine.connect() as conn:
+            members = list((await conn.execute(select(t.integration_batch_members).where(
+                t.integration_batch_members.c.batch_id == batch["id"],
+            ).order_by(t.integration_batch_members.c.ordinal))).mappings())
+        repair_head = observed.source_heads.get(
+            "refs/remotes/origin/" + original["target_ref"].removeprefix("refs/heads/"),
+        )
+        sources = {batch["final_main_sha"], *(member["source_sha"] for member in members)}
+        # An untouched disposable merge need not have landed: its frozen inputs
+        # can reach the target by another merge. Actual repair commits must land.
+        if repair_head and repair_head != original["starting_sha"]:
+            sources.add(repair_head)
+        if not members or None in sources or not observed.target_oid or not all([
+            await self.git.ais_ancestor(observed.store, sha, observed.target_oid, strict=True)
+            is True for sha in sources
+        ]):
+            return False
+        await retain_objects(observed, sources | ({repair_head} if repair_head else set()))
+
+        async def prepare(conn):
+            from src.git.manager import RemoteRefState
+
+            await self.db.lock_hierarchy_project(conn, task["project_id"])
+            current = (await conn.execute(select(t.tasks).where(
+                t.tasks.c.id == task["id"],
+            ).with_for_update())).mappings().one()
+            current_batch = (await conn.execute(select(t.integration_batches).where(
+                t.integration_batches.c.id == batch["id"],
+            ).with_for_update())).mappings().one()
+            refs = await related_on(conn, "batch", batch["id"])
+            busy = await conn.scalar(select(exists().where(
+                t.sessions.c.task_id == task["id"], session_attached_clause(),
+            ))) or await conn.scalar(select(exists().where(
+                t.workspaces.c.locked_by_task_id == task["id"],
+            )))
+            remote = await self.git.als_remote_ref(
+                observed.store, original["target_ref"].removeprefix("refs/heads/"),
+            )
+            branch_fresh = (remote.state is RemoteRefState.PRESENT and remote.oid == repair_head
+                            if repair_head else remote.state is RemoteRefState.ABSENT)
+            if (dict(current) != task or dict(current_batch) != batch or busy
+                    or current["assigned_agent_id"] or current["status"] in {"ASSIGNED", "IN_PROGRESS"}
+                    or await _held_on(conn, task["project_id"], task["id"], current["status"])
+                    or any(row["active"] for row in await history_on(conn, task["project_id"], refs))
+                    or not branch_fresh or not await snapshot.is_fresh()):
+                raise ObsoleteCloseRefused("obsolete.changed", "repair or delivery changed")
+
+        try:
+            await self.obsolete_close.close(
+                task["id"], reason=f"Batch {batch['id']} already delivered at {observed.target_oid}",
+                principal="git-truth-reconciler", _prepare_on=prepare,
+            )
+        except ObsoleteCloseRefused:
+            return False
+        return True
 
     async def _completed(self, now, counts):
         async with self.db._engine.connect() as conn:

@@ -494,10 +494,6 @@ async def test_creation_is_idempotent_and_never_overwrites(db):
     )
     assert not created and again["id"] == "subject-1" and again["phase"] == "building"
     assert Subject.from_row(again) == _subject()
-    by_key = await db.get_integration_subject_by_key(
-        project_id="p", kind="root_batch", subject_key=_subject().subject_key
-    )
-    assert by_key == again
 
 
 @pytest.mark.parametrize("same_id", [True, False])
@@ -554,9 +550,13 @@ async def test_creation_refuses_a_collision_with_a_different_natural_key(
             )
         )
     assert await db.get_integration_subject(original["id"]) == original
-    assert await db.get_integration_subject_by_key(
-        project_id="p", kind="root_batch", subject_key="root_batch:repo:other-request"
-    ) is None
+    async with db._engine.connect() as conn:
+        collided = await conn.execute(
+            select(integration_subjects.c.id).where(
+                integration_subjects.c.subject_key == "root_batch:repo:other-request"
+            )
+        )
+        assert collided.first() is None
 
 
 @pytest.mark.parametrize(
@@ -630,40 +630,6 @@ async def test_a_done_subject_never_reopens(db):
             await conn.execute(update(integration_subjects).values(phase="building", **reopened))
 
 
-async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
-    for index, due in enumerate((NOW - 5, NOW - 5, NOW - 1, NOW + 10)):
-        await _insert_raw(
-            db,
-            id=f"s{index}",
-            subject_key=f"root_batch:repo:r{index}",
-            next_due_at=due,
-            due_set_at=due,
-        )
-    closed = schedule_values(
-        SubjectSchedule.close(now=NOW, reason="published", max_wait_seconds=60)
-    )
-    await _insert_raw(db, id="s-done", subject_key="root_batch:repo:done", phase="done", **closed)
-    await _insert_raw(
-        db, id="s-held", subject_key="root_batch:repo:held", next_due_at=None, gate_id="g"
-    )
-    first = await db.due_integration_subject_page(now=NOW, after=None, limit=2)
-    assert [row["id"] for row in first] == ["s0", "s1"]
-    rest = await db.due_integration_subject_page(
-        now=NOW, after=(first[-1]["next_due_at"], first[-1]["id"]), limit=10
-    )
-    assert [row["id"] for row in rest] == ["s2"]
-    assert (
-        await db.due_integration_subject_page(now=NOW, after=None, limit=10, kinds=["source"]) == []
-    )
-    assert [row["id"] for row in await db.due_integration_subject_page(
-        now=NOW, after=None, limit=10, engine="reconciler"
-    )] == ["s0", "s1", "s2"]
-    with pytest.raises(ValueError):
-        await db.due_integration_subject_page(now=NOW, after=None, limit=0)
-
-
-
-
 async def test_versioned_writes_refuse_a_stale_visit(db):
     await db.ensure_integration_subject(_row(_subject()))
     wait = schedule_values(
@@ -711,17 +677,20 @@ async def test_an_event_wakes_without_invalidating_the_visit_in_flight(db):
             )
         )
     )
-    # The event pulls the due time forward, never back, and keeps the version.
-    assert await db.wake_integration_subjects(now=NOW + 10, batch_ids=["nope"]) == 0
-    assert await db.wake_integration_subjects(now=NOW + 10, subject_ids=["subject-1"]) == 1
+    # An answered gate wakes the subject the way ``gates`` does: due now and
+    # stamped, with the version untouched.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(integration_subjects)
+            .where(integration_subjects.c.id == "subject-1")
+            .values(next_due_at=NOW + 10, wake_requested_at=NOW + 10)
+        )
     woken = await db.get_integration_subject("subject-1")
     assert (woken["next_due_at"], woken["wake_requested_at"], woken["version"]) == (
         NOW + 10,
         NOW + 10,
         0,
     )
-    assert await db.wake_integration_subjects(now=NOW + 20, subject_ids=["subject-1"]) == 1
-    assert (await db.get_integration_subject("subject-1"))["next_due_at"] == NOW + 10
 
     # A visit that started before the wake still writes, and stays due now.
     later = schedule_values(
@@ -748,16 +717,6 @@ async def test_an_event_wakes_without_invalidating_the_visit_in_flight(db):
             visit_started_at=NOW + 25,
         )
     assert settled["next_due_at"] == NOW + 900
-
-
-async def test_wakes_reach_held_subjects_by_writer_task_and_gate(db):
-    held = schedule_values(SubjectSchedule.hold(now=NOW, gate_id="gate-9", max_wait_seconds=60))
-    writer = {"writer_status": "filed", "writer_task_id": "repair-1"}
-    await db.ensure_integration_subject({**_row(_subject()), **held, **writer})
-    assert await db.wake_integration_subjects(now=NOW + 5, gate_ids=["gate-9"]) == 1
-    row = await db.get_integration_subject("subject-1")
-    assert (row["gate_id"], row["next_due_at"]) == ("gate-9", NOW + 5)
-    assert await db.wake_integration_subjects(now=NOW + 6, writer_task_ids=["repair-1"]) == 1
 
 
 def _journal(**overrides) -> dict:
