@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -42,6 +42,7 @@ from src.database.tables import (
     tasks,
 )
 from src.task_graph.batch_digest import compute_structure_digest
+from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
 
 HELD_STATES = frozenset({"held", "reviewing", "needs_scope"})
 SETTABLE_STATES = frozenset({"held", "reviewing", "needs_scope", "retired"})
@@ -314,6 +315,48 @@ async def batch_of_task(conn, task_id: str) -> dict[str, Any] | None:
     ))).mappings().first())
 
 
+async def task_batch_summary(conn, task_id: str) -> dict[str, Any] | None:
+    """Read-only task detail projection, retaining membership after release."""
+    return (await task_batch_summaries(conn, [task_id])).get(task_id)
+
+
+async def task_batch_summaries(conn, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Canonical membership for visible tasks, independent of lifecycle status.
+
+    A single batched read retains released membership, preferring a current
+    hold over historical batches just as the task detail projection does.
+    """
+    ids = set(task_ids)
+    if not ids:
+        return {}
+    rows = (await conn.execute(
+        select(ingest_batches, task_proposals.c.source, ingest_batch_members.c.task_id)
+        .join(ingest_batch_members,
+              ingest_batch_members.c.batch_id == ingest_batches.c.batch_id)
+        .join(task_proposals, task_proposals.c.id == ingest_batches.c.batch_id)
+        .where(ingest_batch_members.c.task_id.in_(ids),
+               ingest_batch_members.c.state == "active")
+        .order_by(ingest_batches.c.state.in_(HELD_STATES).desc(),
+                  ingest_batches.c.created_at.desc(), ingest_batches.c.batch_id)
+    )).mappings()
+    summaries = {}
+    for row in rows:
+        summaries.setdefault(row["task_id"], batch_summary(row))
+    return summaries
+
+
+def batch_summary(batch: Mapping[str, Any]) -> dict[str, Any]:
+    """Common task/batch read shape; source is the proposal's source label."""
+    return {
+        **{key: batch[key] for key in (
+            "batch_id", "state", "structure_revision", "reviewer_task_id", "source",
+        )},
+        "lineage": {key: batch[key] for key in (
+            "lineage_kind", "design_review_id", "design_revision", "design_content_sha256",
+        )},
+    }
+
+
 async def set_member_fidelity(conn, task_id: str, **fields: Any) -> None:
     """Merge acceptance/constraints/size into the task's fidelity metadata."""
     unknown = set(fields) - set(FIDELITY_FIELDS)
@@ -406,6 +449,8 @@ async def hydrate_structure(
     The result is :func:`src.task_graph.batch_digest.compute_structure_digest`
     input. *lock* takes ``FOR UPDATE`` on the membership and task rows, as
     release requires (spec P3 L3.1 step 2).
+    Informational links from the server-assigned fidelity reviewer are excluded:
+    dispatching review does not change the graph being reviewed.
     """
     stmt = (
         select(
@@ -443,9 +488,19 @@ async def hydrate_structure(
             task_metadata.c.task_id.in_(ids), task_metadata.c.key == MEMBER_FIDELITY_META,
         ))).all()
     }
+    ownership = {
+        task_id: json.loads(value)
+        for task_id, value in (await conn.execute(select(
+            task_metadata.c.task_id, task_metadata.c.value,
+        ).where(
+            task_metadata.c.task_id.in_(ids), task_metadata.c.key == "owned_modules",
+        ))).all()
+    }
     for row in rows:
         stored = fidelity.get(row["task_id"], {})
         row.update({field: stored.get(field) for field in FIDELITY_FIELDS})
+        if row["task_id"] in ownership:
+            row["owned_modules"] = ownership[row["task_id"]]
     edges = [dict(row) for row in (await conn.execute(
         select(
             task_dependencies.c.task_id,
@@ -455,6 +510,19 @@ async def hydrate_structure(
         ).where(or_(
             task_dependencies.c.task_id.in_(ids),
             task_dependencies.c.depends_on_task_id.in_(ids),
+        ), ~and_(
+            # Reviewer assignment is control-plane bookkeeping, not a work
+            # graph edit. Include execution edges even from these tasks; omit
+            # only informational links from this batch's server-routed role.
+            task_dependencies.c.dep_type == "related",
+            task_dependencies.c.task_id.in_(select(tasks.c.id).where(
+                tasks.c.project_id == select(ingest_batches.c.project_id).where(
+                    ingest_batches.c.batch_id == batch_id,
+                ).scalar_subquery(),
+                tasks.c.route_source == "role",
+                tasks.c.profile_id == FIDELITY_REVIEWER_PROFILE_ID,
+                tasks.c.dedup_key == fidelity_review_dedup_key(batch_id),
+            )),
         ))
     )).mappings()]
     return rows, edges
@@ -566,6 +634,7 @@ async def record_receipt(
     The command validates authority and verdict coverage and derives
     *passing*. A batch holds one passing receipt per revision: an identical
     passing receipt replays, a different one is refused ``receipt_exists``.
+    Identical nonpassing receipts also replay without creating duplicate evidence.
     """
     batch = await get_batch(conn, batch_id, lock=True)
     if batch is None:
@@ -596,6 +665,16 @@ async def record_receipt(
                 f"{structure_revision}",
                 batch_id=batch_id, receipt_id=existing["receipt_id"],
             )
+    else:
+        existing_rows = (await conn.execute(select(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch_id,
+            ingest_batch_receipts.c.structure_revision == structure_revision,
+            ingest_batch_receipts.c.structure_digest == structure_digest,
+            ingest_batch_receipts.c.passing.is_(False),
+        ))).mappings()
+        for existing in existing_rows:
+            if all(existing[key] == values[key] for key in _RECEIPT_IDENTITY):
+                return {"success": True, "replayed": True, "receipt": dict(existing)}
     receipt_id = "rcpt-" + uuid.uuid4().hex[:16]
     await conn.execute(ingest_batch_receipts.insert().values(
         receipt_id=receipt_id, batch_id=batch_id, structure_revision=structure_revision,
