@@ -353,9 +353,13 @@ def test_work_finished_outside_the_train_is_not_tracked():
         "not_tracked", "Completed outside the train", "untracked",
     )
     cancelled = _classify(_facts(status="COMPLETED", operation=None, collection_cancelled=True))
-    assert cancelled["state"] == "not_tracked"
+    assert cancelled["state"] == "queued"
     unverified = _classify(_facts(status="COMPLETED", operation=None, checkpoint={**VERIFYING, "episode_id": None}))
-    assert unverified["state"] == "not_tracked"
+    assert unverified["state"] == "queued"
+    assert unverified["label"] == "Waiting for aggregate verification"
+    assert unverified["display_status"] == "Queued"
+    assert unverified["responsible"]["label"] == "Integration train"
+    assert unverified["remedy"] == "aq integration reverify-epic epic"
     orphaned = _classify(
         _facts(status="COMPLETED", operation=None, parent_task_id="root", parent_status="COMPLETED")
     )
@@ -364,6 +368,25 @@ def test_work_finished_outside_the_train_is_not_tracked():
         _facts(status="COMPLETED", operation=None, parent_task_id="root", parent_status="PAUSED")
     )
     assert waiting["label"] == "Waiting for parent collection"
+
+
+@pytest.mark.parametrize("mode", ["train", "development"])
+def test_completed_root_branch_without_checkpoint_does_not_display_completed(mode):
+    facts = _facts(status="COMPLETED", checkpoint=None, operation=None, branch_name="aq/epic",
+                   mode=mode)
+    missing = _classify(facts)
+    assert (missing["state"], missing["display_status"], missing["evidence"]) == (
+        "unknown", "Delivery unknown", "unavailable",
+    )
+    pending = _classify(replace(facts, canonical=CanonicalDelivery(
+        state="pending", reason="completion", source="a" * 40, target_ref="refs/heads/dev",
+    )))
+    assert pending["state"] == "queued"
+    assert "not in dev" in pending["reason"]
+    delivered = _classify(replace(facts, canonical=CanonicalDelivery(
+        state="contained", reason="completion", source="a" * 40, target_ref="refs/heads/dev",
+    )))
+    assert delivered["state"] == "delivered"
 
 
 def test_implementation_and_untracked_modes():
@@ -434,7 +457,8 @@ def test_a_canonically_adopted_epic_is_delivered_where_no_receipt_exists():
     assert delivered["links"] == []
 
 
-def test_operator_equivalence_is_named_rather_than_absorbed():
+@pytest.mark.parametrize("leaf_state", ["contained", "no_change"])
+def test_operator_equivalence_is_named_rather_than_absorbed(leaf_state):
     equivalent = _classify(replace(_complete(), canonical=replace(
         ADOPTED, acceptance="operator_equivalent",
     )))
@@ -442,7 +466,8 @@ def test_operator_equivalence_is_named_rather_than_absorbed():
     assert equivalent["reason"].endswith("(operator accepted this source as equivalent)")
 
     leaf = CanonicalDelivery(
-        state="contained", reason="git_completion", source="a" * 40,
+        state=leaf_state, reason="git_no_change" if leaf_state == "no_change" else "git_completion",
+        source="a" * 40,
         target_ref="refs/heads/main", target_oid="c" * 40,
         completion_id="close-epic-2", since=NOW - 5,
     )

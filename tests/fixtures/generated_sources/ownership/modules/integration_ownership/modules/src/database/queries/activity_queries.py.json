@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/activity_queries.py::ActivityQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
