@@ -5,6 +5,7 @@ from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 
+from ..models.wait_cancel_args_owner_kind_type_0 import WaitCancelArgsOwnerKindType0
 from ..models.wait_cancel_args_schema_version import WaitCancelArgsSchemaVersion
 from ..types import UNSET, Unset
 
@@ -21,6 +22,8 @@ class WaitCancelArgs:
         task_id (None | str | Unset):
         session_id (None | str | Unset):
         claim_epoch (int | None | Unset):
+        owner_kind (None | Unset | WaitCancelArgsOwnerKindType0):
+        owner_id (None | str | Unset):
     """
 
     wait_id: str
@@ -29,6 +32,8 @@ class WaitCancelArgs:
     task_id: None | str | Unset = UNSET
     session_id: None | str | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
+    owner_kind: None | Unset | WaitCancelArgsOwnerKindType0 = UNSET
+    owner_id: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         wait_id = self.wait_id
@@ -61,6 +66,20 @@ class WaitCancelArgs:
         else:
             claim_epoch = self.claim_epoch
 
+        owner_kind: None | str | Unset
+        if isinstance(self.owner_kind, Unset):
+            owner_kind = UNSET
+        elif isinstance(self.owner_kind, WaitCancelArgsOwnerKindType0):
+            owner_kind = self.owner_kind.value
+        else:
+            owner_kind = self.owner_kind
+
+        owner_id: None | str | Unset
+        if isinstance(self.owner_id, Unset):
+            owner_id = UNSET
+        else:
+            owner_id = self.owner_id
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -78,6 +97,10 @@ class WaitCancelArgs:
             field_dict["session_id"] = session_id
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
+        if owner_kind is not UNSET:
+            field_dict["owner_kind"] = owner_kind
+        if owner_id is not UNSET:
+            field_dict["owner_id"] = owner_id
 
         return field_dict
 
@@ -129,6 +152,32 @@ class WaitCancelArgs:
 
         claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
+        def _parse_owner_kind(data: object) -> None | Unset | WaitCancelArgsOwnerKindType0:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                owner_kind_type_0 = WaitCancelArgsOwnerKindType0(data)
+
+                return owner_kind_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | Unset | WaitCancelArgsOwnerKindType0, data)
+
+        owner_kind = _parse_owner_kind(d.pop("owner_kind", UNSET))
+
+        def _parse_owner_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        owner_id = _parse_owner_id(d.pop("owner_id", UNSET))
+
         wait_cancel_args = cls(
             wait_id=wait_id,
             schema_version=schema_version,
@@ -136,6 +185,8 @@ class WaitCancelArgs:
             task_id=task_id,
             session_id=session_id,
             claim_epoch=claim_epoch,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
         )
 
         return wait_cancel_args

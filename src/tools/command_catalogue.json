@@ -131,7 +131,93 @@
       "description": "List all projects in the system.",
       "input_schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
+          }
+        }
+      }
+    },
+    {
+      "name": "project_relocate",
+      "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "owner_inventory": {
+            "type": "object"
+          },
+          "expected_digest": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "destination",
+          "owner_inventory"
+        ]
       }
     },
     {
@@ -618,6 +704,61 @@
           "show_dependencies": {
             "type": "boolean",
             "description": "When true, each task in the result includes 'depends_on' (list of upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display' field with pre-formatted text showing dependency relationships. Use this when the user asks about task dependencies, blocking chains, or why a task is waiting. Default false."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
           }
         }
       }
@@ -1764,7 +1905,7 @@
     },
     {
       "name": "supervisor_restart",
-      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2572,6 +2713,61 @@
           "project_id": {
             "type": "string",
             "description": "Optional project filter.  When omitted, all projects are scanned."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
           }
         }
       }
@@ -3649,10 +3845,50 @@
     },
     {
       "name": "playbook_commands",
-      "description": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
+      "description": "Inspect a bounded page of playbook command contracts, including denied and unavailable commands, schemas, caller requirements and execution metadata.",
       "input_schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "schema_quality": {
+            "type": "string"
+          },
+          "result_mode": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "denied": {
+            "type": "boolean"
+          },
+          "include_schema": {
+            "type": "boolean",
+            "default": true
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          }
+        }
       }
     },
     {
@@ -4737,6 +4973,10 @@
           "branch": {
             "type": "string",
             "description": "Branch name for this task's work (optional)."
+          },
+          "repair_batch": {
+            "type": "string",
+            "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch."
           },
           "pr_url": {
             "type": "string",
@@ -9058,6 +9298,35 @@
             ],
             "default": null,
             "title": "Claim Epoch"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
           }
         },
         "required": [
@@ -9065,6 +9334,25 @@
         ],
         "title": "WaitCancelArgs",
         "type": "object"
+      }
+    },
+    {
+      "name": "integration_batch_fix",
+      "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "push",
+              "rebind"
+            ],
+            "default": "status"
+          }
+        }
       }
     },
     {
@@ -12349,6 +12637,33 @@
       }
     },
     {
+      "name": "playbook_script_run",
+      "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256
+          },
+          "environment": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "stdin_base64": {
+            "type": "string",
+            "maxLength": 87384
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "ensure_spec_ingest",
       "description": "Ensure one role task per applied approval decision, including archived receipts.",
       "input_schema": {
@@ -13271,6 +13586,22 @@
         "title": "AskButtonArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "integration_continue_close",
+      "description": "Continue the parent merge belonging to your held task and session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      }
     }
   ],
   "fallback": {
@@ -13405,6 +13736,94 @@
         ],
         "title": "DeliveryReceiptsArgs",
         "type": "object"
+      }
+    },
+    "doctor_catalog": {
+      "name": "doctor_catalog",
+      "description": "List doctor observation audits, identity schemas, scope and coverage contracts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "doctor_run": {
+      "name": "doctor_run",
+      "description": "Observe one audited check or group; never repair or filter a global scan.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "group": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "now": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 253402300799
+          },
+          "timeout_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 60
+          },
+          "pagination": {
+            "type": "string",
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "check_id"
+            ]
+          },
+          {
+            "required": [
+              "group"
+            ]
+          }
+        ],
+        "dependentRequired": {
+          "page_token": [
+            "snapshot_id",
+            "pagination"
+          ],
+          "snapshot_id": [
+            "page_token",
+            "pagination"
+          ],
+          "page_size": [
+            "pagination"
+          ]
+        }
       }
     },
     "explain_task": {
@@ -14136,6 +14555,64 @@
         "type": "object"
       }
     },
+    "integration_cutover_containment": {
+      "name": "integration_cutover_containment",
+      "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "choices": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Choices",
+            "type": "object"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Digest"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationContainmentCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_cutover_plan": {
       "name": "integration_cutover_plan",
       "description": "Authenticated hierarchical integration operational control.",
@@ -14197,6 +14674,85 @@
           "project_id"
         ],
         "title": "IntegrationCutoverArgs",
+        "type": "object"
+      }
+    },
+    "integration_delegate_publication": {
+      "name": "integration_delegate_publication",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "title": "Repository Id",
+            "type": "string"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "claim_epoch": {
+            "minimum": 0,
+            "title": "Claim Epoch",
+            "type": "integer"
+          },
+          "target_branch": {
+            "minLength": 1,
+            "title": "Target Branch",
+            "type": "string"
+          },
+          "expected_target_oid": {
+            "title": "Expected Target Oid",
+            "type": "string"
+          },
+          "expected_owner_fence": {
+            "minimum": 0,
+            "title": "Expected Owner Fence",
+            "type": "integer"
+          },
+          "ttl_seconds": {
+            "default": 480,
+            "maximum": 480,
+            "minimum": 1,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "repository_id",
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "target_branch",
+          "expected_target_oid",
+          "expected_owner_fence",
+          "reason"
+        ],
+        "title": "IntegrationDelegatePublicationArgs",
         "type": "object"
       }
     },
@@ -14313,6 +14869,62 @@
           "engine"
         ],
         "title": "IntegrationEngineTransferArgs",
+        "type": "object"
+      }
+    },
+    "integration_fast_forward_pr": {
+      "name": "integration_fast_forward_pr",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "pr_number": {
+            "exclusiveMinimum": 0,
+            "title": "Pr Number",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "task_id",
+          "pr_number"
+        ],
+        "title": "IntegrationFastForwardPrArgs",
         "type": "object"
       }
     },
@@ -14844,6 +15456,22 @@
         "type": "object"
       }
     },
+    "integration_reconcile_git_truth": {
+      "name": "integration_reconcile_git_truth",
+      "description": "Daemon-only repair of Git-derived integration projections.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "integration_record_delivered": {
       "name": "integration_record_delivered",
       "description": "Local operator verifies exact source on the designated default and records shipped work.",
@@ -15137,6 +15765,11 @@
             "minLength": 1,
             "title": "Task Id",
             "type": "string"
+          },
+          "adopt_source": {
+            "default": false,
+            "title": "Adopt Source",
+            "type": "boolean"
           },
           "dry_run": {
             "default": true,
@@ -15519,6 +16152,65 @@
         "type": "object"
       }
     },
+    "integration_release_withheld_source": {
+      "name": "integration_release_withheld_source",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "expected_source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Source Sha"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "task_id"
+        ],
+        "title": "IntegrationReleaseWithheldSourceArgs",
+        "type": "object"
+      }
+    },
     "integration_reopen_collection": {
       "name": "integration_reopen_collection",
       "description": "Authenticated hierarchical integration operational control.",
@@ -15724,6 +16416,59 @@
         "type": "object"
       }
     },
+    "integration_repair_target": {
+      "name": "integration_repair_target",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationRepairTargetArgs",
+        "type": "object"
+      }
+    },
     "integration_repair_timeout": {
       "name": "integration_repair_timeout",
       "description": "Expire the current repair stage once its absolute deadline has passed.",
@@ -15746,6 +16491,53 @@
           "stage"
         ],
         "title": "IntegrationRepairTimeoutArgs",
+        "type": "object"
+      }
+    },
+    "integration_rerequest_check": {
+      "name": "integration_rerequest_check",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "check_name": {
+            "minLength": 1,
+            "title": "Check Name",
+            "type": "string"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "check_name"
+        ],
+        "title": "IntegrationRerequestCheckArgs",
         "type": "object"
       }
     },
@@ -16015,6 +16807,37 @@
           "task_id"
         ],
         "title": "IntegrationReverifyEpicArgs",
+        "type": "object"
+      }
+    },
+    "integration_revoke_publication": {
+      "name": "integration_revoke_publication",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "reason"
+        ],
+        "title": "IntegrationRevokePublicationArgs",
         "type": "object"
       }
     },
@@ -17706,12 +18529,394 @@
         "type": "object"
       }
     },
+    "observation_snapshot_cleanup": {
+      "name": "observation_snapshot_cleanup",
+      "description": "Collect at most 100 expired snapshots; daemon/operator maintenance only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
     "observe_integration_source_ci": {
       "name": "observe_integration_source_ci",
       "description": "Daemon-only adapter for trusted CI observations, never a raw tool input.",
       "input_schema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    "playbook_state_delete": {
+      "name": "playbook_state_delete",
+      "description": "Create a versioned KV tombstone with replay-safe CAS.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "key",
+          "expected_revision",
+          "operation_key"
+        ]
+      }
+    },
+    "playbook_state_get": {
+      "name": "playbook_state_get",
+      "description": "Read an invocation-owned typed key, including its retained revision.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ]
+      }
+    },
+    "playbook_state_inspect": {
+      "name": "playbook_state_inspect",
+      "description": "Inspect an explicit namespace only under independent operator authority.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "namespace"
+        ]
+      }
+    },
+    "playbook_state_list": {
+      "name": "playbook_state_list",
+      "description": "Materialize immutable pre-scan state revisions and protected pages.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": []
+      }
+    },
+    "playbook_state_notify": {
+      "name": "playbook_state_notify",
+      "description": "Atomically enqueue episode/reminder/clear messages with observation replay.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "action": {
+            "enum": [
+              "present",
+              "cleared"
+            ]
+          },
+          "observed_at": {
+            "type": "number"
+          },
+          "observation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "last_value": {},
+          "source_partition": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "repeat_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "message": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "to_kind": {
+                "enum": [
+                  "session",
+                  "task",
+                  "profile",
+                  "user"
+                ]
+              },
+              "to_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384,
+                "pattern": "\\S"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "to_kind",
+              "to_id",
+              "body"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "action",
+          "observed_at",
+          "observation_id",
+          "message"
+        ]
+      }
+    },
+    "playbook_state_reset": {
+      "name": "playbook_state_reset",
+      "description": "Operator reset: retain revisions/journals and warn of deliberate re-alert.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "namespace",
+          "expected_revision",
+          "operation_key",
+          "reason"
+        ]
+      }
+    },
+    "playbook_state_set": {
+      "name": "playbook_state_set",
+      "description": "Set a private KV value using CAS and a retained operation key.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "value": {},
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "expected_revision",
+          "operation_key"
+        ]
       }
     },
     "plugin_config": {
@@ -19467,6 +20672,7 @@
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
+    "integration": "Author-assisted close continuations and bound batch repair",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",
@@ -19501,6 +20707,8 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -19533,6 +20741,7 @@
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -20339,6 +21548,10 @@
                 "type": "string",
                 "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
               },
+              "publication_delegation_id": {
+                "type": "string",
+                "description": "Single-use integration-owner grant for this target branch"
+              },
               "workspace": {
                 "type": "string",
                 "description": "Workspace name or ID (optional)"
@@ -20642,6 +21855,10 @@
               "expected_remote_oid": {
                 "type": "string",
                 "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+              },
+              "publication_delegation_id": {
+                "type": "string",
+                "description": "Single-use integration-owner grant for this target branch"
               },
               "workspace": {
                 "type": "string",

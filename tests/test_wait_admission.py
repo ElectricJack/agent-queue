@@ -16,6 +16,8 @@ from src.database.tables import (
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.integration.admission import observe_admission
+from src.integration.stacked_branches import StackView
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.registry import build_registry
@@ -50,6 +52,10 @@ async def env():
     o = SimpleNamespace(db=db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                         _worktrees_enabled=lambda: False,
                         _pool_quarantine_state=lambda *a: (None, None))
+    async def admission(ids):
+        return await observe_admission(db, ids, None)
+
+    o._delivery_admission = admission
     service = SchedulerWaitService(o, clock=lambda: NOW)
     yield SimpleNamespace(db=db, o=o, service=service)
     await db.close()
@@ -63,6 +69,33 @@ async def rows(env, table):
 async def sync(env, now=NOW):
     return await env.service.sync({"project_id": "p", "cycle_id": str(now), "blockers": [],
                                    "now": now}, principal=SERVICE)
+
+
+async def test_scheduler_sync_reads_stack_inputs_once_per_project_per_pass(env, monkeypatch):
+    for i in range(4):
+        await env.db.create_task(Task(id=f"candidate-{i}", project_id="p", title="Candidate",
+                                     description="", status=TaskStatus.READY))
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    view = StackView(env.db, "p")
+
+    async def observe(conn, task_id, **kwargs):
+        # Admission verifies the same project inputs at both read boundaries.
+        await view.verified_on(conn)
+        await view.verified_on(conn)
+
+    observed = AsyncMock(side_effect=observe)
+    env.service.reader = SimpleNamespace(observe_task=observed)
+    assert (await sync(env))["success"]
+    assert observed.await_count == 5
+    assert read.await_count == 1
+    assert (await sync(env, NOW + 1))["success"]
+    assert observed.await_count == 10
+    assert read.await_count == 2
+    async with env.db._engine.connect() as conn:
+        await view.verified_on(conn)
+        await view.verified_on(conn)
+    assert read.await_count == 4
 
 
 async def fire(env, deadline, now):
@@ -146,12 +179,36 @@ async def test_reserved_task_still_obeys_frontier_and_claim_consumes_atomically(
     assert reservation["state"] == "consumed" and reservation["consumed_by_session_id"] == "session"
 
 
-async def test_disabled_service_does_not_mutate(env):
+async def test_disabled_service_admits_no_new_waits(env):
     env.o.config.wait_policy.scheduler_waits_enabled = False
-    with pytest.raises(WaitError, match="disabled"):
-        await sync(env)
+    await sync(env)
     assert not await rows(env, wait_records)
     assert not await rows(env, wait_deadlines)
+
+
+async def test_scheduler_rollback_retracts_branch_reservations_but_preserves_resume(env):
+    from src.database.tables import continuations
+
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    wait = (await rows(env, wait_records))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="holder", wait_id=wait["id"], suspension_generation=1,
+            facts={}, branch="aq/holder", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state="queued", created_at=NOW,
+        ))
+        await conn.execute(insert(admission_reservations).values(
+            id="resume-seat", continuation_id="resume", project_id="p", scope={},
+            effective_priority=100, provenance="resume", deadline_at=NOW + 3000,
+            state="pending", created_at=NOW,
+        ))
+    env.o.config.wait_policy.scheduler_waits_enabled = False
+    await sync(env, NOW + 1801)
+    reservations = {r["id"]: r for r in await rows(env, admission_reservations)}
+    assert reservations.pop("resume-seat")["state"] == "pending"
+    assert all(r["state"] == "cancelled" for r in reservations.values())
+    assert all(r["cleared_at"] is not None for r in await rows(env, wait_records))
 
 
 async def test_admission_reader_preserves_ingestion_hold(env):
@@ -173,9 +230,10 @@ async def test_admission_reader_preserves_ingestion_hold(env):
         )) == "awaiting-fidelity-review"
 
 
-def test_policy_defaults_are_dormant_and_string_flags_refused():
+def test_policy_defaults_enable_cutover_and_string_flags_refused():
     policy = AppConfig().wait_policy
-    assert not policy.v2_enabled and not policy.hibernation_enabled and not policy.scheduler_waits_enabled
+    assert policy.v2_enabled and policy.hibernation_enabled and policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
     assert policy.branch_admission_deadline_seconds == 1800
     assert not policy.validate()
     assert parse_wait_policy({"v2_enabled": "false"}).validate()
@@ -367,6 +425,32 @@ async def test_equal_priority_reservations_use_fifo_even_when_task_ids_sort_othe
         assert selected["task_id"] == "holder"
 
 
+async def test_combined_claim_skips_locked_reservation_and_preserves_allowlist(env):
+    from src.waits.reservations import claim_candidate
+
+    await env.db.create_task(Task(
+        id="ordinary", project_id="p", title="Ordinary", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    handler = SimpleNamespace(db=env.db, config=env.o.config)
+    args = dict(project_id="p", profile_id="worker", agent_id="worker-agent")
+    async with env.db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(
+            tasks.c.id == "holder",
+        ).with_for_update())
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(handler, claimant, **args) == ("ordinary", None)
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(
+                handler, claimant, **args, allowed_task_ids={"holder"},
+            ) == (None, None)
+    async with env.db._engine.begin() as claimant:
+        task_id, reservation_id = await claim_candidate(handler, claimant, **args)
+        assert task_id == "holder" and reservation_id
+
+
 async def test_released_branch_owner_retracts_scheduler_priority_donation(env):
     await env.db.create_task(Task(id="urgent", project_id="p", title="Urgent", description="",
                                   priority=10, status=TaskStatus.READY, branch_name="aq/holder",
@@ -432,6 +516,38 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     assert service.command.await_count == 1
     assert any(r['phase'] == 'agent-waits' and r['identity'] == '*' and r['state'] == 'complete'
                for r in await rows(env, wait_bridge_progress))
-    service._bridge_started = False
+    # A new composition root relies on the durable receipt, not process memory.
+    service = WaitService(SimpleNamespace(db=env.db, config=env.o.config), clock=lambda: NOW)
+    service.command = AsyncMock(side_effect=command)
     await service.startup_bridge()
-    assert service.command.await_count == 1
+    service.command.assert_not_awaited()
+
+
+async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
+    import asyncio
+    from src.wait_runtime.service import WaitService
+
+    import src.wait_runtime.service as service_module
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def slow_bridge():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(service_module, "BRIDGE_TICK_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(WaitService, "enabled", property(lambda self: True))
+    service.processing_enabled = AsyncMock(return_value=True)
+    service.startup_bridge = slow_bridge
+    service.lifecycle.tick = AsyncMock()
+    service.listener.tick = AsyncMock(return_value=False)
+    await asyncio.wait_for(service.tick(), 1)
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(service.tick(), 1)
+    assert calls == 1
+    release.set()
+    await service._bridge_task

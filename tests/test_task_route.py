@@ -647,6 +647,12 @@ async def _seed_run(db, run_id: str, task_id: str, *, lifecycle: str, started_at
         ("failed", {"plan_a": {"task_id": "t", "reason": "workspace_requirement",
                                "detail": "feature: no worker candidate at class deep-high"}},
          None, "route_no_candidates", "workspace_requirement", "workspace_requirement"),
+        ("failed", {"plan_a": {"task_id": "t", "reason": "prefer_target_unavailable",
+                               "detail": "kinds.bugfix: selected class deep-high; "
+                                         "deep-high-claude: reserved for lanes "
+                                         "['code-design', 'design-review']"}},
+         None, "route_no_candidates", "prefer_target_unavailable",
+         "deep-high-claude: reserved for lanes ['code-design', 'design-review']"),
         ("completed", {"plan_a": {"task_id": "t", "providers": ["claude", "codex"],
                                   "candidates": [{"profile_id": "standard-high-codex"}]}},
          None, "route_held", "claude, codex", "claude, codex"),
