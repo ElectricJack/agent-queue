@@ -10,8 +10,10 @@ import inspect
 import re
 from pathlib import Path
 
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.git.manager import GitError
+from src.integration.gitops import RetainedRepository
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.promotion_contracts import (
     PromotionInvariantError, PromotionRuntimeError, PromotionSourceMoved,
     ResolvedRepository,
@@ -27,6 +29,7 @@ class RepositoryGit:
         self.data_dir = Path(data_dir)
         self.git = git_manager
         self.repository_resolver = repository_resolver
+        self._retained_repositories = {}
 
     async def _get_repo(self, repository_id: str) -> RepoConfig | None:
         result = (
@@ -57,11 +60,19 @@ class RepositoryGit:
         if not origin:
             raise PromotionInvariantError("canonical repository has no immutable origin")
         digest = hashlib.sha256(repository_id.encode("utf-8")).hexdigest()
-        return ResolvedRepository(
+        from src.projects.storage_binding import repository_path
+
+        retained = await repository_path(
+            self.db, repository_id,
+            self.data_dir / "integration-repositories" / f"{digest}.git",
+        )
+        resolved = ResolvedRepository(
             repo=repo,
             origin_url=origin,
-            retained_git_dir=self.data_dir / "integration-repositories" / f"{digest}.git",
+            retained_git_dir=retained,
         )
+        self._retained_repositories[resolved.retained_git_dir] = repo
+        return resolved
 
 
     async def _ensure_retained_repository(self, repository: ResolvedRepository) -> None:
@@ -79,26 +90,36 @@ class RepositoryGit:
                 env={"LC_ALL": "C"},
                 lock_held=True,
             )
-            configured = await self.git.arun_git_result(
-                ["remote", "get-url", "origin"],
-                cwd=str(store),
-                env={"LC_ALL": "C"},
-                lock_held=True,
-            )
-            if (
-                bare.returncode != 0
-                or bare.stdout.strip() != "true"
-                or configured.returncode != 0
-                or configured.stdout.strip() != repository.origin_url
-            ):
+            if bare.returncode != 0 or bare.stdout.strip() != "true":
                 raise PromotionInvariantError("retained repository identity changed")
+            from src.integration.repository_recovery import (
+                ensure_retained_origin, harden_retained_repository,
+            )
+
+            try:
+                await ensure_retained_origin(
+                    self.git, store, repository.origin_url, lock_held=True,
+                )
+            except GitError as exc:
+                raise PromotionInvariantError("retained repository identity changed") from exc
+            configured = await self.git.arun_git_result(
+                ["remote", "get-url", "origin"], cwd=str(store),
+                env={"LC_ALL": "C"}, lock_held=True,
+            )
+            if configured.returncode != 0 or configured.stdout.strip() != repository.origin_url:
+                raise PromotionInvariantError("retained repository identity changed")
+            await harden_retained_repository(self.git, store, lock_held=True)
 
 
     async def _fetch_all_heads(self, store: Path, origin_url: str) -> None:
+        from src.integration.repository_recovery import fetch_retained_origin
+
+        repository = self._retained_repositories.get(store)
         try:
-            await self.git.afetch_origin(
+            await fetch_retained_origin(self.git,
                 str(store), repository_url=origin_url, lock_held=True,
-                all_heads=True,
+                project_id=repository.project_id if repository else None,
+                repository_id=repository.id if repository else None,
             )
         except (GitError, GitHubAccessError) as exc:
             raise PromotionRuntimeError(f"git fetch failed: {exc}") from exc
@@ -143,3 +164,28 @@ class RepositoryGit:
         if result.returncode != 0 or any(not _OID_RE.fullmatch(oid) for oid in commits):
             raise PromotionRuntimeError((result.stderr or "commit range failed").strip())
         return commits
+
+
+async def development_repository(
+    primitives, repo, binding: GitHubRepositoryBinding, settings, *, fetch: bool = True,
+) -> RetainedRepository:
+    """The existing retained clone, bound to the pinned rebuild.
+
+    A worker checkout is never a delivery source: the store is the repository's
+    own retained clone through the existing delivery path (created on first use
+    and fetched with every head), and the regenerate command and timeout are the
+    ones the reviewed source froze. Regeneration is a property of the merge, not
+    of the validation mode: ``validation: none`` still rebuilds generated files.
+    An unset policy command falls back to the project's own regenerator, exactly
+    as the legacy candidate and promotion paths do.
+    The train passes ``fetch=False`` because its Git snapshot owns the fetch;
+    other callers retain the freshly fetched default.
+    """
+    return RetainedRepository(
+        repository_id=repo.id,
+        store=await primitives.store(repo, **({"fetch": False} if not fetch else {})),
+        binding=binding,
+        default_branch=repo.default_branch,
+        regenerate=settings.regenerate or DEFAULT_REGENERATE_COMMAND,
+        regenerate_timeout_seconds=settings.regenerate_timeout_seconds,
+    )

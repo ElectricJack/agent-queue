@@ -13,7 +13,6 @@ from src.api.auth import SessionTokenStore
 from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
-from src.database import Database
 from src.event_bus import EventBus
 from src.intelligence_classes import IntelligenceClass
 from src.messages.session_lens import SessionLens
@@ -33,7 +32,6 @@ from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import Cap, SessionHandle
 from src.sessions.spec import SessionSpecBuilder
-from tests.db_fixtures import lease_dsn
 
 
 class InteractiveFake(FakeProvider):
@@ -41,9 +39,8 @@ class InteractiveFake(FakeProvider):
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(lease_dsn("terminals.db"))
-    await db.initialize()
+async def handler(tmp_path, reuse_database):
+    db = await reuse_database("terminals.db")
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"),
@@ -96,7 +93,6 @@ async def handler(tmp_path):
     result = CommandHandler(orch, config)
     yield result
     result._current_scope = None
-    await db.close()
 
 
 async def start(handler, agent_id="worker-a", project_id=None):

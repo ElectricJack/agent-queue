@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import statistics
+from importlib import metadata
 from pathlib import Path
 import site
 import subprocess
@@ -205,7 +206,7 @@ def _offline_env(tmp_path: Path, *, worker: bool, database_url: str | None) -> t
     [
         (["--help"], "fixture-plugin"),
         (["--help-all"], "Show the configured fixture value"),
-        (["--version"], "version 0.1.0"),
+        (["--version"], f"version {metadata.version('agent-queue')}"),
         (["schema"], "task_status"),
         (["test", "--aq-help"], "box-wide test semaphore"),
     ],

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.database.tables import (
     archived_tasks,
@@ -69,6 +70,7 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         return {"success": False, "outcome": "invalid"}
     db, request = handler.db, observation.request
     feedback = observation.feedback()
+    delivery = await db.observe_removal_delivery([request.task_id], for_mutation=True)
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, request.project_id)
         task = (await conn.execute(select(tasks).where(
@@ -115,6 +117,12 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         history = json.loads(stored) if stored else {}
         heads = list(history.get("heads", ()))
         policy = (observation.policy.get("root") or {}).get("repair") or {}
+        source_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
+            integration_source_ci.c.task_id == request.task_id,
+            integration_source_ci.c.repository_id == request.repository_id,
+            integration_source_ci.c.source_head == observation.source_sha,
+            integration_source_ci.c.repair_attempt > 0,
+        ).limit(1))
         limit = policy.get("primary_attempts", 3)
         container = False
         for table in (tasks, archived_tasks):
@@ -124,18 +132,20 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
                 container = True
                 break
         reason = ("root_pr_checks_need_repair" if container else
-                  "root_pr_checks_unchanged" if observation.source_sha in heads else
-                  "root_pr_checks_recovery_exhausted" if len(heads) >= limit
+                  "root_pr_checks_unchanged" if observation.source_sha in heads or source_attempt else
+                  "root_pr_checks_recovery_exhausted" if limit and len(heads) >= limit
                   and policy.get("on_exhausted", "human") != "continue" else None)
         if reason:
             identity = hashlib.sha256(repr((request.task_id, request.completion_id,
                 observation.source_sha, reason)).encode()).hexdigest()
-            await conn.execute(pg_insert(messages).values(
-                id=f"root-pr-checks-{identity}", project_id=request.project_id,
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=f"root-pr-checks-{identity}",
+                project_id=request.project_id,
                 from_kind="system", from_id="integration-admission", to_kind="session",
                 to_id=f"supervisor-{request.project_id}",
                 subject=f"Root PR checks require repair: {request.task_id}",
-                body=f"{reason}; automatic reopen attempts: {len(heads)}/{limit}.\n{feedback}",
+                body=f"{reason}; automatic reopen attempts: {len(heads)}/{limit}. Adopt a separate "
+                     f"passing repair with aq integration fast-forward-pr.\n{feedback}",
                 body_kind="integration_root_pr_checks", created_at=time.time(), priority=50,
                 archive_after_inject=1,
             ).on_conflict_do_nothing(index_elements=[messages.c.id]))
@@ -144,7 +154,8 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
             return {"success": True, "outcome": "supervisor_notified", "blocker": reason}
 
         transition = await db._apply_transition(conn, request.task_id, TaskStatus.READY,
-            context="reopen_with_feedback", assigned_agent_id=None, pr_url=None, retry_count=0,
+            integration_delivery=delivery,
+            context="reopen_with_feedback", assigned_agent_id=None,
             description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback)
         await db._upsert_meta(request.task_id, RECOVERY_KEY,
             {"heads": [*heads, observation.source_sha], "attempts": len(heads) + 1}, conn=conn)
