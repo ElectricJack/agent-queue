@@ -572,10 +572,22 @@ class TestExplainCommand:
                 draining=False,
             )
 
+        handler.orchestrator.integration_train = SimpleNamespace(status=lambda: [{
+            "project_id": PROJECT_ID,
+            "repository_id": "repo",
+            "target_ref": "refs/heads/main",
+            "detail": {"blockers": [{
+                "code": "source_provenance_missing",
+                "task_id": "integration-held",
+                "detail": "completion has no verified source provenance",
+                "ref": "integration-held",
+            }]},
+        }])
         res = await handler._cmd_explain_task({"task_id": "integration-held"})
 
         assert res["reason_codes"][0] == "held"
-        assert "repository_not_designated" in res["reason_codes"]
+        reason = next(r for r in res["reasons"] if r["code"] == "source_provenance_missing")
+        assert "completion has no verified source provenance" in reason["detail"]
         # The placeholder ``preflight_evidence_unavailable`` blocker was
         # retired with the functional preflight (operational integration
         # controls, 77585b64); readiness now derives from persisted policy /
@@ -609,7 +621,7 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
-    async def test_delivery_of_reason_names_the_target_and_failure(self, handler, db):
+    async def test_delivery_of_requires_git_even_with_a_historical_failure(self, handler, db):
         from sqlalchemy import insert
 
         from src.database.tables import task_delivery_receipts
@@ -618,21 +630,26 @@ class TestExplainCommand:
         await mktask(db, "root", status=TaskStatus.READY)
         await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
 
-        async def detail():
+        async def unavailable():
             res = await handler._cmd_explain_task({"task_id": "root"})
-            return next(
-                r["detail"] for r in res["reasons"] if r["code"] == "blocked_dependency"
-            )
+            return [
+                r for r in res["reasons"]
+                if r["code"] == "delivery_evidence_unavailable" and r["ref"] == "leaf"
+            ]
 
-        assert await detail() == "waiting_for: delivery-of leaf"
+        # Without an observer Git evidence is unloaded, which never withholds work.
+        assert await unavailable() == []
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_delivery_receipts).values(
                 id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
                 repository_id="repo", target_branch="main", disposition="failed",
                 resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
             ))
-        assert await detail() == "waiting_for: delivery-of leaf (delivery failed: squash conflict)"
-        assert (await db.get_task("root")).is_blocked
+        # A historical failed receipt is not Git evidence either.
+        assert await unavailable() == []
+        assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict"}
+        # SQL projects completion; Git admission separately withholds the task.
+        assert not (await db.get_task("root")).is_blocked
 
     async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
         """Explain reports only the exact typed edges that currently block.
@@ -1122,10 +1139,16 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
     handler, db, monkeypatch, stage,
 ):
     """Successful controls do not turn an incomplete explanation into evidence."""
+    from src.integration import admission
+    from src.integration.status import IntegrationStatusService
+
     await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def stalled(*args, **kwargs):
+        # Control reads share these dependencies; only stall the explanation.
+        if asyncio.current_task() is not request:
+            return await original(*args, **kwargs)
         entered.set()
         try:
             await asyncio.Event().wait()
@@ -1134,11 +1157,14 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
 
     with monkeypatch.context() as fault:
         if stage == "frontier":
-            fault.setattr(db, "claim_frontier_exclusions", stalled)
+            original = db.claim_frontier_exclusions_many
+            fault.setattr(db, "claim_frontier_exclusions_many", stalled)
         elif stage == "admission":
-            fault.setattr("src.integration.admission.observe_admission", stalled)
+            original = admission.observe_admission
+            fault.setattr(admission, "observe_admission", stalled)
         else:
-            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+            original = IntegrationStatusService.task_blockers
+            fault.setattr(IntegrationStatusService, "task_blockers", stalled)
         request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
         try:
             await asyncio.wait_for(entered.wait(), 10)

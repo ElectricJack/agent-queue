@@ -1329,11 +1329,23 @@ async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
 @pytest.mark.asyncio
 async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkeypatch):
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    _git(["init", "--initial-branch=main"], checkout)
-    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
     manager = GitManager(github_access=_BoundAppAccess())
-    lock = asyncio.Lock()
+    # This tests serialization, not subprocess latency on a busy CI runner.
+    async def read_origin(args, **kwargs):
+        assert args == ["config", "--get", "remote.origin.url"]
+        assert kwargs == {"cwd": str(checkout)}
+        return "https://github.com/acme/widgets.git"
+
+    monkeypatch.setattr(manager, "_arun", read_origin)
+    contended = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                contended.set()
+            return await super().acquire()
+
+    lock = ObservedLock()
     manager.set_lock_provider(lambda _cwd: lock)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1341,6 +1353,7 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
 
     async def held_fetch(*_args, **_kwargs):
         nonlocal runs
+        assert lock.locked()
         runs += 1
         entered.set()
         await release.wait()
@@ -1349,15 +1362,23 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
     first = asyncio.create_task(
         manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
     )
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    second = asyncio.create_task(
-        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
-    )
-    await asyncio.sleep(0.05)
-    assert runs == 1
-    release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
-    assert runs == 2
+    tasks = [first]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        tasks.append(asyncio.create_task(
+            manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
+        ))
+        await asyncio.wait_for(contended.wait(), timeout=1)
+        assert runs == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert runs == 2
+        assert not lock.locked()
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -2189,7 +2210,7 @@ async def test_isolated_app_delete_refuses_moved_remote(tmp_path):
 async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
     tmp_path, monkeypatch
 ):
-    """noble-horizon: provenance batches share one import and one transfer."""
+    """noble-horizon: provenance batches share one transfer and borrow, never import."""
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     _git(["push", str(target), f"{base}:refs/heads/taken"], checkout)
     manager = GitManager()
@@ -2211,7 +2232,7 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
             token="installation-token-sentinel",
             updates=((tip, "new/one", absent), (base, "new/two", absent), (tip, "taken", absent)),
         )
-    assert len(fetches) == 1
+    assert fetches == []
     assert _git(["rev-parse", "refs/heads/new/one"], target) == tip
     assert _git(["rev-parse", "refs/heads/new/two"], target) == base
     assert _git(["rev-parse", "refs/heads/taken"], target) == base
@@ -2245,6 +2266,8 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
         return await real_import(args, **kwargs)
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    # A store that cannot be borrowed (shallow or partial) is imported instead.
+    monkeypatch.setattr(manager, "_apush_borrowable_objects", AsyncMock(return_value=None))
 
     await manager._apush_oid_with_app_auth_to_url(
         str(checkout),
@@ -2259,6 +2282,63 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
     assert "maintenance.auto=false" in fetch
     assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
     assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
+async def test_isolated_app_push_borrows_the_checkout_and_sends_only_new_objects(
+    tmp_path, monkeypatch
+):
+    """bold-lantern-71: once the remote moved, an import re-sent the whole history.
+
+    send-pack leaves out only advertised remote tips it holds; a temporary
+    repository holding just the pushed tips' history lacks a remote tip off
+    that history, so the push packed everything. Borrowing the checkout's
+    store keeps the shared history known and the checkout unchanged.
+    """
+    checkout, target, _, _, _ = _git_push_case(tmp_path)
+    for index in range(20):
+        (checkout / "file.txt").write_text(f"history {index}")
+        _git(["commit", "-qam", f"history {index}"], checkout)
+    history = _git(["rev-parse", "HEAD"], checkout)
+    _git(["push", str(target), f"{history}:refs/heads/main"], checkout)
+    # The remote moves to a commit the checkout holds but the pushed tip does
+    # not descend from: an import of that tip alone knows no advertised tip.
+    _git(["commit", "-q", "--allow-empty", "-m", "elsewhere"], checkout)
+    _git(["push", "-q", str(target), "HEAD:refs/heads/main"], checkout)
+    _git(["reset", "-q", "--hard", history], checkout)
+    (checkout / "file.txt").write_text("new")
+    _git(["commit", "-qam", "new"], checkout)
+    new = _git(["rev-parse", "HEAD"], checkout)
+    before = _git(["count-objects", "-v"], checkout)
+    # Keep every received pack as sent, so its index counts what was transferred.
+    _git(["config", "receive.unpackLimit", "1"], target)
+    packs = set((target / "objects" / "pack").glob("*.idx"))
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    absent = "0" * 40
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        updates=((new, "feature", absent),),
+    )
+    assert _git(["rev-parse", "refs/heads/feature"], target) == new
+    assert _git(["count-objects", "-v"], checkout) == before
+    _git(["fsck", "--connectivity-only", "--no-dangling"], target)
+    # One commit, one tree, one blob: the history the remote holds stays home.
+    [received] = set((target / "objects" / "pack").glob("*.idx")) - packs
+    # A version 2 index ends its fan-out table with the pack's object count.
+    sent = int.from_bytes(received.read_bytes()[8 + 255 * 4:8 + 256 * 4], "big")
+    assert sent == 3
+    assert fetches == []
 
 
 @pytest.mark.asyncio
@@ -2469,7 +2549,7 @@ async def test_app_push_expired_authority_deadline_never_enters_transport(
 
 
 @pytest.mark.asyncio
-async def test_app_push_error_never_repeats_remote_output_or_token(tmp_path):
+async def test_app_push_error_retains_remote_diagnostic_without_token(tmp_path):
     secret = "high-authority-secret"
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     failed_git = tmp_path / "failed-git"
@@ -2487,7 +2567,8 @@ async def test_app_push_error_never_repeats_remote_output_or_token(tmp_path):
             expected_old_oid=base,
         )
     assert secret not in str(caught.value)
-    assert "remote echoed" not in str(caught.value)
+    assert "reason=git_exit, returncode=1" in str(caught.value)
+    assert "remote echoed ***" in str(caught.value)
 
 
 def test_askpass_username_and_invalid_prompts_do_not_send_broker_requests():
@@ -2762,6 +2843,29 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ending", [b"\n", b""])
+async def test_push_stderr_drain_bounds_and_scrubs_before_truncating(ending):
+    credential = bytearray(b"private-installation-token")
+    stream = asyncio.StreamReader()
+    stream.feed_data(
+        b"old progress\n" * 10000
+        + b"https://alice:" + b"secret" * 2000 + b"@github.com/test/repo.git\n"
+        + (("進捗" * 600 + "\n") * 2).encode() + b"private-installation-token\n"
+        + b"Authorization: Bearer private-installation-token\n"
+        + b"https://alice:password@github.com/test/repo.git\n"
+        + b"fatal: upstream unavailable" + ending
+    )
+    stream.feed_eof()
+    detail = await manager_module._read_push_stderr(stream, credential)
+    assert len(detail.encode("utf-8")) <= 4096
+    assert "fatal: upstream unavailable" in detail
+    assert "private-installation-token" not in detail
+    assert "password" not in detail and "alice:" not in detail and "secret" not in detail
+    assert "old progress" not in detail
+    assert credential == bytearray()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
 async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
     tmp_path, monkeypatch, cancel
@@ -2803,7 +2907,7 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        with pytest.raises(GitError, match="authenticated Git push failed"):
+        with pytest.raises(GitError, match="reason=timeout, exception=TimeoutError"):
             await task
 
     for _ in range(200):
@@ -2824,7 +2928,7 @@ async def test_app_push_spawn_failure_closes_broker_reader_before_waiting(tmp_pa
     manager._APP_GIT_EXECUTABLE = str(tmp_path / "missing-git")
     open_fds_before = _fd_baseline()
 
-    with pytest.raises(GitError, match="authenticated Git push failed"):
+    with pytest.raises(GitError, match="reason=spawn_or_wait, exception=FileNotFoundError"):
         await manager._apush_oid_with_app_auth_to_url(
             str(checkout),
             destination_url=target.as_uri(),
@@ -3188,6 +3292,245 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
     await verify()
     assert runs.await_count == 4
+
+
+async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, monkeypatch):
+    """bold-lantern-71: a burst of pushes verifies the shared store once."""
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    manager = GitManager()
+    running = 0
+    overlap = []
+
+    async def fsck(*args, **kwargs):
+        nonlocal running
+        running += 1
+        overlap.append(running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return b""
+
+    runs = AsyncMock(side_effect=fsck)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+    deadline = asyncio.get_running_loop().time() + 30
+    await asyncio.gather(*(
+        manager._averify_retained_objects(str(store), home=tmp_path, deadline=deadline)
+        for _ in range(5)
+    ))
+    assert runs.await_count == 1
+    assert overlap == [1]
+
+
+async def test_retained_verification_lock_timeout_has_safe_reason(tmp_path, caplog):
+    manager = GitManager()
+    lock = asyncio.Lock()
+    await lock.acquire()
+    manager._retained_verify_locks = {str(tmp_path.resolve()): lock}
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path,
+            deadline=asyncio.get_running_loop().time() + 0.01,
+        )
+    assert "reason=lock_wait_timeout" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.reason_code == "lock_wait_timeout"
+    assert record.elapsed_seconds >= record.budget_seconds
+    assert str(tmp_path) not in record.getMessage()
+    assert lock.locked()  # Timing out cannot release another verifier's lock.
+    lock.release()
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, FileNotFoundError])
+async def test_isolated_preparation_spawn_failure_has_safe_reason(
+    tmp_path, monkeypatch, caplog, failure,
+):
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(
+        side_effect=failure("private-path-ref-token-sentinel"),
+    ))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._run_isolated_import_git(
+            [f"--git-dir={tmp_path}", "fetch", "private-ref-sentinel"],
+            home=tmp_path, deadline=asyncio.get_running_loop().time() + 12,
+        )
+    reason = "git_timeout" if failure is TimeoutError else "git_exit"
+    assert f"reason={reason}" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.reason_code == reason
+    assert record.git_subcommand == "fetch"
+    assert 0 < record.budget_seconds <= 12
+    if failure is FileNotFoundError:
+        assert record.diagnostic_kind == "executable_missing"
+    assert "sentinel" not in str(caught.value) + record.getMessage()
+    assert str(tmp_path) not in str(caught.value) + record.getMessage()
+
+
+@pytest.mark.parametrize("command", ["fetch", "private-command-sentinel"])
+async def test_isolated_preparation_exit_has_allowlisted_diagnostics(
+    tmp_path, monkeypatch, caplog, command,
+):
+    process = SimpleNamespace(returncode=128, communicate=AsyncMock(return_value=(
+        b"private-output-sentinel", b"fatal: private-path-ref-token-sentinel\n",
+    )))
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(return_value=process))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._run_isolated_import_git([command], home=tmp_path)
+    assert "reason=git_exit" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.git_subcommand == ("fetch" if command == "fetch" else "other")
+    assert record.returncode == 128
+    assert record.diagnostic_kind == "fatal"
+    assert "sentinel" not in str(caught.value) + record.getMessage()
+
+
+async def test_app_push_import_mismatch_has_safe_reason(tmp_path, monkeypatch, caplog):
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_apush_borrowable_objects", AsyncMock(return_value=None))
+    # init, fetch and rev-parse: the returned ref points at a different tip.
+    monkeypatch.setattr(manager, "_run_isolated_import_git", AsyncMock(
+        side_effect=[b"", b"", b"private-ref-token-sentinel"],
+    ))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._apush_oid_with_app_auth_to_url(
+            str(tmp_path), destination_url="https://github.com/acme/widgets.git",
+            token="private-credential-sentinel", tip_oid="a" * 40,
+            branch="private-branch-sentinel", expected_old_oid="0" * 40,
+        )
+    assert "reason=import_mismatch" in str(caught.value)
+    assert caplog.records[-1].reason_code == "import_mismatch"
+    assert "sentinel" not in str(caught.value) + caplog.text
+
+
+def test_preparation_reason_survives_production_json_log_bridge():
+    import io
+    import json
+
+    import structlog
+
+    from src.logging_config import _build_shared_processors
+
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(structlog.stdlib.ProcessorFormatter(
+        processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    structlog.processors.JSONRenderer()],
+        foreign_pre_chain=_build_shared_processors(),
+    ))
+    manager_module.logger.addHandler(handler)
+    before = structlog.contextvars.get_contextvars()
+    try:
+        manager_module._git_preparation_error(
+            "git_timeout", subcommand="fsck", elapsed=119.5, budget=120,
+        )
+    finally:
+        manager_module.logger.removeHandler(handler)
+    event = json.loads(output.getvalue())
+    assert event["reason_code"] == "git_timeout"
+    assert event["git_subcommand"] == "fsck"
+    assert event["elapsed_seconds"] == 119.5
+    assert event["budget_seconds"] == 120
+    assert structlog.contextvars.get_contextvars() == before
+
+
+async def test_retained_fsck_deadline_identifies_phase_and_reaps_process(tmp_path, monkeypatch):
+    manager = GitManager()
+    manager._GIT_TIMEOUT = 0.01
+    process = SimpleNamespace(communicate=AsyncMock(side_effect=asyncio.TimeoutError))
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(return_value=process))
+    cleanup = AsyncMock()
+    monkeypatch.setattr(manager, "_kill_app_git_group", cleanup)
+    with pytest.raises(GitError, match="reason=git_timeout, subcommand=fsck"):
+        await manager._run_isolated_import_git(
+            [f"--git-dir={tmp_path}", "fsck", "--full"],
+            home=tmp_path, verify_integrity=True,
+        )
+    cleanup.assert_awaited_once_with(process)
+
+
+async def test_exact_local_pin_reuses_verification_without_round_trip(tmp_path, monkeypatch):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+    tip = _git(["rev-parse", "HEAD"], work)
+    await _exact_fetch(manager, store, source, tip, "refs/aq/exact/first")
+    # Verify the newly imported object files once, as the retained gate does.
+    await manager._averify_retained_objects(
+        str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    )
+    original = manager._run_isolated_import_git
+    commands = []
+
+    async def record(args, **kwargs):
+        commands.append(args)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", record)
+    assert await _exact_fetch(manager, store, source, tip, "refs/aq/exact/second") == tip
+    assert not any("fetch" in args or "fsck" in args for args in commands)
+    assert _git(["rev-parse", "refs/aq/exact/second"], store) == tip
+    assert any(args == [f"--git-dir={store}", "update-ref", "refs/aq/exact/second", tip]
+               for args in commands)
+
+
+async def test_exact_local_pin_preserves_requested_object_type(tmp_path):
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", str(source), f"{tip}:refs/aq/held"], store)
+    with pytest.raises(GitError, match="another object type"):
+        await GitManager()._afetch_exact_oid_with_app_auth_to_url(
+            str(store), destination_url=source.as_uri(), token=None, oid=tip,
+            destination_ref="refs/aq/invalid-tag", _object_type="tag",
+        )
+    assert not (store / "refs/aq/invalid-tag").exists()
+
+
+async def test_exact_fetch_budget_is_finite_and_explicit_caller_wins(tmp_path, monkeypatch):
+    manager = GitManager()
+    budgets = []
+
+    async def stop(args, *, home, deadline):
+        budgets.append(deadline - asyncio.get_running_loop().time())
+        raise GitError("budget captured before work")
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", stop)
+    for budget in (None, 0.25):
+        with pytest.raises(GitError, match="budget captured"):
+            await manager._afetch_exact_oid_with_app_auth_to_url(
+                str(tmp_path), destination_url="https://github.com/acme/widgets.git",
+                token=None, oid="a" * 40, destination_ref="refs/aq/test",
+                timeout_seconds=budget,
+            )
+    assert 239 < budgets[0] <= 240
+    assert 0 < budgets[1] <= 0.25
+
+
+async def test_exact_fetch_contended_lock_keeps_one_deadline(tmp_path, monkeypatch):
+    """A queue consuming the budget reports the lock, never starts a new fsck."""
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", str(source), f"{tip}:refs/aq/held"], store)
+    manager = GitManager()
+    lock = asyncio.Lock()
+    await lock.acquire()
+    manager._retained_verify_locks = {str(store.resolve()): lock}
+    original = manager._run_isolated_import_git
+    commands = []
+
+    async def record(args, **kwargs):
+        commands.append(args)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", record)
+    try:
+        with pytest.raises(GitError, match="reason=lock_wait_timeout"):
+            await manager._afetch_exact_oid_with_app_auth_to_url(
+                str(store), destination_url=source.as_uri(), token=None, oid=tip,
+                destination_ref="refs/aq/exact/test", timeout_seconds=1.0,
+            )
+        assert not any("fsck" in args for args in commands)
+        assert not (store / "refs/aq/exact/test").exists()
+    finally:
+        lock.release()
 
 
 async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):

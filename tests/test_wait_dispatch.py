@@ -29,6 +29,7 @@ from src.commands import CommandHandler
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.config import AppConfig
 from src.database.tables import wait_deadlines, wait_listener_cursors, wait_records
+from src.integration.admission import observe_admission
 from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
@@ -306,6 +307,7 @@ def runtime(env, *, clock=lambda: NOW, dispatcher=None, enabled=True, registry=N
     config = AppConfig()
     config.wait_policy.v2_enabled = enabled
     orch = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                            plugin_registry=None, wait_registry=registry or env.registry,
                            wait_dispatcher=dispatcher)
     orch._command_handler = CommandHandler(orch, config)
@@ -883,7 +885,7 @@ async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_e
     waiting = asyncio.Event()
 
     def before_execute(conn, cursor, statement, parameters, context, executemany):
-        if "pg_advisory_xact_lock" in statement:
+        if "advisory_xact_lock" in statement:
             waiting.set()
 
     try:
