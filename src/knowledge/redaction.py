@@ -22,6 +22,9 @@ from src.database.tables import (
     record_outbox,
     record_source_artifacts,
     record_export_state,
+    record_import_runs,
+    record_import_items,
+    knowledge_context_bundles,
 )
 from src.records.models import RecordError, uuid_value
 
@@ -132,6 +135,16 @@ class RedactionMixin:
         if len(affected) > 10000:
             raise RecordError("knowledge.redaction_scope_too_large")
         affected_records = {r["record_id"] for r in affected.values()}
+        # Sealed import manifests are operator evidence, never record sources.
+        # Scrub their retained copies whenever any imported record is erased;
+        # this permanently fences both same-run resume and fresh import replay.
+        import_runs = (await conn.execute(select(record_import_runs).where(
+            record_import_runs.c.run_id.in_(select(record_import_items.c.run_id).where(
+                record_import_items.c.record_id.in_(affected_records),
+            )),
+        ))).mappings().all()
+        for run in import_runs:
+            artifacts.add(run["cursor"]["manifest"]["artifact_id"])
         for rid in sorted(affected_records):
             await self.db.get_record_on(record_id=rid, lock=True, conn=conn)
         result = dict(
@@ -190,6 +203,18 @@ class RedactionMixin:
                     )
                     .values(proposed_snapshot=None, source_descriptors=[], redacted_at=now)
                 )
+        # Prepared excerpts are derived copies. Keep execution citations and
+        # delivery receipts, but erase every cached body that pins an affected
+        # revision before any future delivery/replay can read it.
+        bundles = (await conn.execute(select(knowledge_context_bundles).where(
+            knowledge_context_bundles.c.redacted_at.is_(None),
+        ))).mappings().all()
+        for bundle in bundles:
+            if any(item["revision_id"] in revs
+                   for item in bundle["selection"].get("items", [])):
+                await conn.execute(update(knowledge_context_bundles).where(
+                    knowledge_context_bundles.c.bundle_id == bundle["bundle_id"],
+                ).values(selection={}, redacted_at=now))
         if artifacts:
             await conn.execute(
                 update(record_source_artifacts)

@@ -210,7 +210,8 @@ def test_knowledge_import_contract_registered_read_only():
     assert registration is not None
     contract = registration.contract
     execution = contract.execution
-    assert execution.side_effect.value == "read"
+    # Apply/resume share this command; inventory remains a read-only default.
+    assert execution.side_effect.value == "composite"
     assert execution.name == "knowledge_import"
     # Read-only and replay-safe: never a state change.
     assert execution.retry_safe is True
@@ -223,9 +224,13 @@ def test_knowledge_import_args_schema_requires_roots_and_identity():
 
     fields = set(KnowledgeImportArgs.model_fields)
     assert {"roots", "source_installation_id", "snapshot_id", "snapshot_timestamp"} <= fields
-    # roots is required and non-empty by the contract.
+    # Roots are required for dry-run by conditional validation; apply takes a
+    # retained manifest and never needs a live root.
     roots_field = KnowledgeImportArgs.model_fields["roots"]
-    assert roots_field.is_required()
+    assert not roots_field.is_required()
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        KnowledgeImportArgs()
     # Optional evidence knobs are absent-able.
     assert not KnowledgeImportArgs.model_fields["vector_export"].is_required()
 
@@ -423,6 +428,13 @@ async def test_knowledge_import_sealed_manifest_content_is_verifiable(tmp_path):
     )
     with principal_context(TRUSTED_LOCAL):
         result = await handler._cmd_knowledge_import(_args(tmp_path))
+
+    # The generated HTTP response must retain the same sealed bytes and
+    # reconciliation evidence as the shared command result.
+    from src.api.models.knowledge import RESPONSE_MODELS
+
+    response = RESPONSE_MODELS["knowledge_import"].model_validate(result)
+    result = response.model_dump(include=set(result))
 
     content_b64 = result["manifest_content_base64"]
     content = base64.b64decode(content_b64, validate=True)
