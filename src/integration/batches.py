@@ -821,6 +821,7 @@ class BatchService:
         attest: Callable[[Batch, str], Awaitable[str]] | None = None,
         require_attestation: bool = True,
         observe_deferred: Callable[[Batch, str], Awaitable[bool]] | None = None,
+        refresh_eligibility: Callable | None = None,
     ):
         self.store, self.gitops = store, gitops
         self.publish, self.eligible, self.gate = publish, eligible, gate
@@ -828,8 +829,15 @@ class BatchService:
         # validation lane publishes on its own gate and never attests.
         self.attest, self.require_attestation = attest, require_attestation
         self.observe_deferred = observe_deferred
+        self.refresh_eligibility = refresh_eligibility
 
-    async def _authorized(self, batch, members):
+    async def publication_eligibility(self):
+        """Fetch repair evidence before taking publication's row/ref locks."""
+        if self.refresh_eligibility is not None:
+            return await self.refresh_eligibility()
+        return self.eligible
+
+    async def _authorized(self, batch, members, *, eligible=None):
         from src.operator_decisions import OperatorDecisions
 
         if await OperatorDecisions(self.store.db).holds("batch", batch.id):
@@ -839,7 +847,7 @@ class BatchService:
                     (current.project_id, current.repository_id, current.target_ref) ==
                     (batch.project_id, batch.repository_id, batch.target_ref) and
                     await self.store.members(batch.id) == members and
-                    await self.eligible(current, members))
+                    await (eligible or self.eligible)(current, members))
 
     async def freeze(
         self, batch: Batch, members: Iterable[BatchMember], *,

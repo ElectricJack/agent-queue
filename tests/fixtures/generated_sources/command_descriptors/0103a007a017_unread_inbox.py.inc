@@ -6,7 +6,7 @@ def _unread_inbox_changes():
 
 def _before_unread_inbox_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_batch_authority_catalogue()
     approved = _unread_inbox_changes()["transport_definitions"]["message_inbox"]
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "message_inbox"]
     assert definition == approved["current"]
