@@ -6050,7 +6050,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:feccfcf610d1a31d9a858c4574cf18f3efacaed989cd4d23feed5257c9cdbd9d",
+      "digest": "sha256:b7271ddd0aaa6e9be7e0a089c563351b8bc7a3a63125808663ff0143ab367341",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -6060,6 +6060,7 @@
         "src.doctor.models",
         "src.git",
         "src.git.manager",
+        "src.git.repository_lock",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
