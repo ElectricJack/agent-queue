@@ -1125,9 +1125,11 @@ class Orchestrator(
 
         return None, unblocked
 
-    async def pause_task(self, task_id: str) -> None:
+    async def pause_task(self, task_id: str, *, require_workspace_release=False) -> None:
         async with self._task_control_lock(task_id):
-            snapshot = await self.db.pause_task(task_id)
+            snapshot = await self.db.pause_task(
+                task_id, require_workspace_release=require_workspace_release,
+            )
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
@@ -2997,6 +2999,11 @@ class Orchestrator(
         for row in await self.db.list_sessions(live_only=True):
             if row.agent_id:
                 protected_agents.add(row.agent_id)
+        # Resume admission owns a fresh agent before its session is persisted.
+        # Preserve that reservation and its workspace across daemon restarts.
+        from src.waits.occupancy import continuation_agent_ids
+
+        protected_agents.update(await continuation_agent_ids(self.db))
 
         # Reset BUSY agents to IDLE
         await self.db.normalize_agent_state_casing()
@@ -3407,6 +3414,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        maintenance = vars(self).get("_retained_store_maintenance")
+        if maintenance is not None:
+            await maintenance.stop()
         if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
             self._promotion_flow_check.cancel()
             await asyncio.wait({self._promotion_flow_check}, timeout=5.0)
