@@ -19,7 +19,7 @@ def _timestamp(value):
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         return parsed.timestamp() if parsed.tzinfo is not None else None
     except ValueError:
         return None
@@ -28,7 +28,10 @@ def _timestamp(value):
 async def stuck_check_diagnostics(client, trust, sha, checks, workflows, *, expected_event):
     """Keep diagnostics separate from receipts; steps can never establish green."""
     from src.integration.ci import (
-        _hosted_listing, _producer_matches, _require_workflow_repository, _strict_int,
+        _hosted_listing,
+        _producer_matches,
+        _require_workflow_repository,
+        _strict_int,
     )
 
     result, job_listings = [], {}
@@ -76,9 +79,9 @@ async def stuck_check_diagnostics(client, trust, sha, checks, workflows, *, expe
                 f"https://api.github.com/repos/{trust.full_name}/check-runs/{check['id']}"):
             continue
         completed = []
-        if run.get("status") == "completed":
-            if (stamp := _timestamp(run.get("updated_at"))) is not None:
-                completed.append(stamp)
+        if (run.get("status") == "completed"
+                and (stamp := _timestamp(run.get("updated_at"))) is not None):
+            completed.append(stamp)
         steps = job.get("steps")
         if (isinstance(steps, list) and steps
                 and all(isinstance(s, dict) and s.get("status") == "completed"

@@ -781,7 +781,7 @@
       "additionalProperties": false,
       "default": {
         "default_mode": "pull_request",
-        "git_first": "shadow",
+        "git_first": "active",
         "github_app": null,
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
@@ -801,7 +801,7 @@
           "type": "string"
         },
         "git_first": {
-          "default": "shadow",
+          "default": "active",
           "type": "string"
         },
         "github_app": {
@@ -3973,6 +3973,56 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "worktrees": {
       "additionalProperties": false,
       "default": {
@@ -4071,7 +4121,8 @@
       "swarm",
       "test_selection",
       "wait_policy",
-      "work_graph"
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [

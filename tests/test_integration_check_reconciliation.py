@@ -21,7 +21,14 @@ from src.integration.train import CandidateChecks, TrainLane
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
 from tests.test_integration_candidate_baseline import (
-    CANDIDATE, OTHER, ROOT, Clock, Repair, Service, frozen, train,
+    CANDIDATE,
+    OTHER,
+    ROOT,
+    Clock,
+    Repair,
+    Service,
+    frozen,
+    train,
 )
 from tests.test_integration_ci_producers import github
 

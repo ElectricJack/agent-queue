@@ -1,11 +1,56 @@
-"""Preserve work before releasing an integration owner whose writer is gone.
+"""Release an integration branch owner whose writer is gone, preserving its work first.
 
-Require stopped session rows plus fresh provider proof and no live task writer.
-Inspect all bound checkouts; preserve dirty work through a temporary index and
-publish without force. Detached worker work needs origin/claim/sentinel proof.
-Only a matching owner fence may release its claim and workspace; retain unsafe
-checkouts. Preview mutates nothing; no-push retains unpublished work. Audit
-applies and throttled refusals. See the 2026-09-21 owner-recovery design spec.
+An ``integration_branch_owners`` row in ``attached`` or ``handoff_pending``
+fences its branch for one writer.  Several paths end a writer without
+releasing that row (spec §1, G1–G7): delegate retirement and
+``cancel_preserving`` keep it by design, a failed transfer leaves it
+``handoff_pending``, archive/delete forget it, and slot reuse destroys the
+proof every exit-time confirmer needs.  The row then pins the branch, the
+writer's claim and its workspace lock forever.
+
+:class:`OwnerRecovery` decides from facts that stay checkable after the fact,
+never from the task row or its status:
+
+1. **The writer is gone.**  The row's session is stopped in ``state`` and
+   ``desired_state`` and the session provider confirms it by a fresh probe
+   (a row naming no session has no writer), and no live session names the
+   owning task.  Otherwise ``writer_live``.
+2. **The branch is safe.**  After ``git fetch origin`` in the repository's
+   base checkout, every worktree holding the branch (or the row's own
+   checkout, detached) is inspected.  One a live session works in refuses
+   with ``checkout_in_use``; a running pool session with no task and no claim
+   in flight is idle there, not working. On a ``worker`` row only work proved against the
+   recorded task origin, claim time and matching slot sentinel is eligible for
+   preservation; integration rows rely on their fenced writer binding. A missing
+   local task ref never borrows a detached slot's HEAD. Uncommitted work is
+   snapshotted through a temporary index -- the working tree and the live index are never touched
+   -- and anything origin does not already carry (a dirty tree, a HEAD or a
+   local branch ahead of or diverged from origin and not on the default
+   branch) is pushed, never forced, to the task branch itself. Only a
+   divergent tip uses a temporary ``aq/recovery/<owner-row-id>/<sha>`` ref,
+   consumed and deleted when the retry merges it into the task branch. The
+   branch is then detached in place, without reset or clean.  A fetch or
+   push failure refuses with ``origin_unreachable``.
+3. **Release in one transaction.**  A compare-and-swap on
+   ``(id, fence_token, handoff_state)`` (``stale_fence`` when it misses)
+   releases the row with a fresh fence, unlocks the row's workspace
+   (disabling it when dirty or retaining an unproven detached checkout, so
+   allocation cannot recycle it) and releases
+   the gone writer's claim, then writes the audit row and
+   ``integration.owner_recovered``.
+
+Every non-dry run writes one ``integration_owner_recoveries`` row.  Refusals
+emit ``integration.owner_recovery_refused``; a refusal repeating the latest
+recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
+and the task hears about each refusal reason once.  A dry run pushes,
+detaches and records nothing and lists what it would do in
+``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
+proved, snapshotted or pushed, every unpublished source stays where it is
+(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
+
+There is no force: a row the check refuses stays refused, with its reason.
+
+See docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md §3.
 """
 
 from __future__ import annotations
@@ -49,6 +94,7 @@ from src.integration.finished_owners import (
     _stopped_writer,
     stop_confirmer_for,
 )
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -355,9 +401,7 @@ class OwnerRecovery:
             return {"outcome": "not_found", "reason": "task does not exist"}
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, task.project_id)
-            current = (await conn.execute(select(tasks).where(
-                tasks.c.id == task.id,
-            ).with_for_update())).mappings().one_or_none()
+            current = await select_row(conn, tasks, tasks.c.id == task.id, lock=True)
             if current is None or current["project_id"] != task.project_id:
                 return {"outcome": "not_eligible", "reason": "task changed"}
             origin = (await conn.execute(select(task_branch_origins).where(
@@ -509,16 +553,11 @@ class OwnerRecovery:
 
     async def _load(self, owner_row_id: str) -> dict[str, Any] | None:
         async with self.db.immediate() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(integration_branch_owners.c.id == owner_row_id)
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.id == owner_row_id,
+                lock=True,
             )
         return dict(row) if row is not None else None
 
@@ -827,12 +866,8 @@ class OwnerRecovery:
                 task_branch_origins.c.repository_id == row["repository_id"],
                 task_branch_origins.c.retired_at.is_(None),
             ))).mappings().one_or_none()
-            session = (await conn.execute(select(sessions).where(
-                sessions.c.id == row["session_id"],
-            ))).mappings().one_or_none() if row["session_id"] else None
-            workspace = (await conn.execute(select(workspaces).where(
-                workspaces.c.id == row["workspace_id"],
-            ))).mappings().one_or_none() if row["workspace_id"] else None
+            session = await select_row(conn, sessions, sessions.c.id == row['session_id']) if row["session_id"] else None
+            workspace = await select_row(conn, workspaces, workspaces.c.id == row['workspace_id']) if row["workspace_id"] else None
             attempt_at = await conn.scalar(select(task_session_attempts.c.started_at).where(
                 task_session_attempts.c.task_id == row["owner_id"],
                 task_session_attempts.c.session_id == row["session_id"],
@@ -1160,11 +1195,7 @@ class OwnerRecovery:
         self, conn, row: dict[str, Any], session: dict[str, Any], now: float, evidence
     ):
         """Release the gone writer's claim, after the owner row stopped protecting it."""
-        current = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session["id"])))
-            .mappings()
-            .one_or_none()
-        )
+        current = await select_row(conn, sessions, sessions.c.id == session['id'])
         if current is None or current["claim_phase"] is None:
             return None
         if current["task_id"] not in (None, row["owner_id"]):
