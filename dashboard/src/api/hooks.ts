@@ -80,6 +80,7 @@ import {
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
   poolRename,
+  poolDelete,
   poolScale,
   poolSetEnabled,
   playbookActivate,
@@ -160,6 +161,7 @@ import type {
   CancelPlaybookRunResponse,
   PoolStatusResponse,
   PoolRenameRequest,
+  PoolDeleteRequest,
   PoolStatusRow,
   PoolProjectStatus,
   PoolScaleRequest,
@@ -365,6 +367,26 @@ export function usePoolRename() {
       void queryClient.invalidateQueries({ queryKey: ["profile", input.profile_id] });
       void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
       void queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
+    },
+  });
+}
+
+export function usePoolDelete() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolDeleteRequest) => {
+      const { data } = await poolDelete({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not delete this pool");
+      return data;
+    },
+    onSuccess: async (_result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.filter((row) => row.profile_id !== input.profile_id),
+      );
+      for (const key of ["pools", "profiles", "profile", "effective-profile", "sessions", "tasks", "agents", "providers"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
     },
   });
 }
