@@ -15,13 +15,17 @@ Given: the source path in your task description (`source_path`).
 
 Do:
 1. Read the Markdown and its frontmatter.
-2. Draft JSON containing exactly `rules` and `steps` and write it beneath the
+2. Discover command schemas, outcomes, raw result paths, effects and caller
+   requirements with `playbook_commands`; discover read-only diagnostic coverage
+   and supported scopes with `doctor_catalog`. Catalogue membership grants no
+   authority. Never guess semantics from command names.
+3. Draft JSON containing exactly `rules` and `steps` and write it beneath the
    vault as a proposal body.
-3. Call `playbook_v2_propose(playbook_id=<id>, semantic_body_path=<path>)`.
-4. Use every returned diagnostic and source reference to revise the body.
+4. Call `playbook_v2_propose(playbook_id=<id>, semantic_body_path=<path>)`.
+5. Use every returned diagnostic and source reference to revise the body.
    Repeat up to five rounds. A `question` blocks review exactly as an `error`
    does; do not invent an answer the source does not contain.
-5. When the proposal is activatable, return its artifact, digest, semantic
+6. When the proposal is activatable, return its artifact, digest, semantic
    diff, and diagnostics for human review. Do not call an install or activation
    command.
 
@@ -64,6 +68,8 @@ for a materialized proposal artifact.
     "message_reply",
     "message_send",
     "message_status",
+    "playbook_commands",
+    "doctor_catalog",
     "playbook_v2_propose",
     "playbook_v2_validate",
     "prime",
@@ -139,3 +145,35 @@ Role runs the V2 propose/validate loop and returns review material without activ
 
 After proposing, jot down any playbook idioms that were tricky to express so
 future compiles start closer to a valid draft.
+
+## Reusable building blocks
+
+- Generic commands bind the original JSON object, including boolean `success`;
+  read its real keys, never invented `root`/`payload` wrappers. `1` or `"true"`
+  is a contract violation, not success. Typed commands retain their own outcomes.
+- `filter` and `map` bind an item only within their predicate/value; lexical
+  shadowing never changes an outer loop. `len` is list-only; `diff` preserves
+  first-occurrence left identities absent from right. Name exact paths, predicate
+  operators, thresholds, recipients, intervals and explicit limits in source.
+  Missing/null operands fail unless explicitly coalesced. Never invent defaults.
+- Snapshot traversal is finite: materialize once, iterate every `page_tokens`
+  entry (nested foreach where needed), and gate absence clearing on producer
+  `complete` AND successful page/loop completion. Expiry or partial coverage
+  cannot establish absence. Keep `context.observed_at`/`observation_id` frozen.
+- Save notification state revisions before scanning. Clear using those revisions;
+  a CAS conflict waits for fresh evidence, never a reread with the old scan.
+  Stable source/subject keys identify episodes; changing wording/age does not.
+  Null reminders disable repeats; recurrence after clear starts a new episode.
+- Source frontmatter owns `state_schema_version`, `required_capabilities` and
+  `scripts.<step-id>` (program, supporting_files, runtime, limits, output policy).
+  Required capabilities are review declarations, never grants. The server derives
+  feature pins and resolves script digests. Do not emit any of these as compiler
+  metadata. Preserve source-checked integration policy; do not invent it.
+- Scripts run as ordinary processes with timeout/output caps and optional strict
+  JSON parsing. There is no namespace/cgroup/network isolation or launcher gate.
+  Scripts default on via config; jobs admission, runtime manifests and protected
+  output keys are still needed. Keep dynamic data in argv/stdin/environment,
+  never substitute it into program text. Ambiguous execution is not replayable.
+- Compilation returns exactly `rules` and `steps`. A source-linked question blocks
+  review when prose does not establish the executable policy. Review the actual
+  predicates, paths, programs, limits and protected/unresolved values in the graph.
