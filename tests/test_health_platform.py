@@ -62,7 +62,10 @@ class FakeAdapter(MessagingAdapter):
 
 def _make_orchestrator(**overrides):
     """Create a minimal mock orchestrator for health check tests."""
+    from src.config import AppConfig
+
     orch = MagicMock()
+    orch.config = AppConfig()
     orch._paused = overrides.get("paused", False)
     orch._running_tasks = overrides.get("running_tasks", {})
     orch._notify = overrides.get("notify", None)
@@ -151,11 +154,157 @@ class TestHealthChecksMessaging:
         assert "orchestrator" in checks
         assert "agents" in checks
         assert "tasks" in checks
+        orch.db.list_agents.assert_awaited_once()
+
+
+async def test_probes_read_snapshot_while_collection_is_blocked(monkeypatch):
+    import asyncio
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from src.api import dependencies as deps
+    from src.api.health import router
+    from src.api.health_monitor import HealthMonitor
+
+    now = [0.0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    checks = {"database": {"ok": True}, "messaging": {"ok": True},
+              "required_playbooks": {"ok": True}}
+
+    async def provider():
+        entered.set()
+        await release.wait()
+        return checks
+
+    monitor = HealthMonitor(provider, clock=lambda: now[0], timeout=60)
+    monkeypatch.setattr(deps, "_health_provider", provider)
+    monkeypatch.setattr(deps, "_health_monitor", monitor)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        response = await client.get("/health")
+        assert response.status_code == 503 and response.json()["status"] == "busy"
+        release.set()
+        await monitor.refresh()
+        entered.clear()
+        release.clear()
+        monitor.start()
+        task = monitor._task
+        monitor.start()
+        assert monitor._task is task
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            for _ in range(3):
+                assert (await client.get("/health")).json()["status"] == "healthy"
+                assert (await client.get("/ready")).json()["ready"] is True
+            assert not release.is_set() and not task.done()
+            now[0] = monitor.max_age + 1
+            response = await client.get("/health")
+            assert response.status_code == 503 and response.json()["status"] == "busy"
+            assert response.json()["checks"]["health_snapshot"]["reason"] == "stale"
+            assert (await client.get("/ready")).json()["ready"] is False
+        finally:
+            await monitor.stop()
+        assert task.done() and monitor._task is None
+        await monitor.stop()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exception", "invalid"])
+async def test_background_health_failure_and_recovery(failure):
+    import asyncio
+    from src.api.health_monitor import HealthMonitor
+
+    broken = True
+
+    async def provider():
+        if not broken:
+            return {"database": {"ok": True}}
+        if failure == "timeout":
+            await asyncio.Event().wait()
+        if failure == "exception":
+            raise RuntimeError("broken provider")
+        return None
+
+    monitor = HealthMonitor(provider, timeout=0.01)
+    await monitor.refresh()
+    checks = monitor.checks()
+    assert checks["health_snapshot"]["ok"] is False
+    assert checks["health_snapshot"]["reason"] == (
+        "timeout" if failure == "timeout" else "provider_failed"
+    )
+    assert checks["_provider_error"]["ok"] is False
+    broken = False
+    await monitor.refresh()
+    assert monitor.checks()["health_snapshot"]["ok"] is True
+    assert "_provider_error" not in monitor.checks()
+
+
+async def test_background_health_refresh_observes_repaired_playbook():
+    from src.api.health_monitor import HealthMonitor
+
+    verdict = False
+
+    async def provider():
+        return {"required_playbooks": {"ok": verdict}}
+
+    monitor = HealthMonitor(provider)
+    await monitor.refresh()
+    assert monitor.checks()["required_playbooks"]["ok"] is False
+    verdict = True
+    await monitor.refresh()
+    assert monitor.checks()["required_playbooks"]["ok"] is True
 
 
 # ---------------------------------------------------------------------------
 # HealthCheckServer ready endpoint
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_private_key_health_probes_use_live_key_ring(monkeypatch, enabled):
+    import base64
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api import dependencies as deps
+    from src.api.health import router
+    from src.main import _health_checks
+    from src.playbooks.private_values import PrivateValueService
+
+    orch = _make_orchestrator()
+    orch.config.playbooks.enabled = enabled
+    orch.required_playbook_status = {"ok": True}
+    # The config environment is now valid, but the service was loaded before
+    # provisioning. Probes must not report recovery until that service reloads.
+    monkeypatch.setenv("AQ_HEALTH_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    orch.config.playbooks.private_value_active_key_id = "k1"
+    orch.config.playbooks.private_value_key_env = {"k1": "AQ_HEALTH_TEST_PRIVATE_KEY"}
+    orch.db.playbook_private_values = MagicMock(return_value=PrivateValueService(object()))
+
+    async def provider():
+        return await _health_checks(orch, FakeAdapter())
+
+    monkeypatch.setattr(deps, "_health_provider", provider)
+    monkeypatch.setattr(deps, "_health_monitor", None)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        for path in ("/health", "/ready"):
+            response = await client.get(path)
+            assert response.status_code == (503 if enabled else 200)
+            status = response.json()["checks"]["playbook_private_value_key"]
+            assert status["ok"] is (not enabled)
+            if enabled:
+                assert status["error"] == "private_storage_key_unavailable"
+                assert "Restart" in status["remediation"]
+        orch.db.playbook_private_values.return_value = PrivateValueService.from_config(
+            object(), orch.config.playbooks
+        )
+        for path in ("/health", "/ready"):
+            response = await client.get(path)
+            assert response.status_code == 200
+            assert base64.b64encode(b"x" * 32).decode() not in response.text
 
 
 class TestReadyEndpointMessaging:
