@@ -25,6 +25,9 @@ async def lock_database_source(conn, cond):
                      & (t.task_dependencies.c.dep_type == p["dep_type"]))]
     elif cond.kind == "job":
         subjects = [(t.jobs, t.jobs.c.id == p["job_id"])]
+    elif cond.kind == "close_merge":
+        subjects = [(t.integration_close_attempts,
+                     t.integration_close_attempts.c.id == p["operation_id"])]
     elif cond.kind == "batch":
         subjects = [(t.integration_batches, t.integration_batches.c.id == p["batch_id"]),
                     (t.integration_batch_members,

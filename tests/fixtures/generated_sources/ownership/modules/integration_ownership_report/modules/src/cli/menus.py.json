@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/cli/menus.py::task_creation_wizard": {
+      "baseline_span": [
+        182,
+        290
+      ],
+      "landing_span": [
+        182,
+        290
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
