@@ -16,10 +16,12 @@ class WaitGraphArgs:
     Attributes:
         project_id (None | str | Unset):
         fleet (bool | Unset):  Default: False.
+        costs (bool | Unset):  Default: False.
     """
 
     project_id: None | str | Unset = UNSET
     fleet: bool | Unset = False
+    costs: bool | Unset = False
 
     def to_dict(self) -> dict[str, Any]:
         project_id: None | str | Unset
@@ -30,6 +32,8 @@ class WaitGraphArgs:
 
         fleet = self.fleet
 
+        costs = self.costs
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -37,6 +41,8 @@ class WaitGraphArgs:
             field_dict["project_id"] = project_id
         if fleet is not UNSET:
             field_dict["fleet"] = fleet
+        if costs is not UNSET:
+            field_dict["costs"] = costs
 
         return field_dict
 
@@ -55,9 +61,12 @@ class WaitGraphArgs:
 
         fleet = d.pop("fleet", UNSET)
 
+        costs = d.pop("costs", UNSET)
+
         wait_graph_args = cls(
             project_id=project_id,
             fleet=fleet,
+            costs=costs,
         )
 
         return wait_graph_args

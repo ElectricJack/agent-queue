@@ -103,20 +103,7 @@ def wait_register(
     """Register one condition and end the turn until its result pointer arrives."""
     if not kind and not condition and not producer_task:
         raise click.UsageError("--kind or --condition is required")
-    version = (
-        int(schema_version)
-        if schema_version
-        else 2
-        if (
-            condition
-            or producer_task
-            or sha
-            or claimed is not None
-            or escalate_after_seconds is not None
-            or kind not in {"task", "job", "message", "timer"}
-        )
-        else 1
-    )
+    version = int(schema_version) if schema_version else 2
     if version == 1 and any(
         value is not None
         for value in (
@@ -248,7 +235,7 @@ def wait_list(ctx, project_id, limit, offset, schema_version):
 @click.pass_context
 @_handle_errors
 def wait_cancel(ctx, wait_id, claim_epoch, schema_version):
-    """Cancel a wait held by the current claim, preserving the result."""
+    """Cancel a held wait, or let a supervisor retire an orphaned task wait."""
     params = {"wait_id": wait_id}
     if schema_version:
         params["schema_version"] = int(schema_version)
@@ -352,13 +339,16 @@ def wait_explain(ctx, wait_id, task_id, project_id, history):
 @wait.command("graph")
 @click.option("--project", "project_id", default=None)
 @click.option("--fleet", is_flag=True)
+@click.option("--costs", is_flag=True, help="Include measured wait and resume costs.")
 @click.pass_context
 @_handle_errors
-def wait_graph(ctx, project_id, fleet):
+def wait_graph(ctx, project_id, fleet, costs):
     """Read project blockers or the redacted fleet summary."""
     if fleet and project_id:
         raise click.UsageError("--project and --fleet are mutually exclusive")
     params = {"fleet": fleet}
+    if costs:
+        params["costs"] = True
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_graph", params), render=_render_graph)
@@ -374,9 +364,23 @@ def wait_graph(ctx, project_id, fleet):
 @_handle_errors
 def wait_checkpoint(ctx, wait_id, summary_file, continuation_id, generation, claim_epoch):
     """Store the compaction summary on the active continuation."""
+    # Bound the read itself and preserve exact newlines for the stored digest.
+    with Path(summary_file).open("rb") as stream:
+        raw = stream.read(8193)
+    if len(raw) > 8192:
+        raise click.BadParameter("wait.checkpoint_invalid: summary exceeds 8192 UTF-8 bytes",
+                                 param_hint="--summary-file")
+    try:
+        summary = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise click.BadParameter("wait.checkpoint_invalid: summary must be UTF-8",
+                                 param_hint="--summary-file") from exc
+    if not summary.strip():
+        raise click.BadParameter("wait.checkpoint_invalid: summary must not be blank",
+                                 param_hint="--summary-file")
     params = dict(
         wait_id=wait_id,
-        summary=Path(summary_file).read_text(encoding="utf-8"),
+        summary=summary,
         continuation_id=continuation_id,
         generation=generation,
         claim_epoch=resolve_claim_epoch(claim_epoch),
@@ -444,13 +448,18 @@ def wait_lift(ctx, **params):
 
 
 @wait.command("bridge")
+@click.option("--mode", type=click.Choice(["project", "agent-waits"]), default="agent-waits")
 @click.option("--project", "project_id", default=None)
 @click.option("--apply", is_flag=True)
 @click.pass_context
 @_handle_errors
-def wait_bridge(ctx, project_id, apply):
-    """Operator-only projection of legacy waits; implementation must be installed."""
-    params = {"apply": apply}
+def wait_bridge(ctx, project_id, apply, mode):
+    """Preview legacy adoption; --apply commits the guarded migration.
+
+    agent-waits adopts v1 waits and WAITING_INPUT tasks, including the first
+    scheduler audit. project projects legacy sources and performs that audit.
+    """
+    params = {"apply": apply, "mode": mode}
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_legacy_bridge", params))
