@@ -1,0 +1,7 @@
+{
+  "exclusions": {
+    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state."
+  }
+}

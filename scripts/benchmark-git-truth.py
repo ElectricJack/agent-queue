@@ -25,6 +25,9 @@ from src.integration.git_truth import GitTruth, GitTruthSnapshot  # noqa: E402
 from src.integration.provenance import (  # noqa: E402
     CompletionIdentity, GitProvenance,
 )
+from src.integration.selection_metrics import (  # noqa: E402
+    SelectionMetrics, selection_metrics_scope,
+)
 
 
 async def benchmark(members: int, passes: int, profile: str | None):
@@ -77,14 +80,17 @@ async def benchmark(members: int, passes: int, profile: str | None):
         for visit in range(passes + 1):
             snapshot = GitTruthSnapshot(truth, observed.for_request())
             start, cpu, before = time.perf_counter(), time.process_time(), commands
-            for request in requests:
-                proof = await snapshot.is_delivered(request)
-                assert proof.satisfied, proof
+            metrics = SelectionMetrics()
+            with selection_metrics_scope(metrics):
+                for request in requests:
+                    proof = await snapshot.is_delivered(request)
+                    assert proof.satisfied, proof
             elapsed, cpu_used = time.perf_counter() - start, time.process_time() - cpu
             results.append({
                 "phase": "cold" if visit == 0 else "warm", "members": members,
                 "seconds": elapsed, "python_cpu_seconds": cpu_used,
                 "git_commands": commands - before,
+                "cache_counts": metrics.as_dict()["counts"],
                 "cpu_percent_at_5s_interval": cpu_used / 5 * 100,
             })
         if profiler:

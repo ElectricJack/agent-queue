@@ -66,18 +66,20 @@ def sync_detailed(
     body: EditProjectRequest,
 ) -> Response[EditProjectResponse | EditProjectResponse422]:
     """Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
      Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
     Args:
         body (EditProjectRequest):
@@ -107,18 +109,20 @@ def sync(
     body: EditProjectRequest,
 ) -> EditProjectResponse | EditProjectResponse422 | None:
     """Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
      Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
     Args:
         body (EditProjectRequest):
@@ -143,18 +147,20 @@ async def asyncio_detailed(
     body: EditProjectRequest,
 ) -> Response[EditProjectResponse | EditProjectResponse422]:
     """Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
      Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
     Args:
         body (EditProjectRequest):
@@ -182,18 +188,20 @@ async def asyncio(
     body: EditProjectRequest,
 ) -> EditProjectResponse | EditProjectResponse422 | None:
     """Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
      Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit,
-    assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git
-    commit identity override (git_identity_name/git_identity_email; empty on both inherits the
-    installation default), or LOCAL-only hierarchical integration configuration. Use this to rename
-    projects, adjust scheduling weight, set token budgets, or change the default git branch. A project
-    has no default profile: its router routes every task.
+    supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding),
+    repo_default_branch, the operator-only Git commit identity override
+    (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-
+    only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight,
+    set token budgets, or change the default git branch. A project has no default profile: its router
+    routes every task.
 
     Args:
         body (EditProjectRequest):

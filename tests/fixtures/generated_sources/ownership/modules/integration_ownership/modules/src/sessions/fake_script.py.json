@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/sessions/fake_script.py::probe_answer": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/fake_script.py::script_file_for": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
