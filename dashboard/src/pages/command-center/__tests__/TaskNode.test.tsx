@@ -59,6 +59,22 @@ describe("card anatomy (§3.1)", () => {
     expect(ready.container.querySelector(".aq-pulse")).toBeNull();
   });
 
+  it.each(["waiting", "blocked", "active"] as const)("uses the epic's computed %s state for animation and counts", (state) => {
+    const data = card("IN_PROGRESS", { runningCount: 2 }, {
+      task: { id: "task-one", title: "Ship it", status: "IN_PROGRESS", priority: 100,
+        display_state: state, display_reason: "Waiting on foundation", child_state_counts: { [state]: 2 },
+        descendant_state_counts: { DEFINED: 4 } },
+    });
+    const { container } = render(<TaskCard data={data} />);
+    const cardElement = container.querySelector("[data-task-card]")!;
+    expect(cardElement.classList.contains("aq-stripe")).toBe(state === "active");
+    expect(container.querySelector(".aq-pulse") !== null).toBe(state === "active");
+    expect(screen.getByText(state === "active" ? "Active" : state === "blocked" ? "Blocked" : "Waiting")).toBeInTheDocument();
+    expect(container.querySelector("[data-child-state-counts]")).toHaveTextContent(`2 ${state}`);
+    expect(screen.getByText("Waiting on foundation")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "0 of 4 tasks done" }).querySelector('[data-segment="running"]')).toHaveStyle({ width: "0%" });
+  });
+
   it("writes one reason sentence from the loaded neighbours", () => {
     render(<TaskCard data={card("DEFINED", { childCount: 0, descendantCount: 0 }, {
       relations: { blockerCount: 2, blockerTitle: "Schema", dependentTitle: null, readyAhead: null },
@@ -354,3 +370,13 @@ function ReviewProbe() {
   const { reviewId } = useParams();
   return <p data-testid="review-page">{reviewId}</p>;
 }
+
+it("gives a delivery-held READY card a waiting pill and exact landing reason", () => {
+  const data = card("READY", { childCount: 0, descendantCount: 0 });
+  data.task.claim_readiness = { state: "waiting_on_delivery", claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" };
+  render(<TaskCard data={data} />);
+  expect(screen.getByText("Waiting on delivery")).toBeInTheDocument();
+  expect(screen.getByText("Land source.6 on dev; refresh aq/epic")).toBeInTheDocument();
+  expect(screen.queryByText("Claimable · next in frontier")).not.toBeInTheDocument();
+});
