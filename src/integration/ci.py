@@ -17,6 +17,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import execute_batch_mutation
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batches,
@@ -220,10 +221,7 @@ def ci_trust_from_policy(
             repository_id=repository_id,
             full_name=full_name,
             producer_id=producer_id,
-            required_checks={
-                "version": required.get("version"),
-                "names": required.get("names"),
-            },
+            required_checks={'version': required.get('version'), 'names': required.get('names')},
         )
     except (TypeError, ValueError) as exc:
         raise AttestationError("CI policy producer or required checks are malformed") from exc
@@ -289,9 +287,15 @@ class AttestedWorkflowRun(BaseModel):
     ] | None
 
 
-class AttestationPayload(BaseModel):
+class _CanonicalPayload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(self.model_dump(mode="json", by_alias=True), sort_keys=True,
+                          separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+class AttestationPayload(_CanonicalPayload):
     schema_: Literal["aq.integration-attestation.v1"] = Field(alias="schema")
     canonical_repository_id: str = Field(min_length=1)
     repository_id: StrictInt = Field(gt=0)
@@ -304,20 +308,9 @@ class AttestationPayload(BaseModel):
 
     @model_validator(mode="after")
     def coherent_attempts(self) -> AttestationPayload:
-        names = [check.name for check in self.checks]
-        check_ids = [check.check_run_id for check in self.checks]
-        suites = [workflow.check_suite_id for workflow in self.workflow_runs]
-        if len(set(names)) != len(names) or len(set(check_ids)) != len(check_ids):
-            raise ValueError("attested checks contain duplicates")
-        if len(set(suites)) != len(suites):
-            raise ValueError("workflow attempts contain duplicate suites")
-        workflow_by_suite = {workflow.check_suite_id: workflow for workflow in self.workflow_runs}
-        if set(workflow_by_suite) != {check.check_suite_id for check in self.checks}:
-            raise ValueError("workflow attempt coverage does not match check suites")
-        for check in self.checks:
-            workflow = workflow_by_suite[check.check_suite_id]
-            if check.head_sha != self.head_sha or workflow.head_sha != self.head_sha:
-                raise ValueError("attestation head identity is incoherent")
+        _validate_check_workflow_coverage(
+            self.checks, self.workflow_runs, self.head_sha, label="attestation",
+        )
         return self
 
     @classmethod
@@ -330,14 +323,6 @@ class AttestationPayload(BaseModel):
         if payload.canonical_bytes() != value:
             raise AttestationError("attestation bytes are noncanonical")
         return payload
-
-    def canonical_bytes(self) -> bytes:
-        return json.dumps(
-            self.model_dump(mode="json", by_alias=True),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("ascii")
 
     @property
     def external_id(self) -> str:
@@ -354,10 +339,8 @@ class PromotionRepositoryIdentity(BaseModel):
     attestation_app_id: StrictInt = Field(gt=0)
 
 
-class PromotionAttestationPayload(BaseModel):
+class PromotionAttestationPayload(_CanonicalPayload):
     """An admitted step's proof; never interchangeable with a default-lane proof."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     schema_: Literal["aq.promotion-attestation.v1"] = Field(alias="schema")
     repository: PromotionRepositoryIdentity
@@ -385,10 +368,6 @@ class PromotionAttestationPayload(BaseModel):
     def head_sha(self) -> str:
         return self.source_sha
 
-    def canonical_bytes(self) -> bytes:
-        return json.dumps(self.model_dump(mode="json", by_alias=True), sort_keys=True,
-                          separators=(",", ":"), ensure_ascii=True).encode("ascii")
-
     @property
     def external_id(self) -> str:
         return "aq-promotion-attestation-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
@@ -404,10 +383,8 @@ class PromotionAttestationPayload(BaseModel):
         return payload
 
 
-class CIReceiptPayload(BaseModel):
+class CIReceiptPayload(_CanonicalPayload):
     """Canonical live-GitHub evidence retained by the daemon, not published as a check."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     schema_: Literal["aq.integration-ci-receipt.v1"] = Field(alias="schema")
     canonical_repository_id: str = Field(min_length=1)
@@ -423,14 +400,6 @@ class CIReceiptPayload(BaseModel):
     def coherent_attempts(self) -> CIReceiptPayload:
         _validate_check_workflow_coverage(self.checks, self.workflow_runs, self.head_sha)
         return self
-
-    def canonical_bytes(self) -> bytes:
-        return json.dumps(
-            self.model_dump(mode="json", by_alias=True),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("ascii")
 
     @property
     def external_id(self) -> str:
@@ -780,7 +749,7 @@ class CIService:
             )
             .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
         )
-        batch_changed = await conn.execute(
+        batch_changed = await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == subject.batch_id,
@@ -1146,16 +1115,12 @@ class AuthenticatedGitHubObserver:
                     continue
                 app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
                 if app_id is None or app_id <= 0:
-                    raise AttestationError(
-                        f"required check App identity is malformed: {name}"
-                    )
+                    raise AttestationError(f'required check App identity is malformed: {name}')
                 if not _producer_matches(app, trust):
                     continue
                 record_id = _strict_int(record.get("id"))
                 if record_id is None or record_id <= 0:
-                    raise AttestationError(
-                        f"required check ordering identity is malformed: {name}"
-                    )
+                    raise AttestationError(f'required check ordering identity is malformed: {name}')
                 suite = record.get("check_suite")
                 suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
                 if allowed_suites is not None and suite_id not in allowed_suites:
@@ -1196,8 +1161,15 @@ class AuthenticatedGitHubObserver:
             conclusion = newest.get("conclusion")
             if newest.get("head_sha") == head_sha:
                 if newest.get("status") != "completed":
+                    from src.integration.check_reconciliation import stuck_check_diagnostics
+
+                    pending_diagnostics = await stuck_check_diagnostics(
+                        self.client, trust, head_sha, all_records, workflow_records,
+                        expected_event=self.expected_event,
+                    )
                     raise CIObservationDeferred(
-                        f"required check is not conclusive: {name}", classification="pending"
+                        f"required check is not conclusive: {name}", classification="pending",
+                        details={"stuck_checks": pending_diagnostics} if pending_diagnostics else {},
                     )
                 if conclusion in {"timed_out", "action_required", "startup_failure", "stale"}:
                     raise CIObservationDeferred(
@@ -1456,9 +1428,7 @@ class AuthenticatedGitHubObserver:
                 continue
             record_id = _strict_int(record.get("id"))
             if record_id is None or record_id <= 0:
-                raise AttestationError(
-                    "trusted attestation ordering identity is malformed"
-                )
+                raise AttestationError('trusted attestation ordering identity is malformed')
             trusted_existing.append((record_id, record))
         if trusted_existing:
             _, newest = max(trusted_existing, key=lambda item: item[0])
@@ -1661,24 +1631,24 @@ def _require_latest_attempt_jobs(
 def _validate_check_workflow_coverage(
     checks: tuple[AttestedCheck, ...],
     workflow_runs: tuple[AttestedWorkflowRun, ...],
-    head_sha: str,
+    head_sha: str, *, label: str = "CI receipt",
 ) -> None:
     names = [check.name for check in checks]
     check_ids = [check.check_run_id for check in checks]
     suites = [workflow.check_suite_id for workflow in workflow_runs]
     if len(set(names)) != len(names) or len(set(check_ids)) != len(check_ids):
-        raise ValueError("CI receipt checks contain duplicates")
+        raise ValueError(f"{label} checks contain duplicates")
     if len(set(suites)) != len(suites):
-        raise ValueError("CI receipt workflow attempts contain duplicate suites")
+        raise ValueError(f"{label} workflow attempts contain duplicate suites")
     workflow_by_suite = {workflow.check_suite_id: workflow for workflow in workflow_runs}
     if set(workflow_by_suite) != {check.check_suite_id for check in checks}:
-        raise ValueError("CI receipt workflow attempt coverage does not match check suites")
+        raise ValueError(f"{label} workflow attempt coverage does not match check suites")
     if any(
         check.head_sha != head_sha
         or workflow_by_suite[check.check_suite_id].head_sha != head_sha
         for check in checks
     ):
-        raise ValueError("CI receipt head identity is incoherent")
+        raise ValueError(f"{label} head identity is incoherent")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1710,9 +1680,7 @@ class ParentVerification:
         on unchanged state returns the same diagnosis.
         """
         async with self.db.immediate() as conn:
-            _parent, _project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            _parent, _project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             if int(checkpoint["generation"]) != generation:
                 return None
             diagnosis = binding_diagnosis(
@@ -1791,9 +1759,7 @@ class ParentVerification:
         if not evidence_ids or len(set(evidence_ids)) != len(evidence_ids):
             return {"outcome": "invalid_evidence", "task_id": task_id}
         async with self.db.immediate() as conn:
-            parent, project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             if int(checkpoint["generation"]) != generation:
                 return {"outcome": "stale_generation", "task_id": task_id}
             readiness = await self.readiness_on(
@@ -1927,9 +1893,7 @@ class ParentVerification:
         from src.models import TaskStatus
 
         async with self.db.immediate() as conn:
-            parent, project, checkpoint, operation = await self._locked_context_on(
-                conn, task_id
-            )
+            parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
             readiness = await self.readiness_on(
                 conn,
                 parent=parent,
