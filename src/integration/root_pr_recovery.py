@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
+from src.task_templates import render_task_template
 from src.database.tables import (
     archived_tasks,
     integration_source_ci,
@@ -40,16 +42,21 @@ class RootPRCheckFailure:
     checks: ChecksResult
 
     def feedback(self) -> str:
-        lines = [f"Required PR checks failed on {self.source_sha}: {self.pr_url}"]
+        lines = []
         for check in self.checks.checks:
             if check.conclusion is not Conclusion.FAILURE:
                 continue
             lines.append(f"- {check.name}: failure {check.run_url or ''}".rstrip())
             for test_id in check.detail.get("failing_test_ids", ()):
                 lines.append(f"  FAILED {test_id}")
-        lines.append("Fix the reported failures on your assigned branch, run focused and "
-                     "relevant area checks, publish, and close with verification evidence.")
-        return "\n".join(lines)
+        return render_task_template(
+            "root-pr-check-repair",
+            source_sha=self.source_sha,
+            source_base_sha=self.source_base_sha,
+            pr_url=self.pr_url,
+            policy_generation=self.policy_generation,
+            checks="\n".join(lines),
+        )
 
 
 async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> dict:
@@ -63,6 +70,7 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         return {"success": False, "outcome": "invalid"}
     db, request = handler.db, observation.request
     feedback = observation.feedback()
+    delivery = await db.observe_removal_delivery([request.task_id], for_mutation=True)
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, request.project_id)
         task = (await conn.execute(select(tasks).where(
@@ -109,7 +117,21 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         history = json.loads(stored) if stored else {}
         heads = list(history.get("heads", ()))
         policy = (observation.policy.get("root") or {}).get("repair") or {}
-        limit = policy.get("primary_attempts", 3)
+        source_repaired = await conn.scalar(select(task_context.c.id).where(
+            task_context.c.task_id == request.task_id,
+            task_context.c.label == "Source CI Repair",
+            task_context.c.type == "reopen_feedback",
+        ).limit(1))
+        legacy_delegate = await conn.scalar(select(integration_source_ci.c.task_id).where(
+            integration_source_ci.c.repair_task_id == request.task_id,
+        ).limit(1))
+        source_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
+            integration_source_ci.c.task_id == request.task_id,
+            integration_source_ci.c.repair_attempt > 0,
+        ).limit(1))
+        source_budget = bool(policy.get("source_ci") or source_repaired or source_attempt or legacy_delegate
+                             or task["created_by_kind"] == "source_ci_repair")
+        limit = 1 if source_budget else policy.get("primary_attempts", 3)
         container = False
         for table in (tasks, archived_tasks):
             if await conn.scalar(select(table.c.id).where(
@@ -117,15 +139,20 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
             ).limit(1)):
                 container = True
                 break
-        reason = ("root_pr_checks_need_repair" if container else
+        reason = ("source_ci_repair_exhausted" if source_budget and (
+                      source_repaired or source_attempt or legacy_delegate
+                      or task["created_by_kind"] == "source_ci_repair" or len(heads) >= limit
+                  ) else "root_pr_checks_need_repair" if container else
                   "root_pr_checks_unchanged" if observation.source_sha in heads else
                   "root_pr_checks_recovery_exhausted" if len(heads) >= limit
                   and policy.get("on_exhausted", "human") != "continue" else None)
         if reason:
             identity = hashlib.sha256(repr((request.task_id, request.completion_id,
                 observation.source_sha, reason)).encode()).hexdigest()
-            await conn.execute(pg_insert(messages).values(
-                id=f"root-pr-checks-{identity}", project_id=request.project_id,
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=("msg-source-ci-budget-" + request.task_id
+                    if reason == "source_ci_repair_exhausted" else f"root-pr-checks-{identity}"),
+                project_id=request.project_id,
                 from_kind="system", from_id="integration-admission", to_kind="session",
                 to_id=f"supervisor-{request.project_id}",
                 subject=f"Root PR checks require repair: {request.task_id}",
@@ -138,7 +165,8 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
             return {"success": True, "outcome": "supervisor_notified", "blocker": reason}
 
         transition = await db._apply_transition(conn, request.task_id, TaskStatus.READY,
-            context="reopen_with_feedback", assigned_agent_id=None, pr_url=None, retry_count=0,
+            integration_delivery=delivery,
+            context="reopen_with_feedback", assigned_agent_id=None,
             description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback)
         await db._upsert_meta(request.task_id, RECOVERY_KEY,
             {"heads": [*heads, observation.source_sha], "attempts": len(heads) + 1}, conn=conn)

@@ -26,6 +26,16 @@ class AgentConfig:
         codex_service_tier (AgentConfigCodexServiceTierType0 | None | Unset):
         claude_dangerously_skip_permissions (bool | None | Unset):
         read_only (bool | None | Unset):
+        enabled (bool | None | Unset):
+        min_active (int | None | Unset):
+        max_active (int | None | Unset):
+        min_per_project (int | None | Unset):
+        max_claims_per_session (int | None | Unset):
+        mode (None | str | Unset):
+        wake_mode (None | str | Unset):
+        idle_timeout (int | None | Unset):
+        max_session_age (int | None | Unset):
+        allow_base_checkout (bool | None | Unset):
     """
 
     harness: None | str | Unset = UNSET
@@ -38,6 +48,16 @@ class AgentConfig:
     codex_service_tier: AgentConfigCodexServiceTierType0 | None | Unset = UNSET
     claude_dangerously_skip_permissions: bool | None | Unset = UNSET
     read_only: bool | None | Unset = UNSET
+    enabled: bool | None | Unset = UNSET
+    min_active: int | None | Unset = UNSET
+    max_active: int | None | Unset = UNSET
+    min_per_project: int | None | Unset = UNSET
+    max_claims_per_session: int | None | Unset = UNSET
+    mode: None | str | Unset = UNSET
+    wake_mode: None | str | Unset = UNSET
+    idle_timeout: int | None | Unset = UNSET
+    max_session_age: int | None | Unset = UNSET
+    allow_base_checkout: bool | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         harness: None | str | Unset
@@ -107,6 +127,66 @@ class AgentConfig:
         else:
             read_only = self.read_only
 
+        enabled: bool | None | Unset
+        if isinstance(self.enabled, Unset):
+            enabled = UNSET
+        else:
+            enabled = self.enabled
+
+        min_active: int | None | Unset
+        if isinstance(self.min_active, Unset):
+            min_active = UNSET
+        else:
+            min_active = self.min_active
+
+        max_active: int | None | Unset
+        if isinstance(self.max_active, Unset):
+            max_active = UNSET
+        else:
+            max_active = self.max_active
+
+        min_per_project: int | None | Unset
+        if isinstance(self.min_per_project, Unset):
+            min_per_project = UNSET
+        else:
+            min_per_project = self.min_per_project
+
+        max_claims_per_session: int | None | Unset
+        if isinstance(self.max_claims_per_session, Unset):
+            max_claims_per_session = UNSET
+        else:
+            max_claims_per_session = self.max_claims_per_session
+
+        mode: None | str | Unset
+        if isinstance(self.mode, Unset):
+            mode = UNSET
+        else:
+            mode = self.mode
+
+        wake_mode: None | str | Unset
+        if isinstance(self.wake_mode, Unset):
+            wake_mode = UNSET
+        else:
+            wake_mode = self.wake_mode
+
+        idle_timeout: int | None | Unset
+        if isinstance(self.idle_timeout, Unset):
+            idle_timeout = UNSET
+        else:
+            idle_timeout = self.idle_timeout
+
+        max_session_age: int | None | Unset
+        if isinstance(self.max_session_age, Unset):
+            max_session_age = UNSET
+        else:
+            max_session_age = self.max_session_age
+
+        allow_base_checkout: bool | None | Unset
+        if isinstance(self.allow_base_checkout, Unset):
+            allow_base_checkout = UNSET
+        else:
+            allow_base_checkout = self.allow_base_checkout
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -130,6 +210,26 @@ class AgentConfig:
             field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if read_only is not UNSET:
             field_dict["read_only"] = read_only
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
+        if min_active is not UNSET:
+            field_dict["min_active"] = min_active
+        if max_active is not UNSET:
+            field_dict["max_active"] = max_active
+        if min_per_project is not UNSET:
+            field_dict["min_per_project"] = min_per_project
+        if max_claims_per_session is not UNSET:
+            field_dict["max_claims_per_session"] = max_claims_per_session
+        if mode is not UNSET:
+            field_dict["mode"] = mode
+        if wake_mode is not UNSET:
+            field_dict["wake_mode"] = wake_mode
+        if idle_timeout is not UNSET:
+            field_dict["idle_timeout"] = idle_timeout
+        if max_session_age is not UNSET:
+            field_dict["max_session_age"] = max_session_age
+        if allow_base_checkout is not UNSET:
+            field_dict["allow_base_checkout"] = allow_base_checkout
 
         return field_dict
 
@@ -253,6 +353,96 @@ class AgentConfig:
 
         read_only = _parse_read_only(d.pop("read_only", UNSET))
 
+        def _parse_enabled(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        enabled = _parse_enabled(d.pop("enabled", UNSET))
+
+        def _parse_min_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_active = _parse_min_active(d.pop("min_active", UNSET))
+
+        def _parse_max_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_active = _parse_max_active(d.pop("max_active", UNSET))
+
+        def _parse_min_per_project(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_per_project = _parse_min_per_project(d.pop("min_per_project", UNSET))
+
+        def _parse_max_claims_per_session(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_claims_per_session = _parse_max_claims_per_session(d.pop("max_claims_per_session", UNSET))
+
+        def _parse_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        mode = _parse_mode(d.pop("mode", UNSET))
+
+        def _parse_wake_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        wake_mode = _parse_wake_mode(d.pop("wake_mode", UNSET))
+
+        def _parse_idle_timeout(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        idle_timeout = _parse_idle_timeout(d.pop("idle_timeout", UNSET))
+
+        def _parse_max_session_age(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_session_age = _parse_max_session_age(d.pop("max_session_age", UNSET))
+
+        def _parse_allow_base_checkout(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        allow_base_checkout = _parse_allow_base_checkout(d.pop("allow_base_checkout", UNSET))
+
         agent_config = cls(
             harness=harness,
             default_class=default_class,
@@ -264,6 +454,16 @@ class AgentConfig:
             codex_service_tier=codex_service_tier,
             claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             read_only=read_only,
+            enabled=enabled,
+            min_active=min_active,
+            max_active=max_active,
+            min_per_project=min_per_project,
+            max_claims_per_session=max_claims_per_session,
+            mode=mode,
+            wake_mode=wake_mode,
+            idle_timeout=idle_timeout,
+            max_session_age=max_session_age,
+            allow_base_checkout=allow_base_checkout,
         )
 
         return agent_config

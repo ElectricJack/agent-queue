@@ -18,7 +18,12 @@ SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
 #: One generic worker per harness.  The tier x level x provider ladder was
 #: retired: a task's ``intelligence_class`` picks the model and reasoning level
 #: for the run, so profiles that differ only in ``default_class`` bought nothing.
-WORKER_PROFILE_IDS = ("worker-claude", "worker-codex")
+WORKER_PROFILE_IDS = tuple(sorted(
+    path.parent.name
+    for path in (Path(__file__).resolve().parents[1] / "src/profiles/defaults").glob(
+        "worker-*/profile.md"
+    )
+))
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
