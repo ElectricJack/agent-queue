@@ -12,6 +12,7 @@ Three small, local checks cover different kinds of documentation maintenance:
 |---|---|---|
 | CLI inventory | Live Click command tree | [CLI command inventory](cli-command-inventory.md) and its JSON artifact |
 | Configuration schema | `AppConfig` plus the editor schema builder | [configuration-schema.json](configuration-schema.json) |
+| Playbook command pages | The command contract registry | [Playbook commands](playbook-commands/README.md), one page per command |
 | Page links and catalogs | Markdown headings/links plus the ownership manifest | Missing files, GitHub anchors, or module catalog rows |
 
 For example, after adding a setting, a contributor can refresh only the
@@ -36,6 +37,7 @@ a documentation ticket and does not require the application test suite:
 # Verify stable generated facts have been committed.
 python scripts/generate-cli-command-inventory.py --check
 python scripts/generate-config-schema-inventory.py --check
+python scripts/gen-command-docs.py --check
 
 # Verify a page (or a directory) uses valid GitHub-relative links and anchors.
 python scripts/check-docs.py docs/reference/reference-maintenance.md
@@ -74,6 +76,7 @@ private helpers still receive individual rows.
 | `target does not exist` | A relative path is wrong or the destination was renamed. | Correct the link relative to the source page, or restore the intended target. |
 | `anchor ... does not exist` | A GitHub heading slug changed. | Link to the current heading or restore a stable heading. |
 | `missing linked row` | A tracked production module has no catalog entry in its owning shard. | Add a row to that shard with a relative source link and its component page. |
+| `command documentation is stale` | A command contract changed, or a command was registered or retired, without regenerating its page. | Run `python scripts/gen-command-docs.py` and write the hand-written sections of any new page in the same change. |
 | `inventory is stale` | A source/schema change was not regenerated into its committed JSON. | Run the named generator and include the output in the same commit. |
 
 ## Related pages

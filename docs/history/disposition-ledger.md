@@ -24,8 +24,8 @@ happened to the page I remember" and "is this file still true".
 | `archive` | Describes a procedure or component that no longer exists, and has no direct replacement page. | Kept at its path with a **Retired** banner naming what to read instead. Delisted from navigation. |
 | `historical` | Design history or audit evidence, preserved on purpose as the record of how AQ got here. | Kept, with a banner giving its genre and saying it is not current documentation. Bodies of evidence bundles were not edited at all. |
 
-Counts: `current` 121, `update` 3, `redirect` 7,
-`archive` 8, `historical` 369.
+Counts: `current` 117, `update` 3, `redirect` 7,
+`archive` 8, `historical` 373.
 
 ## What "immutable evidence" means here
 
@@ -73,7 +73,7 @@ Documentation that sits beside the code rather than under `docs/`.
 | Path | Disposition | Note |
 |---|---|---|
 | [`goals.md`](../../goals.md) | `historical` | Original product goals, 2026-03. |
-| [`mkdocs.yml`](../../mkdocs.yml) | `archive` | Configures a MkDocs Material site at `electricjack.github.io/agent-queue/`. **Recorded decision: GitHub-rendered Markdown is the publication format and this site is unmaintained** — 49 of the 77 pages in its `nav:` do not exist. The decision is written into the file's own header rather than deleting it, so nobody reinstates a Pages deploy with no config. `.github/workflows/docs.yml` still builds and deploys it on pushes to `main` touching `docs/**`; removing that is an infrastructure change in files this ticket does not own, [recorded as a finding](../plans/documentation-overhaul/known-inaccuracies.md). |
+| `mkdocs.yml` (deleted) | `archive` | Configured a MkDocs Material site at `electricjack.github.io/agent-queue/`. **Recorded decision: GitHub-rendered Markdown is the publication format and that site was unmaintained** — 49 of the 77 pages in its `nav:` did not exist. The decision was first written into the file's own header; `mkdocs.yml`, `.github/workflows/docs.yml` and `scripts/generate-docs.sh` were all removed afterwards by *Retire the MkDocs site and its GitHub Pages deploy* (`84866e671`), which is the infrastructure change this row was waiting on. The row is kept so the decision stays findable. |
 | [`notes.md`](../../notes.md) | `historical` | Scratch notes kept with the repository. |
 | [`requirements.md`](../../requirements.md) | `historical` | Original requirements list. |
 | [`test-coverage-impl-platform.md`](../../test-coverage-impl-platform.md) | `historical` | Point-in-time coverage report for the platform work. |
@@ -84,8 +84,8 @@ Agent-facing and landing-page prose. Listed for completeness; the ticket in each
 
 | Path | Disposition | Note |
 |---|---|---|
-| [`AGENTS.md`](../../AGENTS.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
-| [`CLAUDE.md`](../../CLAUDE.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
+| [`AGENTS.md`](../../AGENTS.md) | `current` | The agent instruction file. Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
+| [`CLAUDE.md`](../../CLAUDE.md) | `current` | One-line `@AGENTS.md` import shim for Claude Code. Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
 | [`README.md`](../../README.md) | `current` | Owned by the `readme` ticket. |
 | [`profile.md`](../../profile.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
 
@@ -139,7 +139,7 @@ Split between current guides and retired ones. Every retired page keeps its old 
 | [`docs/guides/discord-commands.md`](../guides/discord-commands.md) | `redirect` | Accurate but thin; superseded by [Messaging](../concepts/messaging.md) and [Escalations](../guides/escalations.md). |
 | [`docs/guides/discord-migration.md`](../guides/discord-migration.md) | `archive` | Operator runbook for the single-channel cutover, which completed on 2026-09-08. |
 | [`docs/guides/discord-replacement-checklist.md`](../guides/discord-replacement-checklist.md) | `archive` | The cutover's readiness ledger; retained as the record of what replaced what. |
-| [`docs/guides/e2e-swarm.md`](../guides/e2e-swarm.md) | `current` | Referenced by `CLAUDE.md` and [local checks](../contributing/checks.md). |
+| [`docs/guides/e2e-swarm.md`](../guides/e2e-swarm.md) | `current` | Referenced by `AGENTS.md` and [local checks](../contributing/checks.md). |
 | [`docs/guides/escalations.md`](../guides/escalations.md) | `current` | Owned by the `communications` ticket. |
 | [`docs/guides/feature-merge-history.md`](../guides/feature-merge-history.md) | `update` | Describes ancestry in the optional strict integration modes; banner added to say it is not the development-mode path. |
 | [`docs/guides/getting-started.md`](../guides/getting-started.md) | `redirect` | Listed a Discord bot token as a prerequisite. Superseded by [Install](../tutorials/install.md) and [Your first task](../tutorials/first-task.md). |
@@ -545,10 +545,10 @@ This repository's own configured policy, recorded as immutable reviewed bundles.
 | [`docs/playbooks/integration-only/default-pipeline/artifact.sha256`](../playbooks/integration-only/default-pipeline/artifact.sha256) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
 | [`docs/playbooks/integration-only/default-pipeline/manifest.md`](../playbooks/integration-only/default-pipeline/manifest.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
 | [`docs/playbooks/integration-only/default-pipeline/source.md`](../playbooks/integration-only/default-pipeline/source.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.json`](../playbooks/standard-high-default/default-assignment-routing/artifact.json) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.sha256`](../playbooks/standard-high-default/default-assignment-routing/artifact.sha256) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/manifest.md`](../playbooks/standard-high-default/default-assignment-routing/manifest.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
-| [`docs/playbooks/standard-high-default/default-assignment-routing/source.md`](../playbooks/standard-high-default/default-assignment-routing/source.md) | `current` | Reviewed playbook bundle recording this repository's own operator-requested policy. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.json`](../playbooks/standard-high-default/default-assignment-routing/artifact.json) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/artifact.sha256`](../playbooks/standard-high-default/default-assignment-routing/artifact.sha256) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/manifest.md`](../playbooks/standard-high-default/default-assignment-routing/manifest.md) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
+| [`docs/playbooks/standard-high-default/default-assignment-routing/source.md`](../playbooks/standard-high-default/default-assignment-routing/source.md) | `historical` | Reviewed playbook bundle recording this repository's own operator-requested policy; superseded by mandatory task routing (2026-09-28), whose router it cannot replace. |
 
 ## `docs/default_rules/` and `docs/example_playbooks/` — samples
 
@@ -730,7 +730,7 @@ and what now says otherwise:
 | Discord as a control surface: slash commands, task controls, gate buttons, a bot token as a prerequisite. | `docs/guides/getting-started.md`, `docs/index.md`, `docs/specs/messaging/`. | Discord is notification-only — one channel, an activity digest, one thread per escalation — and `messaging_platform: none` is supported. [Messaging](../concepts/messaging.md). |
 | SQLite as a storage backend. | `docs/index.md`, `docs/guides/hierarchical-integration-trains.md`, `docs/guides/e2e-swarm.md`. | PostgreSQL is the only backend; `tests/test_sqlite_removal.py` fails if a dialect branch returns. The one-way `aq db import-sqlite` importer refuses a non-empty target. |
 | In-process agent runtimes with `start()` / `wait()` / `stop()`. | `docs/guides/runtime-development*.md`, `docs/specs/runtimes/`. | There are no in-tree runtimes. Every agent is an external CLI in a tmux session, selected by a profile's `harness` field. [Sessions](../concepts/sessions.md), [harness reference](../reference/harnesses.md). |
-| A MkDocs Material site as a second publication format. | `mkdocs.yml`, whose `nav:` block lists 49 pages that do not exist. | GitHub-rendered Markdown with relative links is the publication format. The decision is recorded in `mkdocs.yml`'s own header; removing the Pages deploy touches `.github/workflows/docs.yml`, which this ticket does not own, and is tracked separately. |
+| A MkDocs Material site as a second publication format. | `mkdocs.yml`, whose `nav:` block listed 49 pages that did not exist. | GitHub-rendered Markdown with relative links is the publication format. **Resolved:** `mkdocs.yml`, `.github/workflows/docs.yml` and `scripts/generate-docs.sh` were deleted by *Retire the MkDocs site and its GitHub Pages deploy* (`84866e671`). |
 
 ## Related pages
 

@@ -24,6 +24,11 @@ from src.task_graph import (
     substitute_vars,
     validate_graph,
 )
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+)
 from src.task_graph.creator import build_plan, write_plan
 from src.task_graph.models import TaskGraph
 from tests.db_fixtures import lease_dsn
@@ -38,9 +43,10 @@ GOLDEN = FIXTURES / "golden"
 
 
 class _FakeTask:
-    def __init__(self, task_id: str, project_id: str):
+    def __init__(self, task_id: str, project_id: str, parent_task_id: str | None = None):
         self.id = task_id
         self.project_id = project_id
+        self.parent_task_id = parent_task_id
 
 
 class _FakeProfile:
@@ -51,13 +57,19 @@ class _FakeProfile:
 class _FakeDB:
     """Minimal db surface the validator uses: get_task + get_profile."""
 
-    def __init__(self, tasks: dict[str, str] | None = None, profiles: set[str] | None = None):
+    def __init__(
+        self,
+        tasks: dict[str, str] | None = None,
+        profiles: set[str] | None = None,
+        parents: dict[str, str] | None = None,
+    ):
         self._tasks = tasks or {"foreign-task": "other-project", "local-task": "p1"}
         self._profiles = profiles if profiles is not None else {"coding", "planner", "reviewer"}
+        self._parents = parents or {}
 
     async def get_task(self, task_id: str):
         project = self._tasks.get(task_id)
-        return _FakeTask(task_id, project) if project else None
+        return _FakeTask(task_id, project, self._parents.get(task_id)) if project else None
 
     async def get_profile(self, profile_id: str):
         return _FakeProfile(profile_id) if profile_id in self._profiles else None
@@ -110,7 +122,8 @@ class TestParseGraph:
     def test_defaults_fill_unset_node_fields(self):
         graph = _load_graph("valid.json")
         schema = graph.nodes[0]
-        assert schema.profile == "coding"  # from defaults
+        assert schema.intelligence_class == "standard-high"  # from defaults
+        assert graph.nodes[2].intelligence_class == "deep-high"  # node wins over defaults
         assert graph.nodes[1].labels == ["overhaul-b"]  # from defaults
         assert schema.labels == ["db"]  # node wins over defaults
 
@@ -179,6 +192,644 @@ class TestParseGraph:
         assert rules == {"bad_field_type", "bad_need"}
 
 
+class TestSubtaskBoundsLiveWithTheTable:
+    """The three per-row/per-call bounds are leaf constants, not command ones.
+
+    ``src/task_graph/parser.py`` must be able to state the same numbers
+    ``task_subtask_add`` enforces without importing ``src.commands`` — that
+    package builds the whole ``CommandHandler`` at import, and the handler
+    imports ``src.task_graph`` right back.
+    """
+
+    def test_the_bounds_are_reachable_without_importing_the_commands_package(self):
+        """Module import plus the three constants, with ``src.commands`` unloaded.
+
+        Scoped deliberately to the *bounds*: ``_parse_node`` still lazily
+        imports ``normalize_deliverables`` from ``src.commands.task_commands``
+        for the ``deliverables`` field, which is pre-existing and out of scope
+        here — so this probe reads the constants rather than parsing.
+        """
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys;"
+            "import src.task_graph.parser as p;"
+            "assert 'src.commands' not in sys.modules, sorted("
+            "m for m in sys.modules if m.startswith('src.commands'));"
+            "assert not hasattr(p, '_subtask_bounds');"
+            "print(p.MAX_SUBTASKS_PER_CALL, p.MAX_SUBTASK_TITLE, p.MAX_SUBTASK_CONTEXT)"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == [
+            str(MAX_SUBTASKS_PER_CALL),
+            str(MAX_SUBTASK_TITLE),
+            str(MAX_SUBTASK_CONTEXT),
+        ]
+
+    def test_the_commands_module_still_re_exports_them(self):
+        """Their original home stays importable — callers and tests use it."""
+        from src.commands import task_subtask_commands as cmds
+
+        assert (
+            cmds.MAX_SUBTASKS_PER_CALL,
+            cmds.MAX_SUBTASK_TITLE,
+            cmds.MAX_SUBTASK_CONTEXT,
+        ) == (MAX_SUBTASKS_PER_CALL, MAX_SUBTASK_TITLE, MAX_SUBTASK_CONTEXT)
+
+    def test_importing_the_commands_package_first_still_works(self):
+        """The reverse import order must not deadlock on a partial module."""
+        import subprocess
+        import sys
+
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import src.commands.task_subtask_commands;"
+                "import src.task_graph.parser as p;"
+                "print(p.MAX_SUBTASK_TITLE)",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == str(MAX_SUBTASK_TITLE)
+
+
+class TestParseSubtasks:
+    """``subtasks:`` on a node — the planning-emits-subtasks grammar (§7.2)."""
+
+    @staticmethod
+    def _doc(subtasks) -> dict:
+        return {
+            "version": 1,
+            "nodes": [{"key": "a", "title": "A", "subtasks": subtasks}],
+        }
+
+    def test_three_string_entries_become_three_subtasks(self):
+        graph = parse_graph(self._doc(["one", "two", "three"]))
+        node = graph.nodes[0]
+        assert [s.title for s in node.subtasks] == ["one", "two", "three"]
+        assert [s.context for s in node.subtasks] == ["", "", ""]
+
+    def test_mixed_string_and_object_entries_parse(self):
+        graph = parse_graph(
+            self._doc(["bare", {"title": "rich", "context": "why it matters"}])
+        )
+        node = graph.nodes[0]
+        assert [(s.title, s.context) for s in node.subtasks] == [
+            ("bare", ""),
+            ("rich", "why it matters"),
+        ]
+
+    def test_subtasks_round_trip_through_to_dict(self):
+        graph = parse_graph(self._doc([{"title": "t", "context": "c"}]))
+        assert graph.to_dict()["nodes"][0]["subtasks"] == [{"title": "t", "context": "c"}]
+
+    def test_a_bare_string_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc("just one"))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_a_bare_object_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc({"title": "just one"}))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_an_over_long_title_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["x" * (MAX_SUBTASK_TITLE + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert exc.value.errors[0].node == "a"
+
+    def test_an_empty_title_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["   "]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_an_over_long_context_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": "x" * (MAX_SUBTASK_CONTEXT + 1)}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    @pytest.mark.parametrize("context", [0, False, [], {}, 5, ["a"], {"k": "v"}])
+    def test_a_non_string_context_is_one_bad_subtask(self, context):
+        """A *falsy* non-string is as wrong as a truthy one.
+
+        ``raw.get("context", "") or ""`` accepted ``0``/``False``/``[]`` as an
+        empty context while rejecting ``5``, which is the author's mistake
+        being silently swallowed for half the type errors.
+        """
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": context}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert "context" in exc.value.errors[0].detail
+
+    @pytest.mark.parametrize("doc_context", [None, ...])
+    def test_absent_or_null_context_is_the_empty_string(self, doc_context):
+        """Only ``None`` and an omitted key mean "no context"."""
+        entry = {"title": "t"} if doc_context is ... else {"title": "t", "context": None}
+        graph = parse_graph(self._doc([entry]))
+        assert graph.nodes[0].subtasks[0].context == ""
+
+    def test_a_non_string_entry_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([17]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_a_non_list_value_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(17))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_over_the_per_node_cap_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert str(MAX_SUBTASKS_PER_CALL) in exc.value.errors[0].detail
+
+    def test_exactly_the_per_node_cap_parses(self):
+        graph = parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL)]))
+        assert len(graph.nodes[0].subtasks) == MAX_SUBTASKS_PER_CALL
+
+    def test_defaults_supply_subtasks_when_a_node_omits_them(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "defaults": {"subtasks": ["shared"]},
+                "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B"}],
+            }
+        )
+        assert [s.title for s in graph.nodes[0].subtasks] == ["shared"]
+        assert [s.title for s in graph.nodes[1].subtasks] == ["shared"]
+
+    def test_a_document_without_subtasks_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert all(node.subtasks == [] for node in graph.nodes)
+        assert all(n["subtasks"] == [] for n in graph.to_dict()["nodes"])
+
+
+class TestParentSubtasks:
+    """Container parents are not scheduled work and cannot own checklists."""
+
+    @staticmethod
+    def _doc(subtasks) -> dict:
+        return {
+            "version": 1,
+            "parent": {"title": "Epic", "subtasks": subtasks},
+            "nodes": [{"key": "a", "title": "A"}],
+        }
+
+    def test_nonempty_parent_subtasks_are_a_parse_finding(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["not scheduled work"]))
+        assert [error.rule for error in exc.value.errors] == ["parent_subtasks_unsupported"]
+
+    def test_an_empty_parent_subtasks_list_is_allowed_for_templates(self):
+        graph = parse_graph(self._doc([]))
+        assert graph.parent is not None
+        assert graph.parent.title == "Epic"
+
+
+class TestParsePhases:
+    """``phases:`` at the top level and ``phase:`` on a node (§7.3)."""
+
+    @staticmethod
+    def _doc(phases, node_phase=None) -> dict:
+        node = {"key": "a", "title": "A"}
+        if node_phase is not None:
+            node["phase"] = node_phase
+        return {"version": 1, "phases": phases, "nodes": [node]}
+
+    def test_phases_parse_in_document_order(self):
+        graph = parse_graph(
+            self._doc(
+                [
+                    {"key": "schema", "title": "Phase 1", "label": "schema"},
+                    {"key": "engine", "title": "Phase 2"},
+                ]
+            )
+        )
+        assert [(p.key, p.title, p.label) for p in graph.phases] == [
+            ("schema", "Phase 1", "schema"),
+            ("engine", "Phase 2", None),
+        ]
+
+    def test_a_node_names_its_phase(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1"}], node_phase="schema")
+        )
+        assert graph.nodes[0].phase == "schema"
+
+    def test_phases_round_trip_through_to_dict(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1", "label": "s"}], node_phase="schema")
+        )
+        payload = graph.to_dict()
+        assert payload["phases"] == [{"key": "schema", "title": "Phase 1", "label": "s"}]
+        assert payload["nodes"][0]["phase"] == "schema"
+        assert parse_graph(payload).phases[0].key == "schema"
+
+    def test_a_non_list_phases_value_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc({"key": "schema"}))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_non_object_entry_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["schema"]))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_phase_without_a_key_is_one_missing_phase_key(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "Phase 1"}]))
+        assert [e.rule for e in exc.value.errors] == ["missing_phase_key"]
+
+    def test_a_non_string_node_phase_is_one_bad_field_type(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"key": "schema", "title": "P"}], node_phase=7))
+        assert [e.rule for e in exc.value.errors] == ["bad_field_type"]
+
+    def test_a_document_without_phases_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert graph.phases == []
+        assert graph.to_dict()["phases"] == []
+        assert all(n["phase"] is None for n in graph.to_dict()["nodes"])
+
+
+class TestPhaseValidation:
+    """The §7.3 finding table: two errors and two warnings."""
+
+    @staticmethod
+    async def _findings(doc, vault):
+        graph = parse_graph(doc)
+        return await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+
+    async def test_a_duplicate_phase_key_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "one", "title": "Again"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "duplicate_phase_key"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+
+    async def test_a_node_naming_an_undeclared_phase_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "two"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "unknown_phase"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+
+    async def test_a_phase_with_no_nodes_is_a_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "phase_without_nodes"]
+        assert len(matched) == 1
+        assert matched[0].severity == "warning"
+        assert "two" in matched[0].detail
+
+    async def test_an_edge_onto_an_earlier_phase_is_a_redundant_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "redundant_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].severity, matched[0].node) == ("warning", "b")
+
+    async def test_an_edge_onto_a_later_phase_is_an_error(self, vault):
+        """A phase-inverted need is a permanent deadlock no cycle check sees."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+        # Nothing else fires: the cycle check cannot see this at all.
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    @pytest.mark.parametrize(
+        "dep_type", ["blocks", "conditional-blocks", "parent-child", "waits-for"]
+    )
+    async def test_every_gating_dep_type_inverts(self, vault, dep_type):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": dep_type}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_non_blocking_edge_across_phases_is_neither(self, vault):
+        """``related`` does not gate, so it can neither deadlock nor be redundant."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "related"}],
+                    },
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a", "dep_type": "related"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
+    async def test_a_farther_reach_never_masks_a_nearer_inversion(self, vault):
+        """Regression (F9): ``a`` inverts onto both phase two and phase three.
+
+        While ``waits-for`` was a *soft* class, the farther soft reach won the
+        ranking and the whole node was reported as a warning — so the hard
+        ``a -> b`` deadlock went unreported and the graph was created.  Every
+        gating type is an error now, so the ranking can only pick between
+        errors.
+        """
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [
+                    {"key": "one", "title": "One"},
+                    {"key": "two", "title": "Two"},
+                    {"key": "three", "title": "Three"},
+                ],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [
+                            {"on": "b", "dep_type": "blocks"},
+                            {"on": "c", "dep_type": "waits-for"},
+                        ],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {"key": "c", "title": "C", "acceptance": ["x"], "phase": "three"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_waits_for_target_can_be_given_children_by_the_document(self, vault):
+        """Regression (F10): the 'a document cannot give a node children'
+        premise was false — a node may declare a ``parent-child`` need, the
+        creator writes that row, and ``_waits_for_unsat`` counts it.  So this
+        is a real deadlock and must be an error."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "waits-for"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {
+                        "key": "c",
+                        "title": "C",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "b", "dep_type": "parent-child"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [(f.node, f.is_error) for f in matched] == [("a", True)]
+
+    async def test_a_very_long_gating_chain_does_not_blow_the_stack(self, vault):
+        """Regression (F11): the traversal was recursive, and the 2,000,000
+        character document cap leaves room for a chain far past Python's
+        recursion limit."""
+        size = 5000
+        nodes = [
+            {
+                "key": f"n{i}",
+                "title": f"N{i}",
+                "acceptance": ["x"],
+                "needs": [{"on": f"n{i + 1}"}],
+            }
+            for i in range(size - 1)
+        ]
+        nodes.append({"key": f"n{size - 1}", "title": "last", "acceptance": ["x"]})
+        nodes[0]["phase"] = "one"
+        nodes[-1]["phase"] = "two"
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": nodes,
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].node == "n0"
+        # The route is folded rather than printed in full: 5,000 keys is not a
+        # message a human reads.
+        assert len(matched[0].detail) < 500
+        assert f"n{size - 1}" in matched[0].detail
+
+    @staticmethod
+    def _chain(*hops: tuple[str, str | None]) -> dict:
+        """A document whose nodes form one ``needs`` chain, first needs second.
+
+        Each hop is ``(key, phase or None)``.
+        """
+        nodes = []
+        for index, (key, phase) in enumerate(hops):
+            node: dict = {"key": key, "title": key.upper(), "acceptance": ["x"]}
+            if phase is not None:
+                node["phase"] = phase
+            if index + 1 < len(hops):
+                node["needs"] = [{"on": hops[index + 1][0]}]
+            nodes.append(node)
+        # Only the phases the chain actually uses, so an unrelated
+        # ``phase_without_nodes`` warning never muddies an assertion.
+        used = [p for p in ("one", "two") if any(h[1] == p for h in hops)]
+        return {
+            "version": 1,
+            "phases": [{"key": key, "title": key.title()} for key in used],
+            "nodes": nodes,
+        }
+
+    async def test_a_later_phase_reached_through_one_unphased_hop_is_an_error(self, vault):
+        """The unsound case: an unphased node is not withheld by any phase, but
+        it is still gated by its OWN edges, so it carries the deadlock."""
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "two")), vault)
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "a -> u -> b" in matched[0].detail
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+
+    async def test_a_later_phase_reached_through_two_unphased_hops_is_an_error(self, vault):
+        findings = await self._findings(
+            self._chain(("a", "one"), ("u", None), ("v", None), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert "a -> u -> v -> b" in matched[0].detail
+
+    async def test_a_chain_back_into_the_same_phase_is_not_an_error(self, vault):
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_a_chain_from_a_later_phase_to_an_earlier_one_is_not_an_error(self, vault):
+        """Phase 2 waiting on phase-1 work through an unphased hop is the
+        ordinary direction: phase 1 finishes first anyway."""
+        findings = await self._findings(self._chain(("a", "two"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_an_unphased_node_needing_a_later_phase_is_not_itself_reported(self, vault):
+        """Nothing gates an unphased node's *start*, so on its own it is fine;
+        only a phased node that reaches through it deadlocks."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "u",
+                        "title": "U",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
+    async def test_a_phased_intermediate_is_reported_by_its_own_edge_only_once(self, vault):
+        """``a`` (phase one) -> ``m`` (phase one) -> ``b`` (phase two): the
+        violation belongs to ``m``, and ``a`` is not reported for reaching
+        through it — propagation stops at a phased node."""
+        findings = await self._findings(
+            self._chain(("a", "one"), ("m", "one"), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [f.node for f in matched] == ["m"]
+
+    async def test_an_edge_within_one_phase_is_not_redundant(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f for f in findings if f.rule == "redundant_phase_edge"] == []
+
+    async def test_a_phased_graph_with_no_findings_validates_clean(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        assert findings == []
+
+
 class TestExtractFromSpec:
     def test_extracts_the_fenced_block(self):
         markdown = (FIXTURES / "valid_spec.md").read_text(encoding="utf-8")
@@ -202,6 +853,22 @@ class TestExtractFromSpec:
             "~~~aq-graph\nversion: 1\nnodes:\n  - key: a\n    title: A\n~~~\n", "s.md"
         )
         assert graph.node_keys() == ["a"]
+
+    def test_parent_subtasks_in_a_fenced_graph_are_rejected(self):
+        with pytest.raises(GraphParseError) as exc:
+            extract_graph_from_spec(
+                "```aq-graph\n"
+                "version: 1\n"
+                "parent:\n"
+                "  title: Epic\n"
+                "  subtasks: [not-scheduled]\n"
+                "nodes:\n"
+                "  - key: a\n"
+                "    title: A\n"
+                "```\n",
+                "parent-subtasks.md",
+            )
+        assert [error.rule for error in exc.value.errors] == ["parent_subtasks_unsupported"]
 
 
 # ---------------------------------------------------------------------------
@@ -265,19 +932,72 @@ class TestSubstituteVars:
         _used, unknown = substitute_vars(graph)
         assert unknown & {"a", "b"}
 
-    def test_parent_profile_is_expanded(self):
+    def test_parent_labels_are_expanded(self):
         graph = parse_graph(
             {
                 "version": 1,
                 "vars": {"p": "coding"},
-                "parent": {"title": "P", "profile": "{p}"},
+                "parent": {"title": "P", "labels": ["{p}"]},
                 "nodes": [{"key": "n", "title": "N"}],
             }
         )
         used, unknown = substitute_vars(graph)
-        assert graph.parent.profile == "coding"
+        assert graph.parent.labels == ["coding"]
         assert unknown == set()
         assert "p" in used
+
+    def test_subtask_titles_and_contexts_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"branch": "feat/x"},
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "subtasks": [{"title": "Rebase {branch}", "context": "onto {branch}"}],
+                    }
+                ],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"branch"}, set())
+        subtask = graph.nodes[0].subtasks[0]
+        assert (subtask.title, subtask.context) == ("Rebase feat/x", "onto feat/x")
+
+    def test_an_undeclared_var_in_a_subtask_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [{"key": "a", "title": "A", "subtasks": ["Rebase {nope}"]}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
+
+    def test_phase_titles_and_labels_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"release": "24.1"},
+                "phases": [{"key": "one", "title": "Ship {release}", "label": "{release}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"release"}, set())
+        assert (graph.phases[0].title, graph.phases[0].label) == ("Ship 24.1", "24.1")
+
+    def test_an_undeclared_var_in_a_phase_title_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "Ship {nope}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
 
     def test_context_type_is_expanded(self):
         graph = parse_graph(
@@ -308,19 +1028,19 @@ class TestVarSubstitutionThroughValidation:
         assert [f.rule for f in findings] == []
         assert graph.nodes[0].title == "boom"
 
-    async def test_var_in_parent_profile_is_accepted(self, vault):
-        """`unused_var 'p'` + `unknown_profile '{p}'` on a correct document."""
+    async def test_var_in_parent_labels_is_accepted(self, vault):
+        """No bogus `unused_var 'p'` for a var only the parent block uses."""
         graph = parse_graph(
             {
                 "version": 1,
                 "vars": {"p": "coding"},
-                "parent": {"title": "P", "profile": "{p}"},
+                "parent": {"title": "P", "labels": ["{p}"]},
                 "nodes": [{"key": "n", "title": "N", "acceptance": ["x"]}],
             }
         )
         findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         assert [f.rule for f in findings] == []
-        assert graph.parent.profile == "coding"
+        assert graph.parent.labels == ["coding"]
 
 
 # ---------------------------------------------------------------------------
@@ -370,54 +1090,135 @@ class TestSelfEdges:
         assert [f.rule for f in findings] == []
 
 
+class TestNeedsOnAncestors:
+    """A node never gates on the task it is filed under, its ancestors, or its filer.
+
+    Membership is already the ``parent-child`` edge, and a container only settles
+    after its children, so such a need either deadlocks or (for a working plan
+    task) repeats what membership says (noble-quest).
+    """
+
+    @staticmethod
+    def _db():
+        return _FakeDB(
+            tasks={"epic": "p1", "plan": "p1", "sibling": "p1"},
+            parents={"plan": "epic", "sibling": "epic"},
+        )
+
+    @staticmethod
+    def _graph(on: str, dep_type: str = "blocks") -> TaskGraph:
+        return parse_graph({
+            "version": 1,
+            "nodes": [{
+                "key": "a", "title": "A", "acceptance": ["x"],
+                "needs": [{"on": on, "dep_type": dep_type}],
+            }],
+        })
+
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks", "parent-child"])
+    @pytest.mark.parametrize("on", ["plan", "epic"])
+    async def test_a_gating_need_on_the_parent_or_an_ancestor_is_an_error(
+        self, on, dep_type, vault
+    ):
+        findings = await validate_graph(
+            self._graph(on, dep_type), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan",
+        )
+        errors, _warnings = split_findings(findings)
+        assert [(f.rule, f.node) for f in errors] == [("dependency_on_ancestor", "a")]
+        assert f"'{on}'" in errors[0].detail
+
+    async def test_the_filer_is_refused_wherever_the_graph_lands(self, vault):
+        findings = await validate_graph(
+            self._graph("plan"), project_id="p1", db=self._db(), vault_root=vault,
+            filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == ["dependency_on_ancestor"]
+
+    @pytest.mark.parametrize("dep_type", ["related", "discovered-from"])
+    async def test_a_non_gating_edge_to_the_parent_is_allowed(self, dep_type, vault):
+        findings = await validate_graph(
+            self._graph("plan", dep_type), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan", filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_a_need_on_a_sibling_of_the_parent_is_untouched(self, vault):
+        findings = await validate_graph(
+            self._graph("sibling"), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan", filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_a_root_graph_may_still_need_an_existing_task(self, vault):
+        findings = await validate_graph(
+            self._graph("plan"), project_id="p1", db=self._db(), vault_root=vault,
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+
 # ---------------------------------------------------------------------------
 # Profile scoping
 # ---------------------------------------------------------------------------
 
 
-class TestProfileScoping:
-    """Project-scoped profiles were retired — the form itself is now an error."""
+class TestRouteKeysAreRefused:
+    """A graph carries hints, never a route (mandatory-routing spec §5.1).
 
-    async def test_scoped_profile_reference_is_rejected(self, vault):
+    A node, the document's ``defaults`` or its ``parent:`` block naming a
+    profile, a pin, a provider or a model is refused at parse time with
+    ``routing_choice_forbidden``, whatever the value — a retired scoped
+    ``project:<pid>:<name>`` reference included.
+    """
+
+    @pytest.mark.parametrize(
+        "document, detail",
+        [
+            (
+                {"nodes": [{"key": "a", "title": "A", "profile": "project:p2:coding"}]},
+                "'profile'",
+            ),
+            ({"nodes": [{"key": "a", "title": "A", "profile": "coding"}]}, "'profile'"),
+            ({"nodes": [{"key": "a", "title": "A", "pin": True}]}, "'pin'"),
+            ({"nodes": [{"key": "a", "title": "A", "provider": "anthropic"}]}, "'provider'"),
+            ({"nodes": [{"key": "a", "title": "A", "model": "claude-opus"}]}, "'model'"),
+            ({"nodes": [{"key": "a", "title": "A", "harness": "codex"}]}, "'harness'"),
+            (
+                {"defaults": {"profile": "coding"}, "nodes": [{"key": "a", "title": "A"}]},
+                "'defaults.profile'",
+            ),
+            (
+                {"defaults": {"pin": True}, "nodes": [{"key": "a", "title": "A"}]},
+                "'defaults.pin'",
+            ),
+            (
+                {
+                    "parent": {"title": "P", "profile": "project:p2:coding"},
+                    "nodes": [{"key": "a", "title": "A"}],
+                },
+                "'parent.profile'",
+            ),
+        ],
+    )
+    def test_a_route_key_is_refused(self, document, detail):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph({"version": 1, **document})
+        [error] = exc.value.errors
+        assert error.rule == "routing_choice_forbidden"
+        assert detail in error.detail
+
+    def test_a_null_or_false_route_key_chooses_nothing(self):
+        """``profile: null`` / ``pin: false`` (an older ``to_dict`` shape) parse."""
         graph = parse_graph(
             {
                 "version": 1,
-                "nodes": [
-                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p2:coding"}
-                ],
+                "parent": {"title": "P", "profile": None},
+                "nodes": [{"key": "a", "title": "A", "profile": None, "pin": False}],
             }
         )
-        db = _FakeDB(profiles={"coding", "project:p2:coding"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        errors, _ = split_findings(findings)
-        assert {f.rule for f in errors} == {"retired_project_profile"}
-        assert graph.nodes[0].profile == "project:p2:coding"  # never rewritten
-
-    async def test_scoped_parent_profile_is_rejected(self, vault):
-        graph = parse_graph(
-            {
-                "version": 1,
-                "parent": {"title": "P", "profile": "project:p2:coding"},
-                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"]}],
-            }
-        )
-        db = _FakeDB(profiles={"project:p2:coding"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
-
-    async def test_a_scoped_reference_to_this_project_is_rejected_too(self, vault):
-        """Even the graph's own project: the override it names no longer exists."""
-        graph = parse_graph(
-            {
-                "version": 1,
-                "nodes": [
-                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p1:special"}
-                ],
-            }
-        )
-        db = _FakeDB(profiles={"project:p1:special"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
+        assert graph.node_keys() == ["a"]
+        assert "profile" not in graph.nodes[0].to_dict()
+        assert "profile" not in graph.parent.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +1331,6 @@ GOLDEN_CASES = [
     "duplicate_key.json",
     "cycle.json",
     "non_blocking_loop.json",
-    "unknown_profile.json",
     "bad_dep_type.json",
     "unresolved_need.json",
     "cross_project.json",
@@ -564,21 +1364,20 @@ async def test_validation_matches_golden(case, vault):
 
 
 class TestValidatorDetails:
-    async def test_a_bare_reference_no_longer_falls_back_to_an_override(self, vault):
-        """Only the global profile counts; a leftover override row is not one."""
-        graph = parse_graph(
-            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "special"}]}
-        )
-        db = _FakeDB(profiles={"project:p1:special"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in findings if f.is_error} == {"unknown_profile"}
-
-    async def test_system_profile_reference_is_left_alone(self, vault):
-        graph = parse_graph(
-            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "coding"}]}
-        )
-        await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
-        assert graph.nodes[0].profile == "coding"
+    def test_the_former_unknown_profile_fixture_is_refused_at_parse(self):
+        """No profile reaches the validator: its ``unknown_profile`` rule is gone."""
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(
+                {
+                    "version": 1,
+                    "nodes": [
+                        {"key": "a", "title": "A", "acceptance": ["done"], "profile": "nonexistent"}
+                    ],
+                }
+            )
+        assert [(e.rule, e.node) for e in exc.value.errors] == [
+            ("routing_choice_forbidden", "a")
+        ]
 
     async def test_existing_task_in_same_project_resolves(self, vault):
         graph = parse_graph(
@@ -675,9 +1474,8 @@ async def db(tmp_path):
     database = Database(lease_dsn("graph.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
-    # tasks.profile_id is a real FK — a graph referencing a profile that
-    # isn't in agent_profiles would fail at insert, which is exactly what
-    # the validator's unknown_profile rule exists to catch first.
+    # A graph names no profile (mandatory routing); the rows only give the
+    # project a realistic catalogue.
     for profile_id in ("coding", "planner", "reviewer"):
         await database.create_profile(AgentProfile(id=profile_id, name=profile_id))
     yield database
@@ -719,6 +1517,46 @@ class TestCreateGraph:
         # ``set_parent`` (write_plan) writes a ``parent-child`` edge for
         # every node alongside the ``blocks`` edge the graph declared.
         assert deps == {ids["schema"], report["parent_id"]}
+
+    @pytest.mark.parametrize(
+        "mode, expected_repo_id",
+        [("development", "graph-repo"), ("observe", "graph-repo"), ("disabled", None)],
+    )
+    @pytest.mark.parametrize("phased", [False, True])
+    async def test_graph_rows_use_designated_repository(
+        self, db, tmp_path, mode, expected_repo_id, phased
+    ):
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(
+                id="graph-repo",
+                project_id="p1",
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "repo"),
+            )
+        )
+        await db.update_project(
+            "p1",
+            hierarchical_integration_mode=mode,
+            integration_repository_id="graph-repo",
+        )
+        graph_doc = {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "nodes": [
+                {"key": "a", "title": "A", "phase": "one" if phased else None},
+                {"key": "b", "title": "B"},
+            ],
+        }
+        if phased:
+            graph_doc["phases"] = [{"key": "one", "title": "Phase 1"}]
+
+        report = await create_graph(_Handler(db), parse_graph(graph_doc), project_id="p1")
+        task_ids = [report["parent_id"], *report["task_ids"]]
+        task_ids.extend(phase["task_id"] for phase in report.get("phases", []))
+        for task_id in task_ids:
+            assert (await db.get_task(task_id)).repo_id == expected_repo_id
 
     async def test_dependency_rows_carry_dep_type(self, db, vault):
         graph = parse_graph(

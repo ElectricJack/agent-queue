@@ -24,15 +24,30 @@ REFERENCE_LINK_RE = re.compile(r"^\s*\[[^\]]+\]:\s*(\S+)", re.MULTILINE)
 HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", re.MULTILINE | re.DOTALL)
 EXTERNAL_SCHEMES = {"http", "https", "mailto", "tel", "data", "javascript"}
+MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
 
 def github_anchor(value: str) -> str:
-    """Return GitHub's stable heading slug for ordinary Markdown headings."""
+    """Return GitHub's stable heading slug for ordinary Markdown headings.
+
+    GitHub slugs the *rendered* heading text: downcase it, drop everything that
+    is not a word character, a hyphen or a space, then map every space to one
+    hyphen.  Two details are easy to get wrong and both produce silently wrong
+    answers rather than loud ones:
+
+    * An underscore is a word character, so ``## `stale_claim`: ...`` anchors as
+      ``stale_claim-...``.  Only an underscore acting as an emphasis delimiter
+      disappears, and GFM emphasis requires a non-word character beside it.
+    * Each space becomes its own hyphen.  ``## 6. Health & Observability``
+      anchors as ``6-health--observability`` — the removed ``&`` leaves two
+      spaces behind, and GitHub keeps both.
+    """
     value = re.sub(r"`([^`]*)`", r"\1", value)
     value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
-    value = re.sub(r"[*_~]", "", value).strip().lower()
+    value = re.sub(r"[*~]", "", value)
+    value = re.sub(r"(?<!\w)_|_(?!\w)", "", value).strip().lower()
     value = re.sub(r"[^\w\- ]", "", value, flags=re.UNICODE)
-    return re.sub(r"[ ]+", "-", value)
+    return value.replace(" ", "-")
 
 
 def anchors(path: Path) -> set[str]:
@@ -91,6 +106,12 @@ def check_links(paths: Iterable[Path]) -> list[str]:
                     problems.append(
                         f"{source.relative_to(ROOT)}: {destination}: directory targets have no anchors",
                     )
+                    continue
+                # A fragment on a non-Markdown file is GitHub's source-view line
+                # anchor (``#L109``, ``#L12-L20``), not a heading slug.  There
+                # are no headings to compare it against, so checking one here
+                # only invents failures for links that resolve correctly.
+                if target.suffix.lower() not in MARKDOWN_SUFFIXES:
                     continue
                 target_anchors = anchors_by_path.setdefault(target, anchors(target))
                 if fragment not in target_anchors:
