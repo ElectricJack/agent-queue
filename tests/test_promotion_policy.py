@@ -32,6 +32,7 @@ from src.profiles.capabilities import CapabilityPolicy
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore, RecordingBus, RecordingRunRepository, StubActivations, artifact_ref_for,
 )
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_promotion_backmerge import (
     MultipleIntentGitHub, source_world,
