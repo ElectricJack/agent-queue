@@ -5,16 +5,21 @@ Mirrors key tests from test_git_manager.py but exercises the async methods
 """
 
 import asyncio
-import json
 import pathlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from src.git.manager import GitManager, GitError, RemoteRefState
+
+from src.git.manager import ChildPreparationConflict, GitError, GitManager, RemoteRefState
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
+from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+
+REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -37,19 +42,17 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
 
 @pytest.fixture
 def bare_repo(tmp_path):
-    """Create a bare repo to act as 'origin'."""
+    """A fresh empty origin, populated only if this test requests a clone."""
     bare = str(tmp_path / "origin.git")
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", bare], check=True, capture_output=True
-    )
+    init_bare_seed(bare)
     return bare
 
 
 @pytest.fixture
 def clone(tmp_path, bare_repo):
-    """Clone the bare repo and add an initial commit."""
+    """Build this test's working clone and initial history with Git."""
     clone_path = str(tmp_path / "clone")
-    subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
+    clone_seed(bare_repo, clone_path)
     _git(["config", "user.name", "Test"], cwd=clone_path)
     _git(["config", "user.email", "t@t.com"], cwd=clone_path)
     pathlib.Path(clone_path, "README.md").write_text("init")
@@ -62,6 +65,65 @@ def clone(tmp_path, bare_repo):
 @pytest.fixture
 def mgr():
     return GitManager()
+
+
+async def test_child_parent_merge_conflict_preserves_child_tip_and_cleans_index(mgr, clone):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    _git(["checkout", "-b", "aq/child"], cwd=clone)
+    child = _commit_file(clone, "README.md", "child\n", "child work")
+    _git(["checkout", "-b", "aq/parent", base], cwd=clone)
+    parent = _commit_file(clone, "README.md", "parent\n", "parent delivery")
+
+    with pytest.raises(ChildPreparationConflict) as conflict:
+        await mgr.aprepare_child_branch(clone, "aq/child", parent)
+
+    assert conflict.value.child_head == child
+    assert conflict.value.parent_head == parent == conflict.value.merge_head
+    assert conflict.value.files == ("README.md",)
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == child
+    assert _git(["branch", "--show-current"], cwd=clone) == "aq/child"
+    assert _git(["status", "--porcelain"], cwd=clone) == ""
+
+
+async def test_child_preparation_with_unavailable_parent_keeps_checkout(mgr, clone):
+    before = _git(["rev-parse", "HEAD"], cwd=clone)
+    with pytest.raises(GitError):
+        await mgr.aprepare_child_branch(clone, "aq/child", "f" * 40)
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == before
+    assert _git(["branch", "--show-current"], cwd=clone) == "main"
+
+
+@pytest.mark.parametrize("state", ["retained", "unpinned", "dirty", "other-branch"])
+async def test_preparation_retry_detaches_only_exact_clean_retained_head(mgr, clone, tmp_path, state):
+    from contextlib import asynccontextmanager
+    from src.orchestrator.workspace_attachments import detach_retained_preparation
+
+    _git(["checkout", "-b", "aq/child"], cwd=clone)
+    child = _commit_file(clone, "README.md", "unpublished child\n", "retained work")
+    store = tmp_path / "retained.git"
+    _git(["clone", "--bare", str(clone), str(store)], cwd=tmp_path)
+    if state != "unpinned":
+        _git(["update-ref", "refs/aq/stacks/" + child, child], cwd=store)
+    if state == "dirty":
+        (pathlib.Path(clone) / "README.md").write_text("unsaved work\n")
+    if state == "other-branch":
+        _git(["checkout", "-b", "aq/other"], cwd=clone)
+
+    @asynccontextmanager
+    async def mutex(path):
+        yield
+
+    before = _git(["status", "--porcelain"], cwd=clone)
+    result = await detach_retained_preparation(
+        mgr, mutex, SimpleNamespace(workspace_path=str(clone)), expected_branch="aq/child",
+        retained={"head": child, "store": str(store)},
+    )
+    assert result is (state == "retained")
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == child
+    assert _git(["status", "--porcelain"], cwd=clone) == before
+    assert _git(["branch", "--show-current"], cwd=clone) == (
+        "" if result else "aq/other" if state == "other-branch" else "aq/child"
+    )
 
 
 # ------------------------------------------------------------------
@@ -107,8 +169,57 @@ class TestArun:
             return proc
 
         with mock.patch("asyncio.create_subprocess_exec", side_effect=mock_create):
-            with pytest.raises(GitError, match="timed out"):
+            with pytest.raises(GitError, match="timed out after 1s") as error:
                 await mgr._arun(["status"], cwd=clone, timeout=1)
+            assert "credential" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_local_command_budgets_are_isolated_and_explicit_timeouts_win(
+    clone, mgr, monkeypatch,
+):
+    original_wait = asyncio.wait_for
+    budgets = {}
+
+    async def record_wait(awaitable, timeout):
+        budgets.setdefault(asyncio.current_task().get_name(), []).append(timeout)
+        return await original_wait(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", record_wait)
+    ready = asyncio.Event()
+
+    async def run(seconds):
+        with mgr.command_timeout(seconds):
+            await ready.wait()
+            await mgr._arun(["status", "--porcelain"], cwd=clone)
+            await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone, timeout=25)
+            await mgr._arun_subprocess(["git", "rev-parse", "HEAD"], cwd=clone)
+        await mgr._arun(["rev-parse", "HEAD"], cwd=clone)
+
+    first = asyncio.create_task(run(600), name="first")
+    second = asyncio.create_task(run(1800), name="second")
+    ready.set()
+    await asyncio.gather(first, second)
+    assert budgets == {"first": [600, 25, 600, 120], "second": [1800, 25, 1800, 120]}
+
+
+@pytest.mark.asyncio
+async def test_command_budget_restored_after_cancellation(mgr):
+    started = asyncio.Event()
+
+    async def cancelled():
+        try:
+            with mgr.command_timeout(1800):
+                started.set()
+                await asyncio.Event().wait()
+        finally:
+            assert mgr._command_timeout() == 120
+
+    worker = asyncio.create_task(cancelled())
+    await started.wait()
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
 
 
 @pytest.mark.asyncio
@@ -139,6 +250,91 @@ async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr
     assert unavailable.state is RemoteRefState.ERROR
     assert unavailable.oid is None
     assert "network unavailable" in (unavailable.error or "")
+
+
+async def test_patch_id_streams_large_complete_diffs_and_keeps_stdin_limit(clone, mgr):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    source = _commit_file(clone, "large.txt", "large source\n" * 100_000, "large source")
+    diff = _git(["diff", "--binary", base, source, "--"], cwd=clone)
+    assert len(diff.encode()) > mgr._MAX_STDIN_BYTES
+    expected = subprocess.check_output(
+        ["git", "patch-id", "--stable"], input=diff, text=True,
+    ).split()[0]
+    assert await mgr.apatch_id(clone, base, source) == expected
+    assert await mgr.apatch_id(clone, source, source) is None
+    with pytest.raises(GitError, match="bounded input limit"):
+        await mgr.arun_git_result(["patch-id", "--stable"], cwd=clone, stdin=diff)
+    with pytest.raises(GitError):
+        await mgr.apatch_id(clone, "0" * 40, source)
+
+
+async def test_patch_id_excludes_exact_literal_paths(clone, mgr):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    code = _commit_file(clone, "source.txt", "source\n", "source")
+    generated = "generated[*].txt"
+    _commit_file(clone, "generated1.txt", "keep this file\n", "other source")
+    head = _commit_file(clone, generated, "generated\n", "generated output")
+    expected = _git(["diff", "--binary", base, head, "--", "source.txt", "generated1.txt"],
+                    cwd=clone)
+    expected_id = subprocess.check_output(
+        ["git", "patch-id", "--stable"], input=expected, text=True,
+    ).split()[0]
+    assert await mgr.apatch_id(clone, base, head, exclude_paths=[generated]) == expected_id
+    assert expected_id != await mgr.apatch_id(clone, base, code)
+    assert await mgr.apatch_id(clone, code, code, exclude_paths=[generated]) is None
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "spawn", "patch"])
+async def test_patch_id_reaps_both_processes_on_interruption(clone, mgr, monkeypatch, failure):
+    import sys
+
+    processes = []
+    started = asyncio.Event()
+    create = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        if len(processes) == 1:
+            if failure == "spawn":
+                raise FileNotFoundError("git")
+            # Keep patch-id alive, and keep the pipe open, until interrupted.
+            script = "import time; time.sleep(30)"
+            if failure == "patch":
+                # A syntactically valid partial answer with failure is no proof.
+                script = "print('" + "a" * 40 + " " + "0" * 40 + "'); raise SystemExit(1)"
+            args = (sys.executable, "-c", script)
+        process = await create(*args, **kwargs)
+        processes.append(process)
+        if len(processes) == 2:
+            started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    deadlines = []
+    if failure == "timeout":
+        # Expire the deadline only once both children run: a wall-clock budget
+        # can lapse during a slow first spawn and never reach patch-id at all.
+        timeout = asyncio.timeout
+
+        def deadline(delay):
+            deadlines.append(timeout(None))
+            return deadlines[-1]
+
+        monkeypatch.setattr(asyncio, "timeout", deadline)
+    operation = asyncio.create_task(mgr.apatch_id(clone, "HEAD", "HEAD"))
+    if failure == "timeout":
+        await asyncio.wait_for(started.wait(), timeout=10)
+        deadlines[0].reschedule(asyncio.get_running_loop().time())
+    if failure == "cancel":
+        await asyncio.wait_for(started.wait(), timeout=10)
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+    else:
+        message = {"timeout": "timed out", "spawn": "unavailable", "patch": "compute patch id"}
+        with pytest.raises(GitError, match=message[failure]):
+            await operation
+    assert len(processes) == (1 if failure == "spawn" else 2)
+    assert all(process.returncode is not None for process in processes)
 
 
 # ------------------------------------------------------------------
@@ -188,42 +384,42 @@ class TestAsyncGetCurrentBranch:
 class TestAsyncFindOpenPr:
     @pytest.mark.asyncio
     async def test_returns_only_the_first_matching_pr_url(self, mgr, monkeypatch):
-        """A duplicated head branch must not leak a newline-delimited URL list."""
-        monkeypatch.setattr(
-            mgr,
-            "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout=("https://github.com/o/r/pull/41\nhttps://github.com/o/r/pull/42\n"),
-                )
-            ),
+        client = MagicMock()
+        client.list_pull_requests = AsyncMock(
+            return_value=[
+                {"url": "https://github.com/org/repo/pull/41", "state": "OPEN"},
+                {"url": "https://github.com/org/repo/pull/42", "state": "OPEN"},
+            ]
         )
-
-        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/41"
-        jq_filter = mgr._arun_subprocess.await_args.args[0][
-            mgr._arun_subprocess.await_args.args[0].index("--jq") + 1
-        ]
-        assert jq_filter.startswith("first(")
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        assert (
+            await mgr.afind_open_pr("/repo", "feature-x", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/41"
+        )
+        client.list_pull_requests.assert_awaited_once_with(
+            state="all", head="feature-x", limit=100, include_head_oid=True
+        )
 
     @pytest.mark.asyncio
-    async def test_accepts_merged_pr_and_excludes_closed_pr(self, mgr, monkeypatch):
-        """Verification can use merged PRs but must reject closed-unmerged ones."""
-        monkeypatch.setattr(
-            mgr,
-            "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    returncode=0, stdout="https://github.com/o/r/pull/42\n"
-                )
-            ),
+    async def test_accepts_merged_pr_at_the_tip_and_excludes_closed_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "feature-x"], cwd=clone)
+        tip = _commit_file(clone, "work.txt", "done", "work")
+        client = MagicMock()
+        client.list_pull_requests = AsyncMock(
+            return_value=[
+                {"url": "https://github.com/org/repo/pull/41", "state": "CLOSED",
+                 "headRefOid": tip},
+                {"url": "https://github.com/org/repo/pull/42", "state": "MERGED",
+                 "headRefOid": tip},
+            ]
         )
-
-        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/42"
-        args = mgr._arun_subprocess.await_args.args[0]
-        assert args[args.index("--state") + 1] == "all"
-        assert "MERGED" in args[args.index("--jq") + 1]
-        assert "CLOSED" not in args[args.index("--jq") + 1]
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        assert (
+            await mgr.afind_open_pr(clone, "feature-x", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/42"
+        )
 
     @pytest.mark.asyncio
     async def test_ancestor_recognizes_branch_at_default_tip(self, mgr, clone):
@@ -427,6 +623,28 @@ class TestAsyncCommitAll:
 
 class TestAsyncReservedDeliveryDiff:
     @pytest.mark.asyncio
+    async def test_manifest_passes_development_delivery_gate(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        _git(["switch", "-c", "task/manifest"], cwd=clone)
+        (repo / ".github").mkdir()
+        manifest = repo / ".github" / "agent-queue-integration.json"
+        manifest.write_text('{"required_checks": []}\n')
+        _git(["add", ".github/agent-queue-integration.json"], cwd=clone)
+        assert await mgr.areserved_paths_in_index(clone) == []
+        _git(["commit", "-m", "add trust manifest"], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        assert await ops._reserved_delivery_failure(
+            clone, "main", "refs/heads/task/manifest", has_remote=True
+        ) is None
+        tip = await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "refs/heads/task/manifest", "task/manifest"
+        )
+        assert _git(["rev-parse", "refs/remotes/origin/task/manifest"], cwd=clone) == tip
+        assert await mgr.areserved_paths_in_tree(clone, tip) == []
+
+    @pytest.mark.asyncio
     async def test_reports_task_changes_to_reserved_paths(self, clone, mgr):
         repo = pathlib.Path(clone)
         tracked = repo / ".codex" / "settings.json"
@@ -466,20 +684,27 @@ class TestAsyncReservedDeliveryDiff:
 @pytest.mark.asyncio
 async def test_validated_push_uses_the_resolved_oid_not_a_mutable_local_ref(mgr, monkeypatch):
     """A post-merge hook cannot substitute content between validation and push."""
-    pushed: list[list[str]] = []
+    pushed: list[tuple] = []
     tip = "d" * 40
 
     async def fake_arun(args, cwd=None, **_kwargs):
         if args[:2] == ["rev-parse", "--verify"]:
             return tip
-        pushed.append(args)
         return ""
 
     monkeypatch.setattr(mgr, "_arun", fake_arun)
+    monkeypatch.setattr(mgr, "_apush_destination", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(mgr, "_aobserved_remote_head", AsyncMock(side_effect=[None, tip]))
+
+    async def capture(*args, **kwargs):
+        pushed.append((args, kwargs))
+
+    monkeypatch.setattr(mgr, "_atransfer_exact_ref", capture)
 
     await mgr.apush_validated_ref("/repo", "HEAD", "main")
 
-    assert pushed == [["push", "origin", f"{tip}:refs/heads/main"]]
+    assert len(pushed) == 1
+    assert pushed[0][0][:4] == ("/repo", tip, "main", "0" * 40)
 
 
 @pytest.mark.asyncio
@@ -489,17 +714,23 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     """A hook moving HEAD after diff inspection cannot replace the delivered commit."""
     clean_tip = "d" * 40
     unsafe_tip = "e" * 40
-    pushed: list[list[str]] = []
+    pushed: list[tuple] = []
     resolved_sources: list[str] = []
 
     async def fake_arun(args, cwd=None, **_kwargs):
         if args[:2] == ["rev-parse", "--verify"]:
             resolved_sources.append(args[-1])
             return clean_tip if len(resolved_sources) == 1 else unsafe_tip
-        pushed.append(args)
         return ""
 
     monkeypatch.setattr(mgr, "_arun", fake_arun)
+    monkeypatch.setattr(mgr, "_apush_destination", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(mgr, "_aobserved_remote_head", AsyncMock(side_effect=[None, clean_tip]))
+
+    async def capture(*args, **kwargs):
+        pushed.append((args, kwargs))
+
+    monkeypatch.setattr(mgr, "_atransfer_exact_ref", capture)
     inspect = AsyncMock(return_value=[])
     monkeypatch.setattr(mgr, "areserved_paths_in_diff", inspect)
 
@@ -508,17 +739,18 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     inspect.assert_awaited_once_with("/repo", "origin/main", clean_tip)
     # The source is resolved exactly once; the push consults no ref again.
     assert resolved_sources == ["HEAD"]
-    assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
+    assert len(pushed) == 1
+    assert pushed[0][0][:4] == ("/repo", clean_tip, "main", "0" * 40)
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
+async def test_explicit_lease_push_moves_only_the_resolved_tip(clone, mgr):
     """Replacing the OID refspec with HEAD would permit a post-check rewrite."""
     base = _git(["rev-parse", "main"], cwd=clone)
     _git(["switch", "-c", "delivery/immutable"], cwd=clone)
     tip = _commit_file(clone, "delivery.txt", "candidate\n", "candidate")
 
-    pushed = await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+    pushed = await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=base)
 
     assert pushed == tip
     assert _git(["rev-parse", "refs/heads/delivery/immutable"], cwd=clone) == tip
@@ -526,7 +758,19 @@ async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
+async def test_explicit_zero_lease_creates_only_once(clone, mgr):
+    _git(["switch", "-c", "delivery/new"], cwd=clone)
+    tip = _commit_file(clone, "new.txt", "candidate", "candidate")
+
+    await mgr.apush_validated_ref(clone, tip, "delivery/new", expected_old_oid="0" * 40)
+    with pytest.raises(GitError, match="expected target"):
+        await mgr.apush_validated_ref(clone, tip, "delivery/new", expected_old_oid="0" * 40)
+
+    assert _git(["ls-remote", "--heads", "origin", "refs/heads/delivery/new"], cwd=clone).split()[0] == tip
+
+
+@pytest.mark.asyncio
+async def test_explicit_lease_push_preserves_a_remote_move_after_validation(
     clone, bare_repo, mgr, tmp_path
 ):
     """Dropping the explicit old-OID lease would overwrite a competing push."""
@@ -541,8 +785,8 @@ async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
     competing_tip = _commit_file(competing, "competing.txt", "other\n", "competing")
     _git(["push", "origin", "main"], cwd=competing)
 
-    with pytest.raises(GitError, match="force-with-lease"):
-        await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+    with pytest.raises(GitError, match="expected target"):
+        await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=base)
 
     assert _git(["rev-parse", "refs/heads/delivery/candidate"], cwd=clone) == tip
     remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
@@ -550,11 +794,10 @@ async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_rejects_a_divergent_expected_target(
+async def test_explicit_lease_push_rejects_a_divergent_expected_target(
     clone, bare_repo, mgr, tmp_path
 ):
-    """Checking only base-to-tip ancestry would permit a divergent force rewrite."""
-    base = _git(["rev-parse", "main"], cwd=clone)
+    """A lease alone would permit a divergent rewrite; the tip must descend from it."""
     _git(["switch", "-c", "delivery/candidate"], cwd=clone)
     tip = _commit_file(clone, "candidate.txt", "candidate\n", "candidate")
 
@@ -566,7 +809,7 @@ async def test_expected_delivery_push_rejects_a_divergent_expected_target(
     _git(["push", "origin", "main"], cwd=competing)
 
     with pytest.raises(GitError, match="expected target"):
-        await mgr.apush_expected_delivery(clone, base, tip, "main", competing_tip)
+        await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=competing_tip)
 
     remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
     assert remote_main.split()[0] == competing_tip
@@ -803,7 +1046,9 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
 
         ops = GitOpsMixin()
         ops.git = mgr
+        ops.db = AsyncMock()
         ops._task_uses_git = AsyncMock(return_value=True)
+        ops._task_produces_no_code = AsyncMock(return_value=False)
         inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
         mgr.areserved_paths_in_diff = inspect
         ctx = SimpleNamespace(
@@ -900,6 +1145,118 @@ class TestAsyncPushBranch:
             cwd=clone,
         )
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
+
+    @pytest.mark.asyncio
+    async def test_force_with_lease_rejects_a_remote_move_since_tracking(
+        self, clone, bare_repo, mgr, tmp_path
+    ):
+        await mgr.aprepare_for_task(clone, "task/fwl-race")
+        _commit_file(clone, "first.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/fwl-race")
+
+        competing = str(tmp_path / "competing-force-lease")
+        subprocess.run(["git", "clone", bare_repo, competing], check=True, capture_output=True)
+        _git(["config", "user.name", "Competitor"], cwd=competing)
+        _git(["config", "user.email", "competitor@example.test"], cwd=competing)
+        _git(["switch", "-c", "task/fwl-race", "origin/task/fwl-race"], cwd=competing)
+        competing_tip = _commit_file(competing, "other.txt", "other", "other")
+        _git(["push", "origin", "task/fwl-race"], cwd=competing)
+
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        _commit_file(clone, "replacement.txt", "replacement", "replacement")
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_branch(clone, "task/fwl-race", force_with_lease=True)
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/fwl-race"], cwd=clone).split()[0] == competing_tip
+
+    @pytest.mark.asyncio
+    async def test_normal_push_rejects_non_fast_forward_even_with_an_exact_lease(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/non-ff")
+        first = _commit_file(clone, "first.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/non-ff")
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        replacement = _commit_file(clone, "replacement.txt", "other", "replacement")
+
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_branch(clone, "task/non-ff")
+
+        assert replacement != first
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/non-ff"], cwd=clone).split()[0] == first
+
+    @pytest.mark.asyncio
+    async def test_normal_push_ignores_local_replace_graph(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/replace-graph")
+        old = _commit_file(clone, "old.txt", "old", "old")
+        await mgr.apush_branch(clone, "task/replace-graph")
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        tip = _commit_file(clone, "new.txt", "new", "new")
+        _git(["replace", "--graft", tip, old], cwd=clone)
+
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_branch(clone, "task/replace-graph")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/replace-graph"], cwd=clone).split()[0] == old
+
+    @pytest.mark.asyncio
+    async def test_lost_push_response_is_observed_before_event(self, clone, mgr, monkeypatch):
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received = []
+        bus.subscribe("git.push", lambda event: received.append(event))
+        await mgr.aprepare_for_task(clone, "task/lost-response")
+        tip = _commit_file(clone, "lost.txt", "saved", "saved")
+        original = mgr._arun
+        pushes = 0
+
+        async def lose_response(args, cwd=None, timeout=None):
+            nonlocal pushes
+            result = await original(args, cwd=cwd, timeout=timeout)
+            if args and args[0] == "push":
+                pushes += 1
+                raise GitError("response lost after remote accepted push")
+            return result
+
+        monkeypatch.setattr(mgr, "_arun", lose_response)
+        await mgr.apush_branch(clone, "task/lost-response", event_bus=bus)
+
+        assert pushes == 1
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/lost-response"], cwd=clone).split()[0] == tip
+        assert [event["commit_range"] for event in received] == [tip]
+
+    @pytest.mark.asyncio
+    async def test_explicit_remote_oid_lease_protects_squash(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/explicit-lease")
+        first = _commit_file(clone, "lease.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/explicit-lease")
+        _git(["reset", "--soft", "HEAD^"], cwd=clone)
+        rewritten = _commit_file(clone, "lease.txt", "rewritten", "rewritten")
+
+        await mgr.apush_branch(
+            clone, "task/explicit-lease", expected_remote_oid=first
+        )
+        assert _git(["rev-parse", "refs/heads/task/explicit-lease"], cwd=bare_repo) == rewritten
+
+        _commit_file(clone, "lease.txt", "later", "later")
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone, "task/explicit-lease", expected_remote_oid=first
+            )
+        assert _git(["rev-parse", "refs/heads/task/explicit-lease"], cwd=bare_repo) == rewritten
+
+    @pytest.mark.asyncio
+    async def test_zero_lease_is_create_only(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/create-only")
+        first = _commit_file(clone, "create.txt", "first", "first")
+        await mgr.apush_branch(
+            clone, "task/create-only", expected_remote_oid="0" * 40
+        )
+        assert _git(["rev-parse", "refs/heads/task/create-only"], cwd=bare_repo) == first
+        _commit_file(clone, "create.txt", "second", "second")
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone, "task/create-only", expected_remote_oid="0" * 40
+            )
 
     @pytest.mark.asyncio
     async def test_emits_git_push_event(self, clone, mgr):
@@ -1071,6 +1428,59 @@ class TestAsyncDeleteBranch:
         branches = await mgr.alist_branches(clone)
         names = [b.lstrip("* ") for b in branches]
         assert "task/delete-me" not in names
+
+    @pytest.mark.asyncio
+    async def test_deletes_remote_under_exact_old_tip(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/delete-remote")
+        _commit_file(clone, "delete.txt", "data", "delete")
+        await mgr.apush_branch(clone, "task/delete-remote")
+        _git(["checkout", "main"], cwd=clone)
+
+        await mgr.adelete_branch(clone, "task/delete-remote")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-remote"], cwd=clone) == ""
+        assert await mgr.abranch_exists(clone, "task/delete-remote") is False
+
+    @pytest.mark.asyncio
+    async def test_remote_delete_refuses_a_moved_head(self, clone, mgr, monkeypatch):
+        await mgr.aprepare_for_task(clone, "task/delete-race")
+        _commit_file(clone, "initial.txt", "data", "initial")
+        await mgr.apush_branch(clone, "task/delete-race")
+        _git(["checkout", "main"], cwd=clone)
+        original = mgr._atransfer_exact_ref
+        competing_tip = None
+
+        async def move_before_delete(*args, **kwargs):
+            nonlocal competing_tip
+            _git(["checkout", "task/delete-race"], cwd=clone)
+            competing_tip = _commit_file(clone, "competing.txt", "new", "competing")
+            _git(["push", "origin", "task/delete-race"], cwd=clone)
+            _git(["checkout", "main"], cwd=clone)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_atransfer_exact_ref", move_before_delete)
+        with pytest.raises(GitError, match="force-with-lease"):
+            await mgr.adelete_branch(clone, "task/delete-race")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-race"], cwd=clone).split()[0] == competing_tip
+        assert await mgr.abranch_exists(clone, "task/delete-race") is True
+
+    @pytest.mark.asyncio
+    async def test_remote_delete_keeps_branch_already_moved_elsewhere(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/delete-moved")
+        _commit_file(clone, "initial.txt", "data", "initial")
+        await mgr.apush_branch(clone, "task/delete-moved")
+        _git(["checkout", "main"], cwd=clone)
+        _git(["checkout", "-b", "other-writer", "origin/task/delete-moved"], cwd=clone)
+        new_tip = _commit_file(clone, "other.txt", "new", "other")
+        _git(["push", "origin", "HEAD:refs/heads/task/delete-moved"], cwd=clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        with pytest.raises(GitError, match="moved beyond its local cleanup tip"):
+            await mgr.adelete_branch(clone, "task/delete-moved")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-moved"], cwd=clone).split()[0] == new_tip
+        assert await mgr.abranch_exists(clone, "task/delete-moved") is True
 
 
 class TestAsyncHasRemote:
@@ -1491,6 +1901,139 @@ async def test_async_abort_operations_removes_linked_worktree_lock(
 
 
 @pytest.mark.asyncio
+async def test_stale_lock_cleanup_resolves_shared_store_and_preserves_live_locks(
+    tmp_path, clone, mgr, monkeypatch,
+):
+    from src.git import locks
+
+    wt_path = str(tmp_path / "maintenance-wt")
+    _git(["worktree", "add", "--detach", wt_path, "HEAD"], cwd=clone)
+    git_dir = pathlib.Path(mgr._resolve_git_dir(wt_path))
+    maintenance = pathlib.Path(clone, ".git", "objects", "maintenance.lock")
+    index = git_dir / "index.lock"
+    maintenance.write_text("abandoned maintenance")
+    index.write_text("abandoned index")
+
+    monkeypatch.setattr(locks, "_live_lock_owner", lambda *args: True)
+    await mgr.aclear_stale_locks(wt_path)
+    assert maintenance.exists() and index.exists()
+
+    inspected = []
+
+    def no_owner(common, identities):
+        inspected.append(common)
+        assert len(identities) == 2
+        return False
+
+    monkeypatch.setattr(locks, "_live_lock_owner", no_owner)
+    await mgr.aclear_stale_locks(wt_path)
+    assert inspected == [pathlib.Path(clone, ".git").resolve()]
+    assert not maintenance.exists() and not index.exists()
+    assert (git_dir / "commondir").exists()
+
+
+def _lock_process(proc_root, *, name="git", cwd=None):
+    process = proc_root / "123"
+    process.mkdir(parents=True)
+    (process / "comm").write_text(name)
+    (process / "stat").write_text(f"123 ({name}) S 1 2 3")
+    (process / "cmdline").write_bytes(name.encode() + b"\0maintenance\0run\0")
+    (process / "environ").write_bytes(b"")
+    (process / "fd").mkdir()
+    if cwd:
+        (process / "cwd").symlink_to(cwd, target_is_directory=True)
+    return process
+
+
+def test_live_git_in_sibling_worktree_preserves_shared_lock(tmp_path, clone):
+    from src.git.locks import _live_lock_owner
+
+    sibling = tmp_path / "live-maintenance-wt"
+    _git(["worktree", "add", "--detach", str(sibling), "HEAD"], cwd=clone)
+    proc_root = tmp_path / "proc"
+    _lock_process(proc_root, cwd=sibling)
+    # No open FD: maintenance can own a pathname after closing the lock FD.
+    assert _live_lock_owner(pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root)
+
+
+@pytest.mark.parametrize("override", ["flag", "env"])
+def test_work_tree_override_does_not_hide_a_live_git_owner(tmp_path, clone, override):
+    from src.git.locks import _live_lock_owner
+
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, cwd=clone)
+    if override == "flag":
+        (process / "cmdline").write_bytes(b"git\0--work-tree=/another/tree\0status\0")
+    else:
+        (process / "environ").write_bytes(b"GIT_WORK_TREE=/another/tree\0")
+    assert _live_lock_owner(pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root)
+
+
+@pytest.mark.parametrize("override", ["cwd", "dash_c", "git_dir", "env_git_dir"])
+def test_git_in_other_repository_does_not_prevent_lock_recovery(tmp_path, clone, override):
+    from src.git.locks import _live_lock_owner
+
+    other = tmp_path / "unrelated"
+    _git(["init", str(other)], cwd=tmp_path)
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, cwd=other if override == "cwd" else tmp_path)
+    if override == "dash_c":
+        (process / "cmdline").write_bytes(b"git\0-C\0unrelated\0maintenance\0run\0")
+    elif override == "git_dir":
+        (process / "cmdline").write_bytes(
+            b"git\0--git-dir=unrelated/.git\0maintenance\0run\0",
+        )
+    elif override == "env_git_dir":
+        (process / "environ").write_bytes(b"GIT_DIR=unrelated/.git\0")
+    assert not _live_lock_owner(
+        pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root,
+    )
+
+
+def test_open_lock_owned_by_non_git_process_is_preserved(tmp_path):
+    from src.git.locks import _live_lock_owner
+
+    lock = tmp_path / "index.lock"
+    lock.write_text("")
+    info = lock.stat()
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, name="editor")
+    (process / "fd" / "5").symlink_to(lock)
+    assert _live_lock_owner(
+        tmp_path, {(info.st_dev, info.st_ino)}, proc_root=proc_root,
+    )
+
+
+@pytest.mark.parametrize("unknown", ["missing_proc", "incomplete_git", "explicit_git_dir"])
+def test_unknown_lock_ownership_preserves_locks(tmp_path, unknown):
+    from src.git.locks import _live_lock_owner
+
+    proc_root = tmp_path / "proc"
+    if unknown != "missing_proc":
+        process = _lock_process(proc_root)
+        if unknown == "explicit_git_dir":
+            (process / "environ").write_bytes(b"GIT_DIR=/another/store\0")
+    assert _live_lock_owner(tmp_path, set(), proc_root=proc_root)
+
+
+def test_lock_replaced_during_owner_inspection_is_preserved(tmp_path, monkeypatch):
+    from src.git import locks
+
+    index = tmp_path / "index.lock"
+    index.write_text("abandoned")
+
+    def replace_lock(*args):
+        # Keep the old inode alive so the filesystem cannot immediately reuse it.
+        index.rename(tmp_path / "old-index.lock")
+        index.write_text("new owner")
+        return False
+
+    monkeypatch.setattr(locks, "_live_lock_owner", replace_lock)
+    locks.remove_stale_locks(tmp_path)
+    assert index.read_text() == "new owner"
+
+
+@pytest.mark.asyncio
 async def test_async_force_clean_workspace_removes_ignored_and_reports_clean(clone, mgr):
     """Nuclear cleanup drops staged, untracked, and gitignored artifacts and
     reports the workspace clean."""
@@ -1558,66 +2101,39 @@ async def test_async_worktree_list_parses_branch_detached_and_locked_entries(mgr
 
 
 @pytest.mark.asyncio
-async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkeypatch):
-    """Each amerge_pr failure mode returns its specified payload; an invalid
-    method never reaches gh; a successful merge parses the printed SHA."""
-    from types import SimpleNamespace
-
-    calls: list[list[str]] = []
-    behaviors: list = []
-
-    async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
-        calls.append(args)
-        behavior = behaviors.pop(0)
-        if isinstance(behavior, Exception):
-            raise behavior
-        return behavior
-
-    monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
-    pr_url = "https://github.com/org/repo/pull/42"
+async def test_async_merge_pr_handles_invalid_method_failure_and_sha(mgr, monkeypatch):
     from src.git.manager import PullRequestIdentity
+    from unittest.mock import MagicMock
 
+    pr_url = "https://github.com/org/repo/pull/42"
     mgr.avalidate_pr_for_merge = AsyncMock(
         return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
-
-    # Invalid method: rejected before any gh invocation.
-    result = await mgr.amerge_pr("/repo", pr_url, method="octopus")
+    client = MagicMock()
+    client.merge_pull_request = AsyncMock()
+    monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+    result = await mgr.amerge_pr("/repo", pr_url, method="octopus", repository=REPOSITORY)
     assert result == {"success": False, "sha": None, "error": "invalid method: octopus"}
-    assert calls == []
+    client.merge_pull_request.assert_not_awaited()
 
-    # Timeout: TimeoutExpired becomes the specified error payload.
-    behaviors.append(subprocess.TimeoutExpired(cmd="gh", timeout=300))
-    result = await mgr.amerge_pr("/repo", pr_url)
-    assert result == {"success": False, "sha": None, "error": "gh pr merge timed out"}
+    client.merge_pull_request.side_effect = GitHubAccessError("transient", "merge timed out")
+    result = await mgr.amerge_pr("/repo", pr_url, repository=REPOSITORY)
+    assert result == {"success": False, "sha": None, "error": "merge timed out"}
 
-    # Nonzero exit: stderr surfaces as the error.
-    behaviors.append(SimpleNamespace(returncode=1, stdout="", stderr="merge conflict\n"))
-    result = await mgr.amerge_pr("/repo", pr_url)
-    assert result == {"success": False, "sha": None, "error": "merge conflict"}
-
-    # Success: SHA is parsed out of gh's punctuation-wrapped output.
-    sha = "0123456789abcdef0123456789abcdef01234567"
-    behaviors.append(
-        SimpleNamespace(returncode=0, stdout=f"Merged pull request #42 ({sha}).\n", stderr="")
+    client.merge_pull_request.side_effect = GitHubAccessError(
+        "conflict_or_invalid", "merge refused"
     )
-    result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
+    result = await mgr.amerge_pr("/repo", pr_url, repository=REPOSITORY)
+    assert result == {"success": False, "sha": None, "error": "merge refused"}
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    client.merge_pull_request.side_effect = None
+    client.merge_pull_request.return_value = sha
+    result = await mgr.amerge_pr("/repo", pr_url, method="rebase", repository=REPOSITORY)
     assert result == {"success": True, "sha": sha, "error": None}
-    assert calls[-1] == [
-        "gh",
-        "pr",
-        "merge",
-        pr_url,
-        "--rebase",
-        "--match-head-commit",
-        "b" * 40,
-        "--delete-branch",
-    ]
-
-
-# ------------------------------------------------------------------
-# afind_open_pr — name match, then commit match
-# ------------------------------------------------------------------
+    client.merge_pull_request.assert_awaited_with(
+        pr_url, method="rebase", expected_head_oid="b" * 40, expected_base_ref="main"
+    )
 
 
 class TestAfindOpenPr:
@@ -1633,28 +2149,25 @@ class TestAfindOpenPr:
 
     @staticmethod
     def _fake_gh(mgr, monkeypatch, *, by_name: str = "", prs: list[dict] | None = None):
-        from types import SimpleNamespace
+        calls: list[dict] = []
+        client = MagicMock()
 
-        calls: list[list[str]] = []
-        real = mgr._arun_subprocess
+        async def list_pull_requests(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("head"):
+                urls = [line.strip() for line in by_name.splitlines() if line.strip()]
+                return [{"url": url, "state": "OPEN"} for url in urls]
+            return [{"state": "OPEN", **pr} for pr in (prs or [])]
 
-        async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
-            if args[:3] != ["gh", "pr", "list"]:
-                return await real(args, cwd=cwd, timeout=timeout, **kwargs)
-            calls.append(args)
-            if "--head" in args:
-                return SimpleNamespace(returncode=0, stdout=by_name, stderr="")
-            open_prs = [{"state": "OPEN", **pr} for pr in (prs or [])]
-            return SimpleNamespace(returncode=0, stdout=json.dumps(open_prs), stderr="")
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
+        client.list_pull_requests = AsyncMock(side_effect=list_pull_requests)
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
         return calls
 
     @pytest.mark.asyncio
     async def test_head_name_match_wins_without_a_second_query(self, clone, mgr, monkeypatch):
-        calls = self._fake_gh(mgr, monkeypatch, by_name="https://gh/org/repo/pull/1\n")
-        url = await mgr.afind_open_pr(clone, "main")
-        assert url == "https://gh/org/repo/pull/1"
+        calls = self._fake_gh(mgr, monkeypatch, by_name="https://github.com/org/repo/pull/1\n")
+        url = await mgr.afind_open_pr(clone, "main", repository=REPOSITORY)
+        assert url == "https://github.com/org/repo/pull/1"
         assert len(calls) == 1, "a name match must not cost a second gh call"
 
     @pytest.mark.asyncio
@@ -1673,13 +2186,16 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/43",
+                    "url": "https://github.com/org/repo/pull/43",
                     "headRefName": "feature/delivery",
                     "headRefOid": tip,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/43"
+        )
 
     @pytest.mark.asyncio
     async def test_exact_head_ref_ignores_a_same_named_tag(self, clone, mgr, monkeypatch):
@@ -1694,7 +2210,7 @@ class TestAfindOpenPr:
             monkeypatch,
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/47",
+                    "url": "https://github.com/org/repo/pull/47",
                     "headRefName": "delivery",
                     "headRefOid": branch_tip,
                 }
@@ -1707,8 +2223,9 @@ class TestAfindOpenPr:
                 "aq/t-shadowed",
                 head_ref="refs/heads/aq/t-shadowed",
                 include_workspace_head=False,
+                repository=REPOSITORY,
             )
-            == "https://gh/org/repo/pull/47"
+            == "https://github.com/org/repo/pull/47"
         )
 
     @pytest.mark.asyncio
@@ -1723,13 +2240,13 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/44",
+                    "url": "https://github.com/org/repo/pull/44",
                     "headRefName": "someone-else",
                     "headRefOid": "0" * 40,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
     @pytest.mark.asyncio
     async def test_strict_lookup_rejects_a_stale_pr_with_the_same_branch_name(
@@ -1744,17 +2261,22 @@ class TestAfindOpenPr:
         self._fake_gh(
             mgr,
             monkeypatch,
-            by_name="https://gh/org/repo/pull/46\n",
+            by_name="https://github.com/org/repo/pull/46\n",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/46",
+                    "url": "https://github.com/org/repo/pull/46",
                     "headRefName": "aq/t-1",
                     "headRefOid": main_tip,
                 }
             ],
         )
 
-        assert await mgr.afind_open_pr(clone, "aq/t-1", include_workspace_head=False) is None
+        assert (
+            await mgr.afind_open_pr(
+                clone, "aq/t-1", include_workspace_head=False, repository=REPOSITORY
+            )
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_head_commit_counts_when_the_task_branch_never_moved(
@@ -1772,13 +2294,129 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/45",
+                    "url": "https://github.com/org/repo/pull/45",
                     "headRefName": "feature/delivery",
                     "headRefOid": tip,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/45"
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/45"
+        )
+
+    @staticmethod
+    def _named_prs(mgr, monkeypatch, named: list[dict]) -> list[dict]:
+        calls: list[dict] = []
+        client = MagicMock()
+
+        async def list_pull_requests(**kwargs):
+            calls.append(kwargs)
+            return named if kwargs.get("head") else []
+
+        client.list_pull_requests = AsyncMock(side_effect=list_pull_requests)
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_earlier_merged_pr_of_a_reused_branch_does_not_deliver_newer_work(
+        self, clone, mgr, monkeypatch
+    ):
+        """PRs #21/#23 merged from ``aq/t-1``; new commits on the same name are unmerged."""
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        first = _commit_file(clone, "one.txt", "1", "first delivery")
+        second = _commit_file(clone, "two.txt", "2", "second delivery")
+        _commit_file(clone, "three.txt", "3", "newer, unmerged work")
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [
+                {"url": "https://github.com/org/repo/pull/23", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": second},
+                {"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": first},
+            ],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
+
+    @pytest.mark.asyncio
+    async def test_merged_pr_whose_head_contains_the_tip_counts(self, clone, mgr, monkeypatch):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        tip = _commit_file(clone, "one.txt", "1", "work")
+        _git(["checkout", "-b", "later"], cwd=clone)
+        merged_head = _commit_file(clone, "two.txt", "2", "pushed after the local tip")
+        _git(["checkout", "aq/t-1"], cwd=clone)
+        assert tip != merged_head
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/65", "state": "MERGED",
+              "headRefName": "aq/t-1", "headRefOid": merged_head}],
+        )
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/65"
+        )
+
+    @pytest.mark.asyncio
+    async def test_workspace_head_at_an_old_start_point_does_not_admit_a_merged_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        """Ancestry is checked against the branch tip only, never the workspace HEAD."""
+        start = _git(["rev-parse", "HEAD"], cwd=clone)
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        old_head = _commit_file(clone, "one.txt", "1", "earlier delivery")
+        _commit_file(clone, "two.txt", "2", "newer, unmerged work")
+        _git(["checkout", "--detach", start], cwd=clone)
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+              "headRefName": "aq/t-1", "headRefOid": old_head}],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
+
+    @pytest.mark.asyncio
+    async def test_open_pr_is_preferred_over_an_earlier_merged_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        old_head = _commit_file(clone, "one.txt", "1", "earlier delivery")
+        tip = _commit_file(clone, "two.txt", "2", "newer work")
+
+        calls = self._named_prs(
+            mgr,
+            monkeypatch,
+            [
+                {"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": old_head},
+                {"url": "https://github.com/org/repo/pull/65", "state": "OPEN",
+                 "headRefName": "aq/t-1", "headRefOid": tip},
+            ],
+        )
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/65"
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_merged_pr_without_a_head_commit_is_not_accepted(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        _commit_file(clone, "one.txt", "1", "work")
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+              "headRefName": "aq/t-1"}],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
     @pytest.mark.asyncio
     async def test_unparseable_gh_output_is_not_an_error(self, clone, mgr, monkeypatch):
@@ -1788,7 +2426,7 @@ class TestAfindOpenPr:
             return SimpleNamespace(returncode=1, stdout="not json", stderr="boom")
 
         monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
-        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
 
 class TestRootDeliveryGatesTheWholeTree:
@@ -1837,3 +2475,511 @@ class TestRootDeliveryGatesTheWholeTree:
             ".aq/claim.json",
             ".codex/config.toml",
         ]
+
+
+@pytest.mark.parametrize("runner", ["local", "result"])
+@pytest.mark.parametrize("during_spawn", [False, True])
+async def test_cancelling_git_operation_reaps_process_before_next_writer(
+    mgr, tmp_path, monkeypatch, runner, during_spawn,
+):
+    import sys
+
+    original_create = asyncio.create_subprocess_exec
+    started = asyncio.Event()
+    release_spawn = asyncio.Event()
+    processes = []
+
+    async def create(*args, **kwargs):
+        proc = await original_create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        processes.append(proc)
+        started.set()
+        if during_spawn:
+            await release_spawn.wait()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    async def writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            if runner == "result":
+                await mgr.arun_git_result(["commit-tree", "HEAD"], cwd=str(tmp_path), lock_held=True)
+            else:
+                await mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path))
+
+    async def next_writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            assert processes[0].returncode is not None
+
+    request = asyncio.create_task(writer())
+    next_request = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        next_request = asyncio.create_task(next_writer())
+        request.cancel()
+        release_spawn.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert processes[0].returncode is not None
+        await asyncio.wait_for(next_request, timeout=5)
+    finally:
+        release_spawn.set()
+        for proc in processes:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        if next_request is not None:
+            await asyncio.gather(next_request, return_exceptions=True)
+
+
+# ------------------------------------------------------------------
+# Worker delivery: explicit lease + authorized repository
+# ------------------------------------------------------------------
+
+
+class _AuthorizedAppAccess:
+    """App-mode access double that records every binding and credential."""
+
+    def __init__(self) -> None:
+        from src.git.github_contracts import GitHubCredentialMode
+
+        self.auth = SimpleNamespace(mode=GitHubCredentialMode.APP)
+        self.bound: list[str] = []
+        self.token_requests: list[GitHubRepositoryBinding] = []
+
+    async def bind_repository(self, reference: str) -> GitHubRepositoryBinding:
+        self.bound.append(reference)
+        return GitHubRepositoryBinding(303, "acme/widgets")
+
+    async def installation_token(self, repository: GitHubRepositoryBinding) -> str:
+        self.token_requests.append(repository)
+        return "app-token"
+
+
+class TestValidatedDeliveryLease:
+    """``apush_validated_delivery`` carries the squash workflow's explicit lease."""
+
+    @pytest.mark.asyncio
+    async def test_lease_rewrites_only_from_the_named_remote_tip(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/squash")
+        first = _commit_file(clone, "work.txt", "first", "first")
+        assert await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            repository_url=bare_repo,
+        ) == first
+        _commit_file(clone, "work.txt", "second", "second")
+        _git(["reset", "--soft", "main"], cwd=clone)
+        squashed = _commit_file(clone, "work.txt", "second", "squashed")
+
+        # Without a lease the rewrite is an ordinary non-fast-forward push.
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            )
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+                expected_remote_oid="b" * 40,
+            )
+        assert _git(["rev-parse", "refs/heads/task/squash"], cwd=bare_repo) == first
+
+        assert await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            expected_remote_oid=first.upper(), repository_url=bare_repo,
+        ) == squashed
+        assert _git(["rev-parse", "refs/heads/task/squash"], cwd=bare_repo) == squashed
+
+    @pytest.mark.asyncio
+    async def test_zero_lease_creates_only_an_absent_branch(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/create")
+        first = _commit_file(clone, "work.txt", "first", "first")
+        await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/create", "task/create",
+            expected_remote_oid="0" * 40,
+        )
+        assert _git(["rev-parse", "refs/heads/task/create"], cwd=bare_repo) == first
+        _commit_file(clone, "work.txt", "second", "second")
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/create", "task/create",
+                expected_remote_oid="0" * 40,
+            )
+        assert _git(["rev-parse", "refs/heads/task/create"], cwd=bare_repo) == first
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lease,kwargs,match", [
+        ("not-an-oid", {}, "invalid expected remote OID"),
+        ("a" * 40, {"force_with_lease": True}, "explicit expected remote OID or force"),
+    ])
+    async def test_malformed_lease_is_refused_before_any_remote_access(
+        self, mgr, monkeypatch, lease, kwargs, match,
+    ):
+        destination = AsyncMock()
+        monkeypatch.setattr(mgr, "_apush_destination", destination)
+        with pytest.raises(GitError, match=match):
+            await mgr.apush_validated_delivery(
+                "/repo", "refs/remotes/origin/main", "task/x", "task/x",
+                expected_remote_oid=lease, **kwargs,
+            )
+        destination.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserved_paths_are_refused_before_any_remote_access(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/reserved")
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "claim")
+        with pytest.raises(GitError, match="reserved delivery paths"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/reserved", "task/reserved",
+                repository_url="https://github.com/acme/widgets",
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_retargeted_local_origin_is_not_the_authorized_repository(
+        self, clone, bare_repo, mgr, tmp_path,
+    ):
+        other = str(tmp_path / "other.git")
+        _git(["init", "--bare", "--initial-branch=main", other], cwd=str(tmp_path))
+        _git(["remote", "set-url", "origin", other], cwd=clone)
+        await mgr.aprepare_for_task(clone, "task/elsewhere")
+        _commit_file(clone, "work.txt", "work", "work")
+
+        with pytest.raises(GitError, match="not the authorized repository"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/elsewhere", "task/elsewhere",
+                repository_url=bare_repo,
+            )
+        assert _git(["for-each-ref", "refs/heads/task/elsewhere"], cwd=other) == ""
+
+
+class TestAuthorizedPushDestination:
+    """The checkout's remote is checked against the record before any credential."""
+
+    @staticmethod
+    def _checkout(tmp_path, origin: str) -> str:
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        _git(["init", "--initial-branch=main"], cwd=str(checkout))
+        _git(["remote", "add", "origin", origin], cwd=str(checkout))
+        return str(checkout)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", [
+        "https://github.com/evil/other.git",
+        "git@github.com:acme/widgets-fork.git",
+        "/srv/mirror.git",
+    ])
+    async def test_foreign_origin_fails_before_binding_or_token(self, tmp_path, origin):
+        access = _AuthorizedAppAccess()
+        mgr = GitManager(github_access=access)
+        checkout = self._checkout(tmp_path, origin)
+
+        with pytest.raises(GitError, match="not the authorized repository"):
+            await mgr._apush_destination(
+                checkout, "origin", repository_url="https://github.com/acme/widgets"
+            )
+        result = await mgr.als_remote_ref(
+            checkout, "aq/t1", repository_url="https://github.com/acme/widgets"
+        )
+        assert result.state is RemoteRefState.ERROR
+        assert access.bound == []
+        assert access.token_requests == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", [
+        "git@github.com:acme/widgets.git",
+        "https://github.com/ACME/Widgets.git",
+    ])
+    async def test_matching_origin_binds_the_authorized_record(self, tmp_path, origin):
+        access = _AuthorizedAppAccess()
+        mgr = GitManager(github_access=access)
+        checkout = self._checkout(tmp_path, origin)
+
+        destination = await mgr._apush_destination(
+            checkout, "origin", repository_url="https://github.com/acme/widgets"
+        )
+
+        assert destination == ("https://github.com/acme/widgets.git", "app-token")
+        assert access.bound == ["https://github.com/acme/widgets"]
+        assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")]
+
+
+@pytest.mark.parametrize("counts,ref_error,infrastructure", [
+    ([None], None, True),
+    ([0], "Delivery branch probe unavailable", True),
+    ([0, None], None, True),
+    ([1, 1], None, False),
+])
+async def test_delivery_resolution_distinguishes_unknown_probes_from_ambiguous_work(
+    counts, ref_error, infrastructure,
+):
+    ops = GitOpsMixin()
+    ops._commits_ahead_of_default = AsyncMock(side_effect=counts)
+    ops._resolve_assigned_ref = AsyncMock(return_value=("refs/heads/task/work", ref_error))
+    ctx = SimpleNamespace(
+        workspace_path="/unused", default_branch="main", delivery_branch=None,
+        task=SimpleNamespace(branch_name="task/work"),
+    )
+
+    resolution = await ops._resolve_task_delivery(ctx, current_branch="main", has_remote=True)
+
+    assert resolution.error
+    assert resolution.infrastructure_failure is infrastructure
+
+
+@pytest.mark.parametrize("api", ["arun", "result", "subprocess"])
+@pytest.mark.parametrize("interruption", ["cancel", "timeout", "startup"])
+async def test_git_cancellation_stops_hook_children_before_successor(
+    mgr, clone, tmp_path, monkeypatch, api, interruption,
+):
+    """A real post-checkout hook cannot write after a newer checkout starts."""
+    import os
+    import signal
+    import sys
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    from src.git.process import _group_has_writer
+
+    root = pathlib.Path(clone)
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import os,pathlib,subprocess,time\n"
+        f"r=pathlib.Path({str(ready)!r}); g=pathlib.Path({str(go)!r})\n"
+        "r.write_text(str(os.getpid()))\n"
+        "while not g.exists(): time.sleep(.01)\n"
+        "subprocess.run(['git','checkout','--detach','HEAD'],check=True)\n"
+        "pathlib.Path('late-write').write_text('old epoch')\n"
+    )
+    hook = root / ".git/hooks/post-checkout"
+    hook.write_text(
+        f"#!{sys.executable}\nimport subprocess,sys\n"
+        f"p=subprocess.Popen([sys.executable,{str(writer)!r}],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "p.wait()\n"
+    )
+    hook.chmod(0o700)
+    created, return_handle = asyncio.Event(), asyncio.Event()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def intercepted(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        created.set()
+        if interruption == "startup":
+            await return_handle.wait()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", intercepted)
+    deadline = asyncio.timeout(None)
+
+    async def operation():
+        async with deadline:
+            if api == "arun":
+                return await mgr._arun(["checkout", "-b", "aq/old"], cwd=clone)
+            if api == "result":
+                return await mgr.arun_git_result(["checkout", "-b", "aq/old"], cwd=clone)
+            return await mgr._arun_subprocess(["git", "checkout", "-b", "aq/old"], cwd=clone)
+
+    request = asyncio.create_task(operation())
+    try:
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(.01)
+        await created.wait()
+        if interruption == "timeout":
+            deadline.reschedule(asyncio.get_running_loop().time())
+        else:
+            request.cancel()
+        if interruption == "startup":
+            await asyncio.sleep(0)
+            request.cancel()  # A second cancellation cannot abandon the handle.
+            return_handle.set()
+        with pytest.raises(TimeoutError if interruption == "timeout" else asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=10)
+        assert all(p.returncode is not None for p in processes)
+        assert not any(_group_has_writer(p.pid) for p in processes)
+        hook.unlink()
+        _git(["checkout", "-b", "aq/successor"], cwd=clone)
+        claim = root / ".aq/claim.json"
+        claim.parent.mkdir(exist_ok=True)
+        claim.write_text('{"task_id":"successor","claim_epoch":2}')
+        (root / "README.md").write_text("staged successor")
+        _git(["add", "README.md"], cwd=clone)
+        (root / "untracked").write_text("successor work")
+        before = (_git(["rev-parse", "HEAD"], cwd=clone),
+                  _git(["diff", "--cached", "--binary"], cwd=clone),
+                  _git(["show-ref"], cwd=clone), claim.read_bytes())
+        go.touch()
+        # Quiescence was proved before opening the barrier; no time-based
+        # assertion that a leaked child merely has not written *yet*.
+        assert not (root / "late-write").exists()
+        assert _git(["branch", "--show-current"], cwd=clone) == "aq/successor"
+        assert before == (_git(["rev-parse", "HEAD"], cwd=clone),
+                          _git(["diff", "--cached", "--binary"], cwd=clone),
+                          _git(["show-ref"], cwd=clone), claim.read_bytes())
+        assert (root / "untracked").read_text() == "successor work"
+    finally:
+        return_handle.set()
+        for process in processes:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_cancel_during_checkout_preserves_partial_source_and_git_lock(mgr, clone, tmp_path):
+    import os
+    import shlex
+    import sys
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    from src.git.process import _group_has_writer
+
+    root = pathlib.Path(clone)
+    _commit_file(clone, ".gitattributes", "payload filter=barrier\n", "filter")
+    _git(["checkout", "-b", "aq/target"], cwd=clone)
+    _commit_file(clone, "payload", "target content\n", "target")
+    _git(["checkout", "main"], cwd=clone)
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    filter_script = tmp_path / "filter.py"
+    # Publish the process-group id before existence permits cancellation.
+    # write_text alone exposes an empty file that cancellation can leave behind.
+    filter_script.write_text(
+        "import os,pathlib,sys,time\n"
+        f"ready = pathlib.Path({str(ready)!r})\n"
+        "ready.with_suffix('.tmp').write_text(str(os.getpgrp()))\n"
+        "ready.with_suffix('.tmp').replace(ready)\n"
+        f"while not pathlib.Path({str(go)!r}).exists(): time.sleep(.01)\n"
+        "sys.stdout.write(sys.stdin.read())\n"
+        "pathlib.Path('late-filter-write').write_text('old writer')\n"
+    )
+    _git(["config", "filter.barrier.smudge", shlex.join([sys.executable, str(filter_script)])],
+         cwd=clone)
+    (root / "untracked").write_text("source evidence")
+    claim = root / ".aq/claim.json"
+    claim.parent.mkdir()
+    claim.write_text('{"task_id":"old","claim_epoch":1}')
+    request = asyncio.create_task(mgr._arun(["checkout", "aq/target"], cwd=clone))
+    async with asyncio.timeout(5):
+        while not ready.exists():
+            await asyncio.sleep(.01)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(request, timeout=10)
+    assert not _group_has_writer(int(ready.read_text()))
+    assert (root / ".git/index.lock").exists()
+
+    def snapshot():
+        return (
+            _git(["rev-parse", "HEAD"], cwd=clone), _git(["show-ref"], cwd=clone),
+            (root / ".git/index").read_bytes(), (root / ".git/index.lock").read_bytes(),
+            (root / "untracked").read_bytes(), claim.read_bytes(),
+        )
+
+    before = snapshot()
+    go.touch()
+    with pytest.raises(GitError, match="index.lock"):
+        await mgr._arun(["checkout", "-b", "aq/successor", "aq/target"], cwd=clone)
+    assert snapshot() == before
+    assert not (root / "late-filter-write").exists()
+
+
+async def test_group_cleanup_failure_is_not_an_ordinary_git_failure(mgr, clone, monkeypatch):
+    from src.git import process
+
+    def unknown(pgid):
+        raise PermissionError("process inventory unavailable")
+
+    monkeypatch.setattr(process, "_group_has_writer", unknown)
+    with pytest.raises(process.ProcessCleanupError, match="cleanup unproved") as raised:
+        await mgr._arun(["rev-parse", "HEAD"], cwd=clone)
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("state, writing", [("S", True), ("Z", False)])
+def test_group_scan_skips_a_process_that_exits_mid_read(monkeypatch, state, writing):
+    """ESRCH from an unrelated vanished pid is not unknown group state (solid-pinnacle-38)."""
+    import types
+
+    from src.git import process
+
+    class Entry:
+        def __init__(self, name, stat):
+            self.name, self._stat = name, stat
+
+        def __truediv__(self, child):
+            return self
+
+        def read_text(self):
+            if isinstance(self._stat, BaseException):
+                raise self._stat
+            return self._stat
+
+    entries = [
+        Entry("101", ProcessLookupError(3, "No such process")),
+        Entry("102", FileNotFoundError(2, "No such file or directory")),
+        Entry("4242", f"4242 (git) {state} 1 4242 4242 0"),
+    ]
+    monkeypatch.setattr(process, "Path", lambda _: types.SimpleNamespace(iterdir=lambda: entries))
+    monkeypatch.setattr(process.os, "killpg", lambda pgid, sig: None)
+    assert process._group_has_writer(4242) is writing
+
+
+async def test_local_git_disables_detached_maintenance_without_losing_config(mgr, clone):
+    mgr._SUBPROCESS_ENV = {
+        **mgr._SUBPROCESS_ENV,
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "aq.caller", "GIT_CONFIG_VALUE_0": "yes",
+    }
+    result = await mgr.arun_git_result(["config", "--get", "maintenance.auto"], cwd=clone)
+    assert result.stdout.strip() == "false"
+    env = mgr._foreground_git_env({
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "aq.caller", "GIT_CONFIG_VALUE_0": "yes",
+    })
+    assert env["GIT_CONFIG_KEY_0"] == "aq.caller" and env["GIT_CONFIG_VALUE_0"] == "yes"
+
+
+async def test_unknown_cleanup_survives_best_effort_git_probe(mgr, clone, monkeypatch):
+    from src.git import process
+
+    def unknown(pgid):
+        raise PermissionError("process inventory unavailable")
+
+    monkeypatch.setattr(process, "_group_has_writer", unknown)
+    with pytest.raises(process.ProcessCleanupError):
+        await mgr.ahas_remote(clone)
+
+
+async def test_unsettled_startup_is_bounded_and_late_handle_remains_owned(mgr, clone, monkeypatch):
+    from src.git import process
+
+    release = asyncio.Event()
+    original = asyncio.create_subprocess_exec
+    created = []
+
+    async def delayed(*args, **kwargs):
+        await release.wait()
+        child = await original(*args, **kwargs)
+        created.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed)
+    monkeypatch.setattr(process, "CLEANUP_SECONDS", .05)
+    try:
+        with pytest.raises(process.ProcessCleanupError, match="did not settle"):
+            await asyncio.wait_for(mgr._arun(["status"], cwd=clone, timeout=.01), timeout=5)
+        pending = tuple(process._pending)
+        assert pending
+    finally:
+        monkeypatch.setattr(process, "CLEANUP_SECONDS", 5)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*process._pending), timeout=10)
+    assert created and all(child.returncode is not None for child in created)
+    assert not any(process._group_has_writer(child.pid) for child in created)

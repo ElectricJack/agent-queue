@@ -4,11 +4,24 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 
 # Supervisor as a Configured Agent
 
-**Status:** Approved direction (2026-08-19), amended by [[../messaging/discord]]:
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The August design
+> below predates opt-in project supervisors, global-only report authorship,
+> turn-health recovery and instance-fenced restart. It is not an operating guide.
+
+**Status:** Approved direction (2026-08-19), amended by [../messaging/discord](../messaging/discord.md):
 Discord now reaches the supervisor only through durable escalation threads;
 the project-channel chat and task-thread routes described below are retired.
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #3 structure guides / intelligence decides, #5 reduce effort not judgment, #7 events not coupling)
-**Related:** [[session-runtime]] (owns session mechanics), [[work-graph]] (owns ids, gates, dep types), [[aq-surface]] (owns `aq prime` assembly), [[profiles]], [[workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` (§4 Workstream B, §3b, §1)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #3 structure guides / intelligence decides, #5 reduce effort not judgment, #7 events not coupling)
+**Related:** [session-runtime](session-runtime.md) (owns session mechanics), [work-graph](work-graph.md) (owns ids, gates, dep types), [aq-surface](aq-surface.md) (owns `aq prime` assembly), [profiles](profiles.md), [workspaces-v2](workspaces-v2.md), `docs/analysis/framework-overhaul-todo.md` (§4 Workstream B, §3b, §1)
 
 ---
 
@@ -173,7 +186,7 @@ profile fields (parser change in the implementation spec). Their runtime semanti
 what "named", "on_demand" and "resume" actually do to a tmux session — are defined by the
 session-runtime spec; this spec only selects values. `workspaces` declares the named
 session's attachments: the project vault (writable) and the project's base checkout
-mounted via the `readonly-dir` kind ([[workspaces-v2]]).
+mounted via the `readonly-dir` kind ([workspaces-v2](workspaces-v2.md)).
 
 ---
 
@@ -181,10 +194,20 @@ mounted via the `readonly-dir` kind ([[workspaces-v2]]).
 
 There is one supervisor session per project. Its **logical name** — used in APIs, the
 CLI, and `messages.to_id` — is **`supervisor-<project_id>`**; the provider-level session
-name is derived by [[session-runtime]]'s naming scheme (`n-supervisor--<project_id>` in
+name is derived by [session-runtime](session-runtime.md)'s naming scheme (`n-supervisor--<project_id>` in
 tmux). All name resolution and sanitization is owned by session-runtime; this spec only
 uses the logical name. The session carries `AQ_PROJECT_ID` in its environment; every `aq` command it runs defaults to
 that project, and its slim MCP surface is scoped the same way.
+
+A logical name only addresses a supervisor that can exist. The suffix is authoritative
+whenever it names a project; `supervisor-global` is the global supervisor, which has no
+project. A suffix that names no project (agents have written `supervisor-aq` for
+`agent-queue`) is delivered to the supervisor of the message's own `project_id`, which was
+validated at send time, when that project exists. Otherwise the address is undeliverable:
+nothing is ever started for it (a cold start would fail the `sessions.project_id` foreign
+key after launching a harness, then repeat on every pass), its rows stay pending and park
+to their sender after `park_after` (24 h, [implementation](../implementation/supervisor-agent.md)),
+and the daemon logs the address once.
 
 Routing rules — all inbound chat becomes a `messages` row (§6), never a direct call:
 
@@ -229,20 +252,85 @@ exchange. Columns (schema detail in the implementation spec):
 
 ### 6.1 Delivery policy
 
-The delivery engine (a cascade step plus a `message.sent` subscriber) resolves the target
-to a concrete session and picks one of three paths:
+The delivery engine runs in one independent daemon service, started after session/token
+initialization and stopped before database shutdown. It resolves the target to a concrete
+session and picks one of three paths below. Scheduling, Git operations and patrol
+playbooks do not own its progress. A `message.sent` subscriber supplies a coalesced wake
+hint; pending database rows are authoritative, including at startup and when an event was
+missed. Passes run no faster than `messages.delivery_interval`. Disabled delivery performs
+no message work and resumes the durable backlog when enabled again.
 
-1. **Target session idle** → provider `nudge` with a rendered envelope
-   (`[message <id> from <from>] <body>` plus the standing instruction to reply with
-   `aq reply <id>`). A nudge to a sleeping `on_demand` session first **wakes** it
+Each mailbox is visited once per pass even when it has messages from several projects;
+the first pending row supplies its project context. Each recipient has a 120-second
+budget, including cold start. Failure or timeout leaves undelivered rows retryable and
+does not abort other recipients. Transcript reply recovery has a separate 120-second
+budget. The scheduler retains recovery/notification maintenance but does not run a second
+delivery consumer. A direct cycle caller without the service retains the delivery seam.
+Concurrent engine passes are skipped while one is in flight.
+
+1. **Target session idle** → provider `nudge` for the first pending message only, as a
+   single line pointing at its durable body (``Handle `aq message status <id> --json`
+   (running it marks the message read).``), the same text on every attempt. Saying that
+   the command is the acknowledgment matters: a supervisor that had peeked at the bodies
+   with `aq message inbox` answered each retry from memory and never acknowledged
+   (2026-10-20);
+   the rest stay pending for later passes. The nudge carries no body and no reply
+   instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
+   and internal notices (`task_recovery`, `agent_question`) take no reply. The nudge
+   records a notification attempt, leaving the row pending until the recipient
+   reads its body with `message_status`, replies, or receives inbox/prime injection.
+   An operator or another supervisor inspecting status does not consume the
+   recipient's message. Notification attempts and their timestamps survive daemon
+   restarts. Retry after 60 seconds, doubling up to five minutes. A read message is
+   never nudged again: the pending query, the notification claim and the cold-start
+   recheck all exclude rows with `read_at` set. After three
+   unanswered attempts queue one durable alert, including the original body, to
+   the global supervisor. For mail addressed to the global supervisor, send that
+   alert to `user:dashboard` instead: an unauthenticated supervisor cannot alert
+   itself. The alert does not recursively escalate. The original
+   message stays pending and retryable. `message_status` is therefore on the agent
+   surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
+   own mailbox, and a non-elevated session may read only messages addressed to its
+   own mailboxes (the `message_inbox` mailbox fence). A named session owns both
+   its UUID and its persisted session name, including task-free batch fixers;
+   reading either address acknowledges the message and ends notification retries.
+   Another session's name grants no mailbox access. A task comment has no
+   exception: its notification is the same one-line pointer. Its rendered body (a
+   six-line header plus up to 8 KB) used to be typed in directly, and Claude Code
+   never shows that verbatim: over 800 characters it collapses to
+   `[Pasted text #N +M lines]`, and on an 80x24 pool pane anything taller than about
+   seven rows shows only its last rows. AQ cannot confirm such text, so it sat
+   unsubmitted and every later nudge to that worker deferred behind it (2026-10-01,
+   `clear-lantern-82`; session-runtime §5.1 "Text the composer cannot show
+   verbatim"). A nudge to a
+   sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
+   Wake selection preserves priority (lower first), then selects the newest
+   eligible message, with creation sequence breaking timestamp ties. Inbox/prime
+   body injection retains chronological ordering. Before delivery and supervisor
+   inbox reads, archive unread system `task_recovery` and `stale_open` notices
+   whose subject identifies a completed or missing task in the notice's project.
+   Preserve user mail and notices for failed or otherwise unfinished tasks;
+   expiry is archival, never a recipient acknowledgment.
+   Apply the same archival policy to supervisor escalation notices, replies and
+   owner reminders whose durable thread identifies a terminal escalation or a
+   completed source task. Worker question notices identified by `msg-<question-id>`
+   expire when the question leaves supervisor handling or its source task completes.
+   Preserve unrelated user conversations and failed-task recovery. Pending selection
+   excludes acknowledged and obsolete notices; notification reservation rechecks
+   these conditions before starting or nudging a recipient, so a source settled
+   after selection cannot trigger another wake. Archival preserves the original body
+   and existing delivery receipts without inventing a read acknowledgment.
+   More than 50 unread, unarchived messages across the global supervisor's logical
+   addresses also queues a durable alert to `user:dashboard`, even if the session
+   is busy or absent. Anchor its identity to the oldest unread message so delivery
+   passes and daemon restarts cannot repeat an alert for the same backlog episode.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
-   nudged on the first cycle that observes the session idle. This *was* a
+   nudged on the first delivery pass that observes the session idle. This *was* a
    `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because
    the command was a stub, so it cost ~1.3 s per prompt and delivered nothing. The two
-   moments — "next prompt boundary" and "first idle observation" — are within one cascade
-   tick of each other, so the path is a latency optimization rather than a delivery
-   mechanism, and it should be reinstated only with a measurement behind it.
+   moments — "next prompt boundary" and "first idle observation" — are usually close;
+   prompt-boundary injection should be reinstated only with a measurement behind it.
 3. **Session starting** → pending messages ride into the first prompt via `aq prime`
    (prime content assembly is owned by the aq-surface spec; this spec only defines that
    undelivered messages are part of it, and that `archive_after_inject` rows are archived
@@ -251,6 +339,27 @@ to a concrete session and picks one of three paths:
 Idle/busy detection is **not** defined here: the engine consumes the session-runtime
 spec's activity signal (transcript in-turn state, A.6) through a narrow interface. Until
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
+
+Session recipients may be immutable UUIDs or historical named supervisor addresses.
+System notifications for a batch fixer use its registered AQ session UUID, including
+new CI evidence, rebind requests and green results. Its tmux session name identifies
+the process, rather than the mailbox authorized by its session token.
+A retired UUID is never redirected to a successor with the same name. The global
+supervisor has no project and can receive project-scoped messages without acquiring that
+project as its session scope. Profile recipients remain inbox/prime broadcasts; they do
+not identify a live session to wake. A per-project supervisor address does not silently
+become a global supervisor address.
+
+Wake logs identify the message and recipient, and distinguish refused from submitted.
+Terminal guard refusals name the observed condition (attached client, copy mode, unknown
+prompt prefix, or cursor outside the pane), retaining the existing guard behavior. All
+provider failures, including unsupported nudges, are available in session diagnostics;
+logs retain evidence across daemon restarts. A confirmed nudge does not stamp
+`delivered_at` or `read_at`. Reading the body as its recipient or replying stamps both;
+inbox/prime injection stamps delivery. No stamp proves the requested work was performed.
+A process crash after notification reservation but before submit delays its retry by
+the bounded backoff; a crash after submit can repeat a pointer on restart: this is
+at-least-once transport, not an exactly-once handling guarantee.
 
 ### 6.2 Reply protocol
 
@@ -262,9 +371,46 @@ shows a completed assistant turn since delivery, the relay tails that turn and p
 the reply, marked `via=transcript_tail`. The fallback keeps chat usable with harnesses or
 prompts that forget the protocol; the profile Rules make the CLI path the norm.
 
+The tail is only a recovery, never an invention, so the turn it posts must pass four
+tests: it carries assistant *prose* (a `[tool_use: …]` transcript placeholder is a tool
+call, not an answer), it is the first such turn after delivery and inside
+`delivered_at + reply_window_multiplier × reply_timeout`, the request came from a human
+(`from_kind=user`), and the attribution is unambiguous. The window is what stops a resumed
+session from replying to its whole backlog at once; without it, every
+delivered-but-unreplied row ever written would qualify forever.
+
+A transcript turn names no message it answers, so the relay never guesses which request a
+turn was about. It fails closed instead:
+
+- **Agent senders are never swept.** A reply addressed to a session or task lands in a
+  mailbox that satisfies that agent's durable message waits and reads as the recipient's
+  answer. On 2026-10-12 a supervisor's general progress about another task was posted as
+  the reply to two workers' requests and cleared one worker's wait. Agents receive only
+  explicit replies (`aq message reply`, `aq agent message --reply-to`).
+  `aq agent message` from a current named launch of the target's own project
+  supervisor is signed `session:supervisor-<project>`, so the worker's
+  `aq message reply` returns to that mailbox on the same thread. Any other
+  caller (the operator CLI, automation, the global supervisor, a stale launch)
+  signs `system:supervisor`, which stays unanswerable. A worker replies only
+  to its own mailboxes' messages, as that mailbox.
+- **One turn binds to at most one conversation.** If any row from another conversation
+  (a different project, thread or sender, of any kind and including archived rows) was
+  delivered to the same recipient within one window length either side of the request's
+  `delivered_at`, the turn may be about that one, and the request gets no tail reply.
+- **The insert re-checks under the request's row lock.** The reply row is written already
+  delivered, in one transaction that locks the request, confirms it is unarchived with the
+  same `delivered_at`, and repeats the explicit-reply and competing-delivery checks. A
+  native reply also locks its parent while inserting, so a reply that wins the race leaves
+  no tail row behind, and concurrent sweeps create one reply at most.
+
+There is no correlated-prose path. Harness transcripts carry no message id, so prose that
+does answer a worker counts only if the recipient sends it with an explicit reply. A quiet
+human chat still receives the recipient's next prose turn. That is the intended fallback;
+it is human-facing, marked `via=transcript_tail`, and cannot satisfy an agent wait.
+
 ### 6.3 Events
 
-`message.sent` (row created), `message.delivered` (nudge confirmed submitted, or injected),
+`message.sent` (row created), `message.delivered` (body read by recipient, or injected),
 `message.replied` (reply row linked). All registered in the event payload registry.
 Subsystems integrate only through these events — the Discord adapter, dashboard WS stream,
 and delivery engine never call each other (principle #7).
@@ -289,6 +435,26 @@ supervisor's resumed harness session, not in the REPL.
 **Discord / dashboard** are thin: they translate to the same API and render `message.*`
 events. Neither holds chat history of its own — the supervisor's session is the
 conversation of record (visible via `aq session peek supervisor-<pid>` / attach).
+
+The dashboard flock includes every live named project supervisor, including sessions
+without a durable agent row. Each entry names its project and exposes the persisted
+harness/model, state, idle duration and last activity. Selecting it opens its existing
+terminal and a Messages tab using the same logical address as `aq chat <project>`.
+Session-backed entries have no agent settings or enable toggle. Project access labels
+must name that project; only the global supervisor is labelled as supervising all projects.
+
+Messages shows recent inbound mail and replies across threads for that supervisor,
+including mail from other surfaces. Queued/unread, delivered, read and replied states
+come from durable message timestamps and reply links. A refused delivery remains pending
+for retry and displays the session lens's latest delivery diagnostic. Message events refresh
+the pane; bounded polling reconciles missed events and read acknowledgements.
+
+Auth health reports recent API authentication/authorization outcomes for the session:
+an observed 401/403 is red for fifteen minutes, and a successful later call restores
+healthy status. An absent or old observation is unknown. Expired/revoked tokens are
+attributed only by a matching server-side token record; arbitrary invalid tokens are
+never attributed to a session. These bounded diagnostics are process-local and reset
+to unknown on daemon restart; they do not change authentication or delivery policy.
 
 ---
 
@@ -411,6 +577,7 @@ Validation is deterministic — the daemon never "interprets" a graph:
 | `spec_ref` path missing from the vault, or section heading not found | error for `--from-spec`; warning for `--graph` |
 | `spec_ref` path resolving **outside** the vault root — `..`, an absolute path, or a symlink out | error always (`spec_ref_outside_vault`), never a warning. Graphs are authored by an LLM from spec text that may be attacker-influenced, and `src/prime/sections._render_spec_ref` inlines the resolved file into another agent's prompt. Containment is enforced at **both** ends. |
 | `needs.on` resolves to a task in another project without `cross_project: true` | error (explicit cross-project edges only, todo §3b) |
+| `needs.on`, with a gating dep type, names the task the graph is created under, one of its ancestors, or a worker filer's held task | error (`dependency_on_ancestor`; membership is already the `parent-child` edge and a container settles only after its children — work-graph §11) |
 | Any node targeting another project | error — graphs are single-project |
 
 `--dry-run` returns the validation report and the ids that would be assigned.
@@ -425,6 +592,16 @@ questions through `aq question`; an agent that only needs to report a blocker
 uses `aq message send --to user:dashboard`. Human gates remain available for
 playbook/task-graph policy and are resolved only on explicit human instruction
 (§4 Rules).
+
+An accepted answer is stored as an `agent_question` message addressed to the asking
+session (id `question:<question-id>:answer`, stamped delivered so the message engine
+never nudges it). It reaches the worker's terminal, under the question's claim fence,
+only as the one line ``[aq question answered] Handle `aq message status
+question:<question-id>:answer --json`.``, and the worker reads the body with the
+`message_status` it already holds. The answer itself is never typed: a harness composer
+does not show long or multi-line input verbatim, so its submission could not be
+confirmed. While `messages.enabled` is false the answer is held, because
+`message_status` would refuse.
 
 ---
 

@@ -1,5 +1,12 @@
 # Playbook V2 — Package 1 child plan: Command contracts, event contracts, and truthful intent
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:test-driven-development` for every task below. Each task names the failing assertion before the implementation that satisfies it. Do not skip a red step.
 
 **Roadmap:** `docs/superpowers/plans/2026-09-01-playbook-v2-implementation-roadmap.md` — Package 1 (§5), global constraints (§2), module map (§3), locked interfaces (§4), milestone M1 (§6), parallelism rules (§7), quality bar (§9).

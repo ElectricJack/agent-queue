@@ -1,5 +1,12 @@
 # Extract Memory Plugin to `aq-memory` Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the memory plugin out of `agent-queue2/src/plugins/internal/memory_v2/` into a new standalone external plugin repo at `/mnt/d/Dev/aq/aq-memory`, dropping the vestigial `V2` suffix from all names. After this, agent-queue2 runs end-to-end with no memory plugin installed, and the plugin is installed via the standard external plugin pathway.
