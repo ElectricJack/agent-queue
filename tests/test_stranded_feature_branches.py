@@ -25,6 +25,7 @@ import src.doctor  # noqa: F401 -- side effect: populates sys.modules
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.doctor.models import Severity
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -91,7 +92,10 @@ async def any_db(request, tmp_path, repo):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI)."""
     database = Database(lease_dsn("doctor.db"))
     await database.initialize()
-    await database.create_project(Project(id=PROJECT_ID, name="P", repo_default_branch="main"))
+    await database.create_project(Project(
+        id=PROJECT_ID, name="P", repo_default_branch="main",
+        repo_url="https://github.com/o/r.git",
+    ))
     await database.create_workspace(
         Workspace(
             id="ws-1",
@@ -108,7 +112,10 @@ def _fake_gh(monkeypatch, *, merged_into: dict, open_to_default: set[str] | None
     """Stub ``GitManager.alist_prs``. ``None`` anywhere means "gh can't answer"."""
     open_to_default = open_to_default or set()
 
-    async def _alist_prs(self, checkout_path, *, state="open", base=None, head=None, limit=30):
+    async def _alist_prs(
+        self, checkout_path, *, state="open", base=None, head=None, limit=30,
+        repository=None,
+    ):
         if state == "open" and head is not None:
             if head in open_to_default:
                 return [{"url": "https://github.com/o/r/pull/900", "headRefName": head}]
@@ -118,6 +125,15 @@ def _fake_gh(monkeypatch, *, merged_into: dict, open_to_default: set[str] | None
         return []
 
     monkeypatch.setattr(pool_checks.GitManager, "alist_prs", _alist_prs)
+
+
+@pytest.fixture(autouse=True)
+def bound_repository(monkeypatch):
+    async def bind(self, repository_url):
+        assert repository_url == "https://github.com/o/r.git"
+        return GitHubRepositoryBinding(1, "o/r")
+
+    monkeypatch.setattr(pool_checks.GitManager, "bind_github_repository", bind)
 
 
 async def _run(db, config, repair: bool = False):
@@ -195,7 +211,10 @@ async def test_a_task_branch_with_merged_prs_is_still_stranded(any_db, config, m
 
 
 async def test_gh_unavailable_reports_nothing_and_counts_it(any_db, config, monkeypatch):
-    async def _no_gh(self, checkout_path, *, state="open", base=None, head=None, limit=30):
+    async def _no_gh(
+        self, checkout_path, *, state="open", base=None, head=None, limit=30,
+        repository=None,
+    ):
         return None
 
     monkeypatch.setattr(pool_checks.GitManager, "alist_prs", _no_gh)
@@ -211,7 +230,10 @@ async def test_fix_prints_the_command_and_opens_no_pr(any_db, config, monkeypatc
     """``--fix`` must not create a pull request — it hands over the command."""
     created: list = []
 
-    async def _alist_prs(self, checkout_path, *, state="open", base=None, head=None, limit=30):
+    async def _alist_prs(
+        self, checkout_path, *, state="open", base=None, head=None, limit=30,
+        repository=None,
+    ):
         if state == "merged" and base == "feature/pkg4-core":
             return [{"url": "https://github.com/o/r/pull/284"}]
         return []

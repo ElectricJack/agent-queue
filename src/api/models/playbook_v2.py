@@ -75,6 +75,10 @@ ValueKind = Literal[
     "loop_ref",
     "template",
     "expression",
+    "filter",
+    "map",
+    "len",
+    "diff",
     "redacted",
     "unresolved",
 ]
@@ -183,6 +187,7 @@ class StepExplanationDTO(V2Model):
     result: ExplanationRowDTO | None = None
     outcomes: list[OutcomeExplanationDTO] = []
     contract_fingerprint: str | None = None  # None for non-command steps
+    docs_url: str | None = None  # Contract help page; None for non-command steps
     renderer: ExplanationRenderer = "contract"
 
 
@@ -229,6 +234,11 @@ class ActivationStateDTO(V2Model):
     activated_by: str | None = None
     pending_event_count: int = 0
     running_count: int = 0
+    source_path: str | None = None
+    source_sha256: str | None = None
+    active_source_sha256: str | None = None
+    source_drift: bool | None = None
+    source_error: str | None = None
 
 
 class PlaybookActivationHealthResponse(V2Model):
@@ -315,7 +325,7 @@ class PlaybookDeleteResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 EdgeKind = Literal[
     "success",
@@ -399,7 +409,7 @@ class CapabilityNarrowingDTO(V2Model):
 class DelegationPolicyDTO(V2Model):
     """AgentTaskStep only."""
 
-    child_profile_id: str
+    child_profile_id: str | None = None  # unresolved until routing for hint-only steps
     wait_for_completion: bool = True
     cancel_child: bool = False
     narrowed_from: str | None = None  # parent principal provenance, human-readable
@@ -414,7 +424,7 @@ class AiNodeDetailDTO(V2Model):
     show the profile, resolved capability namespaces, capability fingerprint,
     budgets, and delegation policy")."""
 
-    profile_id: str
+    profile_id: str | None = None
     intelligence_class: str | None = None
     provider: str | None = None
     model: str | None = None
@@ -430,6 +440,7 @@ class LoopNodeDetailDTO(V2Model):
     """ForEachStep only."""
 
     collection: ExplanationValueDTO
+    max_iterations: int = 500
     item_binding: str
     failure_policy: Literal["halt", "continue", "collect"]
     body_entry_step_id: str
@@ -494,7 +505,18 @@ class NodeBadgeDTO(V2Model):
     value: str
 
 
+class ScriptNodeDetailDTO(V2Model):
+    program: dict[str, Any]
+    source_revision: str | None = None
+    program_sha256: str | None = None
+    runtime_sha256: str | None = None
+    executable_sha256: str | None = None
+    input_pins: list[dict[str, Any]] = []
+    environment_names: list[str] = []
+
+
 class GraphNodeDTO(V2Model):
+    script: ScriptNodeDetailDTO | None = None
     id: str  # artifact-local step id
     rule_id: str
     step_kind: StepKind
@@ -557,6 +579,14 @@ class GraphLegendDTO(V2Model):
     edge_kinds: dict[str, str] = {}  # EdgeKind  -> label
 
 
+class ExecutionRequirementsDTO(V2Model):
+    """Reviewed requirements, never a grant or a resolved principal."""
+
+    required_features: list[str] = []
+    required_capabilities: list[str] = []
+    state_schema_version: int | None = None
+
+
 class PlaybookV2GraphResponse(V2Model):
     """Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``
     narrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and
@@ -567,6 +597,7 @@ class PlaybookV2GraphResponse(V2Model):
     artifact: ArtifactRefDTO
     activation: ActivationStateDTO
     purpose: str = "routine"  # "routine" | "assignment_routing"
+    execution_requirements: ExecutionRequirementsDTO = ExecutionRequirementsDTO()
     event_groups: list[EventGroupDTO] = []
     rules: list[RuleClusterDTO] = []
     nodes: list[GraphNodeDTO] = []
@@ -581,6 +612,44 @@ class PlaybookGraphLayoutSaveResponse(V2Model):
     playbook_id: str
     artifact_sha256: str
     positions: dict[str, GridPositionDTO] = {}
+
+
+class PlaybookCommandCatalogEntryDTO(V2Model):
+    """One contract's dashboard- and CLI-facing discovery metadata."""
+
+    name: str
+    title: str
+    summary: str
+    docs_url: str
+    parameters_schema: dict[str, Any] = {}
+    origin: str | None = None
+    plugin: str | None = None
+    available: bool = True
+    execution_available: bool = False
+    denied: bool = False
+    denial_reason: str | None = None
+    schema_source: str | None = None
+    schema_quality: str | None = None
+    result_mode: str | None = None
+    capability: str | None = None
+    caller_requirements: list[str] = []
+    effect_class: str | None = None
+    idempotency_mechanism: str | None = None
+    idempotency_key_field: str | None = None
+    retry_safe: bool = False
+    timeout_seconds: int | None = None
+    preview_available: bool = False
+    sensitivity: str | None = None
+    receipt_projection: list[str] = []
+
+
+class PlaybookCommandCatalogResponse(V2Model):
+    success: bool = True
+    commands: list[PlaybookCommandCatalogEntryDTO] = []
+    count: int = 0
+    total: int = 0
+    offset: int = 0
+    next_offset: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +830,21 @@ class CancellationFactsDTO(V2Model):
     cancelled_child: bool = False
 
 
+class ScriptExecutionDTO(V2Model):
+    """Public execution facts and opaque handles, never process output or inputs."""
+    job_id: str
+    execution_id: str | None = None
+    terminal_cause: str | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    json_status: str | None = None
+    capture_complete: bool | None = None
+    cleanup_complete: bool | None = None
+    output_refs: dict[str, str] = {}
+
+
 class ReceiptDTO(V2Model):
     receipt_id: str
     step_id: str
@@ -768,6 +852,8 @@ class ReceiptDTO(V2Model):
     step_kind: StepKind
     attempt: int = 1
     iteration_index: int | None = None  # set only inside a foreach body
+    iteration_path: str = ""
+    script: ScriptExecutionDTO | None = None
     outcome: str
     selected_edge_id: str | None = None  # joins GraphEdgeDTO.id
     started_at: float
@@ -943,8 +1029,21 @@ class PlaybookV2ShadowCompileResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
+class PlaybookSourceResyncResponse(V2Model):
+    success: bool = True
+    playbook_id: str
+    artifact_sha256: str
+    source_hash: str
+    previous_source_hash: str
+    source_path: str
+    backup_path: str | None = None
+    changed: bool
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "playbook_source_resync": PlaybookSourceResyncResponse,
     "playbook_v2_graph": PlaybookV2GraphResponse,
+    "playbook_commands": PlaybookCommandCatalogResponse,
     "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,
     "playbook_activation_health": PlaybookActivationHealthResponse,
     "playbook_activate": SetPlaybookActivationResponse,
