@@ -23,23 +23,20 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import and_, case, cast, false, func, insert, literal, not_, or_, select, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import and_, case, false, func, insert, literal, not_, or_, select, update
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
-    development_deliveries,
     events,
     gates,
-    projects,
-    repos,
     task_completion_records,
+    task_delivery_receipts,
     task_dependencies,
     task_gates,
     task_labels,
     task_metadata,
     tasks,
 )
-from src.integration.publishable_artifact import development_empty_source, has_publishable_artifact
 from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -50,6 +47,7 @@ __all__ = [
     "BlockedStateMixin",
     "apply_label_filters",
     "blocked_predicate",
+    "delivery_landed",
     "unmet_dependency_predicate",
 ]
 
@@ -84,68 +82,13 @@ _WITHHOLDING_PARENT_STATUSES = (
 # every edge as ``status != COMPLETED``.
 
 
-def development_delivery_receipt(task, project, repo):
-    """Whether the development publisher delivered *task*'s latest completion.
-
-    True when a ``delivered`` or ``adopted`` development delivery of *project*
-    to *repo*'s default branch lists *task* with the source of its latest
-    completion (or binds that exact close through ``completion_sources``).
-    Transitional helper for consumers awaiting migration. Admission and the
-    graph projection never use receipt state as authority.  *task*,
-    *project* and *repo* are tables or aliases correlated by the caller.
-    """
-    delivery = development_deliveries.alias()
-    completion = task_completion_records.alias()
-    source_sha = (
-        select(cast(completion.c.commits, JSONB).op("->>")(-1))
-        .where(completion.c.task_id == task.c.id)
-        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
-        .limit(1)
-        .correlate(task)
-        .scalar_subquery()
-    )
-    completion_id = (
-        select(completion.c.id)
-        .where(completion.c.task_id == task.c.id)
-        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
-        .limit(1)
-        .correlate(task)
-        .scalar_subquery()
-    )
-    delivered = (
-        select(literal(1))
-        .where(
-            delivery.c.project_id == project.c.id,
-            delivery.c.repository_id == repo.c.id,
-            delivery.c.target_ref == literal("refs/heads/") + repo.c.default_branch,
-            delivery.c.state.in_(("delivered", "adopted")),
-            delivery.c.created_at >= task.c.created_at,
-            or_(
-                cast(delivery.c.manifest, JSONB).contains(
-                    func.jsonb_build_array(func.jsonb_strip_nulls(func.jsonb_build_object(
-                        "task_id", task.c.id, "source_sha", source_sha,
-                    )))
-                ),
-                # The publisher resolves abbreviated SHAs with Git, rejecting
-                # ambiguous names, and binds the result to this exact close.
-                cast(delivery.c.evidence, JSONB)["completion_sources"].contains(
-                    func.jsonb_build_array(func.jsonb_build_object(
-                        "task_id", task.c.id, "completion_id", completion_id,
-                        "reported_sha", source_sha,
-                    ))
-                ),
-            ),
-        )
-        .correlate(task, project, repo)
-        .exists()
-    )
-    return delivered
-
-
 #: ``task_metadata`` key an obsolete close writes (``aq task close --obsolete``):
 #: the task's work was superseded, so there is nothing of it to publish.  JSON:
 #: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
-#: ``cleanup`` it still owes (src/integration/obsolete_close.py).
+#: ``cleanup`` it still owes (src/sessions/obsolete.py).
+#: Evidence-preserving retirement also records ``replacement_task_id``,
+#: ``satisfied_by`` and the transactional ``rewire`` plan. These are audit
+#: evidence, never dependency satisfaction: dependent edges must be rewritten.
 OBSOLETE_META_KEY = "obsolete"
 
 
@@ -160,54 +103,27 @@ def obsolete_marker(task):
     )
 
 
-def _development_delivery_pending(task, *, include_foreign_repos=False):
-    """Completed code is usable only after publication to the configured default ref.
+#: Receipt dispositions that deliver the source: landed code, or a verified
+#: no-op.  They mirror ``DeliveryEvidence.satisfied`` (``CONTAINED`` and
+#: ``NO_CHANGE``); ``ineligible``, ``skipped`` and ``failed`` deliver nothing.
+LANDED_RECEIPT_DISPOSITIONS = ("code", "noop")
 
-    Candidate preservation and parent aggregates are not worker checkout bases.
-    A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks and observed empty revisions have no artifact to publish,
-    and an obsolete one (:data:`OBSOLETE_META_KEY`) has none worth publishing.
 
-    *include_foreign_repos* also counts a task whose ``repo_id`` names a
-    repository that is not one of its project's own.  The publisher never
-    collects such a task, so readiness leaves it out, but its work has not
-    reached the default branch either: the archive sweep asks with this set,
-    because ``fleet-meadow`` carried another project's repository id and was
-    archived undelivered.
+def _default_branch_name(column):
+    return func.regexp_replace(column, "^refs/heads/", "")
+
+
+def delivery_landed(depends_on):
+    """Structural readiness only; AdmissionView proves delivery in current Git.
+
+    SQL cannot observe a target. Completion releases the structural projection
+    so the request-scoped view can evaluate the edge. Receipts are history and
+    cannot satisfy delivery, including after a target rewind.
     """
-    project = projects.alias()
-    repo = repos.alias()
-    repo_scope = or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id)
-    if include_foreign_repos:
-        own = repos.alias()
-        repo_scope = or_(
-            repo_scope,
-            ~select(literal(1))
-            .where(own.c.id == task.c.repo_id, own.c.project_id == task.c.project_id)
-            .correlate(task)
-            .exists(),
-        )
-    delivered = development_delivery_receipt(task, project, repo)
-    return (
-        select(literal(1))
-        .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))
-        .where(
-            project.c.id == task.c.project_id,
-            project.c.hierarchical_integration_mode == "development",
-            has_publishable_artifact(task.c.branch_name),
-            ~development_empty_source(task, repo.c.id),
-            repo_scope,
-            ~delivered,
-            ~obsolete_marker(task),
-        )
-        .correlate(task)
-        .exists()
-    )
+    return depends_on.c.status == TaskStatus.COMPLETED.value
 
 
-def unmet_dependency_predicate(
-    dependency, depends_on, *, dep_types=None, include_development_delivery=False,
-):
+def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
     """Return whether one typed dependency edge is currently unsatisfied.
 
     ``dependency`` is a ``task_dependencies`` table or alias and
@@ -223,11 +139,7 @@ def unmet_dependency_predicate(
         clauses.append(
             and_(
                 dependency.c.dep_type == DepType.BLOCKS.value,
-                or_(
-                    depends_on.c.status != TaskStatus.COMPLETED.value,
-                    _development_delivery_pending(depends_on)
-                    if include_development_delivery else false(),
-                ),
+                depends_on.c.status != TaskStatus.COMPLETED.value,
             )
         )
 
@@ -292,11 +204,21 @@ def unmet_dependency_predicate(
             )
         )
 
+    if DepType.DELIVERY_OF.value in effective:
+        # The graph projection requires completion. AdmissionView separately
+        # requires current Git evidence before dispatch, demand or claims.
+        clauses.append(
+            and_(
+                dependency.c.dep_type == DepType.DELIVERY_OF.value,
+                not_(delivery_landed(depends_on)),
+            )
+        )
+
     return or_(*clauses) if clauses else false()
 
 
-def _blocks_unsat(*, include_development_delivery=False):
-    """``blocks`` — graph completion; optional legacy delivery for unmigrated readers."""
+def _blocks_unsat():
+    """``blocks`` — satisfied once the dependency is COMPLETED (graph completion only)."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
     return (
@@ -305,10 +227,7 @@ def _blocks_unsat(*, include_development_delivery=False):
         .where(
             and_(
                 bd.c.task_id == tasks.c.id,
-                unmet_dependency_predicate(
-                    bd, bt, dep_types={DepType.BLOCKS.value},
-                    include_development_delivery=include_development_delivery,
-                ),
+                unmet_dependency_predicate(bd, bt, dep_types={DepType.BLOCKS.value}),
             )
         )
         .exists()
@@ -372,6 +291,32 @@ def _conditional_unsat():
     )
 
 
+def _failure_reason(evidence) -> str:
+    """The operator-facing reason a ``failed`` receipt's evidence records."""
+    if isinstance(evidence, dict):
+        for key in ("reason", "error", "detail"):
+            if evidence.get(key):
+                return str(evidence[key])
+    return "delivery failed"
+
+
+def _delivery_of_unsat():
+    """``delivery-of`` — satisfied once the target's delivery has landed."""
+    dd = task_dependencies.alias()
+    dt = tasks.alias()
+    return (
+        select(literal(1))
+        .select_from(dd.join(dt, dt.c.id == dd.c.depends_on_task_id))
+        .where(
+            and_(
+                dd.c.task_id == tasks.c.id,
+                unmet_dependency_predicate(dd, dt, dep_types={DepType.DELIVERY_OF.value}),
+            )
+        )
+        .exists()
+    )
+
+
 def _gate_open():
     """Gates — an attached gate blocks until it is ``resolved``.
 
@@ -388,7 +333,7 @@ def _gate_open():
     )
 
 
-def blocked_predicate(*, include_development_delivery=False):
+def blocked_predicate():
     """Return the SQL boolean expression for "this ``tasks`` row is blocked".
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
@@ -396,15 +341,16 @@ def blocked_predicate(*, include_development_delivery=False):
     Built from correlated ``EXISTS`` subqueries.
 
     One clause per blocking rule, in the order of design §3.1.
-    The projection is graph/gate-only. Development delivery is observed
-    asynchronously by integration.admission outside SQL transactions. The
-    explicit compatibility option is only for consumers awaiting migration.
+    Development delivery of ``blocks`` edges is observed asynchronously by
+    integration.admission outside SQL transactions; a ``delivery-of`` edge
+    requires source completion here and current Git proof in AdmissionView.
     """
     return or_(
-        _blocks_unsat(include_development_delivery=include_development_delivery),
+        _blocks_unsat(),
         _parent_child_unsat(),
         _waits_for_unsat(),
         _conditional_unsat(),
+        _delivery_of_unsat(),
         _gate_open(),
     )
 
@@ -443,16 +389,19 @@ class BlockedStateMixin:
         if not affected:
             return set()
 
-        # Canonical (sorted) id order so concurrent PostgreSQL transactions
-        # acquire row locks in the same sequence — same deadlock-freedom
-        # discipline as workspace acquisition.
+        # An IN-list's order does not determine PostgreSQL's UPDATE scan or
+        # lock order. Lock explicitly in id order, as recursive deletion does.
+        # NO KEY UPDATE protects the projection without blocking FK readers.
         ordered = sorted(affected)
 
         before = {
             r[0]: r[1]
             for r in (
                 await conn.execute(
-                    select(tasks.c.id, tasks.c.is_blocked).where(tasks.c.id.in_(ordered))
+                    select(tasks.c.id, tasks.c.is_blocked)
+                    .where(tasks.c.id.in_(ordered))
+                    .order_by(tasks.c.id)
+                    .with_for_update(key_share=True)
                 )
             ).fetchall()
         }
@@ -646,10 +595,18 @@ class BlockedStateMixin:
         async with self._engine.begin() as conn:
             before = {
                 r[0]: r[1]
-                for r in (await conn.execute(select(tasks.c.id, tasks.c.is_blocked))).fetchall()
+                for r in (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.is_blocked)
+                        .order_by(tasks.c.id)
+                        .with_for_update(key_share=True)
+                    )
+                ).fetchall()
             }
             await conn.execute(
-                update(tasks).values(is_blocked=case((blocked_predicate(), 1), else_=0))
+                update(tasks)
+                .where(tasks.c.id.in_(sorted(before)))
+                .values(is_blocked=case((blocked_predicate(), 1), else_=0))
             )
             after = {
                 r[0]: r[1]
@@ -660,6 +617,80 @@ class BlockedStateMixin:
         await self.log_blocked_flips(flipped)
         await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
         return flipped
+
+    async def recompute_delivery_dependents(self, task_ids) -> set[str]:
+        """Recompute the blocked ``delivery-of`` dependents of *task_ids*.
+
+        The delivery observer's hook: a landing changes no row the dependent's
+        other recomputes are seeded from, so the observer seeds them when it
+        sees a target delivered.  Returns the ids that flipped.
+        """
+        ids = sorted(set(task_ids))
+        if not ids:
+            return set()
+        async with self._engine.begin() as conn:
+            waiters = set(
+                (
+                    await conn.execute(
+                        select(task_dependencies.c.task_id)
+                        .select_from(
+                            task_dependencies.join(
+                                tasks, tasks.c.id == task_dependencies.c.task_id
+                            )
+                        )
+                        .where(
+                            task_dependencies.c.depends_on_task_id.in_(ids),
+                            task_dependencies.c.dep_type == DepType.DELIVERY_OF.value,
+                            tasks.c.is_blocked == 1,
+                        )
+                    )
+                ).scalars()
+            )
+            if not waiters:
+                return set()
+            flipped = await self.recompute_blocked(waiters, conn=conn)
+            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+        await self.log_blocked_flips(flipped)
+        await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
+        return flipped
+
+    async def delivery_failures(self, task_ids) -> dict[str, str]:
+        """The newest failed landing of each of *task_ids* that is still current.
+
+        ``task_id -> reason`` from a ``failed`` root receipt recorded no
+        earlier than the task's latest completion, for explain.
+        """
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        completion = task_completion_records.alias()
+        latest_completion = (
+            select(func.max(completion.c.completed_at))
+            .where(completion.c.task_id == task_delivery_receipts.c.source_task_id)
+            .scalar_subquery()
+        )
+        async with self._engine.begin() as conn:
+            rows = await conn.execute(
+                select(
+                    task_delivery_receipts.c.source_task_id,
+                    task_delivery_receipts.c.resolution_evidence,
+                )
+                .where(
+                    task_delivery_receipts.c.source_task_id.in_(ids),
+                    task_delivery_receipts.c.target_task_id.is_(None),
+                    task_delivery_receipts.c.disposition == "failed",
+                    task_delivery_receipts.c.created_at
+                    >= func.coalesce(latest_completion, 0.0),
+                )
+                .order_by(
+                    task_delivery_receipts.c.created_at.desc(),
+                    task_delivery_receipts.c.id.desc(),
+                )
+            )
+            failures: dict[str, str] = {}
+            for task_id, evidence in rows.fetchall():
+                failures.setdefault(task_id, _failure_reason(evidence))
+        return failures
 
     async def tasks_with_graph_blockers(self, task_ids: list[str]) -> set[str]:
         """Of *task_ids*, which carry at least one blocking edge or gate?
@@ -706,8 +737,8 @@ class BlockedStateMixin:
         Development callers evaluate dynamic delivery admission separately;
         this SQL query never treats delivery rows as git authority.
 
-        ``status = READY ∧ is_blocked = 0 ∧ no hold:* label``, ordered
-        ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is
+        ``status = READY ∧ is_blocked = 0 ∧ no hold:* label ∧ no ingestion
+        batch hold``, ordered ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is
         any-of; both are AND-ed with each other.
         """
         stmt = select(tasks).where(
@@ -715,6 +746,7 @@ class BlockedStateMixin:
                 tasks.c.project_id == project_id,
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
+                not_ingest_held(),
             )
         )
         stmt = apply_label_filters(stmt, labels=labels, any_label=any_label, exclude_hold=True)
@@ -798,7 +830,17 @@ def _blocked_ignoring_conditional():
     ``conditional-blocks`` edges, and this one is a subset of the full
     predicate on graphs that carry them.
     """
-    return or_(_blocks_unsat(), _parent_child_unsat(), _waits_for_unsat(), _gate_open())
+    return or_(
+        _blocks_unsat(),
+        _parent_child_unsat(),
+        _waits_for_unsat(),
+        _delivery_of_unsat(),
+        _gate_open(),
+    )
+
+
+# Shared: the claim frontier applies the hold filter on every claim.
+_HOLD_LABEL = task_labels.alias("lbl_hold")
 
 
 def apply_label_filters(stmt, *, labels=None, any_label=None, exclude_hold=False):
@@ -826,7 +868,7 @@ def apply_label_filters(stmt, *, labels=None, any_label=None, exclude_hold=False
             .exists()
         )
     if exclude_hold:
-        th = task_labels.alias("lbl_hold")
+        th = _HOLD_LABEL
         stmt = stmt.where(
             not_(
                 select(literal(1))

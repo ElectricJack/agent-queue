@@ -88,7 +88,9 @@ class StubProxy:
     def __init__(self, upstream_ok: bool = True) -> None:
         self.stats = RelayStats()
         self.http_paths: list[str] = []
+        self.http_headers: list[list[tuple[bytes, bytes]]] = []
         self.ws_paths: list[str] = []
+        self.ws_headers: list[list[tuple[bytes, bytes]]] = []
         self.started = 0
         self.closed = 0
         self._upstream_ok = upstream_ok
@@ -104,11 +106,13 @@ class StubProxy:
 
     async def http(self, scope, receive, send) -> None:
         self.http_paths.append(scope["path"])
+        self.http_headers.append(list(scope["headers"]))
         await send({"type": "http.response.start", "status": 299, "headers": []})
         await send({"type": "http.response.body", "body": b"proxied"})
 
     async def websocket(self, scope, receive, send) -> None:
         self.ws_paths.append(scope["path"])
+        self.ws_headers.append(list(scope["headers"]))
         await receive()
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.send", "text": "proxied"})
@@ -257,6 +261,60 @@ async def test_a_lan_peer_is_refused_bearer_tokens_but_not_the_api(tmp_path):
     assert plain.status_code == 299
     assert (bearer.status_code, bearer.json()["error"]) == (403, "loopback_only")
     assert proxy.http_paths == ["/api/tasks"]
+
+
+async def test_proxy_overwrites_client_viewer_assertion(tmp_path):
+    app, proxy = _app(tmp_path, host="192.168.1.5")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.9", 50000)),
+        base_url="http://192.168.1.5:8082",
+    ) as client:
+        response = await client.get("/api/reviews/pull-requests", headers={
+            "x-aq-dashboard-viewer": "operator",
+        })
+    assert response.status_code == 299
+    viewer_headers = [value for name, value in proxy.http_headers[-1]
+                      if name.lower() == b"x-aq-dashboard-viewer"]
+    assert viewer_headers == [b"other"]
+
+
+def _stamped(headers: list[tuple[bytes, bytes]]) -> dict[bytes, list[bytes]]:
+    names = (b"x-aq-dashboard-viewer", b"x-aq-dashboard-peer")
+    return {name: [v for k, v in headers if k.lower() == name] for name in names}
+
+
+async def test_a_lan_host_shell_reaches_the_daemon_as_a_remote_viewer(tmp_path):
+    """The daemon's ``allow_remote`` gate reads this verdict and the real peer."""
+    app, proxy = _app(tmp_path, host="192.168.1.5")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.9", 50000)),
+        base_url="http://192.168.1.5:8082",
+    ) as client:
+        forged = {"x-aq-dashboard-viewer": "operator", "x-aq-dashboard-peer": "127.0.0.1"}
+        opened = await client.post("/api/host-shell", headers={
+            "origin": "http://192.168.1.5:8082", **forged,
+        })
+        bearer = await client.post("/api/host-shell", headers={
+            "authorization": "Bearer aqs_supervisor",
+        })
+    assert opened.status_code == 299
+    assert (bearer.status_code, bearer.json()["error"]) == (403, "loopback_only")
+    assert proxy.http_paths == ["/api/host-shell"]
+    assert _stamped(proxy.http_headers[-1]) == {
+        b"x-aq-dashboard-viewer": [b"other"], b"x-aq-dashboard-peer": [b"192.168.1.9"],
+    }
+
+    ws_headers = {"host": "192.168.1.5:8082", "origin": "http://192.168.1.5:8082", **forged}
+    with (
+        TestClient(app, base_url="http://192.168.1.5:8082",
+                   client=("192.168.1.9", 50000)) as ws_client,
+        ws_client.websocket_connect("/ws/terminal/aq-host-shell-1", headers=ws_headers) as ws,
+    ):
+        assert ws.receive_text() == "proxied"
+    assert proxy.ws_paths == ["/ws/terminal/aq-host-shell-1"]
+    assert _stamped(proxy.ws_headers[-1]) == {
+        b"x-aq-dashboard-viewer": [b"other"], b"x-aq-dashboard-peer": [b"192.168.1.9"],
+    }
 
 
 async def test_the_identity_endpoint_names_the_process_and_its_bundle(tmp_path):
@@ -588,6 +646,46 @@ async def test_a_websocket_echoes_through_the_server_with_its_origin_and_host_in
                 pass
         assert refused.value.response.status_code == 403
         assert len(daemon.websockets) == 1
+
+
+async def test_a_trusted_lan_terminal_relays_input_and_output_through_serve_mode(tmp_path):
+    """Model the WSL port-forward peer while exercising the real WebSocket relay."""
+    daemon = FakeDaemon()
+    origin = "http://192.168.1.69:5173"
+    async with serve_asgi(daemon.app) as daemon_url:
+        app = create_app(DashboardServerSettings(
+            host="0.0.0.0", api_url=daemon_url, trusted_origins=(origin,),
+            bundle_directory=stage_bundle(tmp_path),
+        ))
+
+        async def lan_app(scope, receive, send):
+            if scope["type"] == "websocket":
+                scope = {**scope, "client": ("172.29.48.1", 50000)}
+                scope["headers"] = [
+                    (key, origin.removeprefix("http://").encode() if key == b"host" else value)
+                    for key, value in scope["headers"]
+                ]
+            await app(scope, receive, send)
+
+        async with serve_asgi(lan_app) as url:
+            async with connect(
+                _ws(url) + "/ws/terminal/s1", origin=origin,
+                subprotocols=[TERMINAL_PROTOCOL],
+            ) as ws:
+                assert ws.subprotocol == TERMINAL_PROTOCOL
+                control = '{"type":"input","data":"hello"}'
+                await ws.send(control)
+                assert await asyncio.wait_for(ws.recv(), 5) == control
+                await ws.send(b"\x1b[32mterminal output\x1b[0m")
+                assert await asyncio.wait_for(ws.recv(), 5) == b"\x1b[32mterminal output\x1b[0m"
+            for denied_origin in ("http://evil.example",):
+                with pytest.raises(InvalidStatus) as denied:
+                    async with connect(_ws(url) + "/ws/terminal/s1", origin=denied_origin):
+                        pass
+                assert denied.value.response.status_code == 403
+        assert len(daemon.websockets) == 1
+        assert daemon.websockets[0].header("origin") == origin
+        assert daemon.websockets[0].header("host") == "192.168.1.69:5173"
 
 
 async def test_with_the_daemon_down_the_page_loads_and_the_api_says_why(tmp_path):
