@@ -1,0 +1,548 @@
+{
+  "cancel_playbook_run": {
+    "argument_reads_diagnostic_only": [
+      "run_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_cancel_playbook_run",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'run_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Playbooks V2 run '{run_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'run_id': run_id, 'status': outcome.lifecycle.value, 'outcome': outcome.outcome}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d225181be32acbce05930e695f6652e4665e09bd91424d20301bcebd15fc66e1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "dry_run_playbook": {
+    "argument_reads_diagnostic_only": [
+      "invoke_ai",
+      "playbook_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_run_v2_artifact": "sha256:1072068724127bf77d439f89d4160fef34f4559871567ee50d3eeca5e3c6b9e8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_dry_run_playbook",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': event}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No active task for this session'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'out of scope: event {key} mismatch'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Worker dry runs simulate AI steps; invoke_ai requires a supervisor'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._run_v2_artifact(playbook_id, event, dry_run=True, invoke_ai=bool(args.get('invoke_ai', False)))"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d8ca6fd7fdc66e72b0274f663a4ba42f8fed31dff954f82bb9cb22389572390e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_worker_git_scope.py"
+    ]
+  },
+  "get_playbook_source": {
+    "argument_reads_diagnostic_only": [
+      "playbook_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_get_playbook_source",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Playbook '{playbook_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Unsupported playbook scope: {scope}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Playbook source path escapes vault: {playbook_id}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Playbook source not found: {playbook_id}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'playbook_id': playbook_id, 'path': str(resolved), 'markdown': markdown, 'source_hash': source_digest(markdown)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:65cc339f322596919441039a25cfe86b993016701f5dcb8eb1493dfe6a8f6dbd",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_list_playbooks_v2.py"
+    ]
+  },
+  "inspect_playbook_run": {
+    "argument_reads_diagnostic_only": [
+      "run_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_inspect_playbook_run",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Playbooks V2 run '{run_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'run': asdict(run)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:670a1a1bd6d8070f051e2812011ffcced68571b0996740a2fe9121bc40f3205a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "list_playbook_runs": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "playbook_id",
+      "status"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_list_playbook_runs",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'runs': summaries, 'count': len(summaries)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:8032b463c30ecf861785b1a5967a15bde1b2c3595287f834caf77d1fe073133b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_list_playbooks_v2.py"
+    ]
+  },
+  "list_playbooks": {
+    "argument_reads_diagnostic_only": [
+      "scope"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_list_playbooks",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'playbooks': playbooks, 'count': len(playbooks)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d8e8d44893cd4384cc7db2dcb43d3638acd04b00e26c0cc4fee6408e1b66a38c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_list_playbooks_v2.py"
+    ]
+  },
+  "playbook_graph_view": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_cmd_playbook_v2_graph": "sha256:f70e5c717e556cf0edff0b886353bf576a3b93b8b8442ea5c8f80c972533e959",
+      "_v2_storage_unavailable": "sha256:4bbf0a4d13b97464679612599e113a1948712d185fa51fb0f7dadb3f9dc09b7c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_playbook_graph_view",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._cmd_playbook_v2_graph(args)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:bb24c686d656e932c20fa6df121d900a3a5a1d0edd0cd42b4bc8b0a965f304f1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "playbook_health": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_cmd_playbook_activation_health": "sha256:4acc147e3d7909d8e5e9c32bb4e531c35a641f5bed0384a05389b67c0db0a7e1",
+      "_v2_storage_unavailable": "sha256:4bbf0a4d13b97464679612599e113a1948712d185fa51fb0f7dadb3f9dc09b7c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_playbook_health",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._cmd_playbook_activation_health(args)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0b76ba5717cad86f5aac6accdbb5f0ff534f479c3dd63cf9c9c44a3534a1928d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "resume_playbook": {
+    "argument_reads_diagnostic_only": [
+      "decision",
+      "human_input",
+      "run_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_resume_playbook",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Playbooks V2 run '{run_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Only human waits accept a decision; technical waits consume their registered event or timer'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._legacy_ask_decision(source, args, option_key=str(args.get('human_input') or args.get('decision') or 'continue'))"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': exc.code, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': exc.code, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fb0cfff8d6259bc9e71757653c3929071f56fa94382447c87b8fb78fa9b165e6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "run_playbook": {
+    "argument_reads_diagnostic_only": [
+      "playbook_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_run_v2_artifact": "sha256:1072068724127bf77d439f89d4160fef34f4559871567ee50d3eeca5e3c6b9e8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_run_playbook",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': event}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._run_v2_artifact(playbook_id, event)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7b972044488eb08f4df6e973163a4c8854c9b4c9f0ed684af677e6d2c9460a11",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "show_playbook_graph": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_cmd_playbook_v2_graph": "sha256:f70e5c717e556cf0edff0b886353bf576a3b93b8b8442ea5c8f80c972533e959",
+      "_v2_storage_unavailable": "sha256:4bbf0a4d13b97464679612599e113a1948712d185fa51fb0f7dadb3f9dc09b7c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_show_playbook_graph",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._cmd_playbook_v2_graph(args)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9fb17cda6b431aec102b7a76b758e7d392f1302cba7855fa2b307caf559d0f94",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "update_playbook_source": {
+    "argument_reads_diagnostic_only": [
+      "expected_source_hash",
+      "markdown",
+      "playbook_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_v2_script_pins": "sha256:df9571fab0a09392b96e81813381b44e8ae9121ec9b69beda17eb67a483daed3"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_update_playbook_source",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'markdown is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Playbook '{playbook_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Unsupported playbook scope: {scope}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Playbook source path escapes vault: {playbook_id}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Playbook source not found: {playbook_id}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Failed to read current source: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': current_hash, 'compiled': False, 'error': 'conflict', 'reason': 'vault_changed_underneath', 'current_source_hash': current_hash, 'expected_source_hash': expected_hash}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Failed to write source: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': list(loaded.errors), 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': ['frontmatter id must match the playbook being edited'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': errors, 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': [f'active V2 artifact could not be loaded: {exc}'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': errors or ['V2 compiler did not produce an artifact'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': ['V2 compiler did not hash the artifact'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': [f'frontmatter scope must match the installed activation ({scope}:{identifier or '<root>'})'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': [f'V2 artifact persistence failed: {exc}'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': False, 'errors': [f'V2 activation failed: {exc}'], 'retries_used': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'playbook_id': playbook_id, 'source_hash': digest, 'compiled': True, 'version': artifact.version, 'node_count': len(artifact.steps), 'scope': artifact_scope, 'triggers': list(dict.fromkeys((rule.trigger.event_type for rule in artifact.rules))), 'retries_used': 0}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:619e213d28c0670337f022dec14c3935b7b78b0613f44de8e14d517b646f6ce2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_update_playbook_source_v2.py",
+      "tests/test_playbook_script.py"
+    ]
+  }
+}
