@@ -947,6 +947,32 @@ async def test_repository_contention_returns_cooldown_and_resumes_same_preparati
         await train
 
 
+async def test_retained_verification_wait_is_its_own_retained_stage(handler, db, tmp_path):
+    from src.git.repository_lock import RetainedVerificationPending
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    prefetch = handler.orchestrator._worktree_slots().prefetch_slot_for_task
+    prefetch.side_effect = RetainedVerificationPending(5.0)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "prepare_failed", result
+    assert "verification in progress" in result["reason"]
+    assert result["retry_after"] > 0 and result["refusal_count"] == 1
+    assert prefetch.await_count == 1
+    held = await db.get_session(env.sid)
+    assert (held.claim_phase, held.last_claim_epoch, held.claim_failure_count) == (
+        "preparing", 1, 0,
+    )
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert (failure["stage"], failure["disposition"]) == ("retained_verification", "retained")
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+
+    prefetch.side_effect = None
+    await expire_claim_refusal(db, env.sid)
+    resumed = await settled_claim(env.handler, {"next": True})
+    assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+    assert await db.get_task_meta(env.task_id, "prepare_failure") is None
+
+
 async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
     from src.integration import lock as lock_module
 
@@ -1528,6 +1554,9 @@ class TestClaim:
         h = scoped(handler, sid)
         initial = await h._cmd_task_claim({"next": True})
         assert initial["result"] == "claim_in_progress"
+        # The result is delivered only to a claim, never to an ended turn.
+        assert "in this same turn" in initial["instructions"]
+        assert "aq task claim --next" in initial["instructions"]
         job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
         finish.set()
         await job
@@ -7294,6 +7323,83 @@ async def test_development_readiness_pool_and_claim_follow_git(
     assert (await settled_claim(scoped(handler, sid), {"next": True}))["task"]["id"] == "dependent"
 
 
+async def test_development_claim_accepts_source_bookkeeping_during_preparation(
+    handler, db, tmp_path, development_admission,
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    before = (await db.get_task("prerequisite")).updated_at
+    sid, _ = await pool_session(db, tmp_path)
+
+    async def reset(*args, **kwargs):
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                updated_at=before + 1,
+            ))
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+        side_effect=reset,
+    )
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("prerequisite")).updated_at == before + 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+async def test_development_claim_of_another_candidates_source_activates(
+    handler, db, tmp_path, development_admission,
+):
+    # "downstream" is a candidate in the same batch whose source is "dependent",
+    # so taking "dependent" moves a request the batch fingerprint fences.
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    await mktask(db, "downstream", profile_id="worker", repo_id="repo")
+    await db.add_dependency("downstream", "dependent")
+    sid, _ = await pool_session(db, tmp_path)
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("dependent")).claim_epoch == 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+@pytest.mark.parametrize("movement", ["claim", "completion"])
+async def test_admission_fences_claimed_sources_except_the_claims_own_move(db, movement):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "dependent", profile_id="worker")
+    await mktask(db, "downstream", profile_id="worker")
+    await db.add_dependency("downstream", "dependent")
+    ids = {"dependent", "downstream"}
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, ids, conn))[-1]
+    batch = AdmissionSnapshot(db, ids, ids, inputs)
+
+    status = "IN_PROGRESS" if movement == "claim" else "COMPLETED"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status=status, claim_epoch=1,
+        ))
+
+    # Only the claim's own lifecycle move is exempt, and only for that claim.
+    assert await batch.matches(task_id="dependent") is (movement == "claim")
+    assert not await batch.matches(task_id="downstream")
+    assert not await batch.matches()
+    for tid in ids:
+        [reason] = batch.reasons[tid]
+        assert reason["code"] == "admission_inputs_changed"
+        assert "dependent.task_status" in reason["detail"]
+        assert "dependent.claim_epoch" in reason["detail"]
+
+
 @pytest.mark.parametrize("movement", ["reopen", "completion", "edge", "gate", "hold", "target", "config"])
 async def test_development_preparation_invalidates_old_admission(
     handler, db, tmp_path, development_admission, movement
@@ -8954,6 +9060,91 @@ async def test_retained_binding_probe_can_exclude_the_claimants_owner_row(db, ow
     ) is (owner != "t-next")
 
 
+@pytest.mark.parametrize("target", ["candidate-a", "candidate-b"])
+async def test_admission_accepts_same_decision_route_refresh(db, target):
+    from src.integration.admission import observe_admission
+
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker", route_source="router",
+                     route={"provider": "anthropic", "live_context": {"as_of": 1}})
+    view = await observe_admission(db, ["candidate-a", "candidate-b"], None)
+    assert view.allowed == {"candidate-a", "candidate-b"}
+
+    await db.update_task(target, route={
+        "provider": "anthropic", "live_context": {"as_of": 2},
+        "selection": {"snapshot_age_seconds": 30, "effective_headroom": 0.8},
+        "scores": [{"load": 2}],
+    })
+
+    assert await view.matches()
+    async with db.immediate() as conn:
+        assert await view.matches(conn=conn, lock=True, task_id="candidate-a")
+    assert not view.rejection_reasons("candidate-a")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("profile_id", "other-worker"),
+    ("intelligence_class", "other-class"),
+    ("route_source", "override"),
+    ("route", {"provider": "openai"}),
+    ("parent_task_id", "parent"),
+])
+@pytest.mark.parametrize("target", ["candidate-a", "candidate-b"])
+async def test_admission_fences_only_selected_candidate_identity(db, field, value, target):
+    from src.integration.admission import observe_admission
+
+    await db.create_profile(AgentProfile(id="other-worker", name="other"))
+    await mktask(db, "parent", status=TaskStatus.DEFINED)
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker", route_source="router",
+                     route={"provider": "anthropic"})
+    view = await observe_admission(db, ["candidate-a", "candidate-b"], None)
+    assert view.allowed == {"candidate-a", "candidate-b"}
+    changes = {field: value}
+    if field == "profile_id":
+        changes["route_source"] = "router"
+    await db.update_task(target, **changes)
+
+    async with db.immediate() as conn:
+        assert await view.matches(conn=conn, lock=True, task_id="candidate-a") is (
+            target != "candidate-a"
+        )
+    if target == "candidate-a":
+        assert view.rejection_reasons("candidate-a")[0]["code"] == "admission_policy_changed"
+    else:
+        assert not view.rejection_reasons("candidate-a")
+    # Initial batch selection still rejects any candidate whose identity moved.
+    assert not await view.matches()
+
+
+@pytest.mark.parametrize("target", ["incoming", "unrelated"])
+async def test_claim_survives_route_refresh_during_workspace_preparation(
+    handler, db, tmp_path, target,
+):
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "incoming", profile_id="worker", priority=1, route_source="router",
+                 route={"provider": "anthropic", "live_context": {"as_of": 1}})
+    await mktask(db, "unrelated", profile_id="worker", priority=2, route_source="router",
+                 route={"provider": "anthropic"})
+    sid, work_dir = await pool_session(db, tmp_path)
+
+    async def refresh_route(*args, **kwargs):
+        await db.update_task(target, route={
+            "provider": "openai" if target == "unrelated" else "anthropic",
+            "live_context": {"as_of": 2},
+        })
+        return "aq/incoming"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = refresh_route
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "incoming"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (work_dir / ".aq/claim.json").exists()
+    assert await db.get_task_meta("incoming", "prepare_failure") is None
+
+
 @pytest.mark.parametrize("stage", ["source", "policy"])
 async def test_admission_clear_records_failed_inputs_in_view_and_explain(
     handler, db, monkeypatch, stage,
@@ -8996,6 +9187,97 @@ async def test_admission_clear_records_failed_inputs_in_view_and_explain(
     reasons = explained["reasons"]
     assert any(r["code"] == code and comparison in r["detail"] for r in reasons), explained
     assert not any(r["code"] == "development_snapshot_changed" for r in reasons), explained
+
+
+@pytest.mark.parametrize("phase", ["observation", "activation"])
+@pytest.mark.parametrize("completed", [False, True])
+async def test_admission_ignores_source_bookkeeping(db, monkeypatch, caplog, phase, completed):
+    from src.integration import admission
+    from src.models import TaskCompletion
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "prerequisite", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    await db.add_dependency("dependent", "prerequisite")
+    if completed:
+        await db.save_task_completion(TaskCompletion(
+            id="source-close", task_id="prerequisite", outcome="pass", commits=[],
+            completed_at=NOW,
+        ))
+    before = (await db.get_task("prerequisite")).updated_at
+
+    async def bookkeeping():
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                updated_at=before + 1,
+            ))
+
+    if phase == "observation":
+        original, reads = admission._inputs, 0
+
+        async def with_bookkeeping(*args, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                await bookkeeping()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(admission, "_inputs", with_bookkeeping)
+    with caplog.at_level("DEBUG", logger="src.integration.admission"):
+        view = await admission.observe_admission(db, ["dependent"], None)
+        assert view.allowed == {"dependent"} and not view.changed, view.reasons
+        if phase == "activation":
+            await bookkeeping()
+        async with db.immediate() as conn:
+            assert await view.matches(conn=conn, lock=True, task_id="dependent")
+    assert not view.rejection_reasons("dependent")
+    assert (await db.get_task("prerequisite")).updated_at == before + 1
+    assert "prerequisite.task_version" in caplog.text
+    assert "bookkeeping" in caplog.text
+
+
+@pytest.mark.parametrize("changed", [
+    "branch_name", "task_status", "legacy_generation", "claim_epoch", "completion_id",
+    "settled_target_ref",
+])
+async def test_admission_delivery_request_diagnostics_name_changed_fields(db, changed):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+    from src.models import TaskCompletion
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "prerequisite", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    await db.add_dependency("dependent", "prerequisite")
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, {"dependent"}, conn))[-1]
+    batch = AdmissionSnapshot(db, {"dependent"}, {"dependent"}, inputs)
+
+    if changed == "completion_id":
+        await db.save_task_completion(TaskCompletion(
+            id="new-close", task_id="prerequisite", outcome="pass", commits=[],
+            completed_at=NOW,
+        ))
+    elif changed == "settled_target_ref":
+        await db.set_task_meta("prerequisite", "development_delivery_settlement", {
+            "repository_id": "r", "target_ref": "refs/heads/other", "reason": "retargeted",
+        })
+    else:
+        column, value = {
+            "branch_name": ("branch_name", "aq/new-source"),
+            "task_status": ("status", "READY"),
+            "legacy_generation": ("legacy_completion_id", "new-generation"),
+            "claim_epoch": ("claim_epoch", 2),
+        }[changed]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                **{column: value},
+            ))
+
+    assert not await batch.matches(task_id="dependent")
+    [reason] = batch.reasons["dependent"]
+    assert reason["code"] == "admission_inputs_changed"
+    assert "delivery requests" in reason["detail"]
+    assert f"prerequisite.{changed}" in reason["detail"]
 
 
 @pytest.mark.parametrize("comparison", [

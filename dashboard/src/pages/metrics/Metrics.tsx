@@ -107,11 +107,11 @@ export default function Metrics() {
 
       <SustainedLagBanner samples={feed.samples} />
 
-      <MetricsSection title="Stat tiles" storageKey="aq:metrics:stat-tiles:open">
+      <MetricsSection title="Stat tiles">
         <StatTiles sample={feed.latest} />
       </MetricsSection>
 
-      <MetricsSection title="Graphs" storageKey="aq:metrics:graphs:open">
+      <MetricsSection title="Graphs">
         {feed.isLoading ? (
           <p className="text-sm text-gray-500">Loading history…</p>
         ) : (
@@ -157,11 +157,11 @@ export default function Metrics() {
         )}
       </MetricsSection>
 
-      <MetricsSection title="Provider usage" storageKey="aq:metrics:provider-usage:open">
+      <MetricsSection title="Provider usage">
         <ProviderUsage />
       </MetricsSection>
 
-      <MetricsSection title="Delivery latency" storageKey="aq:metrics:delivery-latency:open">
+      <MetricsSection title="Delivery latency">
         <DeliveryLatency />
       </MetricsSection>
     </div>

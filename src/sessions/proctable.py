@@ -45,12 +45,15 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "MarkedProc",
     "ProcEntry",
+    "agent_command_running",
     "file_holders_sync",
     "is_alive_sync",
     "kill_marked",
     "kill_marked_sync",
     "kill_tree",
+    "marked_inventory",
     "marked_root_sync",
     "read_entry_sync",
     "read_environ_sync",
@@ -63,6 +66,13 @@ _PROC = Path("/proc")
 #: The env key every fenced kill compares.  Matches
 #: :data:`src.sessions.env.AQ_MARKER_KEYS`.
 _TOKEN_KEY = "AQ_INSTANCE_TOKEN"
+
+#: Set on every pytest process an ``aq test`` run launches.  Matches
+#: :data:`src.resources.test_runs.RUN_ID_KEY`.
+_TEST_RUN_KEY = "AQ_TEST_RUN_ID"
+
+#: A harness runs each tool command in one of these.
+_SHELL_COMMS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "fish"})
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,42 @@ class ProcEntry:
     start_ticks: int
     #: Value of the requested env marker, when the scan asked for one.
     marker: str | None = None
+
+
+@dataclass(frozen=True)
+class MarkedProc:
+    """One live process carrying an ``AQ_INSTANCE_TOKEN``."""
+
+    pid: int
+    ppid: int
+    comm: str
+    token: str
+    #: Carries ``AQ_TEST_RUN_ID``: part of an ``aq test`` run.
+    test_run: bool = False
+
+
+def agent_command_running(
+    procs: list[MarkedProc], token: str, agent_names: tuple[str, ...] = ()
+) -> bool:
+    """True while the session minted *token* is running a command of its own.
+
+    That is an ``aq test`` run, or a shell whose parent is the harness: the
+    process named by *agent_names* or, when none matches, the session's root
+    (its parent carries no token).  A shell the harness spawned is a tool
+    call -- foreground, or a background task its ended turn waits on.  A shell
+    further down is not: an MCP server's ``npm exec`` runs its own ``sh``, and
+    the server lives as long as the session.
+    """
+    mine = {p.pid: p for p in procs if token and p.token == token}
+    for proc in mine.values():
+        if proc.test_run:
+            return True
+        parent = mine.get(proc.ppid)
+        if proc.comm not in _SHELL_COMMS or parent is None or parent.comm.startswith("tmux"):
+            continue
+        if parent.comm in agent_names or parent.ppid not in mine:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +186,36 @@ def _scan_sync(marker_key: str | None) -> list[ProcEntry]:
             ProcEntry(pid=pid, ppid=ppid, comm=comm, start_ticks=start_ticks, marker=marker)
         )
     return entries
+
+
+def _marked_inventory_sync() -> list[MarkedProc]:
+    """Every live token-marked process; unreadable and exited ones are skipped."""
+    procs: list[MarkedProc] = []
+    try:
+        pids = [int(p.name) for p in _PROC.iterdir() if p.name.isdigit()]
+    except OSError:
+        return procs
+    for pid in pids:
+        try:
+            raw = (_PROC / str(pid) / "stat").read_bytes().decode("ascii", errors="replace")
+        except OSError:
+            continue
+        rest = raw[raw.rfind(")") + 2 :].split()
+        if len(rest) < 2 or rest[0] in ("Z", "X") or not rest[1].isdigit():
+            continue
+        env = _read_environ_sync(pid)
+        if not env or not env.get(_TOKEN_KEY):
+            continue
+        procs.append(
+            MarkedProc(
+                pid=pid,
+                ppid=int(rest[1]),
+                comm=raw[raw.find("(") + 1 : raw.rfind(")")],
+                token=env[_TOKEN_KEY],
+                test_run=_TEST_RUN_KEY in env,
+            )
+        )
+    return procs
 
 
 def _descendants_sync(root: int) -> list[ProcEntry]:
@@ -305,6 +381,12 @@ def kill_marked_sync(
 async def scan_by_env_marker(marker_key: str) -> list[ProcEntry]:
     """Every live process whose environment carries *marker_key*."""
     return await asyncio.to_thread(_scan_sync, marker_key)
+
+
+async def marked_inventory() -> list[MarkedProc]:
+    """Every live process carrying an ``AQ_INSTANCE_TOKEN``, for
+    :func:`agent_command_running`.  One scan serves every session."""
+    return await asyncio.to_thread(_marked_inventory_sync)
 
 
 def _workspace_quiescent_sync(paths: tuple[str, ...], instance_token: str) -> bool:
