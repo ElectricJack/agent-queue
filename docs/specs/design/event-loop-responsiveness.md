@@ -60,3 +60,14 @@ content. It does not establish which code caused the historical fleet outage;
 operator deployment and a fleet soak remain necessary to verify that incident.
 Unit checks use thread barriers to prove health proceeds while parsing or
 collection is blocked, instead of machine-dependent wall-clock assertions.
+
+## Isolated Git repository cleanup
+
+Incident samples on 2026-10-25 repeatedly located the loop in synchronous
+`TemporaryDirectory` cleanup during authenticated origin fetches. Isolated Git
+directories (fetch, clone, push and remote reads) must be recursively removed in
+a worker thread. The owning operation waits for removal before returning or
+propagating cancellation, including cancellation received during cleanup. Git
+subprocesses and credential brokers retain their existing termination and
+zeroization order. Regression checks use thread barriers to prove the loop runs
+while removal is blocked and the operation retains ownership until removal ends.

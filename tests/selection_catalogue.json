@@ -3709,7 +3709,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:a20d9a92dd9368bb4d7485b39c32559442f4ea3d26bea22e78a931ee0f146585",
+      "digest": "sha256:559c750b90172ed33154567ec0b3f032058c5ccc99844687d52f403b17270eed",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3722,6 +3722,7 @@
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
+        "src.database.queries.hierarchy_queries",
         "src.database.queries.ingest_hold",
         "src.database.queries.task_queries",
         "src.database.tables",
@@ -5183,14 +5184,16 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:f842f37b8241d9dd6e966a90d619083494660571cc5a793b151c7d631fa014df",
+      "digest": "sha256:eaafe78596b612430a44af7dff6d95197655d8d8fcc7998bd98100543bf449a7",
       "imports": [
         "src.database",
         "src.database.queries.conversation_queries",
         "src.database.tables",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
     },
     "tests/test_conversation_render.py": {
@@ -5213,13 +5216,14 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:c9530260494f0baf95572c372293a1f9655657853211df18fca67f2aabacc1e3",
+      "digest": "sha256:5258c51fa3cff32309002960aa06cfa07529dd3e8352b945a8eb97914bdfa2c5",
       "imports": [
         "src.commands.principal",
         "src.config",
         "src.conversations.intake",
         "src.conversations.outbox",
         "src.conversations.preconditions",
+        "src.database.tables",
         "src.digest",
         "src.discord.inbound",
         "src.discord.intake_diagnostics",
@@ -5235,7 +5239,6 @@
       ],
       "markers": [
         "parametrize",
-        "timeout",
         "tmux"
       ],
       "summary": "Production outbox binding and global-supervisor conversation round trips."
@@ -9464,8 +9467,9 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:de72fddfdd8a6396cf9bec8a23613f9b3786e5d874a2f1c813abbdff1c667a48",
+      "digest": "sha256:dc89c23a21f3c778410e0e67b9626d9cad974fa25db76d51b38f3d18330d389e",
       "imports": [
+        "src.config",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
@@ -10092,12 +10096,13 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:260d76a8f3c27cf0adeef969722615705feae4eccadf13caefea426547fa818e",
+      "digest": "sha256:89cec1d248fe9a98eaa1c824dec28dff472d6c7e648a5a35a8c1040d08c3f26b",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.root_pull_requests",
+        "src.integration.status",
         "src.models"
       ],
       "markers": [
@@ -20236,8 +20241,9 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:09865b26435dc2f731cedc81f092ea8dbf5b962784a4b750061e59adeed88d3c",
+      "digest": "sha256:48f4ecad44c456b7a0dce80ba57e8ac5f686f746a4bcdccca9e241202514d2c6",
       "imports": [
+        "src.claim_file",
         "src.cli.waits",
         "src.commands",
         "src.commands.principal",
@@ -20252,6 +20258,7 @@
         "src.integration.admission",
         "src.integration.delivery_observer",
         "src.models",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.prime",
         "src.prime.budgets",

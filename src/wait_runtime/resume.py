@@ -12,7 +12,7 @@ from sqlalchemy import insert, select, update
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
     admission_reservations, agents, continuations, events, messages, provider_availability,
-    tasks, sessions,
+    tasks, sessions, workspaces,
 )
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
@@ -195,8 +195,8 @@ class ResumeTransaction:
                 raise WaitError('wait.unavailable', 'worktree base disappeared')
             await self.db.update_workspace(workspace.id, workspace_path=target)
             self.orch._worktree_base_paths[target] = base.workspace_path
-            await self.orch._worktree_slots().reprovision_slot(
-                replace(workspace, workspace_path=target), kind, prune=False,
+            await self.reprovision_assigned_slot(
+                replace(workspace, workspace_path=target), kind, task, intent['branch'],
             )
             # A restart may have landed before the old folder was retired.
             await self.retire_checkout(stage['old_path'], target, base)
@@ -237,10 +237,21 @@ class ResumeTransaction:
         self.orch._worktree_base_paths[target] = base.workspace_path
         # reprovision reuses this *new* checkout and applies the configured
         # setup and ownership sentinel. It never copies an old agent folder.
-        await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
+        await self.reprovision_assigned_slot(fresh, kind, task, intent['branch'])
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
         await self.retire_checkout(path, target, base)
         return target
+
+    async def reprovision_assigned_slot(self, workspace, kind, task, branch):
+        """Restore the active assignment after reprovision writes a free sentinel."""
+        slots = self.orch._worktree_slots()
+        await slots.reprovision_slot(workspace, kind, prune=False)
+        sentinel = slots.read_sentinel(workspace.workspace_path)
+        if sentinel is None:
+            raise WaitError('wait.unavailable', 'reprovisioned slot sentinel is missing')
+        slots.write_sentinel(workspace.workspace_path, replace(
+            sentinel, task_id=task.id, branch=branch, assigned_at=self.clock(),
+        ))
 
     async def retire_checkout(self, old_path, target, base):
         """Remove the superseded detached folder once no row names it.
@@ -364,7 +375,7 @@ class ResumeTransaction:
                     'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     async def bind_launch(self, action, record):
-        """Commit the next process identity and immutable envelope before spawn."""
+        """Commit the next writer's acquisition receipt and outcome before spawn."""
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == action.continuation_id,
@@ -381,6 +392,21 @@ class ResumeTransaction:
                     or task['assigned_agent_id'] != action.agent_id
                     or task['claim_epoch'] != record.last_claim_epoch):
                 raise WaitError('continuation.stale_generation', 'launch reservation changed')
+            workspace = (await conn.execute(select(workspaces).where(
+                workspaces.c.workspace_path == record.work_dir,
+            ).with_for_update())).mappings().one_or_none()
+            if (workspace is None or not workspace['enabled']
+                    or workspace['project_id'] != task['project_id']
+                    or workspace['locked_by_task_id'] != task['id']
+                    or workspace['locked_by_agent_id'] != action.agent_id
+                    or record.task_id != task['id'] or record.agent_id != action.agent_id
+                    or record.project_id != task['project_id']):
+                raise WaitError('continuation.stale_generation', 'launch workspace binding changed')
+            await self.db.set_task_meta(task['id'], 'claim_workspace', {
+                'workspace_id': workspace['id'], 'generation': workspace['generation'],
+                'session_id': record.id, 'instance_token': record.instance_token,
+                'claim_epoch': record.last_claim_epoch,
+            }, conn=conn)
             held = await held_messages(conn, wait)
             ids = [m['id'] for m in held]
             envelope = wait_outcome_envelope(wait, intent, held_messages=ids)

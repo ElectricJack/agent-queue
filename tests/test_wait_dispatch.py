@@ -1,6 +1,7 @@
 """Authoritative source transitions write unconditional, transactional wait events."""
 
 from dataclasses import replace
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -471,6 +472,248 @@ async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
     assert dispatcher.commit.await_count == 1
     assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
+async def test_unused_ci_retries_retire_in_batches_during_backoff_without_observation(
+    runtime_env, monkeypatch,
+):
+    from src.waits import loops
+
+    env = runtime_env
+    service = runtime(env)
+    listener = service.listener
+    assert await service.lease()
+    for n in range(5):
+        await env.db.wait_source_commit(source_key=f"ci_check:repo:sha:unit-{n}", generation=0,
+            revision="success", outcome_ref=f"check:{n}", payload={})
+    # An unrelated event behind the cursor still requires its lifecycle dispatch.
+    other = await env.db.wait_source_commit(source_key="ciXcheck:lifecycle", generation=0,
+        revision="1", outcome_ref="other", payload={})
+    watermark = await env.db.wait_source_watermark()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+    listener.batch_size = 2
+    listener._retry_due = {r["seq"]: NOW + 1000 for r in await records(env, wait_source_events)
+                           if r["seq"] != other}
+    prepare = AsyncMock(side_effect=AssertionError("unused CI must not prepare owner progress"))
+    monkeypatch.setattr(loops, "prepare_progress", prepare)
+    dispatched = []
+
+    async def dispatch(conn, event):
+        assert event["seq"] == other
+        dispatched.append(event["seq"])
+
+    listener._dispatch = dispatch
+    # The only preparation/dispatch belongs to the unrelated lifecycle source.
+    prepare.side_effect = None
+    assert await service.drain(watermark) == 3
+    assert dispatched == [other]
+    assert prepare.await_count == 1
+    prepare.side_effect = AssertionError("unused CI must not prepare owner progress")
+    assert listener.changed.is_set()
+    assert await service.drain(watermark) == 2
+    assert await service.drain(watermark) == 1
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == watermark
+    assert listener._retry_due == {}
+
+
+@pytest.mark.parametrize("producer", ["pool", "config", "workspace"])
+@pytest.mark.parametrize("retained", [False, True])
+async def test_unused_resource_backlog_retires_but_provider_lifecycle_still_dispatches(
+    runtime_env, monkeypatch, producer, retained,
+):
+    env = runtime_env
+    service = runtime(env)
+    listener = service.listener
+    assert await service.lease()
+    unused = []
+    for n in range(5):
+        unused.append(await env.db.wait_source_commit(**resource_invalidation(
+            producer=producer, identity=f"source-{n}", revision="1", outcome_ref="hint",
+            payload={})))
+    provider = await env.db.wait_source_commit(**resource_invalidation(
+        producer="provider", identity="fake", revision="1", outcome_ref="recovery", payload={}))
+    watermark = await env.db.wait_source_watermark()
+    if retained:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+        listener._retry_due = {seq: NOW + 1000 for seq in unused}
+    listener.batch_size = 2
+    recovery = AsyncMock()
+    monkeypatch.setattr(service.lifecycle.resume, "recovery_event", recovery)
+    observed = []
+    original = listener._dispatch
+
+    async def dispatch(conn, event):
+        assert event["seq"] == provider
+        observed.append(event["seq"])
+        return await original(conn, event)
+
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    assert sum([await service.drain(watermark) for _ in range(3)]) == 6
+    assert observed == [provider]
+    recovery.assert_awaited_once()
+    assert recovery.await_args.args[1]["seq"] == provider
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == watermark
+    assert listener._retry_due == {}
+
+
+@pytest.mark.parametrize("source", [None, "ci_check:repo:sha:unit", "resource_invalidation:workspace:w"])
+async def test_unsubscribed_listener_does_not_prepare_fleet_admission(runtime_env, monkeypatch, source):
+    service = runtime(runtime_env)
+    if source:
+        await runtime_env.db.wait_source_commit(source_key=source, generation=0,
+            revision="1", outcome_ref="hint", payload={})
+
+    def forbidden(**kwargs):
+        pytest.fail("unsubscribed listener must not prepare fleet admission")
+
+    monkeypatch.setattr(service.scheduler.reader, "prepared", forbidden)
+    assert await service.listener.tick()
+    assert all(r["dispatched_at"] is not None
+               for r in await records(runtime_env, wait_source_events))
+
+
+async def test_listener_prepares_admission_outside_graph_after_registration_race(
+    runtime_env, monkeypatch,
+):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    observation = {"state": "unsatisfied", "revision": "1"}
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(cond, **observation))
+    registry = build_registry(resource_reader=reader)
+    seq = await env.db.wait_source_commit(**resource_invalidation(
+        producer="workspace", identity="w", revision="1", outcome_ref="hint", payload={}))
+    service = runtime(env, registry=registry, dispatcher=ObservingDispatcher(registry))
+    original_lock = listener_module.lock_graph
+    registered = False
+    preparations = []
+
+    async def register_before_lock(conn, **kwargs):
+        nonlocal registered
+        if not registered:
+            registered = True
+            await register(env, {"kind": "resource", "blocker": "workspace", "identity": "opaque",
+                                 "source_revision": "1"}, registry=registry,
+                           scope=Scope("p", "scheduler", "source", principal="service"))
+            observation.update(state="satisfied", revision="2")
+        await original_lock(conn, **kwargs)
+
+    @asynccontextmanager
+    async def prepared(**kwargs):
+        # Taking this fence in a different transaction proves preparation
+        # cannot be entered while the dispatch transaction still holds it.
+        async with env.db._engine.begin() as conn:
+            await original_lock(conn, queued=True, timeout=0.25)
+        preparations.append(kwargs)
+        yield
+
+    monkeypatch.setattr(listener_module, "lock_graph", register_before_lock)
+    monkeypatch.setattr(service.scheduler.reader, "prepared", prepared)
+    assert await service.listener.tick()
+    assert len(preparations) == 1
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == seq
+
+
+@pytest.mark.parametrize("producer", ["pool", "config", "workspace"])
+async def test_resource_retry_retirement_preserves_pending_resource_subscriber(runtime_env, producer):
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    registry = build_registry(resource_reader=reader)
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=registry,
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    seq = await env.db.wait_source_commit(**resource_invalidation(
+        producer=producer, identity="producer", revision="1", outcome_ref="hint", payload={}))
+    service = runtime(env, registry=registry)
+    assert await service.lease()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+    assert await service.listener._retire_unused_retries(seq) == 0
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
+
+
+@pytest.mark.parametrize("subscriber", [
+    "pending", "satisfied", "cancelled", "unverified", "watermarked", "other_generation",
+])
+async def test_ci_retry_retirement_preserves_only_unobserved_pending_subscribers(
+    runtime_env, subscriber,
+):
+    env = runtime_env
+    receipt = await register(env)
+    seq = await env.db.wait_source_commit(source_key="ci_check:repo:sha:unit", generation=0,
+        revision="success", outcome_ref="check", payload={})
+    service = runtime(env)
+    assert await service.lease()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(source_key="ci_check:repo:sha:unit",
+                 source_generation=1 if subscriber == "other_generation" else 0,
+                 outcome=subscriber if subscriber in {"satisfied", "cancelled"} else "pending",
+                 verification_state="stale" if subscriber == "unverified" else "verified",
+                 source_watermark_seq=seq if subscriber == "watermarked" else 0))
+    retired = await service.listener._retire_unused_retries(seq)
+    assert retired == (0 if subscriber == "pending" else 1)
+    assert ((await records(env, wait_source_events))[0]["dispatched_at"] is None) == (
+        subscriber == "pending")
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == seq
+
+
+async def test_ci_retry_retirement_rechecks_subscriptions_after_graph_fence(runtime_env, monkeypatch):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    receipt = await register(env)
+    seq = await env.db.wait_source_commit(source_key="ci_check:repo:sha:unit", generation=0,
+        revision="success", outcome_ref="check", payload={})
+    service = runtime(env)
+    assert await service.lease()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+    original_lock = listener_module.lock_graph
+
+    async def subscribe_before_lock(conn, **kwargs):
+        async with env.db._engine.begin() as registration:
+            await original_lock(registration)
+            await registration.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(source_key="ci_check:repo:sha:unit", source_generation=0))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", subscribe_before_lock)
+    assert await service.listener._retire_unused_retries(seq) == 0
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
+
+
+async def test_ci_retry_retirement_rolls_back_on_lease_loss(runtime_env, monkeypatch):
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="ci_check:repo:sha:unit", generation=0,
+        revision="success", outcome_ref="check", payload={})
+    service = runtime(env)
+    assert await service.lease()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+    original_lease = service.listener.locked_lease
+    calls = 0
+
+    async def lose_after_stamp(conn):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise LeaseLost("lost before retirement commit")
+        return await original_lease(conn)
+
+    monkeypatch.setattr(service.listener, "locked_lease", lose_after_stamp)
+    with pytest.raises(LeaseLost):
+        await service.listener._retire_unused_retries(seq)
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
 
 
 async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
@@ -1136,12 +1379,19 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
 @pytest.mark.parametrize("kind", ["ci_check", "pool", "workspace", "config"])
 async def test_contiguous_observations_coalesce_and_stop_before_lifecycle_event(runtime_env, kind):
     env = runtime_env
-    receipt = await register(env)
     key = "ci_check:repo:sha:unit"
-    async with env.db._engine.begin() as conn:
-        # Force the listener to reobserve subscribed CI hints rather than retire them unread.
-        await conn.execute(update(wait_records).where(wait_records.c.id == receipt["wait_id"])
-                           .values(source_key=key))
+    if kind == "ci_check":
+        receipt = await register(env)
+        async with env.db._engine.begin() as conn:
+            # Exercise reobservation rather than irrelevant-source retirement.
+            await conn.execute(update(wait_records).where(wait_records.c.id == receipt["wait_id"])
+                               .values(source_key=key))
+    else:
+        reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+            cond, state="unsatisfied", revision="1"))
+        await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                             "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                       scope=Scope("p", "scheduler", "source", principal="service"))
     for n in range(12):
         event = (dict(source_key=key, generation=0, revision=str(n),
                       outcome_ref=key, payload={}) if kind == "ci_check" else
@@ -1158,14 +1408,18 @@ async def test_contiguous_observations_coalesce_and_stop_before_lifecycle_event(
 
     service.listener._dispatch = observe
     await service.listener.tick()
-    assert seen == ([barrier - 1, barrier] if kind != "pool" else [barrier])
-    # Pool hints without resource subscriptions are deliberately retired as irrelevant.
+    assert seen == [barrier - 1, barrier]
     assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == barrier
 
 
 async def test_resource_coalescing_preserves_project_and_provider_boundaries(runtime_env):
     env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                   scope=Scope("p", "scheduler", "source", principal="service"))
     for producer, project in [("workspace", "p"), ("workspace", "q"),
                               ("provider", None), ("provider", None)]:
         await env.db.wait_source_commit(**resource_invalidation(
@@ -1292,6 +1546,49 @@ async def test_manual_source_redispatch_reobserves_without_moving_cursor(runtime
     assert len(dispatcher.calls) == 1
 
 
+@pytest.mark.parametrize("producer", ["ci_check", "pool", "config", "workspace"])
+async def test_manual_redispatch_drains_unused_history_but_preserves_foreign_subscriber(
+    runtime_env, producer,
+):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import events as audit_events
+
+    env = runtime_env
+    receipt = await register(env)
+    key = ("ci_check:repo:sha:unit" if producer == "ci_check"
+           else f"resource_invalidation:{producer}:producer")
+    for n in range(3):
+        await env.db.wait_source_commit(source_key=key, generation=0,
+            revision=str(n), outcome_ref=f"hint:{n}", payload={})
+    seq = await env.db.wait_source_watermark()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(project_id="q", source_key=key, source_generation=0,
+                 condition_kind="task" if producer == "ci_check" else "resource"))
+    service = runtime(env)
+    args = {"project_id": "p", "source_seq": seq, "note": "drain settled CI history"}
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", args)
+    assert result["success"], result
+    assert result["result"]["retired_events"] == 0
+    assert all(r["dispatched_at"] is None for r in await records(env, wait_source_events))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(outcome="satisfied"))
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", args)
+    assert result["success"], result
+    assert result["result"]["retired_events"] == 3
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    import json
+    audits = [json.loads(r["payload"]) for r in await records(env, audit_events)
+              if r["event_type"] == "wait.source_redispatched"]
+    assert sorted(a["retired_events"] for a in audits) == [0, 3]
+
+
 async def test_manual_global_invalidation_filters_other_project_subscriptions(runtime_env):
     from src.commands.principal import TRUSTED_LOCAL
 
@@ -1335,11 +1632,18 @@ async def test_drain_yields_between_attempts_and_requests_fresh_watermark(runtim
             revision=str(n), outcome_ref=f"test:{n}", payload={})
     calls = []
 
+    async def empty_retirement(watermark):
+        # Empty housekeeping must not starve the first source attempt even
+        # when database contention consumes the pass budget before it.
+        await asyncio.sleep(0.02)
+        return 0
+
     async def dispatch(conn, event):
         calls.append(event["seq"])
         await asyncio.sleep(0.02)
         return 0
 
+    monkeypatch.setattr(listener, "_retire_unused_retries", empty_retirement)
     monkeypatch.setattr(listener, "_dispatch", dispatch)
     watermark = await runtime_env.db.wait_source_watermark()
     assert await service.drain(watermark) == 1

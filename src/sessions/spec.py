@@ -136,9 +136,8 @@ def knowledge_startup_delivery(
 #: ``Cap.NUDGE`` skips straight to interrupt+kill.  Nothing else in the
 #: system tells the agent to heartbeat, so this prompt has to. A registered
 #: durable wait exempts a quiet owner until its bounded result is available.
-BOOTSTRAP_PROMPT = (
-    "You are running task {task_id} in {work_dir}.\n"
-    "Run `aq prime` first and follow what it tells you.\n"
+_TASK_BOOTSTRAP_HEADER = "You are running task {task_id} in {work_dir}.\n"
+_TASK_BOOTSTRAP_LIFECYCLE = (
     "Before a command quiet for minutes, run `aq task heartbeat {task_id}`; "
     "silence past the lease triggers interruption.\n"
     "For supported waits, use `aq wait register` and end the turn. Your lease "
@@ -147,6 +146,23 @@ BOOTSTRAP_PROMPT = (
     "  aq task close {task_id} --outcome pass --work-outcome shipped\n"
     "  aq session drain-ack\n"
     "Exiting without `aq task close` is treated as a failure, not a success."
+)
+BOOTSTRAP_PROMPT = (
+    _TASK_BOOTSTRAP_HEADER
+    + "Run `aq prime` first and follow what it tells you.\n"
+    + _TASK_BOOTSTRAP_LIFECYCLE
+)
+_CONTINUATION_BOOTSTRAP_PROMPT = (
+    _TASK_BOOTSTRAP_HEADER
+    + "You are resuming continuation {continuation_id}, generation {generation}.\n"
+    "Complete outcome acknowledgment before any task work:\n"
+    "1. Run `aq prime` once to receive the wait outcome. If it returns "
+    "`record.stale_claim` with a wait ack command while RESUME_PENDING, "
+    "continue to step 2; do not stop or exit.\n"
+    "2. Run the exact `aq wait ack` command from prime, with its wait id, "
+    "continuation id and generation. Ack requires the outcome delivery from step 1.\n"
+    "3. Run `aq prime` again and follow the task instructions.\n"
+    + _TASK_BOOTSTRAP_LIFECYCLE
 )
 
 
@@ -414,8 +430,11 @@ class SessionSpecBuilder:
         this harness and never re-selected, ranked or budgeted here.
         """
         name = task_session_name(task.id)
-        bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
-            task_id=task.id, work_dir=work_dir
+        continuation = (extra_env or {}).get("AQ_CONTINUATION_ID")
+        template = _CONTINUATION_BOOTSTRAP_PROMPT if continuation else BOOTSTRAP_PROMPT
+        bootstrap = prompt if prompt is not None else template.format(
+            task_id=task.id, work_dir=work_dir, continuation_id=continuation,
+            generation=(extra_env or {}).get("AQ_CONTINUATION_GENERATION"),
         )
         return self._build(
             harness=harness,

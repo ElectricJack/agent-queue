@@ -809,6 +809,19 @@ class TestPromptDelivery:
         assert "aq session drain-ack" in spec.prompt
         assert "task-1" in spec.prompt
 
+    @pytest.mark.parametrize("harness_id", ["claude", "codex"])
+    def test_continuation_bootstrap_requires_delivery_ack_and_prime_retry(self, builder, harness_id):
+        spec = _build(builder, harness=replace(CLAUDE, id=harness_id), extra_env={
+            "AQ_CONTINUATION_ID": "resume-123", "AQ_CONTINUATION_GENERATION": "4",
+        })
+        assert "resuming continuation resume-123, generation 4" in spec.prompt
+        delivery = spec.prompt.index("1. Run `aq prime` once")
+        ack = spec.prompt.index("2. Run the exact `aq wait ack` command")
+        retry = spec.prompt.index("3. Run `aq prime` again")
+        assert delivery < ack < retry < spec.prompt.index("aq task close")
+        assert "`record.stale_claim`" in spec.prompt and "do not stop or exit" in spec.prompt
+        assert "Run `aq prime` first and follow" not in spec.prompt
+
     @pytest.mark.parametrize(
         ("profile_id", "project_id", "supervisor_inbox"),
         [

@@ -1,0 +1,70 @@
+name: Mirror PostgreSQL
+
+# Seed GHCR when the pin changes; refresh retained blobs weekly. Never publish
+# from pull requests. CI can use public mirrors until this workflow first runs.
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - .github/workflows/mirror-postgres.yml
+      - .github/workflows/tests.yml
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: mirror-postgres
+  cancel-in-progress: false
+
+env:
+  # Keep identical to tests.yml. Copy the full index without changing its digest.
+  POSTGRES_DIGEST: sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install registry copy tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes skopeo
+
+      - name: Mirror pinned PostgreSQL to GHCR
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          auth_file="$RUNNER_TEMP/ghcr-auth.json"
+          trap 'rm -f "$auth_file"' EXIT
+          printf '%s' "$GHCR_TOKEN" | skopeo login --authfile "$auth_file" \
+            --username "$GHCR_ACTOR" --password-stdin ghcr.io
+          destination="ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres"
+          # Docker Hub is a final source for the publisher if both public
+          # mirrors are throttled. Consumers never depend on anonymous Hub pulls.
+          for copy_attempt in 1 2 3; do
+            for source in mirror.gcr.io/library/postgres public.ecr.aws/docker/library/postgres docker.io/library/postgres; do
+              if skopeo copy --all --preserve-digests --authfile "$auth_file" \
+                "docker://$source@$POSTGRES_DIGEST" "docker://$destination:18"; then
+                break 2
+              else
+                copy_status=$?
+              fi
+              echo "::warning::PostgreSQL mirror failed from $source (round $copy_attempt/3)"
+            done
+            if (( copy_attempt == 3 )); then
+              echo "::error::PostgreSQL mirror failed after $copy_attempt rounds"
+              exit "$copy_status"
+            fi
+            sleep 5
+          done
+          # Verify the digest consumers will request, rather than trusting the tag.
+          actual=$(skopeo inspect --raw --authfile "$auth_file" \
+            "docker://$destination@$POSTGRES_DIGEST" | sha256sum | cut -d ' ' -f 1)
+          test "sha256:$actual" = "$POSTGRES_DIGEST"
+          echo "Mirrored $destination:18@$POSTGRES_DIGEST" >> "$GITHUB_STEP_SUMMARY"

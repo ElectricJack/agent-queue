@@ -75,14 +75,20 @@ class WaitV2CommandsMixin:
                 or principal.session_instance_token != session.instance_token):
             return
         async with self.db._engine.begin() as conn:
-            intent_id = await conn.scalar(select(continuations.c.id).where(
+            intent = (await conn.execute(select(
+                continuations.c.id, continuations.c.wait_id,
+                continuations.c.suspension_generation, continuations.c.resume_state,
+            ).where(
                 continuations.c.new_session_id == session_id,
-                continuations.c.resume_state == "launching",
-            ))
-            if intent_id:
-                await mark_delivered(conn, continuation_id=intent_id, session_id=session_id,
+                continuations.c.resume_state.in_(("launching", "delivered")),
+            ))).mappings().first()
+            if intent and intent['resume_state'] == 'launching':
+                await mark_delivered(conn, continuation_id=intent['id'], session_id=session_id,
                                      instance_token=session.instance_token,
                                      claim_epoch=session.last_claim_epoch, now=time.time())
+            if intent:
+                return dict(wait_id=intent['wait_id'], continuation_id=intent['id'],
+                            generation=intent['suspension_generation'])
 
     async def _wait_mutation_fence(self, name, principal, *, mutating):
         if (not mutating or principal is None
