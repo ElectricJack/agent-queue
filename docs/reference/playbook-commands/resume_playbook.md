@@ -14,12 +14,16 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:09fdaec8b41996233ac8755ee06e2fc0a8f2868dc80f8aa7e6ef5379243f8288` |
+| Contract fingerprint | `sha256:95a4898d4fcfc24201c24da1cb9619b2814030056fd4228fa3f87289adf01df8` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `expected` | `object` | no | — | — |
+| `preview_id` | `string` | no | — | — |
+| `idempotency_key` | `string` | no | — | — |
+| `overall_note` | `string` | no | — | — |
 | `run_id` | `string` | yes | — | The playbook run ID to resume |
 | `human_input` | `string` | yes | — | Your review decision or feedback text. This is added to the conversation history and used to determine the next transition. |
 
@@ -46,30 +50,31 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using run_id, human_input | — | always |
+| Composite using expected, preview_id, idempotency_key, overall_note, run_id, human_input | — | always |
 
 <!-- aq:generated:end -->
 
-## Purpose
+## Current V2 behavior
 
-TODO: what this command is for, in the reader's terms.
+Resolve a **human wait** using one of its declared option keys. Despite the legacy
+parameter description above, `human_input` is not conversation text and does not
+ask a model to choose a transition. An optional `overall_note` carries explanation.
+Technical event/task/timer waits reject manual decisions.
 
-## When a playbook uses it
+Inspect `aq playbook inspect-run --run-id <id>` and the pinned artifact first.
+An authorized decision-maker can then use:
 
-TODO: the situations a playbook step reaches for it.
+```bash
+aq playbook resume --run-id <id> --human-input approve --overall-note 'Reviewed the pinned proposal.'
+```
 
-## How it works internally
+The example requires that `approve` is a declared option. Human decision authority
+and expected-state checks apply; an agent cannot acquire them by calling this verb.
+`expected`, `preview_id` and `idempotency_key` participate in the shared ask-decision
+protocol. Missing runs, a changed wait/version, an undeclared option or unavailable
+protected data return a refusal instead of inventing a branch.
 
-TODO: step by step through the executor and handler, with file references.
-
-## Side effects and persistence
-
-TODO: what it writes, which tables or files hold it, and what survives a restart.
-
-## Failure modes and diagnostics
-
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
-
-## Example step
-
-TODO: a realistic playbook step that calls this command.
+[The handler](../../../src/commands/playbook_commands.py) loads the V2 snapshot and
+passes the wait identity to the shared ask decision path. Decision application and
+run advancement persist through the V2 wait/snapshot/receipt boundary. It does not
+re-run a paused side effect from arbitrary text. See [gates and waits](../../concepts/playbooks.md#gates-waits-and-dependencies).

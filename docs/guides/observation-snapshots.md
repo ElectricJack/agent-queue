@@ -102,6 +102,9 @@ transport evidence, and descriptor tests apply it only to these three names.
 The only reviewed bundle referencing them is `stuck-task-watch`; its source,
 steps, and `read` transition are unchanged. Its `get_stuck_tasks` contract pin,
 artifact digest, and manifest were rebuilt and copied to the shipped bundle.
+The two `review-pipeline` test artifacts also pin the new `list_tasks` contract
+and route `rejected` to `sweep-failed`; their exact before/after hashes are in
+the same compatibility record. Their dashboard graph fixture is regenerated.
 Generated command docs/catalogue, CLI inventory, OpenAPI, Python client and
 TypeScript client are regenerated from sources.
 

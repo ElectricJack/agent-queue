@@ -296,12 +296,11 @@ second while one is in flight).
 Inspect and control hierarchical integration trains — how finished task
 branches are validated and published. `status` is the read every diagnosis
 starts from: rollout mode, readiness, active work and cleanup for one project.
-Every other leaf is a control verb, and control verbs are **local operator
-only**: a session token is refused with `out of scope: integration control
-requires local operator`. All leaves are hand-written because they take
-positional identities and explicit compare-and-set fences (`enable` takes the
-generation `status` reported, so a stale operator cannot flip a mode that has
-moved).
+The Git-first controls include `pause-batch`, `resume-batch`, `eject`, and
+`seal-now`; their preview/apply forms carry the identity and reason needed for
+publication. Authorization resolves the target project server-side. Retired
+candidate-building and subject-engine recovery controls are archived in the
+[historical command notes](../../history/legacy-train-commands/).
 
 
 | Command | Daemon command | Kind | What it does |

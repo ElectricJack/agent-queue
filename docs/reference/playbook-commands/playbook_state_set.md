@@ -12,9 +12,9 @@
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
-| Preview | not supported |
+| Preview | supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:c6eb65a5a7055f9c349f32b8cf31b49d00c66b0e323541ea28dd193ec4e71204` |
+| Contract fingerprint | `sha256:7c84ebc172400a63c7240916874b2d0c6b7afef8cb441ced6ae648ecfb6f69ff` |
 
 ## Parameters
 
