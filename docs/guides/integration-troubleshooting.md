@@ -43,10 +43,21 @@ repository administrator action. See [App-mode setup](../config/app-mode-train.m
 ## A passed task blocked at delivery
 
 Passing close records execution, while delivery requires the exact revision to
-be present on its target. Check `task show` for its checkpoint, current Git delivery evidence
-and blockers. Historical receipts alone do not prove current delivery. Resolve missing source evidence or CI under the reviewed policy.
-For a missing no-code receipt, a local operator records a no-code child's disposition with `aq integration record-noop`.
-No worker or supervisor session can invoke that operator control.
+be present on its target. Check `task show` for its checkpoint, current Git delivery
+ evidence and blockers. Historical receipts alone do not prove current delivery.
+Resolve missing source evidence or CI under the reviewed policy. For a missing
+no-code receipt, a local operator or live elevated named supervisor can use
+`aq integration record-noop`; ordinary workers cannot invoke that control.
+
+`obsolete_child` means the child's diff only edits paths the parent has removed.
+Review the reported source and parent heads and the parent commit removing those
+paths. A local operator or project/global supervisor can run
+`aq integration redrive-child CHILD_ID --dispose-obsolete --superseded-by SHA
+--apply --head SOURCE --parent-head TARGET --reason "Why the work is obsolete"`.
+Omit `--apply` to preview. The fenced ours merge preserves the parent's files,
+records the reason and actor, and makes the child a real ancestor. Active writers,
+batches, changed heads or missing supersession proof refuse it. No human gate is
+required. `record-noop` continues to require a code-free completion.
 
 A completed child missing from a parent's collection can be inspected through
 `aq integration redrive-child CHILD_ID`. A completed root missing its PR can be

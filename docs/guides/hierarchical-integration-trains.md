@@ -103,6 +103,10 @@ frozen sources and candidate, and schedules a finite re-observation (default
 300 seconds). Unchanged exhausted evidence does not re-admit work or notify an
 agent. A changed saved head or exact current-policy green can resume delivery.
 Capacity waits retry the same unlaunched identity without spending code rounds.
+An interrupted launch still awaiting registration after 120 seconds enters the
+same bounded retry path when no session was registered or its process is confirmed
+stopped. Each retry gets its own grace period; a possibly live registration stays
+retained for reconciliation.
 Only an explicit operator decision creates an indefinite hold.
 When every conclusive red group identifies a strict subset, the repair policy's
 `split_attributed` decision (default true) removes that subset and its transitive
@@ -372,12 +376,22 @@ GitHub runs no `pull_request` workflows for a PR that conflicts with its base, s
 a conflicting root PR would wait for checks forever. When the PR read reports it
 conflicting, the root's blocker is `pr_conflicting`, with the PR URL and the
 default-branch SHA; a still-computing mergeability is a short `awaiting_pr_checks`
-retry. For an epic root the train's next visit starts the same attested refresh as
-`refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
-`refresh` names its batch. The refreshed head is held for its own review and its
-own exact-head PR checks. For a leaf root nothing is started: merge the default
-branch into the task branch, push it and close the task again. Push-event runs
+retry. For leaves and epics the train first tries a mechanical merge using the
+regenerating drivers. A clean result is pushed as a bot merge, retaining the
+original authored head's PR checks and approvals for admission. Batch-tip CI
+still gates delivery. A real source conflict reopens the original task on its
+own branch with the conflicting paths and default tip; its worker merges,
+runs targeted tests only and closes. The train never reopens the same
+(head, default tip) pair twice, including after a daemon restart, and preserves
+the task's original age. The hot-file fix (Phase A5) must ship before or with
+this policy. Explicit `refresh-epic --apply` remains available. Push-event runs
 never count as PR checks.
+
+Root admission first probes the fetched target and source with local `merge-tree`.
+A source conflict reports `pr_conflicting` without a GitHub read; conflicts confined
+to files marked `merge=aq-generated` follow the build's regeneration policy instead.
+An unavailable probe reports unknown. Conflicting refusals refund the selection
+work quantum, leaving time to admit clean sources in the same visit.
 
 For an existing historical root subject, `engine-transfer` offers a forward-only
 audited ownership transfer to `reconciler`. It does not install a publisher.
@@ -501,10 +515,11 @@ replacement can proceed. Missing Git proof retains the batch. Promotion requests
 keep their separately pinned check sets.
 
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
-`redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
-so authorization resolves their target project server-side. `record-noop` is an
-exception: a local operator records no-code receipts (or an authorized playbook),
-and *every* session is refused it, including the project's supervisor. See
+`redrive-child`, `record-noop`, `reopen-collection`, `reserve-owner`, `release-owner` —
+take no `project_id`, so authorization resolves their target project server-side.
+A live elevated named project supervisor or global supervisor may record no-code
+receipts, alongside a local operator or an authorized playbook. Workers and
+supervisors outside the child's project are refused. See
 [the command scope model](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
 
 Current recoveries reuse the existing episode, fence, receipts and stage budget.
@@ -555,8 +570,8 @@ for the retained contracts and table exclusions.
 A reviewer filed under an active parent is itself a child in the collection
 episode. Its `pass --work-outcome no-op` close records the review verdict, but
 the parent still needs a disposition receipt for the reviewer's own branch.
-When parent readiness reports `receipt_missing` for that child, a local
-operator records the exact no-code disposition:
+When parent readiness reports `receipt_missing` for that child, a local operator
+or live elevated named supervisor records the exact no-code disposition:
 
 ```bash
 aq --json task show CHILD_TASK_ID | jq -r '.data.integration_delivery.checkpoint_sha'
@@ -569,10 +584,20 @@ still its reserved base, resolves that commit's tree from Git, and writes a
 receipt for the current parent episode. Repeating the command returns the same
 receipt; a new no-op completion gets a new receipt revision. A playbook may
 invoke the contracted `integration_record_noop` command when its policy grants
-that exact capability. No session can invoke it: worker and supervisor
-principals are both refused, so a no-code child always needs a local operator
-(and a supervisor asked to record one reports the child id and its checkpoint
-head instead).
+that exact capability. Supervisors retain these evidence guards; ordinary worker
+sessions cannot invoke it. A child with real code requires an explicit obsolete
+disposition rather than a no-code receipt.
+
+For `obsolete_child`, the train and `redrive-child` supply the one-command
+`aq integration redrive-child CHILD --dispose-obsolete --superseded-by SHA
+--apply --head SOURCE --parent-head TARGET --reason REASON`.
+Review the exact source and parent heads first. The superseding commit must be
+on the parent and remove the last of the child's changed paths. Preview without
+`--apply` is read-only. Apply performs a fenced ours merge: the parent keeps its
+files and gains real child ancestry. The merge commit records the reason, actor
+and superseding commit; completion history remains intact. Local operators and
+live project/global supervisors can apply it without a human gate. Head movement,
+live writers, active batches and unverified provenance refuse the write.
 
 ### A parent whose last child was deleted
 
@@ -719,6 +744,15 @@ source-CI observation path so the two agree.
 
 ## Delivery evidence
 
+The delivery watchdog keeps one wait projection per repository, task completion
+generation and target. Repeated and overlapping scans reuse that row, including
+its original completion age and takeover history. A previously settled wait keeps
+its outcome when the same generation is observed again. Each task observation
+and each settlement has its own transaction: a failed task rolls back, is logged
+with its project and task id, and appears in the scan's `errors` list. Other tasks
+continue and the project cursor advances; the failed task is retried on a later
+pass.
+
 The train automatically re-runs a required Actions job once if its check stays
 `in_progress` for five minutes after its workflow or all job steps completed.
 The check remains pending until fresh authenticated evidence concludes it.
@@ -765,6 +799,13 @@ separately; absent branches receive reservations for ordinary materialization.
 Existing origins, checkpoints and retired completion history are preserved.
 An unknown remote state or conflicting branch ownership refuses the edit and
 rolls back its database changes.
+
+Re-enabling the train playbook also recovers detached READY roots filed while
+it was off: branch reconciliation backfills missing origins before draining
+reservations. The same bounded pass catches system filings that have no origin;
+the delivery watchdog reserves an origin when it files a takeover while the
+train is enabled. Failures are retried without blocking later roots, and the
+pass rechecks train activation and writer ownership under the project lock.
 
 A reservation is cut by the branch materialization drain
 (`src/integration/branch_materialization.py`), ten origins per pass, so a

@@ -102,17 +102,11 @@ To read the code, you need to know that two integration designs are in `src/inte
    publishers and runtimes (`docs/reports/2026-10-12-legacy-consumer-retirement.md`). Its
    tables, recovery commands and many helpers remain, and some still run in maintenance.
 
-A daemon-wide setting chooses between them: `integration.git_first` in
-`src/config.py`. It is restart-required.
-
-| `git_first` | What runs |
-|---|---|
-| `active` | `train_for()` (`train_sources.py`) builds an `IntegrationTrain`. |
-| `shadow` (**the code default**) | `train_for()` returns `None`, and `core.py` sets every subject runtime to `None`. **No delivery engine runs.** Inspect `integration.delivery_engine` against the running daemon. |
-
-The Subject publishers and runtimes were retired on 2026-10-12. Shadow is no
-longer a fallback publisher. `integration.reconciler_active` does not pause an
-active train.
+The Git-first train is always constructed by `train_for()`. The compatibility
+setting `integration.git_first` defaults to `active` and accepts only `active`.
+Old `shadow` configurations fail validation with a migration message: remove the
+key or set it to `active` before restarting. Legacy subjects are retained
+historical evidence, never an alternate delivery engine.
 
 The current project activation supplies train policy (`train_policy.py`). Its
 binding is `hierarchical_integration_policy.train.playbook_id`, defaulting to
@@ -325,6 +319,24 @@ exception. Root pre-existing failures receive bounded rechecks; a red promotion
 is held. With a bound train policy, a missing push run is a finite wait rather
 than a code repair (the unbound compatibility path can allocate a repair).
 
+  Zero in `primary_seconds`, `debug_seconds`, `primary_attempts`, or
+  `debug_attempts` disables that limit. Unlimited durations store a null stage
+  deadline, including in resolution reservations; they never expire or refuse
+  publication because of elapsed time. An unlimited primary attempt budget
+  stays primary; an unlimited debug budget stays debug after a finite primary
+  budget is spent. `source_ci_infra_attempts: 0` keeps retrying cancellation-only
+  observations with the configured bounded backoff. Positive limits in frozen
+  snapshots keep their existing behavior.
+
+  Task-free batch fixers use the complete configured primary attempt budget
+  for distinct red observations. Without a repair policy they have no time or
+  round limit. Successive failed source heads can reopen the original branch
+  without a lineage cap; exact-head and concurrent-writer guards still apply.
+  The main CI sentinel also defaults to unlimited attempts; its
+  optional `max_attempts` argument can set a positive limit, and zero disables it.
+
+
+
 Source movement, ejection, withheld sources, pause/resume and abort remain fenced
 `TrainControls` operations. Existing ordinary repair tasks can still close through
 compatibility adapters; their staged primary/debug lifecycle is not the live
@@ -426,10 +438,10 @@ The consumers are:
 
 | Consumer | What it reads |
 |---|---|
-| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes a task whose prerequisite is not delivered: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. With no snapshot available the reason is `delivery_evidence_unavailable`, and the claim fails closed. |
-| **Readiness** (`src/task_graph/readiness.py`) | Maps those codes to "Waiting on delivery" or "Checking delivery evidence", reading cached snapshots only. |
+| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes proven missing prerequisite delivery or pending refresh: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. Unknown or unloaded observations permit worker preparation. |
+| **Readiness** (`src/task_graph/readiness.py`) | Maps delivery exclusions to "Waiting on delivery", reading cached snapshots only. Unknown evidence adds no exclusion. |
 | **Archive and delete** (`archive_queries.py`) | Refuse without an observer. |
-| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus current default-target Git proof in `AdmissionView`. |
+| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus a default-target Git observation in `AdmissionView`; unknown evidence permits preparation without establishing delivery. |
 
 #### 3.3.7 Cleanup, retirement and recovery
 
@@ -493,8 +505,7 @@ The train holds one live batch per target with a `pg_advisory_xact_lock` in
 
 - `IntegrationConfig` (`src/config.py`, about lines 2577–2735; restart-required).
   `git_first`, `default_mode` and `merge_*` are covered above.
-  - `reconciler_active` (default `True`) is a retained Subject-runtime control; it does
-    not pause the live train.
+  - `reconciler_active` (default `True`) is retained for historical ownership guards; it does not select a delivery engine.
   - `reconciler_shadow` and `publisher_stall_after` have no remaining effect.
 - Per-project policy is `projects.hierarchical_integration_policy`, validated by
   `models.py:HierarchicalIntegrationPolicy`. Its parts are:
@@ -566,14 +577,9 @@ This table covers the inventory's other 17 systems and where the line falls with
 
 ## 6. Remaining limitations and audit findings
 
-- **Default engine selection:** `integration.git_first` still defaults to `shadow`,
-  which starts no writer after Subject-runtime retirement. An installation requiring
-  automatic delivery must explicitly select `active`. Reported for supervisor triage;
-  this documentation audit changes no runtime defaults.
-- **Offline engine diagnostic:** `delivery_engine.engine_refusal` returns no refusal
-  for `shadow` with `reconciler_active=True` when no live orchestrator is supplied,
-  despite the current startup wiring constructing no engine. The live-service check
-  does detect the missing writer. Reported as a suspected diagnostic bug.
+- **Engine selection:** `integration.git_first` now defaults to `active` and accepts
+  only `active`. Old `shadow` values must be removed or migrated before restart;
+  project activation and explicit holds remain binding.
 - **Portable policy model:** `src/policy_profiles/models.py:IntegrationSettings`
   omits `development` from its rollout-mode literal, although the project runtime
   accepts that mode. Reported as a suspected code bug; no model change is made here.
@@ -664,3 +670,16 @@ Historical records (the code wins where they disagree):
 - About 50 dated point-fix specs in `docs/superpowers/specs/` (2026-09-15 to 2026-10-13)
   record individual repair, recovery and subject-reconciler fixes. Most belong to the
   retired subject and publisher era.
+
+### Historical PR #1858 ownership authorization
+
+The following records the original reviewed footprint, rather than a new merged ceiling.
+
+For PR [#1858](https://github.com/ElectricJack/agent-queue/pull/1858), supervisor
+decision `msg-08efc39cceeb430cafb8636f1acb85f1` under
+`size-cap-delegation-2026-10-23` (operator decision `6679052c`) amends the
+recorded transition exception to exactly **161,023 owned lines**, **85,320
+engine lines** and **45 tables** at source
+`a68665e4afde3be9a0aba0d9dec50e61e632be84`. This adds 186 owned lines and four
+engine lines to the previous exact measurement. The ownership records retain
+the earlier decisions and the measurement-equality assertion remains enforced.
