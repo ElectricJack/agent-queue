@@ -302,6 +302,17 @@ route and budgets and never launches execution. Error guidance must name repeat
 Pause, not Resume. `PAUSED` alone proves neither writer termination nor checkpoint
 success; inspect `manual_pause.cleanup_pending` and checkpoint/no-checkpoint context.
 
+Resume may recover a stale pause binding after its captured harnesses are confirmed
+stopped and their current database identities are rechecked under locks. When no
+workspace or active integration owner remains attached, discard the stale binding
+and resume with the recorded branch, source history, gates and budgets preserved.
+Never stop or release a replacement worker. For an unchanged retained workspace,
+an operator or project supervisor can request `aq task resume --task-id <id>
+--recover-stale-pause`; this records the recovery and retries ordinary checkpoint
+cleanup using the stopped original harness identities. Changed source generations,
+job pins, active integration ownership and unproved preparation termination still
+refuse recovery. A stopped database marker alone is not process termination proof.
+
 ---
 
 ### Agent

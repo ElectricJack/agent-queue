@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useReplyAsk, type AskDetailData } from "../../api/asks";
 import { useDraftWarning } from "../../components/asks/useDraftWarning";
+import { randomUUID } from "../../randomUUID";
 
 export function DiscussionPanel({ data, onDraftChange, onPromote }: {
   data: AskDetailData; onDraftChange?: (dirty: boolean) => void;
@@ -9,11 +10,11 @@ export function DiscussionPanel({ data, onDraftChange, onPromote }: {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const key = useRef(crypto.randomUUID());
+  const key = useRef(randomUUID());
   const reply = useReplyAsk();
   const action = data.actions.find(a => a.action === "discuss");
   useDraftWarning(Boolean(text));
-  const edit = (value: string) => { setText(value); onDraftChange?.(Boolean(value)); setSaved(false); key.current = crypto.randomUUID(); };
+  const edit = (value: string) => { setText(value); onDraftChange?.(Boolean(value)); setSaved(false); key.current = randomUUID(); };
   const send = async () => {
     setError(null);
     try {

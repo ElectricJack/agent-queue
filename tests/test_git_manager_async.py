@@ -2731,9 +2731,13 @@ async def test_cancel_during_checkout_preserves_partial_source_and_git_lock(mgr,
     _git(["checkout", "main"], cwd=clone)
     ready, go = tmp_path / "ready", tmp_path / "go"
     filter_script = tmp_path / "filter.py"
+    # Publish the process-group id before existence permits cancellation.
+    # write_text alone exposes an empty file that cancellation can leave behind.
     filter_script.write_text(
         "import os,pathlib,sys,time\n"
-        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpgrp()))\n"
+        f"ready = pathlib.Path({str(ready)!r})\n"
+        "ready.with_suffix('.tmp').write_text(str(os.getpgrp()))\n"
+        "ready.with_suffix('.tmp').replace(ready)\n"
         f"while not pathlib.Path({str(go)!r}).exists(): time.sleep(.01)\n"
         "sys.stdout.write(sys.stdin.read())\n"
         "pathlib.Path('late-filter-write').write_text('old writer')\n"
@@ -2779,6 +2783,35 @@ async def test_group_cleanup_failure_is_not_an_ordinary_git_failure(mgr, clone, 
     with pytest.raises(process.ProcessCleanupError, match="cleanup unproved") as raised:
         await mgr._arun(["rev-parse", "HEAD"], cwd=clone)
     assert isinstance(raised.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("state, writing", [("S", True), ("Z", False)])
+def test_group_scan_skips_a_process_that_exits_mid_read(monkeypatch, state, writing):
+    """ESRCH from an unrelated vanished pid is not unknown group state (solid-pinnacle-38)."""
+    import types
+
+    from src.git import process
+
+    class Entry:
+        def __init__(self, name, stat):
+            self.name, self._stat = name, stat
+
+        def __truediv__(self, child):
+            return self
+
+        def read_text(self):
+            if isinstance(self._stat, BaseException):
+                raise self._stat
+            return self._stat
+
+    entries = [
+        Entry("101", ProcessLookupError(3, "No such process")),
+        Entry("102", FileNotFoundError(2, "No such file or directory")),
+        Entry("4242", f"4242 (git) {state} 1 4242 4242 0"),
+    ]
+    monkeypatch.setattr(process, "Path", lambda _: types.SimpleNamespace(iterdir=lambda: entries))
+    monkeypatch.setattr(process.os, "killpg", lambda pgid, sig: None)
+    assert process._group_has_writer(4242) is writing
 
 
 async def test_local_git_disables_detached_maintenance_without_losing_config(mgr, clone):

@@ -3204,6 +3204,60 @@ async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
     assert runs.await_count == 2
 
 
+async def test_integrity_transient_failure_rechecks_full_store_with_same_deadline(
+    tmp_path, monkeypatch,
+):
+    manager = GitManager()
+    runs = AsyncMock(side_effect=[GitError('retained Git object integrity is unavailable'), b''])
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+    deadline = asyncio.get_running_loop().time() + 30
+    await manager._averify_retained_objects(str(tmp_path), home=tmp_path, deadline=deadline)
+    assert runs.await_count == 2
+    assert runs.await_args_list[0] == runs.await_args_list[1]
+    assert runs.await_args.kwargs['deadline'] == deadline
+    assert runs.await_args.kwargs['verify_integrity'] is True
+
+
+async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path, monkeypatch):
+    oid = b'c' * 40
+    process = SimpleNamespace(returncode=2, communicate=AsyncMock(return_value=(
+        b'missing blob ' + oid + b'\n', b'error: private-path-token-sentinel\n',
+    )))
+    manager = GitManager()
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr(manager, '_spawn_isolated_git', spawn)
+    with pytest.raises(GitError, match='missing ' + oid.decode()) as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+    assert spawn.await_count == 2
+    assert 'private-path' not in str(caught.value)
+
+
+async def test_linked_gitdir_integrity_cache_observes_shared_object_changes(tmp_path, monkeypatch):
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    linked = tmp_path / 'linked'
+    _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
+    gitdir = _git(['rev-parse', '--absolute-git-dir'], linked)
+    manager = GitManager()
+    runs = AsyncMock(return_value=b'')
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+
+    async def verify():
+        await manager._averify_retained_objects(
+            gitdir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    await verify()
+    await verify()
+    assert runs.await_count == 1
+    content = tmp_path / 'new-object'
+    content.write_text('new linked worktree object\n')
+    _git(['hash-object', '-w', str(content)], work)
+    await verify()
+    assert runs.await_count == 2
+
+
 _STALE_GC_LOG = (
     "fatal: Unable to read current working directory: No such file or directory\n"
     "fatal: failed to run repack\n"

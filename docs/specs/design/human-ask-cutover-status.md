@@ -1,7 +1,8 @@
 # Human ask cutover status
 
 `aq ask cutover-status --project-id PROJECT --json` reads communication ownership
-through CommandHandler for the local operator or daemon, with the same access
+through CommandHandler for the local operator, daemon, or live named global
+supervisor with the command grant, with the same access
 boundary as `ask_cutover`. It does not reconcile, create mode rows, advance a
 generation, change a deadline, or send external messages.
 
