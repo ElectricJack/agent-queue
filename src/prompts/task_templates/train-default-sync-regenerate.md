@@ -1,0 +1,1 @@
+Generated files are regenerated, never hand-merged: resolve their sources and run the repository's regeneration command ({{regeneration_command}} by default) for paths marked merge=aq-generated in .gitattributes.
