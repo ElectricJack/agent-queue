@@ -1,0 +1,65 @@
+{
+  "provenance": {
+    "task_id": "fresh-horizon-48",
+    "supervisor_decision": "msg-827bc6458163481aa3fd92f72684a888",
+    "captured_at": "2026-10-22",
+    "installed_artifact_sha256": "c1db5c80705154150f61e6b953d84b3f3072bc68e7de9dbaf9ba22eb994c780c",
+    "shipped_artifact_sha256": "208bf1c33575b484032228249d90f1ca1995e5a93d68f75810bc58fc1c7ce9be",
+    "shipped_source_sha256": "850a53de226ec1e9343e833c5054eab726cf86cedfbd978d65af724509208088",
+    "shipped_source_bytes_sha256": "d6c12242a292ce47d687fb54b4d351b709f0a6f914ce4fbc47ceb21870ae7b22",
+    "installed_source_available": false,
+    "metadata_differences": ["compiled_at", "scope", "source_hash"],
+    "decision": "Preserve source and artifact bytes. No integration-policy changes or installation.",
+    "building_blocks": "Nothing to replace: one terminal rule, no commands, loops, agents, observations, notification state or scripts. The deterministic Git train reads the literal integration-policy. Optional required_capabilities defaults to an empty list; no state schema or script manifest is needed."
+  },
+  "integration_policy": {
+    "version": 1,
+    "max_wait_seconds": 3600,
+    "tables": {},
+    "train": {"idle": "merge", "red": "repair", "conflict": "repair", "wait_seconds": 30}
+  },
+  "policy_actions": [
+    {"state": "idle", "action": "merge"},
+    {"state": "red", "action": "repair"},
+    {"state": "conflict", "action": "repair"},
+    {"state": "green", "action": "publish"},
+    {"state": "unavailable", "action": "wait"}
+  ],
+  "scenarios": [
+    {
+      "id": "readiness-hint",
+      "event": {"event_id": "train-ready", "event_type": "integration.readiness_changed", "project_id": "agent-queue"},
+      "rules_selected": ["observe-policy"],
+      "outcomes": ["completed"],
+      "replay": true
+    },
+    {
+      "id": "red-and-held-payload-is-only-a-hint",
+      "event": {"event_id": "train-red", "event_type": "integration.readiness_changed", "project_id": "agent-queue", "state": "red", "human_hold": true, "batch_id": "batch-1", "task_ids": ["task-1", "task-2"]},
+      "rules_selected": ["observe-policy"],
+      "outcomes": ["completed"],
+      "replay": false
+    },
+    {
+      "id": "green-payload-does-not-publish-from-the-graph",
+      "event": {"event_id": "train-green", "event_type": "integration.readiness_changed", "project_id": "agent-queue", "state": "green", "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "rules_selected": ["observe-policy"],
+      "outcomes": ["completed"],
+      "replay": false
+    },
+    {
+      "id": "task-completion-is-not-a-train-graph-trigger",
+      "event": {"event_id": "task-done", "event_type": "task.completed", "project_id": "agent-queue", "task_id": "task-1"},
+      "rules_selected": [],
+      "outcomes": [],
+      "replay": false
+    },
+    {
+      "id": "unknown-event-does-not-dispatch",
+      "event": {"event_id": "other", "event_type": "fixture.unknown", "project_id": "agent-queue"},
+      "rules_selected": [],
+      "outcomes": [],
+      "replay": false
+    }
+  ]
+}

@@ -241,6 +241,16 @@ def _integration_cleanup_reason(blocker: dict, task_id: str):
     )
 
 
+def _recovery_hold_reason(incident: dict):
+    """A decided recovery hold, who placed it and how restart may release it."""
+    from src.explain import Reason
+
+    return Reason(code="recovery_hold", ref=str(incident["id"]), detail=(
+        f"held by {incident.get('decided_by', 'unknown')} at {incident.get('decided_at')}: "
+        f"{incident.get('decision_reason')}; restart requires --override-hold --reason "
+        "and operator/global-supervisor authority"))
+
+
 def _recovery_incident_reason(incident: dict):
     """The open recovery incident with its owner, remaining budget and next action."""
     from src.explain import Reason
@@ -4410,7 +4420,9 @@ class TaskCommandsMixin:
         await self._emit_task_graph_change("task.updated", task)
         return {"success": True, "task_id": task_id, "status": task.status.value}
 
-    async def _cmd_resume_task(self, args: dict) -> dict:
+    async def _cmd_resume_task(
+        self, args: dict, *, defer_recovery_supersession=False,
+    ) -> dict:
         task_id = args["task_id"]
         error = await self._task_control_scope_error(task_id)
         if error:
@@ -4450,6 +4462,7 @@ class TaskCommandsMixin:
         task = await self.orchestrator.resume_task(
             task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
             actor=(self._current_scope or {}).get("session_id") or "local-operator",
+            **({"defer_recovery_supersession": True} if defer_recovery_supersession else {}),
         )
         await self._emit_task_graph_change("task.updated", task)
         return {"success": True, "task_id": task_id, "status": task.status.value}
@@ -4813,15 +4826,34 @@ class TaskCommandsMixin:
         if (paused is None or paused.status != TaskStatus.PAUSED
                 or await self.db.get_task_meta(task_id, "manual_pause") is None):
             return None
-        resumed = await self._cmd_resume_task({"task_id": task_id})
+        resumed = await self._cmd_resume_task(
+            {"task_id": task_id}, defer_recovery_supersession=True,
+        )
         return None if resumed.get("success") else resumed
 
     async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.commands.supervisor_authority import operator_or_global_supervisor
+        from src.database.queries.task_recovery_queries import RecoveryHoldError
+
+        hold_override, error = await self.db.restart_hold_override(
+            args['task_id'], args.get('override_hold', False), args.get('reason'),
+            authority=operator_or_global_supervisor)
+        if error:
+            return {'success': False, 'error': error}
+        try:
+            return await TaskCommandsMixin._restart_task(self, args, hold_override)
+        except RecoveryHoldError as exc:
+            return {'success': False, 'error_code': 'task_recovery.held',
+                    'error': str(exc), 'recovery_hold': exc.incident}
+
+    async def _restart_task(self, args: dict, hold_override) -> dict:
         from src.integration.repair import OrdinaryRepairService
         from src.wait_runtime.restart import readmit, release_continuations, restart_lock
         from src.waits.conditions import WaitError
 
-        if (refused := await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])) is not None:
+        await self.db.guard_restart_recovery_hold(args["task_id"], hold_override)
+        refused = await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])
+        if refused is not None:
             return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
         async with restart_lock(self, args["task_id"]):
@@ -4830,6 +4862,7 @@ class TaskCommandsMixin:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            await self.db.guard_restart_recovery_hold(task.id, hold_override)
             if stale := await OrdinaryRepairService(self.db).stale(task):
                 return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
@@ -4837,12 +4870,13 @@ class TaskCommandsMixin:
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
             project = await self.db.get_project(task.project_id)
-            managed = project is not None and (
-                project.hierarchical_integration_mode in {"hierarchy", "train"})
+            from src.integration.train_policy import worker_integration_enabled
+
+            managed = await worker_integration_enabled(self.db, project)
             if managed and task.status in _RESTART_RESERVATION_STATUSES:
                 # Repair delegates restart through their operation's reserved branch fence.
                 if task.created_by_kind == "integration_repair":
-                    return await self._restart_repair_delegate(task)
+                    return await self._restart_repair_delegate(task, hold_override=hold_override)
                 if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
                     task.id
                 ):
@@ -4857,16 +4891,12 @@ class TaskCommandsMixin:
                             "apply only after its provider-backed proof succeeds, then retry restart."
                         )}
             old_status = task.status.value
-            if not await readmit(self, task, released):
+            if not await readmit(self, task, released, hold_override=hold_override):
                 return {"success": False, "error": "Task changed during cold restart; retry."}
-            return {
-                "success": True,
-                "restarted": args["task_id"],
-                "title": task.title,
-                "previous_status": old_status,
-            }
+            return {"success": True, "restarted": args["task_id"], "title": task.title,
+                    "previous_status": old_status}
 
-    async def _restart_repair_delegate(self, task) -> dict:
+    async def _restart_repair_delegate(self, task, *, hold_override=None) -> dict:
         """Restart an integration repair delegate through its own reservation.
 
         The pool claim frontier admits a repair delegate only on the exact
@@ -4887,14 +4917,10 @@ class TaskCommandsMixin:
         previous = (task.status, task.retry_count, task.assigned_agent_id)
         previous_streak = await self.db.get_task_meta(task.id, "worker_failure_streak")
         previous_incident = await self.db.get_task_meta(task.id, "supervisor_recovery_incident")
-        await self.db.transition_task(
-            task.id,
-            TaskStatus.READY,
-            context="restart_task",
-            retry_count=0,
-            assigned_agent_id=None,
-            _defer_recovery_supersession=True,
-        )
+        restart = {"context": "restart_task", "_recovery_hold_override": hold_override}
+        await self.db.transition_task(task.id, TaskStatus.READY, retry_count=0,
+                                      assigned_agent_id=None, _defer_recovery_supersession=True,
+                                      **restart)
         reservation = await self._integration_repair_service().reserve_delegate(task.id)
         if reservation["outcome"] in {"acquired", "already_reserved"}:
             if previous_incident and previous_incident.get("decision") in (None, "hold"):
@@ -4903,27 +4929,15 @@ class TaskCommandsMixin:
                 # The preparatory READY write cannot release a supervisor hold:
                 # only an accepted branch handoff authorizes the new attempt.
                 accepted = await self.db.transition_task_with_meta(
-                    task.id,
-                    TaskStatus.READY,
-                    meta={},
-                    context="restart_task",
-                    from_statuses=(TaskStatus.READY,),
-                    extra_where=(
-                        tasks.c.assigned_agent_id.is_(None)
-                        & (tasks.c.claim_epoch == task.claim_epoch)
-                    ),
-                )
+                    task.id, TaskStatus.READY, meta={}, from_statuses=(TaskStatus.READY,),
+                    extra_where=(tasks.c.assigned_agent_id.is_(None)
+                                 & (tasks.c.claim_epoch == task.claim_epoch)), **restart)
                 if not accepted:
                     return {"error": (
                         f"Task {task.id} changed during its restart handoff; retry restart."
                     )}
-            return {
-                "success": True,
-                "restarted": task.id,
-                "title": task.title,
-                "previous_status": previous[0].value,
-                "reservation": reservation["outcome"],
-            }
+            return {"success": True, "restarted": task.id, "title": task.title,
+                    "previous_status": previous[0].value, "reservation": reservation["outcome"]}
         await self._undo_refused_restart(task, previous)
         if previous_streak is not None:
             await self.db.set_task_meta(task.id, "worker_failure_streak", previous_streak)
@@ -5053,6 +5067,9 @@ class TaskCommandsMixin:
             else:
                 from src.integration.reviews import ReviewEvidenceProducer
 
+                transition_values["integration_delivery"] = await self.db.observe_removal_delivery(
+                    [task_id], for_mutation=True,
+                )
                 async with self.db.immediate() as conn:
                     transition = await ReviewEvidenceProducer(
                         self.db, None
@@ -5825,8 +5842,11 @@ class TaskCommandsMixin:
             for blocker in await self.db.get_integration_delegate_cleanup(str(task_id)):
                 reasons.append(_integration_cleanup_reason(blocker, str(task_id)))
         recovery = await self.db.get_task_meta(str(task_id), "supervisor_recovery_incident")
-        if isinstance(recovery, dict) and recovery.get("id") and not recovery.get("decision"):
-            reasons.append(_recovery_incident_reason(recovery))
+        recovery_held = isinstance(recovery, dict) and recovery.get("decision") == "hold"
+        if isinstance(recovery, dict) and recovery.get("id") and recovery.get("decision") in (
+                None, "hold"):
+            reasons.append((_recovery_hold_reason if recovery_held else _recovery_incident_reason)(
+                recovery))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
         if needs_attention and not retirement:
             detail = str(needs_attention)
@@ -5848,7 +5868,7 @@ class TaskCommandsMixin:
                                f"is gone")
             elif needs_attention in {
                 "integration_prepare_failed", "integration_prepare_failed_attached",
-                "repair_target_unpublished",
+                "repair_target_unpublished", "child_preparation_conflict",
             }:
                 prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
                 if isinstance(prepared, dict) and prepared.get("reason"):
@@ -5866,7 +5886,9 @@ class TaskCommandsMixin:
         if blocked_terminal and not retirement:
             reasons.append(Reason(
                 code="blocked_terminal",
-                detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
+                detail=f"{blocked_terminal}; not auto-recovered" + (
+                    "; recovery hold must be explicitly released before restart"
+                    if recovery_held else ", restart or reopen to retry"),
                 ref=str(task_id),
             ))
         # BLOCKED with no attention, terminal mark, open incident or graph
@@ -5878,7 +5900,7 @@ class TaskCommandsMixin:
             "decision"
         )
         if (task.status is TaskStatus.BLOCKED and not retirement and not needs_attention
-                and not blocked_terminal and not open_incident
+                and not blocked_terminal and not open_incident and not recovery_held
                 and not await self.db.tasks_with_graph_blockers([str(task_id)])):
             failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
             if isinstance(failure, dict):
@@ -5931,12 +5953,6 @@ class TaskCommandsMixin:
         # route filter depends on the project's router readiness (§9.1).
         from src.routing.readiness import orchestrator_router_ready
 
-        reasons.extend(await self.db.claim_frontier_exclusions(
-            str(task_id),
-            router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
-            cached_only=True,
-        ))
-
         from src.integration.admission import observe_admission
 
         admission = await observe_admission(
@@ -5945,6 +5961,8 @@ class TaskCommandsMixin:
             self._development_integration(),
             cached_only=True,
             default_mode=self.config.integration.default_mode,
+            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                self.orchestrator, task.project_id) else set()),
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -5968,9 +5986,14 @@ class TaskCommandsMixin:
                     ) if prerequisite_project is not None else None
                 )
             issue = delivery_issues.get(prerequisite_project_id)
+            engine_reason = issue and (
+                delivery_reason["code"].startswith(("development_", "pr_"))
+                or (delivery_reason["code"] == "delivery_evidence_unavailable"
+                    and delivery_reason["ref"] != str(task_id))
+            )
             reasons.append(
                 Reason(code="delivery_engine_unavailable", detail=issue["detail"],
-                       ref=delivery_reason["ref"]) if issue else delivery_reason
+                       ref=delivery_reason["ref"]) if engine_reason else dict(delivery_reason)
             )
         issue = delivery_issues.get(task.project_id)
         if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):
@@ -6187,7 +6210,7 @@ class TaskCommandsMixin:
 
         integration = await IntegrationStatusService(
             self.db,
-            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            git_first=getattr(self.config.integration, "git_first", "active"),
             train=getattr(self.orchestrator, "integration_train", None),
             cached_only=True,
         ).task_blockers(str(task_id))
