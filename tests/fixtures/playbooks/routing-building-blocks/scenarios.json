@@ -1,0 +1,657 @@
+{
+  "event": {
+    "event_type": "task.route_needed",
+    "event_id": "routing-port",
+    "task_id": "task-1",
+    "project_id": "p",
+    "router": "default-assignment-routing",
+    "task": {
+      "status": "READY",
+      "route_source": "unrouted"
+    }
+  },
+  "plan_value": {
+    "task_id": "task-1",
+    "title": "Repair bounded parser",
+    "description": "One deterministic parser change",
+    "task_type": "feature",
+    "class_hint": "standard-high",
+    "questions": [
+      "risk"
+    ],
+    "allowed_kinds": [
+      "feature"
+    ],
+    "allowed_classes": [
+      "standard-high"
+    ],
+    "profile_id": "standard-high-claude",
+    "candidates": [
+      {
+        "profile_id": "standard-high-claude"
+      }
+    ],
+    "live_context": {
+      "as_of": 123,
+      "observational": true
+    }
+  },
+  "classification": {
+    "task_type": "feature",
+    "intelligence_class": "standard-high",
+    "narrow": false,
+    "test_verified": false,
+    "independent_verifier": false,
+    "reason": "bounded change",
+    "risk": "low",
+    "risk_reason": "one parser"
+  },
+  "cases": [
+    {
+      "name": "direct-routed",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed"
+    },
+    {
+      "name": "direct-stale",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "stale"
+    },
+    {
+      "name": "direct-rejected",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "rejected"
+    },
+    {
+      "name": "direct-runtime_error",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "runtime_error"
+    },
+    {
+      "name": "initial-held",
+      "plans": [
+        "held"
+      ],
+      "steps": [
+        "plan_first",
+        "done"
+      ],
+      "terminal": "completed"
+    },
+    {
+      "name": "initial-already_routed",
+      "plans": [
+        "already_routed"
+      ],
+      "steps": [
+        "plan_first",
+        "done"
+      ],
+      "terminal": "completed"
+    },
+    {
+      "name": "initial-no_candidates",
+      "plans": [
+        "no_candidates"
+      ],
+      "steps": [
+        "plan_first",
+        "failed"
+      ],
+      "terminal": "failed"
+    },
+    {
+      "name": "initial-rejected",
+      "plans": [
+        "rejected"
+      ],
+      "steps": [
+        "plan_first",
+        "failed"
+      ],
+      "terminal": "failed"
+    },
+    {
+      "name": "initial-runtime_error",
+      "plans": [
+        "runtime_error"
+      ],
+      "steps": [
+        "plan_first",
+        "failed"
+      ],
+      "terminal": "failed"
+    },
+    {
+      "name": "completed-planned",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "apply_b",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-held",
+      "plans": [
+        "needs_classification",
+        "held"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-already_routed",
+      "plans": [
+        "needs_classification",
+        "already_routed"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-needs_classification",
+      "plans": [
+        "needs_classification",
+        "needs_classification"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-no_candidates",
+      "plans": [
+        "needs_classification",
+        "no_candidates"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-rejected",
+      "plans": [
+        "needs_classification",
+        "rejected"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "completed"
+    },
+    {
+      "name": "completed-runtime_error",
+      "plans": [
+        "needs_classification",
+        "runtime_error"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "completed"
+    },
+    {
+      "name": "runtime_error-planned",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "apply_c",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-held",
+      "plans": [
+        "needs_classification",
+        "held"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-already_routed",
+      "plans": [
+        "needs_classification",
+        "already_routed"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-needs_classification",
+      "plans": [
+        "needs_classification",
+        "needs_classification"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-no_candidates",
+      "plans": [
+        "needs_classification",
+        "no_candidates"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-rejected",
+      "plans": [
+        "needs_classification",
+        "rejected"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "runtime_error-runtime_error",
+      "plans": [
+        "needs_classification",
+        "runtime_error"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "invalid-planned",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "apply_c",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-held",
+      "plans": [
+        "needs_classification",
+        "held"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-already_routed",
+      "plans": [
+        "needs_classification",
+        "already_routed"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "done"
+      ],
+      "terminal": "completed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-needs_classification",
+      "plans": [
+        "needs_classification",
+        "needs_classification"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-no_candidates",
+      "plans": [
+        "needs_classification",
+        "no_candidates"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-rejected",
+      "plans": [
+        "needs_classification",
+        "rejected"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "invalid"
+    },
+    {
+      "name": "invalid-runtime_error",
+      "plans": [
+        "needs_classification",
+        "runtime_error"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "failed"
+      ],
+      "terminal": "failed",
+      "llm": "invalid"
+    },
+    {
+      "name": "completed-apply-stale",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "apply_b",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "stale",
+      "llm": "completed"
+    },
+    {
+      "name": "runtime_error-apply-stale",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "apply_c",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "stale",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "completed-apply-rejected",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "apply_b",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "rejected",
+      "llm": "completed"
+    },
+    {
+      "name": "runtime_error-apply-rejected",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "apply_c",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "rejected",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "completed-apply-runtime_error",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_classified",
+        "apply_b",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "runtime_error",
+      "llm": "completed"
+    },
+    {
+      "name": "runtime_error-apply-runtime_error",
+      "plans": [
+        "needs_classification",
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "classify",
+        "plan_unclassified",
+        "apply_c",
+        "failed"
+      ],
+      "terminal": "failed",
+      "apply": "runtime_error",
+      "llm": "runtime_error"
+    },
+    {
+      "name": "admit-DEFINED",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed",
+      "task": {
+        "status": "DEFINED",
+        "route_source": "unrouted"
+      }
+    },
+    {
+      "name": "admit-BLOCKED",
+      "plans": [
+        "planned"
+      ],
+      "steps": [
+        "plan_first",
+        "apply_a",
+        "done"
+      ],
+      "terminal": "completed",
+      "apply": "routed",
+      "task": {
+        "status": "BLOCKED",
+        "route_source": "legacy"
+      }
+    },
+    {
+      "name": "ignore-finished",
+      "plans": [],
+      "steps": [],
+      "terminal": null,
+      "event": {
+        "task": {
+          "status": "COMPLETED",
+          "route_source": "unrouted"
+        }
+      }
+    },
+    {
+      "name": "ignore-routed",
+      "plans": [],
+      "steps": [],
+      "terminal": null,
+      "event": {
+        "task": {
+          "status": "READY",
+          "route_source": "router"
+        }
+      }
+    },
+    {
+      "name": "ignore-other-router",
+      "plans": [],
+      "steps": [],
+      "terminal": null,
+      "event": {
+        "router": "project-router"
+      }
+    },
+    {
+      "name": "ignore-other-event",
+      "plans": [],
+      "steps": [],
+      "terminal": null,
+      "event": {
+        "event_type": "task.completed"
+      }
+    }
+  ]
+}
