@@ -15,7 +15,10 @@ topic: aq-memory plugin extraction
 > **Current boundary (2026-10-22).** The extraction below is historical, not an installation recipe. Core now
 > owns durable knowledge and refuses legacy `aq-memory` / `memory` plugin loads.
 > No external distribution or adapter is installed by this repository. See
-> [knowledge records](../../guides/knowledge-records.md).
+> [knowledge records](../../guides/knowledge-records.md). The proposed K07
+> versioned read-only adapter handshake remains a loading boundary. External
+> plugins run in the daemon process, with service access restricted to
+> `config` and `vault_watcher`; see the [plugins guide](../../guides/plugins-and-mcp.md).
 
 ## 1. Goal
 
