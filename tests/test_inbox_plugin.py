@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -12,6 +13,17 @@ from src.plugins.internal.inbox.auth import (
     extract_from_address,
     parse_authentication_results,
 )
+from src.plugins.internal.inbox.plugin import InboxPlugin
+
+
+class TestInboxPluginDiscovery:
+    def test_internal_discovery_loads_inbox_package_plugin(self):
+        """The direct-child discovery contract reaches the inbox implementation."""
+        from src.plugins.internal import discover_internal_plugins
+
+        discovered = dict(discover_internal_plugins())
+
+        assert discovered["src.plugins.internal.inbox"] is InboxPlugin
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +273,10 @@ class TestAllowlistClassifier:
         al = Allowlist(f)
         assert "jack@example.com" in al.entries
 
-        # Wait briefly so mtime can change (some filesystems have 1s resolution).
-        time.sleep(1.1)
+        previous_mtime = f.stat().st_mtime_ns
         _write_allowlist(f, senders=["jack@example.com", "jessica@example.com"])
+        # Force a detectable change even on filesystems with coarse timestamps.
+        os.utime(f, ns=(previous_mtime, previous_mtime + 2_000_000_000))
         # Reloads lazily on next access.
         assert "jessica@example.com" in al.entries
         assert len(al.entries) == 2

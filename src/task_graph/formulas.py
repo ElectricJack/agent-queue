@@ -23,7 +23,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -220,8 +220,9 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
             )
         )
 
-    extends = fm.extra.get("extends")
-    extends = str(extends) if extends else None
+    # ``parse_frontmatter`` lifts ``extends`` out of ``extra`` into a field of
+    # its own (profile inheritance uses the same key), so read it from there.
+    extends = fm.extends or None
     # ``extends: system:<name>`` pins that one hop to system scope, which is
     # what lets a project override extend the system formula of the SAME name
     # (``projects/p1/formulas/base.md`` -> ``system`` ``base``).  Without the
@@ -575,6 +576,11 @@ def merge_documents(chain: list[Formula]) -> dict:
     - ``defaults``: merged key-wise, child wins.
     - ``parent``: merged field-wise, child keys override, missing keys
       inherited from the parent formula(s).
+    - ``phases``: merged by ``key``, exactly like ``nodes`` — a child
+      formula amends a phase it names and appends any it introduces. A
+      child's new phases land at the END, and document order *is* the gate
+      order, so a child can only add later phases: it can never reorder the
+      chain's stages or insert one before them.
     - ``nodes``: merged by ``key``. A child node replaces the fields it
       authors on the same-keyed parent node (field-wise, child wins);
       ``needs`` (a list of strings and/or dicts, either shape), ``labels``,
@@ -585,14 +591,38 @@ def merge_documents(chain: list[Formula]) -> dict:
 
     Returns a new dict — never mutates any ``Formula.graph_doc``.
     """
-    doc: dict = {"version": 1, "defaults": {}, "parent": {}, "nodes": []}
+    doc: dict = {"version": 1, "defaults": {}, "parent": {}, "phases": [], "nodes": []}
     index: dict[str, int] = {}
+    phase_index: dict[str, int] = {}
+    #: A non-list ``phases`` from any hop.  Kept aside rather than written
+    #: into ``doc`` mid-loop, so a later hop's merge still has a list to
+    #: append to; it replaces the merged value at the end and reaches the
+    #: parser as a ``bad_phase`` finding, which is where malformed input
+    #: belongs.
+    malformed_phases: Any = None
     for formula in chain:
         src = copy.deepcopy(formula.graph_doc)
         if src.get("spec"):
             doc["spec"] = src["spec"]
         doc["defaults"].update(_drop_null(src.get("defaults") or {}))
         doc["parent"].update(_drop_null(src.get("parent") or {}))
+        raw_phases = src.get("phases")
+        if isinstance(raw_phases, list):
+            for phase in raw_phases:
+                # A malformed entry is passed through untouched so the parser
+                # reports it as ``bad_phase``/``missing_phase_key`` rather
+                # than dying here with a TypeError or a KeyError.
+                key = phase.get("key") if isinstance(phase, dict) else None
+                if not isinstance(key, str):
+                    doc["phases"].append(phase)
+                    continue
+                if key in phase_index:
+                    doc["phases"][phase_index[key]].update(_drop_null(phase))
+                else:
+                    phase_index[key] = len(doc["phases"])
+                    doc["phases"].append(_drop_null(phase))
+        elif raw_phases is not None:
+            malformed_phases = raw_phases
         for node in src.get("nodes") or []:
             key = node["key"]
             clean = _drop_null(node)
@@ -603,6 +633,10 @@ def merge_documents(chain: list[Formula]) -> dict:
                 doc["nodes"].append(clean)
     if not doc["parent"]:
         doc.pop("parent")
+    if malformed_phases is not None:
+        doc["phases"] = malformed_phases
+    elif not doc["phases"]:
+        doc.pop("phases")
     return doc
 
 
