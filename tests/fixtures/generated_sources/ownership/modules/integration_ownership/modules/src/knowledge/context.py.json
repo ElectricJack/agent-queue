@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/knowledge/context.py::ContextService": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/knowledge/context.py::context_enabled": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
