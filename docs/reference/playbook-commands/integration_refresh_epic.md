@@ -12,9 +12,9 @@
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
-| Preview | not supported |
+| Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:2d65479b35d495ba4f76ce22b02de19be7176ac3c1cc718c6af8a746690bb903` |
+| Contract fingerprint | `sha256:b0ceca2c291932a5ce636b47aa870aafb1c81190f9edc08c7d1b29411171f617` |
 
 ## Parameters
 
@@ -36,6 +36,9 @@
 | `target_sha` | `string \| null` | — |
 | `intent` | `string \| null` | — |
 | `dry_run` | `boolean \| null` | — |
+| `replacement_batch_id` | `string \| null` | — |
+| `members` | `string[]` | — |
+| `blockers` | `object[]` | — |
 | `default_ref` | `string \| null` | — |
 | `default_sha` | `string \| null` | — |
 | `ahead` | `integer \| null` | — |
@@ -43,7 +46,7 @@
 | `state` | `string \| null` | — |
 | `detail` | `object \| null` | — |
 
-Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`, `target_ref`, `candidate_sha`, `target_sha`, `intent`, `dry_run`, `default_ref`, `default_sha`, `ahead`, `behind`, `state`, `detail`.
+Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`, `target_ref`, `candidate_sha`, `target_sha`, `intent`, `dry_run`, `replacement_batch_id`, `members`, `blockers`, `default_ref`, `default_sha`, `ahead`, `behind`, `state`, `detail`.
 
 ## Outcomes
 
