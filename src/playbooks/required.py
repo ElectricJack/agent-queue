@@ -35,6 +35,8 @@ DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
 # Explicit installation inventory. Morning reporting still requires operator
 # activation and reports.morning.enabled. Project defaults are code-owned
 # creation/graft settings in this release, not a separate shipped playbook.
+# Retired policies remain available as reviewed bundles for explicit import,
+# but are absent from both this inventory and the default source directory.
 INITIAL_SYSTEM_PLAYBOOK_IDS = (
     *REQUIRED_SYSTEM_PLAYBOOK_IDS,
     *DEFAULT_SYSTEM_PLAYBOOK_IDS,
@@ -481,8 +483,44 @@ class RequiredPlaybookReconciler:
             health="ready",
             reasons="[]",
         )
+        if repointed_from is not None:
+            await self._resync_replaced_source(playbook_id, repointed_from, shipped_sha)
         records, _contracts, _profiles = await self._handler._v2_health_records()
         return _system_activation(records, playbook_id), None, repointed_from
+
+    async def _resync_replaced_source(self, playbook_id: str, previous_sha: str, sha: str) -> None:
+        """Explicit repair advances an unchanged old source with its activation.
+
+        An authored edit or a deleted source remains operator-owned; neither
+        is evidence that the operator wanted the shipped Markdown restored.
+        """
+        from src.playbooks.artifact_store import resync_system_source
+        from src.playbooks.definition import source_digest
+        from src.playbooks.run_state import PlaybookStorageError
+
+        store = self._handler._v2_engine().services.artifact_store
+        vault = self._handler._v2_vault_root()
+        path = vault / "system" / "playbooks" / f"{playbook_id}.md"
+        try:
+            previous = store.load(previous_sha)
+            if (
+                not path.is_file()
+                or source_digest(path.read_text(encoding="utf-8")) != previous.source_hash
+            ):
+                return
+            result = await asyncio.to_thread(
+                resync_system_source,
+                store,
+                vault,
+                playbook_id,
+                sha,
+                previous.source_hash,
+            )
+            logger.info("Resynced %s system source during explicit repair: %s", playbook_id, result)
+        except (OSError, ValueError, UnicodeError, PlaybookStorageError):
+            logger.warning(
+                "Could not resync %s system source; use source-resync", playbook_id, exc_info=True
+            )
 
     async def _missing_grant(self, playbook_id: str, artifact_sha256: str) -> str | None:
         """The :data:`REQUIRED_GRANTS` command *playbook_id*'s artifact lacks, if any.
