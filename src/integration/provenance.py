@@ -16,7 +16,9 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 from src.git.identity import LEDGER_IDENTITY
-from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
+from src.git.manager import (
+    GitError, RemoteRefResult, RemoteRefState, is_valid_git_oid, safe_git_detail,
+)
 
 PREFIX = "refs/aq/provenance/"
 LEGACY_PREFIX = "aq-provenance/"
@@ -105,6 +107,30 @@ def _completion_record(completed: CompletedSource, claim_epoch: int, artifact: b
             "artifact": artifact}
 
 
+def _publication_refusal(
+    ref: str, expected_oid: str, verified: RemoteRefResult,
+    publication: RemoteRefResult | None,
+) -> GitError:
+    """Keep the per-ref cause alongside the final proof failure, safely bounded."""
+    def detail(result: RemoteRefResult | None) -> str:
+        if result is None:
+            return "not_attempted"
+        parts = [result.state.value]
+        if result.oid is not None:
+            parts.append("oid=" + (result.oid if is_valid_git_oid(result.oid) else "invalid"))
+        if result.error:
+            parts.append("error=" + safe_git_detail(result.error))
+        if result.publication_error and result.publication_error != result.error:
+            parts.append("transfer_error=" + safe_git_detail(result.publication_error))
+        return ", ".join(parts)
+
+    return GitError(
+        "complete provenance is not verified on the authorized remote; "
+        f"ref={ref}; expected_oid={expected_oid}; "
+        f"readback=[{detail(verified)}]; publication=[{detail(publication)}]"
+    )
+
+
 class GitProvenance:
     def __init__(self, git, checkout: str, *, repository_url: str):
         self.git, self.checkout, self.repository_url = git, checkout, repository_url
@@ -134,6 +160,34 @@ class GitProvenance:
         if result.returncode not in (0, 1):
             raise GitError(result.stderr or "source ancestry is unknown")
         return result.returncode == 0
+
+    async def strict_ancestor(self, source: str, target: str) -> bool:
+        """Exact reachability only; an incomplete negative is not a proof.
+
+        This additive primitive is used by the containment shadow contract.
+        Legacy replacement readers remain unchanged until fenced cutover.
+        """
+        await self.exact(source)
+        await self.exact(target)
+        return await self._strict_ancestor(source, target)
+
+    async def _strict_ancestor(self, source: str, target: str) -> bool:
+        # Callers caching validated immutable objects can avoid resolving twice.
+        contained = await self.ancestor(source, target)
+        if not contained and await self.run("rev-parse", "--is-shallow-repository") != "false":
+            raise GitError("incomplete_shallow_history")
+        return contained
+
+    async def strictly_contained(self, completed: CompletedSource, target_oid: str) -> bool:
+        """Compatibility proof delegate retaining the immutable generation fence."""
+        record = await self.read_completion(completed.identity)
+        if record is None:
+            raise GitError("missing_git_provenance")
+        if record["source_oid"] != completed.source_oid:
+            raise ValueError("completion_source_mismatch")
+        if not record["artifact"]:
+            return False
+        return await self.strict_ancestor(completed.source_oid, target_oid)
 
     async def _validate(self, record: dict, oid: str) -> dict:
         if (not isinstance(record, dict) or record.get("version") != 1
@@ -247,24 +301,25 @@ class GitProvenance:
         )
         legacy = observed[legacy_ref]
         if legacy.state is RemoteRefState.ERROR:
-            raise GitError(legacy.error or "cannot inspect legacy provenance")
+            raise GitError(safe_git_detail(legacy.error or "cannot inspect legacy provenance"))
         if legacy.state is RemoteRefState.PRESENT and legacy.oid != oid:
             raise ValueError("immutable completion generation already binds different evidence")
         remote = observed[ref]
         if remote.state is RemoteRefState.ERROR:
-            raise GitError(remote.error or "cannot inspect published provenance")
+            raise GitError(safe_git_detail(remote.error or "cannot inspect published provenance"))
+        publication = None
         if remote.state is RemoteRefState.PRESENT:
             if remote.oid != oid:
                 raise ValueError("immutable completion generation already binds different evidence")
         else:
-            await self.git.apush_new_refs(
+            publication = (await self.git.apush_new_refs(
                 self.checkout, {ref: oid}, qualified=True, repository_url=self.repository_url,
-            )
+            )).get(ref)
         verified = (await self.git.als_remote_qualified_refs(
             self.checkout, [ref], repository_url=self.repository_url
         ))[ref]
         if verified.state is not RemoteRefState.PRESENT or verified.oid != oid:
-            raise GitError("complete provenance is not verified on the authorized remote")
+            raise _publication_refusal(ref, oid, verified, publication)
         await self.run("update-ref", ref, oid)
         return oid
 
@@ -280,7 +335,7 @@ class GitProvenance:
         """:meth:`write_completion` for many generations in one remote transfer.
 
         Each record is staged and validated exactly as a single write stages
-        it; one read, one push leased to absence and one read-back settle every
+        it; one preflight read, one push leased to absence and a final read-back settle every
         ref. A ref already holding the same deterministic object is kept, and
         each generation reports its own oid or its own failure, never a peer's.
         """
@@ -309,27 +364,33 @@ class GitProvenance:
             remote = before[branch]
             legacy = before[legacy_refs[branch]]
             if legacy.state is RemoteRefState.ERROR:
-                results[identity] = GitError(legacy.error or "cannot inspect legacy provenance")
+                results[identity] = GitError(
+                    safe_git_detail(legacy.error or "cannot inspect legacy provenance"))
             elif legacy.state is RemoteRefState.PRESENT and legacy.oid != oid:
                 results[identity] = ValueError(
                     "immutable completion generation already binds different evidence")
             elif remote.state is RemoteRefState.ERROR:
-                results[identity] = GitError(remote.error or "cannot inspect published provenance")
+                results[identity] = GitError(
+                    safe_git_detail(remote.error or "cannot inspect published provenance"))
             elif remote.state is RemoteRefState.PRESENT and remote.oid != oid:
                 results[identity] = ValueError(
                     "immutable completion generation already binds different evidence")
             elif remote.state is RemoteRefState.ABSENT:
                 absent[branch] = oid
-        after = await self.git.apush_new_refs(
+        publication = await self.git.apush_new_refs(
             self.checkout, absent, qualified=True, repository_url=self.repository_url
         ) if absent else {}
+        eligible = [ref for ref, (identity, _oid) in staged.items() if identity not in results]
+        after = await self.git.als_remote_qualified_refs(
+            self.checkout, eligible, repository_url=self.repository_url
+        ) if eligible else {}
         for branch, (identity, oid) in staged.items():
             if identity in results:
                 continue
-            verified = after.get(branch, before[branch])
+            verified = after[branch]
             if verified.state is not RemoteRefState.PRESENT or verified.oid != oid:
-                results[identity] = GitError(
-                    verified.error or "complete provenance is not verified on the authorized remote")
+                results[identity] = _publication_refusal(
+                    branch, oid, verified, publication.get(branch))
                 continue
             try:
                 await self.run("update-ref", branch, oid)
@@ -358,8 +419,13 @@ class GitProvenance:
         branch = PREFIX + "replacements/" + hashlib.sha256(_json(record).encode()).hexdigest()
         return await self._write(branch, record)
 
-    async def contained(self, completed: CompletedSource, target_oid: str) -> bool:
+    async def contained(self, completed: CompletedSource, target_oid: str, *,
+                        contract_version: str = "legacy-equivalence-v1") -> bool:
         """Proof primitive for the shared evaluator; failures propagate as unknown."""
+        if contract_version == "strict-ancestry-v1":
+            return await self.strictly_contained(completed, target_oid)
+        if contract_version != "legacy-equivalence-v1":
+            raise ValueError("unsupported delivery proof contract")
         await self.exact(target_oid)
         record = await self.read_completion(completed.identity)
         if record is None or record["source_oid"] != completed.source_oid:

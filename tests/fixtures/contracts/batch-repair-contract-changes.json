@@ -1,0 +1,23 @@
+{
+  "source_base": "ee36726bc1ae824a79787c2805c998422197da2a",
+  "source_commit": "67575c6b9a43f820d824ff2bdb7d6be41ec21db3",
+  "previous_cli_catalogue_sha256": "212a969357a004021f8d4638cb1dbb1aaaab5dfada827b183ecb2a67dfed7ac5",
+  "cli_catalogue_sha256": "d6bf91d0c3b5b37a190a23041d57a946c8dd243935a6c29ae3063b234e8e9a62",
+  "added_property": {
+    "repair_batch": {
+      "type": "string",
+      "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch."
+    }
+  },
+  "transport_definitions": {
+    "task_set": {
+      "previous_sha256": "fca6ae2ce029e8d785f526b7271c43adbf1b44907d2b8406a82c824e1ffbc9e2",
+      "sha256": "6e7cde32ad7b5dacccbfd3312b8ff2e8170de41e1b88f150d1793467cc1402bb"
+    }
+  },
+  "review_notes": [
+    "Adds exactly one optional string property, repair_batch, to task_set. Removing it restores the publication-delegation catalogue byte for byte; all earlier compatibility records remain unchanged.",
+    "Assignment requires Git-first active mode and authenticated supervisor/operator authority for the task project. It binds an open batch in the task integration repository without renaming its canonical task branch. Ordinary workers and raw integration_batch_repair metadata writes cannot grant authority.",
+    "Assignment failure preserves explicit boolean success=false. Success delegates to the existing task_show result and appends repair_batch to fields_changed. This argument does not grant PR, default-branch, foreign-repository, rewrite or stale-claim publication rights."
+  ]
+}
