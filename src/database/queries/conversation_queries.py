@@ -27,10 +27,11 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, select, tuple_, update
+from sqlalchemy import and_, case, delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.sources import insert_message_with_source_event
 from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
 from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
 from src.conversations.outbox import STATUS_LINE_ACTION
@@ -39,6 +40,8 @@ from src.database.tables import (
     conversation_inputs,
     conversation_intake_gaps,
     digest_windows,
+    escalation_messages,
+    doc_review_comments,
     messages,
     outbound_deliveries,
     supervisor_conversations,
@@ -468,7 +471,7 @@ class ConversationQueriesMixin:
             rendered_brief = brief(conversation["id"], input_id) if callable(brief) else brief
             if not isinstance(rendered_brief, str) or not rendered_brief:
                 raise ValueError("brief must render non-empty text")
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages).values(
                     id=supervisor_message_id,
                     project_id=supervisor_project_id,
@@ -1018,6 +1021,8 @@ class ConversationQueriesMixin:
             )
             if item is None:
                 raise ConversationNotFound(f"conversation input {input_id} does not exist")
+            if item["ask_id"] is not None:
+                raise ConversationStateError("Ask discussion requires ask_discussion_reply")
             if item["conversation_id"] != conversation_id:
                 raise ConversationConflict(
                     f"input {input_id} does not belong to conversation {conversation_id}"
@@ -1063,7 +1068,7 @@ class ConversationQueriesMixin:
             sender = notice["to_id"] if notice is not None else SUPERVISOR_RECIPIENT
             reply = (
                 (
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,
@@ -1254,6 +1259,7 @@ class ConversationQueriesMixin:
             .where(
                 conversation_inputs.c.state == "accepted",
                 conversation_inputs.c.delay_notified_at.is_(None),
+                conversation_inputs.c.ask_id.is_(None),
                 conversation_inputs.c.received_at <= older_than,
                 messages.c.delivered_at.is_(None),
                 supervisor_conversations.c.state != "closed",
@@ -1287,15 +1293,15 @@ class ConversationQueriesMixin:
     ) -> list[str]:
         """A bounded batch of unarchived old messages in conversation threads.
 
-        Join by thread rather than input pointers: this includes every reply,
+        Match by thread rather than input pointers: this includes every reply,
         even after a later reply replaces an input's current reply pointer.
         """
         statement = (
             select(messages.c.id)
-            .select_from(
-                messages.join(
-                    supervisor_conversations,
-                    messages.c.thread_id == supervisor_conversations.c.thread_id,
+            .where(
+                or_(
+                    messages.c.thread_id.in_(select(supervisor_conversations.c.thread_id)),
+                    messages.c.thread_id.like("ask:%:revision:%"),
                 )
             )
             .where(messages.c.created_at < older_than, messages.c.archived_at.is_(None))
@@ -1328,13 +1334,30 @@ class ConversationQueriesMixin:
                     ),
                 )
             )
+            await conn.execute(
+                update(escalation_messages)
+                .where(
+                    escalation_messages.c.ask_id.is_not(None),
+                    escalation_messages.c.entry_kind == "discussion",
+                    escalation_messages.c.created_at < older_than,
+                    ~escalation_messages.c.id.in_(
+                        select(doc_review_comments.c.source_discussion_id)
+                        .where(doc_review_comments.c.source_discussion_id.is_not(None))
+                    ),
+                )
+                .values(text="[Ordinary discussion expired]")
+            )
         return int(result.rowcount or 0)
 
     async def delete_conversation_tombstones(self, *, older_than: float) -> int:
         """Delete inputs received before *older_than*; conversations are kept."""
         async with self.immediate() as conn:
             result = await conn.execute(
-                delete(conversation_inputs).where(conversation_inputs.c.received_at < older_than)
+                delete(conversation_inputs).where(
+                    conversation_inputs.c.received_at < older_than,
+                    conversation_inputs.c.retention_entry_id.is_(None),
+                    conversation_inputs.c.ask_id.is_(None),
+                )
             )
         return int(result.rowcount or 0)
 
@@ -1512,6 +1535,8 @@ async def _input_by_external(conn, transport: str, external_message_id: str) -> 
 
 
 async def _replay(conn, existing: Mapping[str, Any]) -> dict[str, Any]:
+    if existing["routing_state"] != "conversation" or existing["ask_id"]:
+        raise ConversationStateError("Input belongs to shared ask intake; use its stored receipt")
     conversation = (
         (
             await conn.execute(
