@@ -57,6 +57,9 @@ def fake_executable(directory, identity):
         "Path(sys.argv[1]).write_text(json.dumps({"
         f"'identity': {identity!r}, "
         "'path': os.environ.get('PATH'), "
+        "'inherited': {k: v for k, v in os.environ.items() "
+        "if k.startswith(('CLAUDE', 'AQ_STALE', 'DISCORD_'))}, "
+        "'terminal': all(os.environ.get(k) for k in ('TERM', 'TMUX', 'TMUX_PANE')), "
         "'other_env': os.environ.get('AQ_PATH_TEST'), 'args': sys.argv[2:]}))\n"
         "print('READY', flush=True)\n"
         "time.sleep(30)\n"
@@ -70,6 +73,13 @@ async def launch_and_observe(provider, tmp_path, command, env):
     # new-session -e PATH=... populated the session metadata correctly.
     await provider._tmux("new-session", "-d", "-s", "keeper", "/bin/sleep 30")
     await provider._tmux("set-option", "-g", "default-shell", "/bin/sh")
+    # Simulate a server surviving a daemon restart with an unsanitized env.
+    for key, value in {
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "20",
+        "AQ_STALE_CLAIM": "parent-epoch",
+        "DISCORD_BOT_TOKEN": "server-secret",
+    }.items():
+        await provider._tmux("set-environment", "-g", key, value)
     output = tmp_path / "observed.json"
     literal_arg = "literal '$PATH; $(touch argument-injected)"
     spec = SessionSpec(
@@ -117,6 +127,8 @@ async def test_tmux_exec_uses_validated_session_path(
     assert observed == {
         "identity": "session-path-executable",
         "path": session_path,
+        "inherited": {},
+        "terminal": True,
         "other_env": other_env,
         "args": [literal_arg],
     }
@@ -140,6 +152,26 @@ async def test_tmux_exec_uses_preflight_default_when_path_is_absent(
     assert observed == {
         "identity": "absolute-executable",
         "path": os.defpath,
+        "inherited": {},
+        "terminal": True,
         "other_env": "retained",
         "args": [literal_arg],
     }
+
+
+async def test_tmux_exec_preserves_explicit_session_values(isolated_tmux, tmp_path):
+    binary = fake_executable(tmp_path / "tools", "explicit-environment")
+    observed, _ = await launch_and_observe(
+        isolated_tmux,
+        tmp_path,
+        str(binary),
+        {
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+            "AQ_STALE_CLAIM": "explicit-fresh-epoch",
+        },
+    )
+    assert observed["inherited"] == {
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+        "AQ_STALE_CLAIM": "explicit-fresh-epoch",
+    }
+    assert observed["terminal"] is True
