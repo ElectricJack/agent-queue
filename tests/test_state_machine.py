@@ -184,7 +184,7 @@ class TestEnforcementFlagContract:
         path.write_text(
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
             "discord:\n  bot_token: t\n  guild_id: '1'\n"
             "state_machine:\n  enforce: true\n",
             encoding="utf-8",

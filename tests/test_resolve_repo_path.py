@@ -6,15 +6,16 @@ and various error conditions.
 """
 
 import os
+import time
 
 import pytest
 
-from src.config import AppConfig, DiscordConfig
-from src.database import Database
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.git.manager import GitManager
-from src.models import Project, RepoConfig, RepoSourceType, Workspace
+from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Workspace
 from src.plugins.services import WorkspaceServiceImpl
 from unittest.mock import AsyncMock, MagicMock
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -23,12 +24,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.fixture
-async def db(tmp_path):
+async def db(reuse_database):
     """Create a real test database."""
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -36,7 +35,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -95,6 +94,36 @@ class TestWorkspaceResolution:
         assert project is not None
         assert project.id == "p-ws"
         mock_git.avalidate_checkout.assert_called_once_with(checkout)
+
+    async def test_session_git_command_uses_held_worktree(self, ws_service, db, tmp_path, mock_git):
+        base = _make_dir(str(tmp_path / "base"))
+        held = _make_dir(str(tmp_path / "held-task"))
+        await db.create_project(Project(id="p-held", name="Held Task"))
+        await db.create_workspace(
+            Workspace(
+                id="base-ws", project_id="p-held", workspace_path=base,
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_session(SessionRecord(
+            id="s-held", project_id="p-held", profile_id="worker-codex",
+            harness="codex", provider="fake", name="s-held", lifecycle="pool",
+            state="running", work_dir=held, epoch="test", instance_token="test-only",
+            started_at=time.time(),
+        ))
+
+        path, project, err = await ws_service.resolve_repo_path(
+            {"project_id": "p-held", "session_id": "s-held"}
+        )
+        assert err is None
+        assert path == held
+        assert project.id == "p-held"
+        mock_git.avalidate_checkout.assert_called_once_with(held)
+
+        _, _, err = await ws_service.resolve_repo_path(
+            {"project_id": "p-held", "session_id": "missing"}
+        )
+        assert err == {"error": "No active session worktree for this project"}
 
     async def test_workspace_takes_priority_over_legacy_repo(
         self,

@@ -19,13 +19,15 @@ from src.api.messages import resolve_session_project, router
 from src.commands.handler import CommandHandler
 from src.config import MessagesConfig
 from src.database import Database
-from src.models import Project
+from src.models import AgentProfile, Project, SessionRecord
+from tests.db_fixtures import lease_dsn
+
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(str(tmp_path / "relay.db"))
-    await db.initialize()
+async def handler(reuse_database):
+    db = await reuse_database("relay.db")
     await db.create_project(Project(id="agent-queue", name="Agent Queue"))
 
     bus = MagicMock()
@@ -38,7 +40,6 @@ async def handler(tmp_path):
     config.messages = MessagesConfig(enabled=True)
 
     yield CommandHandler(orch, config)
-    await db.close()
 
 
 @pytest.fixture
@@ -201,9 +202,21 @@ from src.api.auth import SessionTokenStore  # noqa: E402
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # noqa: E402
 
 
+async def _seed_global_sender(db):
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", aq_commands=["message_send", "message_list"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="boot", instance_token="global-token", started_at=1, state="running",
+    ))
+
+
 async def _seed_messages_app(tmp_path):
     """Build a FastAPI app with the messages router + auth middleware wired up."""
-    db = Database(str(tmp_path / "msg_scope.db"))
+    db = Database(lease_dsn("msg_scope.db"))
     await db.initialize()
     await db.create_project(Project(id="proj-a", name="Project A"))
     await db.create_project(Project(id="proj-b", name="Project B"))
@@ -358,14 +371,24 @@ async def test_global_chat_is_projectless_and_does_not_include_project_messages(
 
 
 @pytest.mark.parametrize("elevated,project_id", [(False, "proj-a"), (True, "proj-a"), (False, None)])
-async def test_scoped_or_unprivileged_tokens_cannot_access_global_chat(tmp_path, elevated, project_id):
+async def test_unbound_or_unprivileged_tokens_cannot_access_global_chat(
+    tmp_path, elevated, project_id,
+):
     db, store, ch, app = await _seed_messages_app(tmp_path)
     try:
         token = await store.mint(session_id="scoped", task_id=None, project_id=project_id, elevated=elevated)
         with TestClient(app) as client:
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get("/api/sessions/supervisor-global/messages", headers=headers).status_code == 403
-            assert client.post("/api/sessions/supervisor-global/message", headers=headers, json={"body": "denied"}).status_code == 403
+            response = client.post(
+                "/api/sessions/supervisor-global/message", headers=headers, json={"body": "denied"},
+            )
+            # Elevated project tokens reach the report route, whose handler
+            # still requires a persisted live named supervisor launch.
+            assert response.status_code == (422 if elevated else 403), response.text
+            assert response.json()["detail" if elevated else "error"] == (
+                "out of scope: system messages require global admin"
+            )
         assert await db.list_messages() == []
         assert await db.get_project("global") is None
     finally:
@@ -395,11 +418,110 @@ async def test_system_message_commands_require_global_authority(handler, elevate
     assert len(await handler.db.list_messages()) == 1
 
 
+async def test_authenticated_projectless_inbound_and_scoped_global_report(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.execute import router as execute_router
+    from src.models import AgentProfile, SessionRecord
+
+    db, store, ch, app = await _seed_messages_app(tmp_path)
+    app.include_router(execute_router)
+    ch.orchestrator.session_lens = None
+    try:
+        await db.update_project("proj-a", supervisor_enabled=True)
+        await db.create_profile(AgentProfile(
+            id="supervisor", name="Supervisor", aq_commands=[
+                "message_list", "message_status", "message_inbox", "message_send", "message_reply",
+            ], plugin_tools=[], harness_tools=[],
+        ))
+        await db.create_session(SessionRecord(
+            id="sup-a-uuid", name="n-supervisor--proj-a", project_id="proj-a",
+            profile_id="supervisor", lifecycle="named", state="running", harness="codex",
+            provider="fake", work_dir="/tmp", epoch="test", instance_token="launch-a", started_at=1,
+        ))
+        ch.config.security.capability_enforcement = "enforce"
+        token = await store.mint(
+            session_id="sup-a-uuid", session_instance_token="launch-a", task_id=None,
+            project_id="proj-a", elevated=True,
+        )
+        directive = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-proj-a", body="global directive",
+            thread_id="directive-thread",
+        )
+        foreign = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-proj-b", body="private directive",
+        )
+        transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+        async with AsyncClient(transport=transport, base_url="http://test", headers={
+            "Authorization": f"Bearer {token}",
+        }) as client:
+            async def execute(command, **args):
+                response = await client.post("/api/execute", json={"command": command, "args": args})
+                return response, response.json()
+
+            response, history = await execute(
+                "message_list", to_kind="session", to_id="sup-a-uuid", limit=500,
+            )
+            assert response.status_code == 200 and history["ok"], history
+            assert [m["id"] for m in history["result"]["messages"]] == [directive.id]
+            pane = await client.get("/api/sessions/supervisor-proj-a/messages?supervisor_only=true")
+            assert [m["id"] for m in pane.json()["messages"]] == [directive.id], pane.text
+            assert (await db.get_message(directive.id)).delivered_at is None
+            response, injected = await execute(
+                "message_inbox", to_kind="session", to_id="sup-a-uuid", inject=True,
+            )
+            assert injected["result"]["injected"] == 1, injected
+            response, status = await execute("message_status", message_id=directive.id)
+            assert status["result"]["state"] == "acknowledged", status
+            response, reply = await execute("message_reply", message_id=directive.id, body="ack")
+            assert reply["ok"], reply
+            assert reply["result"]["reply"]["project_id"] == "proj-a"
+            assert reply["result"]["reply"]["from_id"] == "sup-a-uuid"
+            # Client scope/sender claims never replace the authenticated identity.
+            response = await client.post("/api/messages/send", json={
+                "to_kind": "session", "to_id": "supervisor-global", "body": "report",
+                "from_kind": "system", "from_id": "supervisor-global",
+                "_scope": {"kind": "local", "elevated": True},
+            })
+            report = response.json()
+            assert report["success"], report
+            assert report["message"]["from_id"] == "sup-a-uuid"
+            assert report["message"]["project_id"] == "proj-a"
+            response, denied = await execute("message_status", message_id=foreign.id)
+            assert not denied["ok"] and "not found" in denied["error"], denied
+            response, denied = await execute(
+                "message_inbox", to_kind="session", to_id="supervisor-global", inject=True,
+            )
+            assert response.status_code == 403, denied
+            # Losing the capability refuses the same route even while elevated.
+            await db.update_profile("supervisor", aq_commands=[])
+            ch._invalidate_principal_cache()
+            before = len(await db.list_messages())
+            response = await client.post("/api/messages/send", json={
+                "to_kind": "session", "to_id": "supervisor-global", "body": "denied",
+                "from_id": "cli",
+            })
+            denied = response.json()
+            assert response.status_code == 422 and denied["error_code"] == "capability_denied", denied
+            assert len(await db.list_messages()) == before
+        assert (await db.get_message(foreign.id)).delivered_at is None
+    finally:
+        _deps._orchestrator = None
+        _deps._command_handler = None
+        _deps._token_store = None
+        _deps._require_session_token = False
+        await db.close()
+
+
 async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_path):
     from httpx import ASGITransport, AsyncClient
     db, store, ch, app = await _seed_messages_app(tmp_path)
     try:
-        token = await store.mint(session_id="global-admin", task_id=None, project_id=None, elevated=True)
+        await _seed_global_sender(db)
+        token = await store.mint(session_id="global-admin", task_id=None, project_id=None,
+                                 elevated=True, session_instance_token="global-token")
         transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
         async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {token}"}) as client:
             sent = await client.post("/api/sessions/supervisor-global/message", json={"body": "hello"})
@@ -408,9 +530,53 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
             assert response.status_code == 200
             assert response.json()["project_id"] is None
             assert [m["body"] for m in response.json()["messages"]] == ["hello"]
-        direct = await ch.execute("message_send", {"from_kind": "session", "from_id": "global-admin", "to_kind": "user", "to_id": "user", "body": "update", "_scope": {"kind": "session", "session_id": "global-admin", "elevated": True, "project_id": None}})
+        direct = await ch.execute("message_send", {
+            "from_kind": "session", "from_id": "global-admin", "to_kind": "user",
+            "to_id": "user", "body": "update", "_scope": {
+                "kind": "session", "session_id": "global-admin", "elevated": True,
+                "project_id": None, "session_instance_token": "global-token",
+            },
+        })
         assert direct["message"]["project_id"] is None
         assert await db.get_project("global") is None
+    finally:
+        _deps._orchestrator = None
+        _deps._command_handler = None
+        _deps._token_store = None
+        _deps._require_session_token = False
+        await db.close()
+
+
+async def test_global_admin_send_to_a_task_lands_in_the_tasks_project(tmp_path):
+    """``aq message send --to task:<id>`` from the global supervisor, no ``--project``.
+
+    Stored projectless, the 2026-09-28 approval never satisfied the worker's
+    thread wait and its ``aq message status`` answered "Message not found".
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from src.models import Task
+
+    db, store, _ch, app = await _seed_messages_app(tmp_path)
+    try:
+        await _seed_global_sender(db)
+        await db.create_task(Task(id="t-b", project_id="proj-b", title="B", description=""))
+        token = await store.mint(
+            session_id="global-admin", task_id=None, project_id=None, elevated=True,
+            session_instance_token="global-token",
+        )
+        transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+        async with AsyncClient(
+            transport=transport, base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            sent = await client.post("/api/messages/send", json={
+                "to_kind": "task", "to_id": "t-b", "thread_id": "approval:t-b",
+                "body": "APPROVED",
+            })
+        assert sent.status_code == 200, sent.text
+        stored = await db.get_message(sent.json()["message_id"])
+        assert stored.project_id == "proj-b"
     finally:
         _deps._orchestrator = None
         _deps._command_handler = None
@@ -437,17 +603,80 @@ async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
 
 
 async def test_global_supervisor_can_send_to_a_real_project(handler):
+    await _seed_global_sender(handler.db)
+    await handler.db.update_project("agent-queue", supervisor_enabled=True)
     sent = await handler.execute("message_send", {
         "project_id": "agent-queue", "from_kind": "session",
         "from_id": "supervisor-global", "to_kind": "session",
         "to_id": "supervisor-agent-queue", "body": "project instruction",
         "_scope": {"kind": "session", "session_id": "global-admin",
-                   "project_id": None, "elevated": True},
+                   "project_id": None, "elevated": True,
+                   "session_instance_token": "global-token"},
     })
     assert sent["message"]["project_id"] == "agent-queue"
+    assert sent["message"]["to_id"] == "supervisor-agent-queue"
     reply = await handler.execute("message_reply", {
         "message_id": sent["message_id"], "body": "project response",
         "_scope": {"kind": "session", "session_id": "project-admin",
                    "project_id": "agent-queue", "elevated": True},
     })
+    assert "error" not in reply, reply
     assert reply["reply"]["project_id"] == "agent-queue"
+
+
+async def test_supervisor_pane_filters_before_limit_and_shows_reply_and_failed_delivery(client, handler):
+    import time
+    from types import SimpleNamespace
+
+    from src.messages.delivery import MessageDeliveryEngine
+    from src.models import SessionRecord
+
+    now = time.time()
+    await handler.db.update_project("agent-queue", supervisor_enabled=True)
+    await handler.db.create_session(SessionRecord(
+        id="project-supervisor", name="n-supervisor--agent-queue", project_id="agent-queue",
+        profile_id="supervisor", lifecycle="named", state="running", harness="codex",
+        provider="tmux", work_dir="/tmp", epoch="e", instance_token="i", started_at=now,
+    ))
+    handler.orchestrator.session_lens = SimpleNamespace(nudge_failure=lambda sid: {
+        "at": now, "reason": "terminal delivery unavailable", "deferred": False,
+    } if sid == "project-supervisor" else None)
+    inbound = await handler.db.create_message(
+        project_id="agent-queue", from_kind="user", from_id="cli", to_kind="session",
+        to_id="project-supervisor", body="Earlier CLI message", thread_id="cli-thread",
+    )
+    await handler.db.mark_delivered(inbound.id, via="nudge")
+    reply = await handler._cmd_message_reply({"message_id": inbound.id, "body": "Supervisor reply"})
+    # A newer worker message must not consume a slot in the supervisor's LIMIT.
+    await handler.db.create_message(
+        project_id="agent-queue", from_kind="user", from_id="cli", to_kind="session",
+        to_id="worker", body="Worker traffic",
+    )
+    response = client.get("/api/sessions/supervisor-agent-queue/messages?supervisor_only=true&limit=2")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert {row["id"] for row in data["messages"]} == {inbound.id, reply["reply_id"]}
+    original = next(row for row in data["messages"] if row["id"] == inbound.id)
+    assert original["delivered_at"] and original["read_at"]
+    assert data["delivery_failure"]["reason"] == "terminal delivery unavailable"
+    sent = client.post("/api/sessions/supervisor-agent-queue/message", json={
+        "body": "Dashboard request", "from": "dashboard", "thread_id": "dashboard:agent-queue",
+    })
+    assert sent.status_code == 200, sent.text
+    queued = await handler.db.get_message(sent.json()["message_id"])
+    assert queued.to_id == "supervisor-agent-queue" and queued.delivered_at is None
+    transport = SimpleNamespace(activity=AsyncMock(return_value="idle"),
+                                nudge=AsyncMock(return_value=True))
+    engine = MessageDeliveryEngine(handler.db, transport, handler.config.messages)
+    await engine.run_delivery_pass()
+    notified = await handler.db.get_message(queued.id)
+    assert notified.delivered_at is None
+    assert notified.notification_attempts == 1
+    assert notified.last_notified_at is not None
+    assert any(call.kwargs["target_id"] == "supervisor-agent-queue"
+               and call.kwargs["project_id"] == "agent-queue"
+               and queued.id in call.kwargs["text"]
+               for call in transport.nudge.await_args_list)
+    await handler._cmd_message_reply({"message_id": queued.id, "body": "Dashboard response"})
+    response = client.get("/api/sessions/supervisor-agent-queue/messages?supervisor_only=true")
+    assert any(row["body"] == "Dashboard response" for row in response.json()["messages"])

@@ -16,13 +16,11 @@ class DiscordPurgeChannelRequest:
     """
     Attributes:
         channel_id (None | str | Unset): Target channel id.
-        project_id (None | str | Unset): Use this project's channel instead of channel_id.
         limit (int | None | Unset): How many messages back to scan (default 1000).
         confirm (bool | None | Unset): Actually delete. Without it this is a dry run.
     """
 
     channel_id: None | str | Unset = UNSET
-    project_id: None | str | Unset = UNSET
     limit: int | None | Unset = UNSET
     confirm: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -33,12 +31,6 @@ class DiscordPurgeChannelRequest:
             channel_id = UNSET
         else:
             channel_id = self.channel_id
-
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
 
         limit: int | None | Unset
         if isinstance(self.limit, Unset):
@@ -57,8 +49,6 @@ class DiscordPurgeChannelRequest:
         field_dict.update({})
         if channel_id is not UNSET:
             field_dict["channel_id"] = channel_id
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
         if limit is not UNSET:
             field_dict["limit"] = limit
         if confirm is not UNSET:
@@ -78,15 +68,6 @@ class DiscordPurgeChannelRequest:
             return cast(None | str | Unset, data)
 
         channel_id = _parse_channel_id(d.pop("channel_id", UNSET))
-
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_limit(data: object) -> int | None | Unset:
             if data is None:
@@ -108,7 +89,6 @@ class DiscordPurgeChannelRequest:
 
         discord_purge_channel_request = cls(
             channel_id=channel_id,
-            project_id=project_id,
             limit=limit,
             confirm=confirm,
         )

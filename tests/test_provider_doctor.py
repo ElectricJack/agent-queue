@@ -39,13 +39,9 @@ CHECK_ID = "providers.claude_usage"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 def _config(*, enabled: bool = True, stale_after: int | None = None):
@@ -56,6 +52,30 @@ def _config(*, enabled: bool = True, stale_after: int | None = None):
     if stale_after is not None:
         cfg.providers.claude.stale_after_seconds = stale_after
     return cfg
+
+
+def _assert_named_aq_commands_exist(detail: str) -> None:
+    """Every backticked ``aq …`` in *detail* must resolve in the real CLI tree.
+
+    The detail is the operator's next step.  It once said ``aq run
+    provider_usage_probe`` — there is no ``aq run`` — and nothing noticed,
+    because a test that only pins the sentence pins the mistake with it.
+    """
+    import re
+
+    import click
+
+    from src.cli.app import cli
+
+    named = re.findall(r"`(aq [^`]+)`", detail)
+    assert named, f"expected the detail to name a command to run: {detail!r}"
+    for line in named:
+        node: click.Command = cli
+        for word in line.split()[1:]:
+            assert isinstance(node, click.Group), f"{line!r}: {node.name!r} has no subcommands"
+            child = node.get_command(click.Context(node), word)
+            assert child is not None, f"{line!r} names no such command ({word!r})"
+            node = child
 
 
 async def _record_health(db, **overrides):
@@ -118,9 +138,23 @@ async def _run(db, cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_the_catalog_holds_exactly_the_claude_usage_check():
-    assert {c.id for c in provider_checks.CHECKS} == {CHECK_ID}
-    assert all(c.owner == "provider-usage" for c in provider_checks.CHECKS)
+def test_the_catalog_holds_the_claude_usage_check_and_the_availability_checks():
+    # The ``providers.`` namespace also carries provider-failover's four
+    # availability checks (D21), owned by that workstream.
+    by_id = {c.id: c for c in provider_checks.CHECKS}
+    assert set(by_id) == {
+        CHECK_ID,
+        "providers.usage_activity_gap",
+        "providers.availability",
+        "providers.recovery_stuck",
+        "providers.failover_playbook",
+        "providers.held_tasks",
+    }
+    assert by_id[CHECK_ID].owner == "provider-usage"
+    assert by_id["providers.usage_activity_gap"].owner == "provider-usage"
+    assert {c.owner for c in by_id.values() if c.id not in {
+        CHECK_ID, "providers.usage_activity_gap",
+    }} == {"provider-failover"}
 
 
 def test_the_check_is_report_only():
@@ -160,6 +194,18 @@ async def test_a_fresh_parsed_probe_reports_the_percentages(db):
     assert finding.fixable is False
 
 
+async def test_unchanged_readings_refresh_probe_freshness(db):
+    now = time.time()
+    await _seed_snapshots(db, observed_at=now - 86_400)
+    await _seed_snapshots(db, observed_at=now)
+    await _record_health(db, recorded=0)
+
+    finding = await _run(db, _config())
+
+    assert finding.severity is Severity.OK
+    assert finding.data["age_seconds"] < 60
+
+
 async def test_a_stale_snapshot_warns_even_when_the_probe_verdict_is_fresh(db):
     """T7's freshness rule is about the snapshot, not the verdict.
 
@@ -187,6 +233,7 @@ async def test_a_probe_that_has_stored_no_reading_warns(db):
     assert finding.severity is Severity.WARN
     assert "stored no reading" in finding.detail
     assert finding.data["age_seconds"] is None
+    _assert_named_aq_commands_exist(finding.detail)
 
 
 async def test_transcript_rows_do_not_count_as_probe_freshness(db):
@@ -244,6 +291,7 @@ async def test_no_probe_has_ever_run_warns(db):
     assert finding.severity is Severity.WARN
     assert finding.data["probe_ran"] is False
     assert "provider-usage-probe" in finding.detail
+    _assert_named_aq_commands_exist(finding.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +366,7 @@ async def test_a_box_without_the_cli_is_info(db):
     finding = await _run(db, _config())
 
     assert finding.severity is Severity.INFO
-    assert "not installed" in finding.detail
+    assert finding.data["outcome"] == "unavailable"
 
 
 async def test_an_api_key_account_is_info(db):
