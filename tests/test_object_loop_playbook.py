@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.contracts.registry import CONTRACTS, ContractRegistry
+from src.commands.contracts.models import CommandResult
 from src.commands.principal import (
     TRUSTED_LOCAL,
     ExecutionPrincipal,
@@ -24,31 +28,183 @@ from src.database.tables import doc_review_revisions, doc_reviews, object_loops,
 from src.integration.development import _publishable_object_task
 from src.models import Project, TaskStatus
 from src.object_loop.inputs import SCORE_PREFIX
-from src.playbooks.definition import load_definition_json
+from src.playbooks.authority import bind
+from src.playbooks.definition import TrustedExecutionMetadata, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.invocation import _invocation_context
 from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
 from src.profiles.capabilities import CapabilityPolicy
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_formulas
+from tests._private_values_helper import private_value_service
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
     artifact_ref_for,
 )
 from tests.test_object_loop import B, C, H, receipt, start_args, variant
+from tests.test_review_commands import decide
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "tests/fixtures/playbooks/v2/object-loop"
+REFACTOR_BASELINE = ROOT / "tests/fixtures/object-loop-refactor"
 PROJECT = "matter-engine-cpp"
 COMMANDS = (
     "object_loop_inputs", "object_loop_start", "object_loop_reconcile",
     "object_score_record", "object_checkpoint_read",
 )
+PORT_FIXTURES = ROOT / "tests/fixtures/playbooks/object-loop-port"
+PORT_SCENARIOS = json.loads((PORT_FIXTURES / "scenarios.json").read_text())
 
 
 def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
+
+
+def test_port_preserves_installed_graph_and_authority():
+    raw = (PORT_FIXTURES / "installed.artifact.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == PORT_SCENARIOS["installed_artifact_sha256"]
+    # The exact pre-port repository bytes are also pinned by the legacy digest
+    # guard. The installed copy differs only in its compilation timestamp.
+    repository = json.loads((PORT_FIXTURES / "repository.artifact.json").read_text())
+    installed = json.loads(raw)
+    repository.pop("compiled_at")
+    installed.pop("compiled_at")
+    assert repository == installed
+    old = load_definition_json(raw.decode())
+    # Keep the independently recorded authoring port pinned after the filter refactor.
+    new = load_definition_json((PORT_FIXTURES / "ported.artifact.json").read_text())
+    # required_capabilities changes checkpoint authority (amber-crest-92).
+    # Retain legacy metadata until that compatibility work is reviewed.
+    assert new.trusted_execution is old.trusted_execution is None
+    assert new.compiled_against == old.compiled_against
+    assert new.scope == old.scope
+    # Source references move when authoring clauses are added. Executable rules,
+    # inputs, conditions, retries, limits and edges must otherwise stay identical.
+    for key in ("rules", "steps"):
+        before = old.model_dump(mode="json")[key]
+        after = new.model_dump(mode="json")[key]
+        for items in (before, after):
+            for item in (items.values() if isinstance(items, dict) else items):
+                item.pop("source", None)
+        assert before == after
+
+
+@pytest.mark.parametrize("rule", [
+    "on-formula", "on-completion", "on-failure", "on-review", "recover",
+])
+@pytest.mark.parametrize("scenario", PORT_SCENARIOS["scenarios"], ids=lambda s: s["name"])
+async def test_port_matches_installed_scenarios(scenario, rule):
+    """Run both frozen graphs through typed previews; no live handler is invoked.
+
+    Only the current-policy placeholder changes between graphs. This models
+    separately pinned attempts, never automatic adoption of an existing loop.
+    Compare all command arguments and node outcomes, including refusals.
+    """
+    old = load_definition_json((PORT_FIXTURES / "installed.artifact.json").read_text())
+    traces = []
+    ported = load_definition_json((PORT_FIXTURES / "ported.artifact.json").read_text())
+    for definition in (old, ported):
+        ref = artifact_ref_for(definition)
+
+        def bind_policy(value):
+            if isinstance(value, dict):
+                return {k: bind_policy(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [bind_policy(v) for v in value]
+            if value == "$POLICY":
+                return ref.artifact_sha256
+            if value == "$POLICY_HEX":
+                return ref.artifact_sha256.removeprefix("sha256:")
+            return value
+
+        remaining = bind_policy(scenario["calls"])
+        calls = []
+        registry = ContractRegistry()
+        for name in COMMANDS:
+            registration = CONTRACTS.require(name)
+
+            async def preview(args, _principal, name=name, registration=registration):
+                expected = remaining.pop(0)
+                assert name == expected["command"]
+                assert args.model_dump() == registration.contract.execution.args_model.model_validate(
+                    expected["args"],
+                ).model_dump()
+                calls.append((name, args.model_dump(), expected["outcome"]))
+                return CommandResult(
+                    outcome=expected["outcome"], summary=expected["outcome"],
+                    value=registration.contract.execution.result_model.model_validate(
+                        expected["value"],
+                    ),
+                )
+
+            async def forbidden_live(_args, _principal):
+                pytest.fail("Equivalence previews must never invoke a live command")
+
+            contract = registration.contract.model_copy(update={
+                "execution": registration.contract.execution.model_copy(
+                    update={"supports_preview": True},
+                ),
+            })
+            registry.register(replace(
+                registration, contract=contract, invoke=forbidden_live, preview=preview,
+            ))
+        store = InMemoryArtifactStore()
+        store.put(definition)
+        engine = PlaybookEngine(
+            services=EngineServices(contracts=registry, artifact_store=store, clock=lambda: 100),
+            runs=RecordingRunRepository(),
+        )
+        event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
+        tree = await engine.dry_run(ref, {
+            "event_type": event_type, "project_id": PROJECT, "event_id": "port-equivalence",
+        }, TRUSTED_LOCAL)
+        assert not tree.truncated and len(tree.paths) == 1
+        path = tree.paths[0]
+        assert not remaining, (remaining, path)
+        assert len(calls) == len(scenario["calls"]), path
+        assert path.completed, path  # Traversal completion, not business success.
+        terminal = "done" if scenario["completed"] else "failed"
+        assert path.nodes[-1].step_id == f"{rule}--{terminal}", path
+        assert all(n.outcome != "runtime_error" for n in path.nodes), path
+        # Remove only the per-artifact identity from argument comparison.
+        normalized_calls = json.dumps(calls, sort_keys=True).replace(
+            ref.artifact_sha256.removeprefix("sha256:"), "$POLICY_HEX",
+        )
+        traces.append((normalized_calls, [
+            (n.step_id, n.target, n.outcome) for n in path.nodes
+        ]))
+    assert traces[0] == traces[1]
+
+
+@pytest.fixture(params=[False, True], ids=["legacy", "run-bound"])
+def checkpoint_authority(request, monkeypatch):
+    """Replay the checkpoint traces with and without capability metadata."""
+    if request.param:
+        definition = artifact().model_copy(update={
+            "trusted_execution": TrustedExecutionMetadata(required_capabilities=COMMANDS),
+        })
+        monkeypatch.setattr(__name__ + ".artifact", lambda: definition)
+
+
+@contextmanager
+def checkpoint_invocation(*, invocation=True, declared=True, **identity):
+    definition = artifact().model_copy(update={
+        "trusted_execution": TrustedExecutionMetadata(required_capabilities=COMMANDS),
+    })
+    principal = replace(bind(TRUSTED_LOCAL, definition, "run", "checkpoint"), **identity)
+    ctx = SimpleNamespace(
+        run_id="run", dispatch_id="dispatch", rule_id="recover", step_id="checkpoint",
+        attempt=1, iteration_path="", artifact_ref=artifact_ref_for(definition),
+        artifact=definition if declared else None, services=SimpleNamespace(private_values=None),
+    )
+    with principal_context(principal):
+        if invocation:
+            with _invocation_context(ctx):
+                yield principal
+        else:
+            yield principal
 
 
 async def review(db, review_id="brief-review", kind="other", revision=1, digest=C,
@@ -127,7 +283,10 @@ async def sweep(handler, *, rule="recover"):
 
         live.register(replace(registration, invoke=invoke))
     engine = PlaybookEngine(
-        services=EngineServices(contracts=live, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=live, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
@@ -135,33 +294,9 @@ async def sweep(handler, *, rule="recover"):
     result = await engine.run_rule(ref, rule, event, TRUSTED_LOCAL)
     assert result.outcome == "completed", (result, recordings)
 
-    remaining = list(recordings)
-    previews = ContractRegistry()
-    for name in COMMANDS:
-        registration = CONTRACTS.require(name)
-
-        async def preview(args, _principal, name=name):
-            expected_name, expected_args, recorded = remaining.pop(0)
-            assert (name, args.model_dump()) == (expected_name, expected_args)
-            return recorded
-
-        contract = registration.contract.model_copy(update={
-            "execution": registration.contract.execution.model_copy(update={"supports_preview": True})
-        })
-        previews.register(replace(registration, contract=contract, preview=preview))
-    dry_engine = PlaybookEngine(
-        services=EngineServices(contracts=previews, artifact_store=store, clock=time.time),
-        runs=RecordingRunRepository(),
-    )
-    tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
-    assert not tree.truncated and len(tree.paths) == 1
-    assert tree.paths[0].completed, tree
-    assert not remaining, json.dumps({
-        "remaining": [name for name, _, _ in remaining],
-        "nodes": [(n.step_id, n.target, n.outcome) for n in tree.paths[0].nodes],
-        "inputs": recordings[0][2].value.model_dump(),
-        "artifact": definition.artifact_sha256(),
-    }, default=str)
+    tree = await replay(handler, definition, recordings, event)
+    baseline = load_definition_json((REFACTOR_BASELINE / "baseline.artifact.json").read_text())
+    await replay(handler, baseline, recordings, event, recorded_sha=ref.artifact_sha256)
     if trace_dir := os.getenv("AQ_OBJECT_LOOP_TRACE_DIR"):
         destination = Path(trace_dir)
         destination.mkdir(parents=True, exist_ok=True)
@@ -169,6 +304,8 @@ async def sweep(handler, *, rule="recover"):
         (destination / f"{uuid.uuid4().hex}.json").write_text(json.dumps({
             "test": os.environ.get("PYTEST_CURRENT_TEST", "").split(" (", 1)[0],
             "rule": rule, "artifact_sha256": ref.artifact_sha256,
+            "baseline_artifact_sha256": baseline.artifact_sha256(),
+            "baseline_dry_completed": True,
             "live_outcome": result.outcome, "dry_completed": tree.paths[0].completed,
             "commands": [{"name": name, "outcome": result.outcome}
                          for name, _, result in recordings],
@@ -180,6 +317,67 @@ async def sweep(handler, *, rule="recover"):
             ),
         }, indent=2) + "\n")
     return recordings, tree
+
+
+async def replay(handler, definition, recordings, event, *, recorded_sha=None):
+    """Replay exact calls against either graph, changing only its own policy pin.
+
+    No invoke adapter or database command can run here. The historical artifact
+    must see its own hash in persisted inputs to exercise its eligibility checks.
+    All other arguments, results, order and number of calls must be identical.
+    """
+    ref = artifact_ref_for(definition)
+    store = InMemoryArtifactStore()
+    store.put(definition)
+
+    def repin(value):
+        if recorded_sha and isinstance(value, str):
+            if value == recorded_sha:
+                return ref.artifact_sha256
+            if value == recorded_sha.removeprefix("sha256:"):
+                return ref.artifact_sha256.removeprefix("sha256:")
+        if isinstance(value, dict):
+            return {key: repin(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [repin(item) for item in value]
+        return value
+
+    remaining = list(recordings)
+    previews = ContractRegistry()
+    for name in COMMANDS:
+        registration = CONTRACTS.require(name)
+
+        async def preview(args, _principal, name=name):
+            expected_name, expected_args, recorded = remaining.pop(0)
+            assert (name, args.model_dump()) == (expected_name, repin(expected_args))
+            return recorded.model_copy(update={
+                "value": type(recorded.value).model_validate(
+                    repin(recorded.value.model_dump(mode="json"))
+                ),
+            })
+
+        contract = registration.contract.model_copy(update={
+            "execution": registration.contract.execution.model_copy(update={"supports_preview": True})
+        })
+        previews.register(replace(registration, contract=contract, preview=preview))
+    dry_engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=previews, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
+        runs=RecordingRunRepository(),
+    )
+    tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
+    assert not tree.truncated and len(tree.paths) == 1
+    assert tree.paths[0].completed, tree
+    assert tree.paths[0].nodes[-1].outcome == "completed", tree
+    assert not remaining, json.dumps({
+        "remaining": [name for name, _, _ in remaining],
+        "nodes": [(n.step_id, n.target, n.outcome) for n in tree.paths[0].nodes],
+        "inputs": recordings[0][2].value.model_dump(),
+        "artifact": definition.artifact_sha256(),
+    }, default=str)
+    return tree
 
 
 async def state(handler):
@@ -386,6 +584,10 @@ async def test_scoring_live_and_dry_traces(setup, scenario, reference_kind):
     await score_packet(setup, current, invalid=scenario in {"invalid", "repair"},
                        next_variants=next_variants)
     trace, _ = await sweep(setup)
+    if scenario == "budget" and reference_kind == "calibrated":
+        past = json.loads((REFACTOR_BASELINE / "past-budget-trace.json").read_text())["trace"]
+        assert [{"name": name, "outcome": result.outcome}
+                for name, _, result in trace] == past["commands"]
     result = await state(setup)
     assert result["state"]["reference_kind"] == reference_kind
     assert any(name == "object_score_record" for name, _, _ in trace)
@@ -413,7 +615,7 @@ async def test_failed_scorer_trace(setup, status):
 
 
 @pytest.mark.parametrize("verdict", ["rejected", "withdrawn", "changes_requested", "approved"])
-async def test_checkpoint_decision_trace(setup, verdict):
+async def test_checkpoint_decision_trace(setup, verdict, checkpoint_authority):
     await boot(setup)
     current = await complete_wave(setup)
     await score_packet(setup, current, action="checkpoint")
@@ -564,7 +766,7 @@ async def test_inputs_refuse_foreign_score_scope_and_missing_capability(setup):
         assert not denied["success"] and "capability" in denied["error"]
 
 
-async def test_new_review_revision_never_adopts_old_checkpoint(setup):
+async def test_new_review_revision_never_adopts_old_checkpoint(setup, checkpoint_authority):
     await boot(setup)
     current = await complete_wave(setup)
     await score_packet(setup, current, action="checkpoint")
@@ -583,6 +785,81 @@ async def test_new_review_revision_never_adopts_old_checkpoint(setup):
     assert not current["approved"]
 
 
+@pytest.mark.parametrize("foreign_current_scope", [False, True],
+                         ids=["request-project", "foreign-current-scope"])
+async def test_project_playbook_reads_only_its_project_checkpoint(setup, foreign_current_scope):
+    await boot(setup)
+    before = await state(setup)
+    await setup.db.create_project(Project(id="foreign", name="Foreign"))
+    async with setup.db.immediate() as conn:
+        row = (await conn.execute(select(object_loops))).mappings().one()
+        await conn.execute(insert(object_loops).values(
+            **dict(row, object_id="foreign-rock", project_id="foreign",
+                   epic_task_id="foreign-epic", finalization_task_id="foreign-finalizer",
+                   terminal_gate_id="foreign-gate",
+                   state={**row.state, "object_id": "foreign-rock", "project_id": "foreign"}),
+        ))
+    with checkpoint_invocation():
+        result = await setup.execute("object_checkpoint_read", {
+            "project_id": PROJECT, "object_id": "rock",
+        })
+        assert result["success"], result
+        assert (result["state"], result["version"]) == (before["state"], before["version"])
+        foreign_args = {"project_id": "foreign", "object_id": "foreign-rock"}
+        if foreign_current_scope:
+            previous_scope = setup._current_scope
+            setup._current_scope = {"project_id": "foreign"}
+            try:
+                foreign = await setup._cmd_object_checkpoint_read(foreign_args)
+            finally:
+                setup._current_scope = previous_scope
+        else:
+            foreign = await setup.execute("object_checkpoint_read", foreign_args)
+        assert not foreign["success"] and "project_id mismatch" in foreign["error"], foreign
+        missing = await setup.execute("object_checkpoint_read", {
+            "project_id": PROJECT, "object_id": "foreign-rock",
+        })
+        assert not missing["success"], missing
+    assert await state(setup) == before
+
+
+@pytest.mark.parametrize("invalid", [
+    "unscoped", "missing_invocation", "missing_run", "missing_step",
+    "wrong_run", "wrong_step", "undeclared", "no_grant",
+    "session_identity", "task_identity", "task_selector", "session_selector",
+])
+async def test_playbook_checkpoint_read_refuses_unbound_or_borrowed_authority(setup, invalid):
+    identity = {
+        "unscoped": {"project_id": None},
+        "missing_run": {"parent_run_id": None},
+        "missing_step": {"parent_step_id": None},
+        "wrong_run": {"parent_run_id": "other"},
+        "wrong_step": {"parent_step_id": "other"},
+        "no_grant": {"policy": CapabilityPolicy.from_namespaces(aq_commands=[])},
+        "session_identity": {"session_id": "worker"},
+        "task_identity": {"task_id": "worker-task"},
+    }.get(invalid, {})
+    args = {"project_id": PROJECT, "object_id": "rock"}
+    if invalid in {"task_selector", "session_selector"}:
+        args["task_id" if invalid == "task_selector" else "session_id"] = "worker"
+    with checkpoint_invocation(invocation=invalid != "missing_invocation",
+                               declared=invalid != "undeclared", **identity):
+        refused = await setup.execute("object_checkpoint_read", args)
+    assert not refused["success"], refused
+    assert "out of scope" in refused.get("error", "") or "capability" in refused["error"]
+
+
+async def test_checkpoint_exception_does_not_widen_other_held_commands(setup):
+    from src.commands.resource_authorization import HELD_COMMANDS, authorize_resources
+
+    with checkpoint_invocation() as principal:
+        for command in HELD_COMMANDS - {"object_checkpoint_read"}:
+            refused = await authorize_resources(command, {}, principal, db=setup.db)
+            assert refused["success"] is False and refused["error_code"] == "session_required", (
+                command, refused,
+            )
+
+
 async def test_two_objects_recover_in_one_sweep(setup):
     for object_id in ("rock", "stone"):
         values = variables()
@@ -598,6 +875,69 @@ async def test_two_objects_recover_in_one_sweep(setup):
     assert sum(name == "object_loop_start" for name, _, _ in trace) == 2
     trace, _ = await sweep(setup)
     assert sum(name == "object_loop_reconcile" for name, _, _ in trace) == 2
+
+
+@pytest.mark.parametrize("held_by", ["proposal", "policy"])
+async def test_ineligible_starts_remain_held_after_filtering(setup, held_by):
+    values = variables()
+    if held_by == "policy":
+        packet = json.loads(values["start"])
+        packet["policy_sha256"] = C
+        values["start"] = json.dumps(packet)
+    cooked = await setup._cmd_formula_cook({
+        "name": "object", "project_id": PROJECT, "vars": values,
+    })
+    assert cooked["success"], cooked
+    if held_by == "proposal":
+        async with setup.db.immediate() as conn:
+            await conn.execute(update(doc_reviews).where(
+                doc_reviews.c.id == "rev-amber-zenith",
+            ).values(state="withdrawn"))
+    trace, _ = await sweep(setup, rule="on-formula")
+    assert [name for name, _, _ in trace] == ["object_loop_inputs"]
+    assert (await setup.db.get_task(cooked["task_ids"][0])).is_blocked
+    async with setup.db._engine.connect() as conn:
+        assert not (await conn.execute(select(object_loops))).first()
+
+
+async def test_foreign_policy_loop_is_not_reconciled(setup):
+    await boot(setup)
+    current = await state(setup)
+    foreign_state = {**current["state"], "policy_sha256": C}
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(object_loops).values(state=foreign_state))
+    trace, _ = await sweep(setup)
+    assert [name for name, _, _ in trace] == ["object_loop_inputs"]
+    after = await state(setup)
+    assert after["version"] == current["version"]
+    assert after["state"] == foreign_state
+
+
+@pytest.mark.parametrize("bound", ["budget", "rounds"])
+async def test_hundred_dollar_three_round_packet_keeps_its_bounds(setup, bound):
+    values = variables()
+    packet = json.loads(values["start"])
+    packet["limits"]["usd"] = 100
+    packet["max_rounds"] = 3
+    values["start"] = json.dumps(packet)
+    cooked = await setup._cmd_formula_cook({
+        "name": "object", "project_id": PROJECT, "vars": values,
+    })
+    assert cooked["success"], cooked
+    await sweep(setup, rule="on-formula")
+    for _ in range(1 if bound == "budget" else 3):
+        current = await complete_wave(setup)
+        await score_packet(setup, current, next_variants=[
+            variant("next", usd=100 if bound == "budget" else 1).model_dump(),
+        ])
+        await sweep(setup)
+    after = await state(setup)
+    assert after["state"]["limits"]["usd"] == 100
+    assert after["state"]["max_rounds"] == 3
+    assert after["state"]["round_id"] == (0 if bound == "budget" else 2)
+    assert after["state"]["status"] == "stopped"
+    assert "continuation refused" in after["state"]["stop_reason"]
+    assert after["state"]["incumbent_sha256"] == B
 
 
 async def test_object_review_approval_stores_pinned_bytes_without_activation(setup):
@@ -622,7 +962,7 @@ async def test_object_review_approval_stores_pinned_bytes_without_activation(set
     revision = await setup.db.get_review_revision(submitted["review_id"], 1)
     pinned = load_definition_json(revision["playbook_artifact"])
     assert pinned.steps == artifact().steps
-    approved = await setup.execute("review_decide", {
+    approved = await decide(setup, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "approve",
     })
     assert approved["success"] and approved["playbook"]["stored"], approved
@@ -652,21 +992,45 @@ async def test_revised_brief_start_failure_is_visible_and_notified_once(setup):
     ref = artifact_ref_for(definition)
     store = InMemoryArtifactStore()
     store.put(definition)
-    repository = RecordingRunRepository()
+    await handler.db.upsert_playbook_artifact(
+        ref, scope="project", scope_identifier=PROJECT,
+        path=str(BUNDLE / "artifact.json"), size_bytes=(BUNDLE / "artifact.json").stat().st_size,
+    )
+    repository = handler.db
     engine = PlaybookEngine(
-        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=CONTRACTS, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=repository,
     )
+    failures = []
     for _ in range(2):
         result = await engine.run_rule(ref, "recover", {
             "event_type": "timer.5m", "project_id": PROJECT, "event_id": uuid.uuid4().hex,
         }, TRUSTED_LOCAL)
         assert result.outcome == "failed"
-        assert "pins revision 1" in result.snapshot.error
-        assert "current revision is 2 (approved)" in result.snapshot.error
-    failures = [r for r in repository.receipts if r.step_id.endswith("--start") and r.outcome == "failure"]
-    assert failures and all("pins revision 1" in r.error for r in failures)
-    assert all(r.result["error_code"] == "object_loop.start_refused" for r in failures)
+        assert result.snapshot.lifecycle.value == "failed"
+        assert result.snapshot.error in (None, "private_run_error")
+        stored = await repository.load_run(result.run_id)
+        restored = await repository.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+        refusal = restored.bindings["started"]
+        assert refusal["error_code"] == "object_loop.start_refused"
+        assert "pins revision 1" in refusal["error"]
+        assert "current revision is 2 (approved)" in refusal["error"]
+        receipts = await repository.list_receipts(result.run_id)
+        failures.extend(r for r in receipts if r.step_id.endswith("--start")
+                        and r.outcome == "failure")
+        public = json.dumps({
+            "snapshot": result.snapshot.redacted().to_body(), "stored": stored.to_body(),
+            "receipts": [{"inputs": r.inputs, "result": r.result, "error": r.error}
+                         for r in receipts],
+        })
+        for protected in ("pins revision 1", "current revision is 2 (approved)", H, B):
+            assert protected not in public
+    assert len(failures) == 2
+    assert all(set(r.result) == {"__redacted__"} and r.result["__redacted__"] > 0
+               for r in failures)
     async with handler.db._engine.connect() as conn:
         notices = (await conn.execute(select(messages).where(
             messages.c.from_id == "object-loop",

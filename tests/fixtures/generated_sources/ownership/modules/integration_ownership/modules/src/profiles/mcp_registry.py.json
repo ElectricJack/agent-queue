@@ -1,0 +1,13 @@
+{
+  "generic_dependencies": {
+    "src/profiles/mcp_registry.py::McpRegistry": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_registry.py::builtin_from_config": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_registry.py::derive_server_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::load_from_vault": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_registry.py::parse_server_markdown": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::register_mcp_server_handlers": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_registry.py::render_server_markdown": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::validate_vault_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::vault_path_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
