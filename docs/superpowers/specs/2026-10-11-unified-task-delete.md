@@ -32,6 +32,18 @@ batches, retires branch origins, and deletes task identities while retaining aud
 and integration history. Frozen batch manifests remain historical; cancellation
 removes their authority to publish the deleted work.
 
+Both the initial fence and the final task transaction lock selected sessions
+before selected tasks, ordering each set by id, before changing agents or other
+owned resources. This matches pool claim release and session termination, so a
+reconciler can finish stopping a session during external cleanup without
+deadlocking the confirmed delete.
+
+Layout publication takes task KEY SHARE locks in id order before locking any
+layout geometry or publication metadata. It holds these locks across every
+upsert batch. A task deleted after the layout snapshot was computed is omitted
+from publication, including its spatial cells, so deletion and layout updates
+cannot acquire task and geometry locks in opposite orders.
+
 Branch discovery combines task branch names, origins (including old origins),
 checkpoints, owner refs, selected worktree checkouts and task recovery refs. It
 examines matching repository clones and retained stores. Keep lists everything

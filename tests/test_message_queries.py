@@ -20,7 +20,7 @@ async def test_notification_migration_recovers_only_unread_legacy_nudges(db, mon
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    migration = import_module("migrations.versions.a00000000091_message_notification_receipts")
+    migration = import_module("migrations.versions.a00000000092_message_notification_receipts")
     unread = await _send(db)
     read = await _send(db)
     archived = await _send(db)
@@ -57,8 +57,8 @@ async def test_notification_migration_recovers_only_unread_legacy_nudges(db, mon
 async def db(tmp_path):
     database = Database(lease_dsn("messages.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="p1"))
-    await database.create_project(Project(id="p2", name="p2"))
+    await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
+    await database.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
     yield database
     await database.close()
 
@@ -351,3 +351,29 @@ async def test_system_only_is_distinct_from_all_projects(db):
     assert {m.id for m in await db.list_messages()} == {system.id, project.id}
     assert [m.id for m in await db.list_messages(system_only=True)] == [system.id]
     assert [m.id for m in await db.list_messages(project_id="p1")] == [project.id]
+
+
+async def test_inbound_project_view_keeps_other_filters_and_pagination(db):
+    own = await _send(db, project_id=None, to_id="own-uuid", thread_id="directive")
+    cross_project = await _send(db, project_id="p2", to_id="supervisor-p1", thread_id="directive")
+    await _send(db, project_id=None, to_id="foreign", thread_id="directive")
+    await _send(db, project_id="p2", to_id="foreign", thread_id="directive")
+    addresses = ["own-uuid", "supervisor-p1"]
+    rows = await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+        to_kind="session", recipient_ids=addresses, thread_id="directive", limit=2,
+    )
+    assert [m.id for m in rows] == [cross_project.id, own.id]
+    assert (await db.get_message(own.id)).delivered_at is None
+    rows = await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+        since=own.created_at, thread_id="directive", limit=1,
+    )
+    assert [m.id for m in rows] == [cross_project.id]
+    await db.archive_messages([own.id])
+    assert [m.id for m in await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses,
+    )] == [cross_project.id]
+    assert {m.id for m in await db.list_messages(
+        project_id="p1", inbound_session_addresses=addresses, include_archived=True,
+    )} == {own.id, cross_project.id}

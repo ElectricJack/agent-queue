@@ -14,27 +14,58 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:b3acb362f394bf55d871ce44f6f7b93f4d9a9152612319ffe8432ad66dac9888` |
+| Contract fingerprint | `sha256:6f4227faba6e74f07f46e7ee2caafebdb9455f41028fe15cc9d6e50c507eef26` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `pagination` | `"snapshot" \| null` | no | `null` | — |
+| `snapshot_id` | `string \| null` | no | `null` | — |
+| `page_token` | `string \| null` | no | `null` | — |
+| `page_size` | `integer \| null` | no | `null` | — |
 | `project_id` | `string \| null` | no | `null` | Project |
 | `status` | `string \| null` | no | `null` | Status |
 | `display_mode` | `string \| null` | no | `null` | Display mode |
 | `show_dependencies` | `boolean \| null` | no | `null` | Show dependencies |
+| `include_completed` | `boolean \| null` | no | `null` | — |
+| `completed_only` | `boolean \| null` | no | `null` | — |
+| `show_all` | `boolean \| null` | no | `null` | — |
+| `labels` | `string[] \| null` | no | `null` | — |
+| `any_label` | `string[] \| null` | no | `null` | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
+| `success` | `boolean` | — |
+| `complete` | `boolean \| null` | — |
+| `execution_status` | `string \| null` | — |
+| `error` | `string \| null` | — |
+| `error_code` | `string \| null` | — |
+| `reasons` | `string[]` | — |
+| `snapshot_id` | `string \| null` | — |
+| `producer` | `string \| null` | — |
+| `producer_version` | `integer \| null` | — |
+| `observed_at` | `number \| null` | — |
+| `materialized_at` | `number \| null` | — |
+| `expires_at` | `number \| null` | — |
+| `interval_started_at` | `number \| null` | — |
+| `interval_finished_at` | `number \| null` | — |
+| `coverage` | `object[]` | — |
+| `identity_manifest` | `object[]` | — |
+| `page_tokens` | `object[]` | — |
+| `artifacts` | `object[]` | — |
+| `page_count` | `integer` | — |
+| `page_kind` | `string \| null` | — |
+| `page_index` | `integer \| null` | — |
 | `display_mode` | `string` | Display mode |
 | `tasks` | `object[]` | Tasks |
 | `total` | `integer` | Total |
 | `hidden_completed` | `integer` | Hidden completed tasks |
 | `filtered` | `boolean` | Completed tasks hidden |
 | `dependency_display` | `string \| null` | Dependency view |
+| `label_filter_scope` | `string \| null` | — |
 | `trees` | `object[]` | Task trees |
 | `total_root_tasks` | `integer` | Root tasks |
 | `total_tasks` | `integer` | Total tasks |
@@ -44,6 +75,7 @@
 | Outcome | Classification | Meaning |
 |---|---|---|
 | `listed` | success | Listed |
+| `rejected` | failure | — |
 
 ## Declared effects
 
