@@ -87,6 +87,8 @@ Bot:  Created task `task-1` — "Add rate limiting to API"
 
 Full docs available at **[electricjack.github.io/agent-queue](https://electricjack.github.io/agent-queue/)**.
 
+<!-- Human-in-the-loop approval workflow is enabled for this feature -->
+
 ## License
 
 MIT
