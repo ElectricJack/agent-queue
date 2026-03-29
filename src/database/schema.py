@@ -245,6 +245,29 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
     updated_at REAL NOT NULL,
     archived_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS plugins (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL DEFAULT '0.0.0',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_rev TEXT NOT NULL DEFAULT '',
+    source_branch TEXT NOT NULL DEFAULT '',
+    install_path TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'installed',
+    config TEXT NOT NULL DEFAULT '{}',
+    permissions TEXT NOT NULL DEFAULT '[]',
+    error_message TEXT,
+    installed_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plugin_data (
+    plugin_id TEXT NOT NULL REFERENCES plugins(id),
+    key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '{}',
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (plugin_id, key)
+);
 """
 
 # Idempotent ALTER TABLE migrations applied on every startup.
@@ -270,6 +293,7 @@ MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
     "ALTER TABLE archived_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
     "ALTER TABLE hooks ADD COLUMN last_triggered_at REAL",
+    "ALTER TABLE hooks ADD COLUMN plugin_id TEXT",
 ]
 
 # Indexes created after migrations (idempotent).
@@ -278,4 +302,8 @@ INDEXES = [
     "ON task_dependencies(depends_on_task_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id "
     "ON task_dependencies(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin_id "
+    "ON plugin_data(plugin_id)",
+    "CREATE INDEX IF NOT EXISTS idx_hooks_plugin_id "
+    "ON hooks(plugin_id)",
 ]

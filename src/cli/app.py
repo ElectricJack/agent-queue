@@ -793,6 +793,219 @@ def project_details(project_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /plugin — Plugin management commands
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def plugin() -> None:
+    """Plugin management commands."""
+    pass
+
+
+@plugin.command("list")
+def plugin_list() -> None:
+    """List installed plugins."""
+    from rich.table import Table
+
+    async def _run_list():
+        async with _get_client() as client:
+            return await client.list_plugins()
+
+    try:
+        plugins = _run(_run_list())
+    except FileNotFoundError as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise SystemExit(1)
+
+    if not plugins:
+        console.print("[dim]No plugins installed.[/dim]")
+        return
+
+    table = Table(title="Installed Plugins", show_lines=True)
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Version")
+    table.add_column("Status")
+    table.add_column("Source")
+
+    status_colors = {
+        "active": "green",
+        "installed": "yellow",
+        "disabled": "dim",
+        "error": "red",
+    }
+
+    for p in plugins:
+        status = p.get("status", "unknown")
+        color = status_colors.get(status, "white")
+        table.add_row(
+            p.get("id", "?"),
+            p.get("version", "?"),
+            f"[{color}]{status}[/{color}]",
+            p.get("source_url", ""),
+        )
+
+    console.print(table)
+
+
+@plugin.command("info")
+@click.argument("name")
+def plugin_info(name: str) -> None:
+    """Show detailed plugin info."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    async def _run_info():
+        async with _get_client() as client:
+            return await client.get_plugin(name)
+
+    try:
+        p = _run(_run_info())
+    except FileNotFoundError as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise SystemExit(1)
+
+    if not p:
+        console.print(f"[bold red]Plugin '{name}' not found.[/]")
+        return
+
+    lines = []
+    lines.append(f"[bold]Name:[/] {p.get('id', name)}")
+    lines.append(f"[bold]Version:[/] {p.get('version', '?')}")
+    lines.append(f"[bold]Status:[/] {p.get('status', '?')}")
+    lines.append(f"[bold]Source:[/] {p.get('source_url', '?')}")
+    lines.append(f"[bold]Rev:[/] {p.get('source_rev', '?')[:12]}")
+    lines.append(f"[bold]Path:[/] {p.get('install_path', '?')}")
+    if p.get("error_message"):
+        lines.append(f"[bold red]Error:[/] {p['error_message']}")
+
+    console.print(Panel("\n".join(lines), title=f"Plugin: {name}"))
+
+
+@plugin.command("install")
+@click.argument("url")
+@click.option("--branch", "-b", default=None, help="Branch to install")
+@click.option("--name", "-n", default=None, help="Override plugin name")
+def plugin_install(url: str, branch: str | None, name: str | None) -> None:
+    """Install a plugin from a git repository."""
+    console.print(f"[bold]Installing plugin from {url}...[/]")
+
+    async def _run_install():
+        async with _get_client() as client:
+            from src.plugins.loader import clone_plugin_repo, parse_plugin_yaml, install_requirements, setup_prompts
+            from pathlib import Path
+            import json
+
+            # Derive name from URL
+            plugin_name = name
+            if not plugin_name:
+                plugin_name = url.rstrip("/").rsplit("/", 1)[-1]
+                if plugin_name.endswith(".git"):
+                    plugin_name = plugin_name[:-4]
+
+            plugins_dir = Path(os.environ.get("AGENT_QUEUE_DATA", os.path.expanduser("~/.agent-queue"))) / "plugins"
+            install_path = str(plugins_dir / plugin_name)
+            Path(install_path).mkdir(parents=True, exist_ok=True)
+
+            # Clone
+            rev = await clone_plugin_repo(url, install_path, branch=branch)
+
+            # Parse and validate
+            info = parse_plugin_yaml(install_path)
+            install_requirements(install_path)
+            setup_prompts(install_path)
+
+            # Record in DB
+            await client.create_plugin(
+                plugin_id=info.name,
+                version=info.version,
+                source_url=url,
+                source_rev=rev,
+                source_branch=branch or "",
+                install_path=install_path,
+                status="installed",
+                config=json.dumps(info.default_config),
+                permissions=json.dumps([p.value for p in info.permissions]),
+            )
+            return info.name, info.version
+
+    try:
+        pname, pversion = _run(_run_install())
+        console.print(f"[bold green]Installed plugin '{pname}' v{pversion}[/]")
+        console.print("[dim]Restart the daemon to activate the plugin.[/dim]")
+    except Exception as e:
+        console.print(f"[bold red]Installation failed:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("remove")
+@click.argument("name")
+@click.confirmation_option(prompt="Are you sure you want to remove this plugin?")
+def plugin_remove(name: str) -> None:
+    """Remove an installed plugin."""
+    import shutil
+
+    async def _run_remove():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                return None
+            install_path = p.get("install_path")
+            await client.delete_plugin_data_all(name)
+            await client.delete_plugin(name)
+            return install_path
+
+    try:
+        install_path = _run(_run_remove())
+        if install_path is None:
+            console.print(f"[bold red]Plugin '{name}' not found.[/]")
+            raise SystemExit(1)
+
+        if install_path and os.path.exists(install_path):
+            shutil.rmtree(install_path)
+
+        console.print(f"[bold green]Plugin '{name}' removed.[/]")
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"[bold red]Removal failed:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("enable")
+@click.argument("name")
+def plugin_enable(name: str) -> None:
+    """Enable a disabled plugin."""
+    async def _run_enable():
+        async with _get_client() as client:
+            await client.update_plugin(name, status="installed")
+
+    try:
+        _run(_run_enable())
+        console.print(f"[bold green]Plugin '{name}' enabled.[/]")
+        console.print("[dim]Restart the daemon to activate.[/dim]")
+    except Exception as e:
+        console.print(f"[bold red]Enable failed:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("disable")
+@click.argument("name")
+def plugin_disable(name: str) -> None:
+    """Disable a plugin without removing it."""
+    async def _run_disable():
+        async with _get_client() as client:
+            await client.update_plugin(name, status="disabled")
+
+    try:
+        _run(_run_disable())
+        console.print(f"[bold green]Plugin '{name}' disabled.[/]")
+    except Exception as e:
+        console.print(f"[bold red]Disable failed:[/] {e}")
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

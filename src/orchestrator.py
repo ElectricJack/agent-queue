@@ -713,6 +713,24 @@ class Orchestrator:
         await self.db.initialize()
         await self._sync_profiles_from_config()
         await self._recover_stale_state()
+
+        # Initialize plugin registry (after DB, before hooks)
+        from src.plugins import PluginRegistry
+        self.plugin_registry = PluginRegistry(
+            db=self.db,
+            bus=self.bus,
+            config=self.config,
+        )
+        try:
+            discovered = await self.plugin_registry.discover_plugins()
+            if discovered:
+                logger.info("Discovered %d plugins: %s", len(discovered), discovered)
+            loaded = await self.plugin_registry.load_all()
+            if loaded:
+                logger.info("Loaded %d plugins", loaded)
+        except Exception as e:
+            logger.error("Plugin initialization failed: %s", e, exc_info=True)
+
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)
             self.hooks.set_orchestrator(self)

@@ -215,3 +215,23 @@ class CLIClient:
         for p in projects:
             all_ws.extend(await self.db.list_workspaces(p.id))
         return all_ws
+
+    # ----- Plugins -----
+
+    async def list_plugins(self, status: str | None = None) -> list[dict]:
+        return await self.db.list_plugins(status=status)
+
+    async def get_plugin(self, plugin_id: str) -> dict | None:
+        return await self.db.get_plugin(plugin_id)
+
+    async def create_plugin(self, **kwargs) -> None:
+        await self.db.create_plugin(**kwargs)
+
+    async def update_plugin(self, plugin_id: str, **kwargs) -> None:
+        await self.db.update_plugin(plugin_id, **kwargs)
+
+    async def delete_plugin(self, plugin_id: str) -> None:
+        await self.db.delete_plugin(plugin_id)
+
+    async def delete_plugin_data_all(self, plugin_id: str) -> None:
+        await self.db.delete_plugin_data_all(plugin_id)
