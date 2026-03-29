@@ -189,6 +189,18 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "read_prompt": "system",
     "render_prompt": "system",
     # analyzer_status, analyzer_toggle, analyzer_history: deprecated (Phase 6)
+    # plugins
+    "plugin_list": "system",
+    "plugin_info": "system",
+    "plugin_install": "system",
+    "plugin_update": "system",
+    "plugin_remove": "system",
+    "plugin_enable": "system",
+    "plugin_disable": "system",
+    "plugin_reload": "system",
+    "plugin_config": "system",
+    "plugin_prompts": "system",
+    "plugin_reset_prompts": "system",
 }
 
 
@@ -2317,6 +2329,168 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # analyzer tool definitions removed (Phase 6)
+    # --- Plugin management tools ---
+    {
+        "name": "plugin_list",
+        "description": "List all installed plugins with their status.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "plugin_info",
+        "description": "Get detailed information about a specific plugin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_install",
+        "description": "Install a plugin from a git repository URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Git repository URL for the plugin",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch to install (optional)",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Override plugin name (optional)",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "plugin_update",
+        "description": "Update an installed plugin to the latest version.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name to update",
+                },
+                "rev": {
+                    "type": "string",
+                    "description": "Specific revision to update to (optional)",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_remove",
+        "description": "Completely remove an installed plugin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name to remove",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_enable",
+        "description": "Enable a disabled plugin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name to enable",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_disable",
+        "description": "Disable a plugin without removing it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name to disable",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_reload",
+        "description": "Reload a plugin (shutdown, reimport, reinitialize).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name to reload",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_config",
+        "description": "Get or set a plugin's configuration.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name",
+                },
+                "config": {
+                    "type": "string",
+                    "description": "New config as JSON string (optional, omit to read current)",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_prompts",
+        "description": "List a plugin's prompt templates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "plugin_reset_prompts",
+        "description": "Reset a plugin's prompts to defaults from source.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Plugin name",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 class ToolRegistry:
@@ -2336,8 +2510,13 @@ class ToolRegistry:
         if tools is None:
             tools = list(_ALL_TOOL_DEFINITIONS)
         self._all_tools: dict[str, dict] = {t["name"]: t for t in tools}
+        self._plugin_registry = None
         # Add new tools that don't exist in the legacy TOOLS list
         self._ensure_navigation_tools()
+
+    def set_plugin_registry(self, plugin_registry) -> None:
+        """Set the plugin registry for dynamic tool merging."""
+        self._plugin_registry = plugin_registry
 
     def _ensure_navigation_tools(self) -> None:
         """Add browse_tools, load_tools, send_message, and rule stubs
@@ -2560,5 +2739,8 @@ class ToolRegistry:
         ]
 
     def get_all_tools(self) -> list[dict]:
-        """Return all tool definitions (core + all categories)."""
-        return list(self._all_tools.values())
+        """Return all tool definitions (core + all categories + plugins)."""
+        tools = list(self._all_tools.values())
+        if self._plugin_registry:
+            tools.extend(self._plugin_registry.get_all_tool_definitions())
+        return tools

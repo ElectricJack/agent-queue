@@ -6497,6 +6497,184 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     # ===================================================================
+    # PLUGIN MANAGEMENT
+    # ===================================================================
+
+    @bot.tree.command(name="plugin-list", description="List all installed plugins")
+    async def plugin_list_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_list", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        plugins = result.get("plugins", [])
+        if not plugins:
+            await _send_info(
+                interaction, "No Plugins",
+                description="No plugins are currently installed.",
+                followup=True,
+            )
+            return
+        lines = []
+        for p in plugins:
+            status = "✅" if p.get("enabled") else "❌"
+            version = p.get("version", "unknown")
+            lines.append(f"{status} **{p['name']}** `v{version}` — {p.get('description', 'No description')}")
+        await _send_success(
+            interaction, f"Installed Plugins ({len(plugins)})",
+            description="\n".join(lines),
+            followup=True,
+        )
+
+    @bot.tree.command(
+        name="plugin-install",
+        description="Install a plugin from a git repository",
+    )
+    @app_commands.describe(
+        url="Git repository URL for the plugin",
+        branch="Git branch to install from (optional)",
+    )
+    async def plugin_install_command(
+        interaction: discord.Interaction, url: str, branch: str | None = None,
+    ):
+        await interaction.response.defer()
+        args: dict = {"url": url}
+        if branch:
+            args["branch"] = branch
+        result = await handler.execute("plugin_install", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        name = result.get("name", "unknown")
+        version = result.get("version", "unknown")
+        await _send_success(
+            interaction, "Plugin Installed",
+            description=f"**{name}** `v{version}` has been installed successfully.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="plugin-update", description="Update an installed plugin")
+    @app_commands.describe(name="Name of the plugin to update")
+    async def plugin_update_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_update", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        old_ver = result.get("old_version", "unknown")
+        new_ver = result.get("version", "unknown")
+        desc = f"**{name}** updated from `v{old_ver}` to `v{new_ver}`."
+        await _send_success(
+            interaction, "Plugin Updated",
+            description=desc, followup=True, result=result,
+        )
+
+    @bot.tree.command(name="plugin-remove", description="Remove an installed plugin")
+    @app_commands.describe(name="Name of the plugin to remove")
+    async def plugin_remove_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_remove", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Plugin Removed",
+            description=f"**{name}** has been removed.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(
+        name="plugin-toggle",
+        description="Enable or disable an installed plugin",
+    )
+    @app_commands.describe(name="Name of the plugin to toggle")
+    async def plugin_toggle_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_toggle", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        enabled = result.get("enabled", False)
+        state = "enabled" if enabled else "disabled"
+        emoji = "✅" if enabled else "❌"
+        await _send_success(
+            interaction, "Plugin Toggled",
+            description=f"{emoji} **{name}** is now **{state}**.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="plugin-info", description="Show detailed plugin information")
+    @app_commands.describe(name="Name of the plugin")
+    async def plugin_info_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_info", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        plugin = result.get("plugin", result)
+        enabled = "Enabled" if plugin.get("enabled") else "Disabled"
+        fields = [
+            ("Version", f"`{plugin.get('version', 'unknown')}`", True),
+            ("Status", enabled, True),
+            ("Author", plugin.get("author", "unknown"), True),
+        ]
+        if plugin.get("url"):
+            fields.append(("Repository", plugin["url"], False))
+        hooks = plugin.get("hooks", [])
+        if hooks:
+            fields.append(("Hooks", ", ".join(f"`{h}`" for h in hooks), False))
+        commands_list = plugin.get("commands", [])
+        if commands_list:
+            fields.append(("Commands", ", ".join(f"`{c}`" for c in commands_list), False))
+        await _send_info(
+            interaction, f"Plugin: {plugin.get('name', name)}",
+            description=plugin.get("description", "No description available."),
+            fields=fields, followup=True,
+        )
+
+    @bot.tree.command(
+        name="plugin-config",
+        description="Show configuration for a plugin",
+    )
+    @app_commands.describe(name="Name of the plugin")
+    async def plugin_config_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_config", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        config = result.get("config", {})
+        if not config:
+            await _send_info(
+                interaction, f"Plugin Config: {name}",
+                description="This plugin has no configuration.",
+                followup=True,
+            )
+            return
+        lines = []
+        for key, value in config.items():
+            lines.append(f"**{key}:** `{value}`")
+        await _send_info(
+            interaction, f"Plugin Config: {name}",
+            description="\n".join(lines),
+            followup=True,
+        )
+
+    @bot.tree.command(name="plugin-reload", description="Reload a plugin")
+    @app_commands.describe(name="Name of the plugin to reload")
+    async def plugin_reload_command(interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        result = await handler.execute("plugin_reload", {"name": name})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Plugin Reloaded",
+            description=f"**{name}** has been reloaded successfully.",
+            followup=True, result=result,
+        )
+
+    # ===================================================================
     # INTERACTIVE MENU
     # ===================================================================
 

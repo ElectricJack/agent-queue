@@ -35,6 +35,7 @@ from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
+from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
 from src.models import AgentState, TaskStatus
 from src.state_machine import is_valid_status_transition
@@ -56,6 +57,7 @@ class SQLiteDatabaseAdapter(
     HookQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
+    PluginQueryMixin,
 ):
     """Async SQLite persistence layer implementing the repository pattern.
 
