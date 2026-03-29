@@ -1005,6 +1005,317 @@ def plugin_disable(name: str) -> None:
         raise SystemExit(1)
 
 
+@plugin.command("update")
+@click.argument("name")
+def plugin_update(name: str) -> None:
+    """Update a plugin (git pull + reinstall requirements)."""
+    from src.plugins.loader import pull_plugin_repo, install_requirements, parse_plugin_yaml
+
+    async def _run_update():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            install_path = p["install_path"]
+            new_rev = await pull_plugin_repo(install_path)
+            install_requirements(install_path)
+            info = parse_plugin_yaml(install_path)
+            await client.update_plugin(
+                name, version=info.version, source_rev=new_rev,
+            )
+            return info.version, new_rev
+
+    try:
+        console.print(f"[bold]Updating plugin '{name}'...[/]")
+        version, rev = _run(_run_update())
+        console.print(
+            f"[bold green]Plugin '{name}' updated to v{version} "
+            f"(rev {rev[:12]})[/]"
+        )
+        console.print("[dim]Restart the daemon to activate changes.[/dim]")
+    except Exception as e:
+        console.print(f"[bold red]Update failed:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("reload")
+@click.argument("name")
+def plugin_reload(name: str) -> None:
+    """Reload a plugin module."""
+    from src.plugins.loader import parse_plugin_yaml, import_plugin_module
+
+    async def _run_reload():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            install_path = p["install_path"]
+            info = parse_plugin_yaml(install_path)
+            import_plugin_module(install_path)
+            await client.update_plugin(name, version=info.version)
+            return info.version
+
+    try:
+        version = _run(_run_reload())
+        console.print(
+            f"[bold green]Plugin '{name}' reloaded (v{version}).[/]"
+        )
+        console.print("[dim]Restart the daemon to apply in-process.[/dim]")
+    except Exception as e:
+        console.print(f"[bold red]Reload failed:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("config")
+@click.argument("name")
+@click.argument("key_values", nargs=-1)
+def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
+    """View or set plugin configuration.
+
+    With no KEY=VALUE arguments, shows current config.
+    With KEY=VALUE pairs, sets those values.
+    """
+    import json
+
+    async def _run_config():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            return p
+
+    async def _set_config(updates: dict):
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            current = json.loads(p.get("config", "{}") or "{}")
+            current.update(updates)
+            await client.update_plugin(name, config=json.dumps(current))
+            return current
+
+    try:
+        if not key_values:
+            p = _run(_run_config())
+            cfg = json.loads(p.get("config", "{}") or "{}")
+            if not cfg:
+                console.print(f"[dim]No configuration for plugin '{name}'.[/dim]")
+                return
+            from rich.table import Table
+
+            table = Table(title=f"Config: {name}")
+            table.add_column("Key", style="bold cyan")
+            table.add_column("Value")
+            for k, v in sorted(cfg.items()):
+                table.add_row(k, str(v))
+            console.print(table)
+        else:
+            updates = {}
+            for kv in key_values:
+                if "=" not in kv:
+                    console.print(
+                        f"[bold red]Invalid format:[/] '{kv}' "
+                        "(expected KEY=VALUE)"
+                    )
+                    raise SystemExit(1)
+                k, v = kv.split("=", 1)
+                updates[k] = v
+            result = _run(_set_config(updates))
+            console.print(f"[bold green]Config updated for '{name}'.[/]")
+            for k, v in sorted(result.items()):
+                console.print(f"  [cyan]{k}[/] = {v}")
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"[bold red]Config error:[/] {e}")
+        raise SystemExit(1)
+
+
+@plugin.command("logs")
+@click.argument("name")
+@click.option("--limit", default=20, help="Number of recent runs to show")
+def plugin_logs(name: str, limit: int) -> None:
+    """View plugin hook execution history."""
+    from .formatters import format_hook_run_table
+
+    async def _run_logs():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            hooks = await client.list_hooks()
+            plugin_hooks = [
+                h for h in hooks if getattr(h, "plugin_id", None) == name
+            ]
+            all_runs = []
+            for h in plugin_hooks:
+                runs = await client.list_hook_runs(h.id, limit=limit)
+                all_runs.extend(runs)
+            all_runs.sort(
+                key=lambda r: getattr(r, "started_at", 0) or 0,
+                reverse=True,
+            )
+            return all_runs[:limit]
+
+    try:
+        runs = _run(_run_logs())
+    except Exception as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise SystemExit(1)
+
+    if not runs:
+        console.print(f"[dim]No hook runs found for plugin '{name}'.[/dim]")
+        return
+
+    table = format_hook_run_table(runs)
+    console.print(table)
+
+
+@plugin.command("prompts")
+@click.argument("name")
+def plugin_prompts(name: str) -> None:
+    """List prompts provided by a plugin."""
+    from pathlib import Path
+
+    async def _run_prompts():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            return p["install_path"]
+
+    try:
+        install_path = _run(_run_prompts())
+    except Exception as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise SystemExit(1)
+
+    inst_dir = Path(install_path) / "prompts"
+    src_dir = Path(install_path) / "src" / "prompts"
+
+    from rich.table import Table
+
+    table = Table(title=f"Prompts: {name}")
+    table.add_column("File", style="bold cyan")
+    table.add_column("Source", style="dim")
+    table.add_column("Instance")
+
+    prompt_names: set[str] = set()
+    if src_dir.exists():
+        for f in src_dir.iterdir():
+            if f.is_file():
+                prompt_names.add(f.name)
+    if inst_dir.exists():
+        for f in inst_dir.iterdir():
+            if f.is_file():
+                prompt_names.add(f.name)
+
+    if not prompt_names:
+        console.print(f"[dim]No prompts found for plugin '{name}'.[/dim]")
+        return
+
+    for pname in sorted(prompt_names):
+        has_src = (src_dir / pname).exists() if src_dir.exists() else False
+        has_inst = (inst_dir / pname).exists() if inst_dir.exists() else False
+        table.add_row(
+            pname,
+            "[green]yes[/]" if has_src else "[dim]no[/]",
+            "[green]yes[/]" if has_inst else "[dim]no[/]",
+        )
+
+    console.print(table)
+
+
+@plugin.command("diff-prompts")
+@click.argument("name")
+def plugin_diff_prompts(name: str) -> None:
+    """Diff instance prompts vs source defaults."""
+    import difflib
+    from pathlib import Path
+
+    async def _run_diff():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            return p["install_path"]
+
+    try:
+        install_path = _run(_run_diff())
+    except Exception as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise SystemExit(1)
+
+    src_dir = Path(install_path) / "src" / "prompts"
+    inst_dir = Path(install_path) / "prompts"
+
+    if not src_dir.exists():
+        console.print(f"[dim]No source prompts for plugin '{name}'.[/dim]")
+        return
+
+    any_diff = False
+    for src_file in sorted(src_dir.iterdir()):
+        if not src_file.is_file():
+            continue
+        inst_file = inst_dir / src_file.name
+        if not inst_file.exists():
+            console.print(
+                f"[yellow]{src_file.name}:[/] instance file missing"
+            )
+            any_diff = True
+            continue
+
+        src_lines = src_file.read_text().splitlines(keepends=True)
+        inst_lines = inst_file.read_text().splitlines(keepends=True)
+        diff = list(difflib.unified_diff(
+            src_lines,
+            inst_lines,
+            fromfile=f"source/{src_file.name}",
+            tofile=f"instance/{src_file.name}",
+        ))
+        if diff:
+            any_diff = True
+            console.print(f"\n[bold]{src_file.name}[/]")
+            for line in diff:
+                line = line.rstrip("\n")
+                if line.startswith("+"):
+                    console.print(f"[green]{line}[/]")
+                elif line.startswith("-"):
+                    console.print(f"[red]{line}[/]")
+                else:
+                    console.print(line)
+
+    if not any_diff:
+        console.print(
+            f"[bold green]All prompts match source defaults for '{name}'.[/]"
+        )
+
+
+@plugin.command("reset-prompts")
+@click.argument("name")
+@click.confirmation_option(prompt="Reset all prompts to source defaults?")
+def plugin_reset_prompts(name: str) -> None:
+    """Reset instance prompts to source defaults."""
+    from src.plugins.loader import reset_prompts
+
+    async def _run_reset():
+        async with _get_client() as client:
+            p = await client.get_plugin(name)
+            if not p:
+                raise ValueError(f"Plugin '{name}' not found.")
+            return p["install_path"]
+
+    try:
+        install_path = _run(_run_reset())
+        count = reset_prompts(install_path)
+        console.print(
+            f"[bold green]Reset {count} prompt(s) for '{name}'.[/]"
+        )
+    except Exception as e:
+        console.print(f"[bold red]Reset failed:[/] {e}")
+        raise SystemExit(1)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

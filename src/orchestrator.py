@@ -3583,6 +3583,9 @@ class Orchestrator:
                     "task_id": task.id,
                     "project_id": task.project_id,
                 })
+
+                # Auto-reload plugin if the task modified a plugin workspace
+                await self._check_plugin_workspace_update(task, ws)
             else:
                 # Pipeline stopped (merge failed) — task stays in VERIFYING
                 await _post(
@@ -3822,3 +3825,64 @@ class Orchestrator:
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s",
                              action.task_id, e)
+
+    # ------------------------------------------------------------------
+    # Plugin self-update detection
+    # ------------------------------------------------------------------
+
+    async def _check_plugin_workspace_update(self, task: Any, ws: Any) -> None:
+        """Check if a completed task modified a plugin workspace and auto-reload.
+
+        When agents work inside a plugin's install directory, the plugin
+        source has likely changed.  This method detects that situation and
+        performs a hot-reload (shutdown -> load -> initialize) so the new
+        code takes effect immediately — enabling an agent-driven plugin
+        development workflow.
+
+        Args:
+            task: The completed task object (needs ``id`` and ``title``).
+            ws: The workspace record (may be ``None``).  Must expose
+                ``workspace_path`` when present.
+        """
+        if not ws or not getattr(ws, "workspace_path", None):
+            return
+
+        registry = getattr(self, "plugin_registry", None)
+        if registry is None:
+            return
+
+        workspace_path = str(ws.workspace_path)
+
+        # Identify which plugin (if any) owns this workspace path.
+        # Plugin install paths live under ~/.agent-queue/plugins/{name}/.
+        target_plugin: str | None = None
+        for name, loaded in registry._plugins.items():
+            plugin_dir = str(loaded.install_path)
+            # Check if the workspace is inside (or equal to) the plugin dir
+            if workspace_path == plugin_dir or workspace_path.startswith(plugin_dir + "/"):
+                target_plugin = name
+                break
+
+        if target_plugin is None:
+            return
+
+        logger.info(
+            "Task %s (%s) modified plugin workspace '%s' — auto-reloading plugin",
+            task.id, task.title, target_plugin,
+        )
+
+        try:
+            await registry.reload_plugin(target_plugin)
+            logger.info("Plugin '%s' reloaded successfully after task %s", target_plugin, task.id)
+        except Exception as e:
+            logger.error(
+                "Failed to auto-reload plugin '%s' after task %s: %s",
+                target_plugin, task.id, e,
+                exc_info=True,
+            )
+            # Emit a failure event so hooks/monitors can react
+            await self.bus.emit("plugin.reload_failed", {
+                "plugin": target_plugin,
+                "task_id": task.id,
+                "error": str(e),
+            })
