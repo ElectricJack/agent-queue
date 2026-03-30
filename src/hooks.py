@@ -664,7 +664,7 @@ class HookEngine:
                 )
 
         except Exception as e:
-            logger.error("Hook %s failed: %s", hook.name, e)
+            logger.error("Hook %s failed: %s", hook.name, e, exc_info=True)
             await self.db.update_hook_run(
                 run.id,
                 status="failed",

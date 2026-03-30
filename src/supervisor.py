@@ -135,6 +135,13 @@ class Supervisor:
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
+        # Per-call cancel events for concurrent safety.  Each chat() call
+        # creates its own Event and adds it to this set.  cancel() sets ALL
+        # active events.  This avoids a race where one call's finally block
+        # clears the event while another call is still checking it.
+        self._cancel_events: set[asyncio.Event] = set()
+        # Backward-compat alias — points to the most-recently-created event
+        # (or None if no chat is in progress).  Read-only external use.
         self._cancel_event: asyncio.Event | None = None
 
     def initialize(self) -> bool:
@@ -173,20 +180,20 @@ class Supervisor:
         return self.initialize()
 
     def cancel(self) -> None:
-        """Cancel the current chat() call.
+        """Cancel all in-progress chat() calls.
 
-        Sets the internal cancel event so the response loop exits
+        Sets every active cancel event so all response loops exit
         immediately at the next checkpoint.  Safe to call from any
-        coroutine — the event is checked between LLM calls and tool
+        coroutine — the events are checked between LLM calls and tool
         executions.
         """
-        if self._cancel_event is not None:
-            self._cancel_event.set()
+        for evt in list(self._cancel_events):
+            evt.set()
 
     @property
     def is_chatting(self) -> bool:
-        """True while a ``chat()`` call is in progress."""
-        return self._cancel_event is not None and not self._cancel_event.is_set()
+        """True while at least one ``chat()`` call is in progress."""
+        return any(not evt.is_set() for evt in self._cancel_events)
 
     def _build_system_prompt(self) -> str:
         from src.prompt_builder import PromptBuilder
@@ -302,15 +309,21 @@ class Supervisor:
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
 
-        # Set up cancellation for this chat session
-        self._cancel_event = asyncio.Event()
+        # Per-call cancel event — safe for concurrent hook invocations.
+        cancel_event = asyncio.Event()
+        self._cancel_events.add(cancel_event)
+        self._cancel_event = cancel_event  # backward compat alias
 
         try:
             return await self._chat_inner(
                 text, user_name, history, on_progress, _reflection_trigger,
+                _cancel_event=cancel_event,
             )
         finally:
-            self._cancel_event = None
+            self._cancel_events.discard(cancel_event)
+            # Only clear the alias if it still points to OUR event
+            if self._cancel_event is cancel_event:
+                self._cancel_event = None
             # Clear conversation context so it doesn't leak to future calls
             self.handler._current_conversation_context = None
 
@@ -344,6 +357,7 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
+        _cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
         the cancel event lifecycle in a try/finally."""
@@ -379,11 +393,12 @@ class Supervisor:
         nudge_count = 0
         max_nudges = 2
 
+        # Use per-call cancel event if provided, fall back to instance attr
+        cancel_evt = _cancel_event or self._cancel_event
+
         for round_num in range(max_rounds):
-            # Check for cancellation before each round (guard against None
-            # in case a concurrent chat() call on a shared Supervisor has
-            # already cleared the event in its finally block)
-            if self._cancel_event is not None and self._cancel_event.is_set():
+            # Check for cancellation before each round
+            if cancel_evt is not None and cancel_evt.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -480,8 +495,8 @@ class Supervisor:
 
             messages.append({"role": "user", "content": tool_results})
 
-            # Check for cancellation after tool execution (guard against None)
-            if self._cancel_event is not None and self._cancel_event.is_set():
+            # Check for cancellation after tool execution
+            if cancel_evt is not None and cancel_evt.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
