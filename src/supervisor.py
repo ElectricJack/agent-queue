@@ -380,8 +380,10 @@ class Supervisor:
         max_nudges = 2
 
         for round_num in range(max_rounds):
-            # Check for cancellation before each round
-            if self._cancel_event.is_set():
+            # Check for cancellation before each round (guard against None
+            # in case a concurrent chat() call on a shared Supervisor has
+            # already cleared the event in its finally block)
+            if self._cancel_event is not None and self._cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -478,8 +480,8 @@ class Supervisor:
 
             messages.append({"role": "user", "content": tool_results})
 
-            # Check for cancellation after tool execution
-            if self._cancel_event.is_set():
+            # Check for cancellation after tool execution (guard against None)
+            if self._cancel_event is not None and self._cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
