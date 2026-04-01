@@ -1008,8 +1008,11 @@ def plugin_disable(name: str) -> None:
 @plugin.command("update")
 @click.argument("name")
 def plugin_update(name: str) -> None:
-    """Update a plugin (git pull + reinstall requirements)."""
-    from src.plugins.loader import pull_plugin_repo, install_requirements, parse_plugin_yaml
+    """Update a plugin (git pull + reinstall)."""
+    from src.plugins.loader import (
+        has_pyproject, install_plugin_package, load_plugin_via_entry_point,
+        parse_plugin_metadata, parse_plugin_yaml, pull_plugin_repo,
+    )
 
     async def _run_update():
         async with _get_client() as client:
@@ -1018,8 +1021,15 @@ def plugin_update(name: str) -> None:
                 raise ValueError(f"Plugin '{name}' not found.")
             install_path = p["install_path"]
             new_rev = await pull_plugin_repo(install_path)
-            install_requirements(install_path)
-            info = parse_plugin_yaml(install_path)
+            install_plugin_package(install_path)
+            if has_pyproject(install_path):
+                plugin_class = load_plugin_via_entry_point(name)
+                if plugin_class:
+                    info = parse_plugin_metadata(install_path, plugin_class)
+                else:
+                    info = parse_plugin_yaml(install_path)
+            else:
+                info = parse_plugin_yaml(install_path)
             await client.update_plugin(
                 name, version=info.version, source_rev=new_rev,
             )
