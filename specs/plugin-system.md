@@ -109,7 +109,7 @@ email-reviewer = "email_reviewer:EmailReviewerPlugin"
 
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 ```
 
 ### Plugin class
