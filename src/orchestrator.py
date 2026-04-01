@@ -271,6 +271,37 @@ class Orchestrator:
         """Set the Supervisor reference for post-task delegation."""
         self._supervisor = supervisor
 
+        # Wire LLM invocation callback into the plugin registry so plugins
+        # can call ctx.invoke_llm() from cron jobs and command handlers.
+        if hasattr(self, "plugin_registry") and self.plugin_registry:
+            async def _plugin_invoke_llm(
+                prompt: str,
+                plugin_name: str,
+                *,
+                model: str | None = None,
+                provider: str | None = None,
+                tools: list[dict] | None = None,
+            ) -> str:
+                if model or provider:
+                    from src.chat_providers import create_chat_provider
+                    from src.config import ChatProviderConfig
+                    cfg = ChatProviderConfig(
+                        provider=provider or self.config.chat_provider.provider,
+                        model=model or self.config.chat_provider.model,
+                    )
+                    one_shot = create_chat_provider(cfg)
+                    resp = await one_shot.create_message(
+                        messages=[{"role": "user", "content": prompt}],
+                        system=f"You are a helper for plugin:{plugin_name}.",
+                    )
+                    return resp.text
+                # Default: use the supervisor (has tool loop)
+                return await supervisor.chat(
+                    prompt, user_name=f"plugin:{plugin_name}",
+                )
+
+            self.plugin_registry.set_invoke_llm_callback(_plugin_invoke_llm)
+
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
 
@@ -1015,6 +1046,10 @@ class Orchestrator:
             # 7. Run hook engine tick (periodic hooks; event hooks fire async).
             if self.hooks:
                 await self.hooks.tick()
+
+            # 7b. Run plugin cron jobs (plain async functions, not LLM prompts).
+            if hasattr(self, "plugin_registry") and self.plugin_registry:
+                await self.plugin_registry.tick_cron()
 
             # 8. Config hot-reload is handled by ConfigWatcher (background task).
 

@@ -1,15 +1,20 @@
 # Plugin System Specification
 
-**Source files:** `src/plugins/` (new), modifications to `src/command_handler.py`, `src/hooks.py`, `src/tool_registry.py`, `src/orchestrator.py`
+**Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
 **Related specs:** `hooks.md`, `rule-system.md`, `command-handler.md`, `tiered-tools.md`
 
 ---
 
 ## 1. Overview
 
-The plugin system enables extending AgentQueue with installable, self-contained packages that can register commands, tools, hook triggers, context step types, and scheduled behaviors. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
+The plugin system enables extending AgentQueue with installable, self-contained Python packages that can register commands, tools, cron-scheduled functions, CLI commands, and Discord slash commands. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
 
-The core design principle: **plugins are first-class participants** in the hook, command, and tool systems — not a parallel execution path. A plugin registers its capabilities into the existing infrastructure rather than reimplementing dispatch.
+The core design principles:
+
+- **Plugins are proper Python packages** — metadata (name, version, description, author) lives in `pyproject.toml`, not a custom manifest. Entry points use the `aq.plugins` group.
+- **Plugins are first-class participants** in the command, tool, CLI, and Discord systems — not a parallel execution path.
+- **Cron-scheduled functions are plain async Python** — not LLM prompt invocations. Plugins can call `ctx.invoke_llm()` when they need AI reasoning.
+- **Legacy `plugin.yaml` is still supported** but deprecated. New plugins should use `pyproject.toml`.
 
 ### Use Cases
 
@@ -29,12 +34,23 @@ A plugin has two locations: the **source** (git-managed code) and the **instance
 
 ```
 my-plugin/                         # Cloned to ~/.agent-queue/plugins/{name}/src/
-├── plugin.yaml          # Required: metadata, capabilities, config schema
-├── plugin.py            # Required: Python entry point
-├── requirements.txt     # Optional: pip dependencies
+├── pyproject.toml       # Required: Python packaging metadata + aq.plugins entry point
+├── my_plugin/
+│   ├── __init__.py      # Exports the Plugin subclass
+│   └── ...
 ├── CLAUDE.md            # Required: plugin dev guide for agents (see §12)
+├── prompts/             # Optional: default prompt templates
 ├── README.md            # Optional: documentation
-└── ...                  # Any additional files the plugin needs
+└── ...
+```
+
+**Legacy format** (deprecated, still supported):
+```
+my-plugin/
+├── plugin.yaml          # Metadata, capabilities, config schema
+├── plugin.py            # Python entry point
+├── requirements.txt     # pip dependencies
+└── ...
 ```
 
 ### Instance Directory (install-specific, not in git)
@@ -78,124 +94,102 @@ await ctx.save_prompt("main", new_content)
 prompts = ctx.list_prompts()  # ["main", "summary", "classification"]
 ```
 
-### plugin.yaml
+### pyproject.toml
 
-```yaml
-name: email-reviewer
-version: "1.0.0"
-description: "Periodic email review and important item notifications"
-author: "david"
-min_agent_queue_version: "0.2.0"
+```toml
+[project]
+name = "aq-email-reviewer"
+version = "1.0.0"
+description = "Periodic email review and important item notifications"
+authors = [{name = "david"}]
+dependencies = ["httpx"]
 
-# What this plugin provides
-capabilities:
-  commands:
-    - check_email
-    - email_summary
-    - email_configure
-  tools:
-    - name: check_email
-      category: email
-      description: "Check email for important items"
-      input_schema:
-        type: object
-        properties:
-          max_results:
-            type: integer
-            default: 20
-          filter:
-            type: string
-            description: "Search filter (e.g. 'is:unread')"
-    - name: email_summary
-      category: email
-      description: "Get summary of recent important emails"
-      input_schema:
-        type: object
-        properties:
-          hours:
-            type: integer
-            default: 24
-  hooks:
-    - name: periodic-email-check
-      trigger:
-        type: periodic
-        interval_seconds: 14400  # 4 hours
-        schedule:
-          times: ["08:00", "12:00", "16:00", "20:00"]
-      prompt_template: |
-        Check email for important items using the check_email tool.
-        Summarize findings and create tasks for action items.
-        Notify the user of anything urgent.
-  events:
-    - email.checked
-    - email.important_found
-    - email.action_required
+[project.entry-points."aq.plugins"]
+email-reviewer = "email_reviewer:EmailReviewerPlugin"
 
-# Plugin-specific configuration schema
-config_schema:
-  type: object
-  properties:
-    imap_server:
-      type: string
-      description: "IMAP server hostname"
-    email_address:
-      type: string
-    credentials_path:
-      type: string
-      description: "Path to credentials file"
-    important_senders:
-      type: array
-      items:
-        type: string
-      description: "Email addresses that are always important"
-  required:
-    - imap_server
-    - email_address
-
-# Permissions this plugin needs
-permissions:
-  filesystem: false
-  network: true
-  database: false
-  shell: false
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
 ```
 
-### plugin.py
+### Plugin class
 
 ```python
-from src.plugins.base import Plugin, PluginContext
+import click
+from discord import app_commands
+from src.plugins.base import Plugin, PluginContext, PluginPermission, cron
 
 class EmailReviewerPlugin(Plugin):
     """Periodic email review and notification plugin."""
 
-    async def initialize(self, ctx: PluginContext) -> None:
-        """Called once when the plugin is loaded. Register capabilities."""
-        self.config = ctx.get_config()
+    # Class attributes replace plugin.yaml capability declarations
+    plugin_permissions = [PluginPermission.NETWORK]
+    config_schema = {
+        "imap_server": {"type": "string", "required": True},
+        "email_address": {"type": "string", "required": True},
+    }
+    default_config = {"imap_server": "", "email_address": ""}
 
-        # Register commands
+    async def initialize(self, ctx: PluginContext) -> None:
+        self.config = ctx.get_config()
         ctx.register_command("check_email", self.cmd_check_email)
         ctx.register_command("email_summary", self.cmd_email_summary)
-        ctx.register_command("email_configure", self.cmd_email_configure)
+        ctx.register_event_type("email.checked")
+        ctx.register_event_type("email.important_found")
 
-        # Register hooks declared in plugin.yaml (auto-registered by framework)
-        # Register event types (auto-registered from plugin.yaml)
-
-    async def shutdown(self) -> None:
-        """Called when plugin is unloaded or AgentQueue shuts down."""
+    async def shutdown(self, ctx: PluginContext) -> None:
         pass
 
+    # --- Cron-scheduled functions (plain async Python) ---
+
+    @cron("0 8,12,16,20 * * *")
+    async def periodic_check(self, ctx: PluginContext) -> None:
+        """Check email 4x daily. Can invoke LLM when needed."""
+        emails = await self._fetch_emails()
+        if emails:
+            summary = await ctx.invoke_llm(
+                f"Summarize these emails and identify action items: {emails}"
+            )
+            await ctx.notify(summary)
+            await ctx.emit_event("email.checked", {"count": len(emails)})
+
+    # --- CLI extension (Click group) ---
+
+    def cli_group(self) -> click.Group | None:
+        @click.group("email")
+        def email():
+            """Email reviewer plugin commands."""
+        @email.command()
+        def status():
+            click.echo("Email plugin: OK")
+        @email.command()
+        @click.argument("query")
+        def search(query):
+            click.echo(f"Searching: {query}")
+        return email
+
+    # --- Discord extension (app_commands.Group) ---
+
+    def discord_commands(self) -> app_commands.Group | None:
+        grp = app_commands.Group(
+            name="email", description="Email plugin commands"
+        )
+        @grp.command(name="check", description="Check email now")
+        async def check(interaction):
+            await interaction.response.send_message("Checking...")
+        @grp.command(name="status", description="Email status")
+        async def status(interaction):
+            await interaction.response.send_message("OK")
+        return grp
+
+    # --- Command handlers ---
+
     async def cmd_check_email(self, args: dict) -> dict:
-        """Check email and return important items."""
-        # Implementation here
-        return {"emails": [...], "important_count": 3}
+        emails = await self._fetch_emails()
+        return {"emails": emails, "important_count": len(emails)}
 
     async def cmd_email_summary(self, args: dict) -> dict:
-        """Summarize recent important emails."""
-        return {"summary": "...", "action_items": [...]}
-
-    async def cmd_email_configure(self, args: dict) -> dict:
-        """Update email plugin configuration."""
-        return {"success": True}
+        return {"summary": "...", "action_items": []}
 ```
 
 ---
@@ -394,7 +388,19 @@ class PluginContext:
     def get_prompt(self, name: str, variables: dict | None = None) -> str
     async def save_prompt(self, name: str, content: str) -> None
     def list_prompts(self) -> list[str]
+
+    # LLM invocation (ChatProvider, not Claude Code agent)
+    async def invoke_llm(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,       # override model
+        provider: str | None = None,     # "anthropic" or "ollama"
+        tools: list[dict] | None = None, # tool definitions for tool-use loop
+    ) -> str
 ```
+
+**LLM access:** `invoke_llm()` uses the system's ChatProvider (Anthropic API or Ollama) for lightweight message-in/message-out calls. This is suitable for summarization, classification, extraction, etc. For heavy autonomous work (file editing, shell commands), plugins should create a task via `execute_command("create_task", {...})`.
 
 Plugins do NOT get direct access to the database, orchestrator, or file system (unless granted via permissions). All interaction goes through `PluginContext`.
 
@@ -608,25 +614,36 @@ Without a CLAUDE.md, the agent has to reverse-engineer all of this from code, wh
 
 ## 12. Implementation Phases
 
-### Phase 1: Core Plugin Infrastructure
+### Phase 1: Core Plugin Infrastructure ✅
 - `src/plugins/base.py` — Plugin ABC, PluginContext, PluginInfo
 - `src/plugins/registry.py` — PluginRegistry with discover/load/unload
 - `src/plugins/loader.py` — Git clone, requirements install, module import
 - Database schema: `plugins` and `plugin_data` tables
 - Integration: CommandHandler fallback, ToolRegistry merge, Orchestrator init
 
-### Phase 2: Management Commands
+### Phase 2: Management Commands ✅
 - `aq plugin` CLI subcommands (list, install, update, remove, enable, disable, config)
 - Discord slash commands (/plugin-list, /plugin-install, etc.)
 - Supervisor tools (list_plugins, install_plugin, etc.)
 
-### Phase 3: Self-Update Flow
+### Phase 3: Self-Update Flow ✅
 - Detect when an agent task targets a plugin workspace
 - Auto-reload plugin on task completion
 - `plugin.updated` event emission
-- AgentQueue-driven plugin development workflow
 
-### Phase 4: First Plugin Extraction
+### Phase 4: pyproject.toml + Cron + CLI/Discord Extension ✅
+- Plugin metadata from `pyproject.toml` (via `importlib.metadata` + entry points)
+- `pip install -e .` instead of `requirements.txt`
+- `@cron` decorator for scheduled plain async Python functions
+- `PluginContext.invoke_llm()` for LLM access from cron jobs and handlers
+- `Plugin.cli_group()` for extending the `aq` CLI with Click groups
+- `Plugin.discord_commands()` for extending Discord with `app_commands.Group`
+- Reserved plugin name validation to prevent CLI/Discord collisions
+- Class attributes (`plugin_permissions`, `config_schema`, `default_config`) replace
+  plugin.yaml capability declarations
+- Legacy `plugin.yaml` still supported with deprecation warning
+
+### Phase 5: First Plugin Extraction
 - Extract File Watcher as a plugin (proves the architecture)
 - Document plugin authoring guide
 - Publish plugin template repository

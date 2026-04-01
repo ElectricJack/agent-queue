@@ -18,10 +18,15 @@ from src.plugins.base import (
     PluginPermission,
     PluginStatus,
 )
+from src.plugins.base import cron
 from src.plugins.loader import (
+    has_pyproject,
     import_plugin_module,
     install_requirements,
+    load_plugin_via_entry_point,
+    parse_plugin_metadata,
     parse_plugin_yaml,
+    parse_pyproject_metadata,
     reset_prompts,
     setup_prompts,
 )
@@ -826,3 +831,409 @@ class TestPluginDatabaseQueries:
             assert disabled[0]["id"] == "p2"
         finally:
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# @cron Decorator Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCronDecorator:
+    def test_cron_sets_attribute(self):
+        """The @cron decorator stores the expression on the function."""
+        @cron("0 */4 * * *")
+        async def my_job(ctx):
+            pass
+
+        assert hasattr(my_job, "_cron_expression")
+        assert my_job._cron_expression == "0 */4 * * *"
+
+    def test_cron_on_method(self):
+        """The @cron decorator works on class methods."""
+        class MyPlugin(Plugin):
+            plugin_permissions = []
+
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+            @cron("30 2 * * 1-5")
+            async def weekday_check(self, ctx):
+                pass
+
+        instance = MyPlugin()
+        assert hasattr(instance.weekday_check, "_cron_expression")
+        assert instance.weekday_check._cron_expression == "30 2 * * 1-5"
+
+    def test_cron_preserves_function(self):
+        """The @cron decorator doesn't alter function identity or callability."""
+        @cron("0 0 * * *")
+        async def midnight_job(ctx):
+            return "done"
+
+        assert midnight_job.__name__ == "midnight_job"
+        assert asyncio.iscoroutinefunction(midnight_job)
+
+
+# ---------------------------------------------------------------------------
+# Plugin Class Attributes Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPluginClassAttributes:
+    def test_default_class_attrs(self):
+        """Plugin subclass inherits empty defaults for class attributes."""
+        class MinimalPlugin(Plugin):
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+        assert MinimalPlugin.plugin_permissions == []
+        assert MinimalPlugin.config_schema == {}
+        assert MinimalPlugin.default_config == {}
+
+    def test_custom_class_attrs(self):
+        """Plugin subclass can override class attributes."""
+        class CustomPlugin(Plugin):
+            plugin_permissions = [PluginPermission.NETWORK, PluginPermission.SHELL]
+            config_schema = {"api_key": {"type": "string"}}
+            default_config = {"api_key": ""}
+
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+        assert PluginPermission.NETWORK in CustomPlugin.plugin_permissions
+        assert PluginPermission.SHELL in CustomPlugin.plugin_permissions
+        assert CustomPlugin.config_schema == {"api_key": {"type": "string"}}
+        assert CustomPlugin.default_config == {"api_key": ""}
+
+    def test_cli_group_default_none(self):
+        """Default cli_group() returns None."""
+        class MinimalPlugin(Plugin):
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+        assert MinimalPlugin().cli_group() is None
+
+    def test_discord_commands_default_none(self):
+        """Default discord_commands() returns None."""
+        class MinimalPlugin(Plugin):
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+        assert MinimalPlugin().discord_commands() is None
+
+
+# ---------------------------------------------------------------------------
+# PluginContext.invoke_llm Tests
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeLLM:
+    @pytest.mark.asyncio
+    async def test_invoke_llm_calls_callback(self, tmp_path):
+        """invoke_llm routes through the callback."""
+        callback = AsyncMock(return_value="LLM response")
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+            invoke_llm_callback=callback,
+        )
+        result = await ctx.invoke_llm("What is 2+2?")
+        assert result == "LLM response"
+        callback.assert_called_once_with(
+            "What is 2+2?", "test", model=None, provider=None, tools=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_invoke_llm_passes_overrides(self, tmp_path):
+        """invoke_llm passes model/provider/tools overrides."""
+        callback = AsyncMock(return_value="response")
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+            invoke_llm_callback=callback,
+        )
+        await ctx.invoke_llm(
+            "prompt",
+            model="claude-opus-4-20250514",
+            provider="anthropic",
+            tools=[{"name": "t"}],
+        )
+        callback.assert_called_once_with(
+            "prompt", "test",
+            model="claude-opus-4-20250514",
+            provider="anthropic",
+            tools=[{"name": "t"}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_invoke_llm_raises_without_callback(self, tmp_path):
+        """invoke_llm raises RuntimeError if no callback is configured."""
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+        )
+        with pytest.raises(RuntimeError, match="LLM invocation not available"):
+            await ctx.invoke_llm("hello")
+
+
+# ---------------------------------------------------------------------------
+# pyproject.toml Loader Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPyprojectLoader:
+    def test_has_pyproject_true(self, tmp_path):
+        """has_pyproject returns True when pyproject.toml has aq.plugins entry."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+            [project]
+            name = "aq-test"
+            version = "1.0.0"
+
+            [project.entry-points."aq.plugins"]
+            test = "test_mod:TestPlugin"
+        """))
+        assert has_pyproject(str(tmp_path)) is True
+
+    def test_has_pyproject_false_no_entry_point(self, tmp_path):
+        """has_pyproject returns False when no aq.plugins entry point."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+            [project]
+            name = "aq-test"
+            version = "1.0.0"
+        """))
+        assert has_pyproject(str(tmp_path)) is False
+
+    def test_has_pyproject_false_no_file(self, tmp_path):
+        """has_pyproject returns False when pyproject.toml doesn't exist."""
+        src = tmp_path / "src"
+        src.mkdir()
+        assert has_pyproject(str(tmp_path)) is False
+
+    def test_parse_pyproject_metadata(self, tmp_path):
+        """parse_pyproject_metadata reads name/version/description/author."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+            [project]
+            name = "aq-email-reviewer"
+            version = "2.1.0"
+            description = "Email review plugin"
+            authors = [{name = "David"}]
+
+            [project.entry-points."aq.plugins"]
+            email-reviewer = "email_reviewer:Plugin"
+        """))
+        meta = parse_pyproject_metadata(str(tmp_path))
+        assert meta["name"] == "aq-email-reviewer"
+        assert meta["version"] == "2.1.0"
+        assert meta["description"] == "Email review plugin"
+        assert meta["author"] == "David"
+
+    def test_parse_pyproject_metadata_missing_raises(self, tmp_path):
+        """parse_pyproject_metadata raises FileNotFoundError if no file."""
+        src = tmp_path / "src"
+        src.mkdir()
+        with pytest.raises(FileNotFoundError):
+            parse_pyproject_metadata(str(tmp_path))
+
+    def test_parse_plugin_metadata_from_class(self, tmp_path):
+        """parse_plugin_metadata merges package data with class attributes."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+            [project]
+            name = "aq-test-plugin"
+            version = "3.0.0"
+            description = "From pyproject"
+
+            [project.entry-points."aq.plugins"]
+            test = "test:TestPlugin"
+        """))
+
+        class TestPlugin(Plugin):
+            plugin_permissions = [PluginPermission.NETWORK]
+            config_schema = {"key": {"type": "string"}}
+            default_config = {"key": "val"}
+
+            async def initialize(self, ctx):
+                pass
+
+            async def shutdown(self, ctx):
+                pass
+
+        info = parse_plugin_metadata(str(tmp_path), TestPlugin)
+        assert info.name == "aq-test-plugin"
+        assert info.version == "3.0.0"
+        assert info.description == "From pyproject"
+        assert PluginPermission.NETWORK in info.permissions
+        assert info.config_schema == {"key": {"type": "string"}}
+        assert info.default_config == {"key": "val"}
+
+    def test_load_plugin_via_entry_point_returns_none_for_unknown(self):
+        """load_plugin_via_entry_point returns None for non-existent plugins."""
+        result = load_plugin_via_entry_point("definitely-not-a-plugin-xyz")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Registry Cron Job Collection Tests
+# ---------------------------------------------------------------------------
+
+
+class TestReservedNames:
+    @pytest.mark.asyncio
+    async def test_install_reserved_name_rejected(
+        self, tmp_path, mock_db, mock_bus, mock_config,
+    ):
+        """Installing a plugin with a reserved name raises ValueError."""
+        from src.plugins.registry import RESERVED_PLUGIN_NAMES
+
+        registry = PluginRegistry(
+            db=mock_db, bus=mock_bus, config=mock_config,
+        )
+        for reserved in ["task", "status", "plugin", "hook"]:
+            assert reserved.lower() in RESERVED_PLUGIN_NAMES
+            with pytest.raises(ValueError, match="reserved"):
+                await registry.install_from_git(
+                    "https://example.com/repo.git", name=reserved,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Registry Cron Job Collection Tests
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryCronJobs:
+    @pytest.mark.asyncio
+    async def test_cron_jobs_collected_on_load(
+        self, tmp_path, mock_db, mock_bus, mock_config,
+    ):
+        """@cron-decorated methods are collected when a plugin is loaded."""
+        # Create a plugin with a cron method
+        mock_config.data_dir = str(tmp_path / "data")
+        os.makedirs(mock_config.data_dir, exist_ok=True)
+
+        plugin_dir = tmp_path / "data" / "plugins" / "cron-test"
+        src = plugin_dir / "src"
+        src.mkdir(parents=True)
+
+        (src / "plugin.yaml").write_text(textwrap.dedent("""\
+            name: cron-test
+            version: "1.0.0"
+        """))
+        (src / "plugin.py").write_text(textwrap.dedent("""\
+            from src.plugins.base import Plugin, PluginContext, cron
+
+            class CronPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    pass
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+
+                @cron("0 */4 * * *")
+                async def every_four_hours(self, ctx: PluginContext) -> None:
+                    pass
+
+                @cron("30 2 * * 1-5")
+                async def weekday_check(self, ctx: PluginContext) -> None:
+                    pass
+        """))
+
+        mock_db.get_plugin = AsyncMock(return_value={
+            "id": "cron-test",
+            "install_path": str(plugin_dir),
+            "status": "installed",
+        })
+
+        registry = PluginRegistry(
+            db=mock_db, bus=mock_bus, config=mock_config,
+        )
+        await registry.load_plugin("cron-test")
+
+        assert len(registry._cron_jobs) == 2
+        expressions = {j.expression for j in registry._cron_jobs}
+        assert "0 */4 * * *" in expressions
+        assert "30 2 * * 1-5" in expressions
+        assert all(j.plugin_name == "cron-test" for j in registry._cron_jobs)
+
+    @pytest.mark.asyncio
+    async def test_cron_jobs_removed_on_unload(
+        self, tmp_path, mock_db, mock_bus, mock_config,
+    ):
+        """Cron jobs are removed when a plugin is unloaded."""
+        mock_config.data_dir = str(tmp_path / "data")
+        os.makedirs(mock_config.data_dir, exist_ok=True)
+
+        plugin_dir = tmp_path / "data" / "plugins" / "cron-test"
+        src = plugin_dir / "src"
+        src.mkdir(parents=True)
+
+        (src / "plugin.yaml").write_text(textwrap.dedent("""\
+            name: cron-test
+            version: "1.0.0"
+        """))
+        (src / "plugin.py").write_text(textwrap.dedent("""\
+            from src.plugins.base import Plugin, PluginContext, cron
+
+            class CronPlugin(Plugin):
+                async def initialize(self, ctx: PluginContext) -> None:
+                    pass
+
+                async def shutdown(self, ctx: PluginContext) -> None:
+                    pass
+
+                @cron("0 0 * * *")
+                async def midnight(self, ctx: PluginContext) -> None:
+                    pass
+        """))
+
+        mock_db.get_plugin = AsyncMock(return_value={
+            "id": "cron-test",
+            "install_path": str(plugin_dir),
+            "status": "installed",
+        })
+
+        registry = PluginRegistry(
+            db=mock_db, bus=mock_bus, config=mock_config,
+        )
+        await registry.load_plugin("cron-test")
+        assert len(registry._cron_jobs) == 1
+
+        await registry.unload_plugin("cron-test")
+        assert len(registry._cron_jobs) == 0

@@ -21,10 +21,12 @@ Integration points:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -37,13 +39,17 @@ from src.plugins.base import (
 from src.plugins.loader import (
     clone_plugin_repo,
     get_current_rev,
+    has_pyproject,
     import_plugin_module,
-    install_requirements,
+    install_plugin_package,
+    load_plugin_via_entry_point,
+    parse_plugin_metadata,
     parse_plugin_yaml,
+    parse_pyproject_metadata,
     pull_plugin_repo,
-    reset_prompts,
     setup_prompts,
 )
+from src.schedule import matches_schedule
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -54,6 +60,26 @@ logger = logging.getLogger(__name__)
 
 # Circuit breaker: auto-disable after this many consecutive failures
 MAX_CONSECUTIVE_FAILURES = 5
+
+# Names reserved by built-in CLI groups and Discord commands.  Plugins must
+# not use these because they would collide with core functionality.
+RESERVED_PLUGIN_NAMES: frozenset[str] = frozenset({
+    # CLI groups
+    "status", "task", "agent", "hook", "project", "plugin",
+    # Discord commands that read as top-level groups
+    "tasks", "projects", "agents", "events", "hooks",
+    # Meta
+    "aq", "help", "version",
+})
+
+
+@dataclass
+class _CronJob:
+    """A cron-scheduled plugin method."""
+    plugin_name: str
+    method: Callable
+    expression: str
+    last_run: float | None = None
 
 
 class _LoadedPlugin:
@@ -109,6 +135,7 @@ class PluginRegistry:
         self._config = config
         self._notify_callback = notify_callback
         self._execute_command_callback = execute_command_callback
+        self._invoke_llm_callback: Callable | None = None
 
         # Loaded plugin instances keyed by plugin name
         self._plugins: dict[str, _LoadedPlugin] = {}
@@ -117,6 +144,10 @@ class PluginRegistry:
         self._commands: dict[str, Callable] = {}
         self._tools: dict[str, dict] = {}
         self._event_types: set[str] = set()
+
+        # Cron-scheduled plugin methods
+        self._cron_jobs: list[_CronJob] = []
+        self._cron_tasks: dict[str, asyncio.Task] = {}
 
         # Plugins base directory
         self._plugins_dir = Path(config.data_dir) / "plugins"
@@ -153,25 +184,41 @@ class PluginRegistry:
                 continue
 
             try:
-                info = parse_plugin_yaml(str(entry))
-                discovered.append(info.name)
+                # Prefer pyproject.toml, fall back to plugin.yaml
+                if has_pyproject(str(entry)):
+                    meta = parse_pyproject_metadata(str(entry))
+                    plugin_name = meta["name"]
+                    version = meta["version"]
+                    default_config: dict = {}
+                    permissions: list = []
+                else:
+                    info = parse_plugin_yaml(str(entry))
+                    logger.warning(
+                        "Plugin '%s' uses legacy plugin.yaml — migrate to "
+                        "pyproject.toml with [project.entry-points.\"aq.plugins\"]",
+                        info.name,
+                    )
+                    plugin_name = info.name
+                    version = info.version
+                    default_config = info.default_config
+                    permissions = [p.value for p in info.permissions]
+
+                discovered.append(plugin_name)
 
                 # Ensure DB record exists
-                existing = await self._db.get_plugin(info.name)
+                existing = await self._db.get_plugin(plugin_name)
                 if not existing:
                     await self._db.create_plugin(
-                        plugin_id=info.name,
-                        version=info.version,
-                        source_url=info.url,
+                        plugin_id=plugin_name,
+                        version=version,
+                        source_url="",
                         source_rev=get_current_rev(str(entry)),
                         install_path=str(entry),
                         status=PluginStatus.INSTALLED.value,
-                        config=json.dumps(info.default_config),
-                        permissions=json.dumps(
-                            [p.value for p in info.permissions]
-                        ),
+                        config=json.dumps(default_config),
+                        permissions=json.dumps(permissions),
                     )
-                    logger.info("Discovered plugin: %s v%s", info.name, info.version)
+                    logger.info("Discovered plugin: %s v%s", plugin_name, version)
             except Exception as e:
                 logger.warning(
                     "Skipping invalid plugin directory %s: %s", entry.name, e,
@@ -236,11 +283,35 @@ class PluginRegistry:
         if not Path(install_path).exists():
             raise FileNotFoundError(f"Plugin '{name}' not found at {install_path}")
 
-        # Parse manifest
-        info = parse_plugin_yaml(install_path)
+        # Load plugin class: try entry point first, fall back to plugin.py import
+        use_pyproject = has_pyproject(install_path)
+        plugin_class: type[Plugin] | None = None
 
-        # Import the plugin module
-        plugin_class = import_plugin_module(install_path)
+        if use_pyproject:
+            plugin_class = load_plugin_via_entry_point(name)
+            if not plugin_class:
+                # Entry point might use the distribution name instead
+                try:
+                    meta = parse_pyproject_metadata(install_path)
+                    plugin_class = load_plugin_via_entry_point(meta["name"])
+                except (FileNotFoundError, ValueError):
+                    pass
+
+        if not plugin_class:
+            if use_pyproject:
+                logger.debug(
+                    "Plugin '%s' has pyproject.toml but no entry point found, "
+                    "falling back to plugin.py import",
+                    name,
+                )
+            plugin_class = import_plugin_module(install_path)
+
+        # Build metadata
+        if use_pyproject:
+            info = parse_plugin_metadata(install_path, plugin_class)
+        else:
+            info = parse_plugin_yaml(install_path)
+
         instance = plugin_class()
 
         # Create context
@@ -254,6 +325,7 @@ class PluginRegistry:
             event_type_registry=self._event_types,
             notify_callback=self._notify_callback,
             execute_command_callback=self._execute_command_callback,
+            invoke_llm_callback=self._invoke_llm_callback,
         )
 
         # Initialize plugin
@@ -276,6 +348,23 @@ class PluginRegistry:
             install_path=install_path,
             status=PluginStatus.ACTIVE,
         )
+
+        # Collect @cron-decorated methods
+        for attr_name in dir(instance):
+            try:
+                method = getattr(instance, attr_name)
+            except Exception:
+                continue
+            if callable(method) and hasattr(method, "_cron_expression"):
+                self._cron_jobs.append(_CronJob(
+                    plugin_name=name,
+                    method=method,
+                    expression=method._cron_expression,
+                ))
+                logger.info(
+                    "Plugin '%s' registered cron job: %s [%s]",
+                    name, attr_name, method._cron_expression,
+                )
 
         # Update DB status
         await self._db.update_plugin(
@@ -334,6 +423,13 @@ class PluginRegistry:
         for key in to_remove_tools:
             self._tools.pop(key, None)
 
+        # Remove cron jobs and cancel running tasks
+        self._cron_jobs = [j for j in self._cron_jobs if j.plugin_name != name]
+        for key, task in list(self._cron_tasks.items()):
+            if key.startswith(f"{name}."):
+                task.cancel()
+                self._cron_tasks.pop(key, None)
+
         del self._plugins[name]
         logger.info("Unloaded plugin: %s", name)
 
@@ -381,6 +477,12 @@ class PluginRegistry:
             if name.endswith(".git"):
                 name = name[:-4]
 
+        if name.lower() in RESERVED_PLUGIN_NAMES:
+            raise ValueError(
+                f"Plugin name '{name}' is reserved (conflicts with built-in "
+                f"CLI/Discord commands). Choose a different name."
+            )
+
         install_path = str(self._plugins_dir / name)
 
         # Create instance directory
@@ -389,14 +491,21 @@ class PluginRegistry:
         # Clone
         rev = await clone_plugin_repo(url, install_path, branch=branch)
 
-        # Parse manifest to validate
-        info = parse_plugin_yaml(install_path)
-
-        # Install requirements
-        if not install_requirements(install_path):
+        # Install: prefer pip install -e (pyproject.toml), fall back to requirements.txt
+        if not install_plugin_package(install_path):
             raise RuntimeError(
-                f"Failed to install requirements for plugin '{info.name}'"
+                f"Failed to install plugin at '{install_path}'"
             )
+
+        # Parse metadata (try pyproject.toml first, fall back to plugin.yaml)
+        if has_pyproject(install_path):
+            plugin_class = load_plugin_via_entry_point(name)
+            if plugin_class:
+                info = parse_plugin_metadata(install_path, plugin_class)
+            else:
+                info = parse_plugin_yaml(install_path)
+        else:
+            info = parse_plugin_yaml(install_path)
 
         # Setup default config
         config_path = Path(install_path) / "config.yaml"
@@ -450,21 +559,35 @@ class PluginRegistry:
         if not source.exists():
             raise FileNotFoundError(f"Source path not found: {source_path}")
 
-        # Parse manifest from source
-        # For local installs, the source IS the src dir
-        temp_info_path = source / "plugin.yaml"
-        if not temp_info_path.exists():
-            temp_info_path = source / "plugin.yml"
-        if not temp_info_path.exists():
-            raise ValueError(f"No plugin.yaml in {source_path}")
+        # Determine plugin name from source directory
+        # Try pyproject.toml first, then plugin.yaml
+        pyproject_path = source / "pyproject.toml"
+        if pyproject_path.exists():
+            import tomllib
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+            plugin_name = name or data.get("project", {}).get("name")
+        else:
+            temp_info_path = source / "plugin.yaml"
+            if not temp_info_path.exists():
+                temp_info_path = source / "plugin.yml"
+            if not temp_info_path.exists():
+                raise ValueError(
+                    f"No pyproject.toml or plugin.yaml in {source_path}"
+                )
+            import yaml
+            with open(temp_info_path) as f:
+                data = yaml.safe_load(f)
+            plugin_name = name or data.get("name")
 
-        import yaml
-        with open(temp_info_path) as f:
-            data = yaml.safe_load(f)
-
-        plugin_name = name or data.get("name")
         if not plugin_name:
             raise ValueError("Cannot determine plugin name")
+
+        if plugin_name.lower() in RESERVED_PLUGIN_NAMES:
+            raise ValueError(
+                f"Plugin name '{plugin_name}' is reserved (conflicts with "
+                f"built-in CLI/Discord commands). Choose a different name."
+            )
 
         install_path = str(self._plugins_dir / plugin_name)
         Path(install_path).mkdir(parents=True, exist_ok=True)
@@ -481,10 +604,18 @@ class PluginRegistry:
         # Use symlink for development mode
         src_dir.symlink_to(source.resolve())
 
-        info = parse_plugin_yaml(install_path)
+        # Install: prefer pip install -e (pyproject.toml), fall back to requirements.txt
+        install_plugin_package(install_path)
 
-        # Install requirements
-        install_requirements(install_path)
+        # Parse metadata
+        if has_pyproject(install_path):
+            plugin_class = load_plugin_via_entry_point(plugin_name)
+            if plugin_class:
+                info = parse_plugin_metadata(install_path, plugin_class)
+            else:
+                info = parse_plugin_yaml(install_path)
+        else:
+            info = parse_plugin_yaml(install_path)
 
         # Record in DB
         await self._db.create_plugin(
@@ -535,11 +666,18 @@ class PluginRegistry:
         # Pull latest
         new_rev = await pull_plugin_repo(install_path, rev=rev)
 
-        # Reinstall requirements
-        install_requirements(install_path)
+        # Reinstall
+        install_plugin_package(install_path)
 
-        # Re-parse manifest
-        info = parse_plugin_yaml(install_path)
+        # Re-parse metadata
+        if has_pyproject(install_path):
+            plugin_class = load_plugin_via_entry_point(name)
+            if plugin_class:
+                info = parse_plugin_metadata(install_path, plugin_class)
+            else:
+                info = parse_plugin_yaml(install_path)
+        else:
+            info = parse_plugin_yaml(install_path)
 
         # Setup prompts (non-destructive — only copies new ones)
         setup_prompts(install_path)
@@ -799,3 +937,104 @@ class PluginRegistry:
         self._execute_command_callback = callback
         for loaded in self._plugins.values():
             loaded.context._execute_command_callback = callback
+
+    def set_invoke_llm_callback(self, callback: Callable) -> None:
+        """Set the LLM invocation callback for all plugin contexts."""
+        self._invoke_llm_callback = callback
+        for loaded in self._plugins.values():
+            loaded.context._invoke_llm_callback = callback
+
+    # ------------------------------------------------------------------
+    # Cron Scheduling
+    # ------------------------------------------------------------------
+
+    async def tick_cron(self) -> None:
+        """Check and run due cron-scheduled plugin methods.
+
+        Called each orchestrator cycle (~5s).  Each ``@cron``-decorated
+        method on a loaded plugin is checked against ``matches_schedule``
+        from ``src/schedule.py``.  Jobs run as ``asyncio.Task`` instances;
+        overlapping invocations of the same job are skipped.
+        """
+        # Clean up finished tasks
+        done_keys = [k for k, t in self._cron_tasks.items() if t.done()]
+        for k in done_keys:
+            self._cron_tasks.pop(k, None)
+
+        from datetime import datetime, timezone
+        now_dt = datetime.now(timezone.utc)
+        for job in self._cron_jobs:
+            # Skip if plugin is no longer loaded
+            if job.plugin_name not in self._plugins:
+                continue
+
+            key = f"{job.plugin_name}.{job.method.__name__}"
+
+            # Skip if still running from last invocation
+            if key in self._cron_tasks and not self._cron_tasks[key].done():
+                continue
+
+            last_run_dt = (
+                datetime.fromtimestamp(job.last_run, tz=timezone.utc)
+                if job.last_run else None
+            )
+            schedule = {"cron": job.expression}
+            if matches_schedule(schedule, now=now_dt, last_run=last_run_dt):
+                job.last_run = time.time()
+                ctx = self._plugins[job.plugin_name].context
+                task = asyncio.create_task(
+                    self._run_cron_safe(job, ctx),
+                    name=f"plugin-cron:{key}",
+                )
+                self._cron_tasks[key] = task
+
+    async def _run_cron_safe(self, job: _CronJob, ctx: PluginContext) -> None:
+        """Execute a cron job with error handling and circuit breaker."""
+        key = f"{job.plugin_name}.{job.method.__name__}"
+        try:
+            await job.method(ctx)
+            self.record_success(job.plugin_name)
+            logger.debug("Plugin cron job completed: %s", key)
+        except Exception as e:
+            logger.error("Plugin cron job %s failed: %s", key, e, exc_info=True)
+            await self.record_failure(job.plugin_name, f"Cron {key}: {e}")
+
+    # ------------------------------------------------------------------
+    # CLI / Discord Extension Accessors
+    # ------------------------------------------------------------------
+
+    def get_cli_groups(self) -> list[tuple[str, Any]]:
+        """Collect CLI groups from all loaded plugins.
+
+        Returns:
+            List of (plugin_name, click.Group) tuples for plugins that
+            provide CLI extensions.
+        """
+        result = []
+        for name, loaded in self._plugins.items():
+            try:
+                group = loaded.instance.cli_group()
+                if group is not None:
+                    result.append((name, group))
+            except Exception as e:
+                logger.warning("Plugin '%s' cli_group() failed: %s", name, e)
+        return result
+
+    def get_discord_commands(self) -> list[Any]:
+        """Collect Discord app command groups from all loaded plugins.
+
+        Returns:
+            List of ``discord.app_commands.Group`` instances from plugins
+            that provide Discord extensions.
+        """
+        result = []
+        for name, loaded in self._plugins.items():
+            try:
+                group = loaded.instance.discord_commands()
+                if group is not None:
+                    result.append(group)
+            except Exception as e:
+                logger.warning(
+                    "Plugin '%s' discord_commands() failed: %s", name, e,
+                )
+        return result

@@ -1317,6 +1317,40 @@ def plugin_reset_prompts(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Plugin CLI extensions
+# ---------------------------------------------------------------------------
+
+
+def _load_plugin_cli_groups() -> None:
+    """Dynamically register CLI groups from installed aq.plugins entry points.
+
+    Iterates over all ``aq.plugins`` entry points, instantiates each Plugin
+    class, and calls ``cli_group()`` to get a Click group.  If the plugin
+    provides one, it is mounted on the main ``cli`` group as
+    ``aq <entry-point-name> ...``.
+
+    Failures are silently ignored so that a broken plugin never prevents the
+    CLI from starting.
+    """
+    try:
+        from importlib.metadata import entry_points
+        for ep in entry_points(group="aq.plugins"):
+            try:
+                cls = ep.load()
+                instance = cls()
+                group = instance.cli_group()
+                if group is not None:
+                    cli.add_command(group, ep.name)
+            except Exception:
+                pass  # Plugin CLI failure must not break the CLI
+    except Exception:
+        pass
+
+
+_load_plugin_cli_groups()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

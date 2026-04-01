@@ -5,18 +5,17 @@ This module defines the stable API surface that plugins interact with:
 - **Plugin** — Abstract base class that all plugins must subclass.
 - **PluginContext** — The API object passed to plugin lifecycle methods.
   Provides command/tool registration, event emission, configuration,
-  data storage, and prompt management.
-- **PluginInfo** — Metadata parsed from ``plugin.yaml``.
+  data storage, prompt management, and LLM invocation.
+- **PluginInfo** — Metadata from ``pyproject.toml`` (preferred) or ``plugin.yaml``.
 - **PluginStatus** — Lifecycle states for installed plugins.
 - **PluginPermission** — Granular permission flags.
+- **cron** — Decorator to schedule plugin methods on a cron expression.
 """
 
 from __future__ import annotations
 
 import abc
 import logging
-import os
-import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -28,6 +27,34 @@ if TYPE_CHECKING:
     from src.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cron decorator
+# ---------------------------------------------------------------------------
+
+
+def cron(expression: str):
+    """Mark a plugin method as a cron-scheduled function.
+
+    The decorated method will be called automatically by the plugin registry
+    on the schedule defined by the cron expression.  The method must accept
+    a single ``PluginContext`` argument::
+
+        @cron("0 */4 * * *")
+        async def periodic_check(self, ctx: PluginContext) -> None:
+            ...
+
+    Standard 5-field cron syntax is supported (minute, hour, day-of-month,
+    month, day-of-week).  See ``src/schedule.py`` for full syntax details.
+
+    Args:
+        expression: A 5-field cron expression string.
+    """
+    def decorator(func: Callable) -> Callable:
+        func._cron_expression = expression  # type: ignore[attr-defined]
+        return func
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +158,7 @@ class PluginContext:
         event_type_registry: set[str],
         notify_callback: Callable | None = None,
         execute_command_callback: Callable | None = None,
+        invoke_llm_callback: Callable | None = None,
     ):
         self._plugin_name = plugin_name
         self._install_path = Path(install_path)
@@ -141,6 +169,7 @@ class PluginContext:
         self._event_type_registry = event_type_registry
         self._notify_callback = notify_callback
         self._execute_command_callback = execute_command_callback
+        self._invoke_llm_callback = invoke_llm_callback
 
         # Ensure instance directories exist
         self._data_dir = self._install_path / "data"
@@ -272,6 +301,43 @@ class PluginContext:
             logger.info("Plugin '%s' notification (no callback): %s",
                        self._plugin_name, message)
 
+    # --- LLM Invocation ---
+
+    async def invoke_llm(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        tools: list[dict] | None = None,
+    ) -> str:
+        """Invoke the LLM with a prompt and return the response text.
+
+        This uses the system's ChatProvider (Anthropic API or Ollama) for
+        lightweight message-in/message-out LLM calls.  For heavy autonomous
+        work that requires file editing, shell access, etc., use
+        ``execute_command("create_task", {...})`` instead.
+
+        Args:
+            prompt: The user message to send to the LLM.
+            model: Optional model override (e.g. ``"claude-opus-4-20250514"``).
+                   Defaults to the system-configured model.
+            provider: Optional provider override (``"anthropic"`` or ``"ollama"``).
+                      Defaults to the system-configured provider.
+            tools: Optional tool definitions for a tool-use loop.
+
+        Returns:
+            The LLM's response text.
+
+        Raises:
+            RuntimeError: If LLM invocation is not available (e.g. during tests).
+        """
+        if not self._invoke_llm_callback:
+            raise RuntimeError("LLM invocation not available")
+        return await self._invoke_llm_callback(
+            prompt, self._plugin_name, model=model, provider=provider, tools=tools,
+        )
+
     # --- Configuration ---
 
     def get_config(self) -> dict:
@@ -399,18 +465,39 @@ class Plugin(abc.ABC):
     installation, loading, and shutdown. The ``PluginContext`` provides
     the API for registering capabilities and interacting with the system.
 
-    Minimal example::
+    Class attributes replace ``plugin.yaml`` for declaring plugin-specific
+    metadata that doesn't belong in standard Python packaging::
 
         class MyPlugin(Plugin):
+            plugin_permissions = [PluginPermission.NETWORK]
+            config_schema = {"api_key": {"type": "string"}}
+            default_config = {"api_key": ""}
+
             async def initialize(self, ctx: PluginContext) -> None:
                 ctx.register_command("my_command", self.handle_command)
 
             async def shutdown(self, ctx: PluginContext) -> None:
-                pass  # Cleanup resources
+                pass
+
+            @cron("0 */4 * * *")
+            async def periodic_check(self, ctx: PluginContext) -> None:
+                result = await ctx.invoke_llm("Summarize events")
+                await ctx.notify(result)
 
             async def handle_command(self, args: dict) -> dict:
                 return {"result": "hello from plugin"}
     """
+
+    # --- Class attributes (replaces plugin.yaml capability declarations) ---
+
+    plugin_permissions: list[PluginPermission] = []
+    """Permissions this plugin requires (e.g. network, filesystem, shell)."""
+
+    config_schema: dict = {}
+    """JSON Schema for plugin-specific configuration."""
+
+    default_config: dict = {}
+    """Default configuration values."""
 
     @abc.abstractmethod
     async def initialize(self, ctx: PluginContext) -> None:
@@ -445,3 +532,55 @@ class Plugin(abc.ABC):
             config: The new configuration dict.
         """
         pass
+
+    def cli_group(self) -> Any | None:
+        """Return a Click group to mount as ``aq <plugin-name> ...``.
+
+        Override this to add CLI commands for your plugin.  The returned
+        object should be a ``click.Group`` instance::
+
+            import click
+
+            def cli_group(self):
+                @click.group("my-plugin")
+                def grp():
+                    \"\"\"My plugin commands.\"\"\"
+                @grp.command()
+                def status():
+                    click.echo("OK")
+                return grp
+
+        Returns:
+            A Click group, or None if no CLI extension is provided.
+        """
+        return None
+
+    def discord_commands(self) -> Any | None:
+        """Return a Discord app command group to register on the bot's tree.
+
+        Override this to add Discord slash commands for your plugin.
+        The returned object should be a ``discord.app_commands.Group``,
+        which namespaces your commands under ``/<group-name> <subcommand>``::
+
+            from discord import app_commands
+
+            def discord_commands(self):
+                grp = app_commands.Group(
+                    name="email", description="Email plugin commands"
+                )
+
+                @grp.command(name="check", description="Check for new emails")
+                async def check(interaction):
+                    await interaction.response.send_message("Checking...")
+
+                @grp.command(name="status", description="Email plugin status")
+                async def status(interaction):
+                    await interaction.response.send_message("OK")
+
+                return grp
+
+        Returns:
+            A ``discord.app_commands.Group``, or None if no Discord
+            extension is provided.
+        """
+        return None

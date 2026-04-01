@@ -361,6 +361,16 @@ class AgentQueueBot(commands.Bot):
         from src.discord.commands import setup_commands
         setup_commands(self)
 
+        # Register Discord commands from loaded plugins.
+        if hasattr(self, "orchestrator") and self.orchestrator:
+            registry = getattr(self.orchestrator, "plugin_registry", None)
+            if registry:
+                for cmd in registry.get_discord_commands():
+                    try:
+                        self.tree.add_command(cmd)
+                    except Exception as e:
+                        print(f"WARNING: Failed to register plugin Discord command: {e}")
+
         # Log how many commands were registered on the tree.
         registered = self.tree.get_commands()
         cmd_names = sorted(c.name for c in registered)

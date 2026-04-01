@@ -25,6 +25,7 @@ from src.plugins.base import (
     PluginInfo,
     PluginStatus,
     PluginPermission,
+    cron,
 )
 from src.plugins.registry import PluginRegistry
 
@@ -35,4 +36,5 @@ __all__ = [
     "PluginRegistry",
     "PluginStatus",
     "PluginPermission",
+    "cron",
 ]
