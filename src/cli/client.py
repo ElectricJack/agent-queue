@@ -183,6 +183,9 @@ class CLIClient:
     async def get_project(self, project_id: str) -> Project | None:
         return await self.db.get_project(project_id)
 
+    async def update_project(self, project_id: str, **kwargs) -> None:
+        return await self.db.update_project(project_id, **kwargs)
+
     # ----- Agents -----
 
     async def list_agents(self) -> list[Agent]:

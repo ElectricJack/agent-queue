@@ -353,6 +353,7 @@ def format_project_table(projects: list[Project]) -> Table:
     table.add_column("ID", style="bold bright_magenta", no_wrap=True)
     table.add_column("Name", style="white")
     table.add_column("Status", no_wrap=True)
+    table.add_column("Channel", style="cyan", no_wrap=True)
     table.add_column("Agents", justify="right")
     table.add_column("Tokens Used", justify="right", style="dim")
 
@@ -364,6 +365,7 @@ def format_project_table(projects: list[Project]) -> Table:
             project.id,
             project.name,
             status_text,
+            project.discord_channel_id or "—",
             str(project.max_concurrent_agents),
             f"{project.total_tokens_used:,}" if project.total_tokens_used else "—",
         )
