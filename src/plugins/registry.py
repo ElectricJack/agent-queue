@@ -79,6 +79,7 @@ class _CronJob:
     plugin_name: str
     method: Callable
     expression: str
+    config_key: str | None = None
     last_run: float | None = None
 
 
@@ -356,14 +357,17 @@ class PluginRegistry:
             except Exception:
                 continue
             if callable(method) and hasattr(method, "_cron_expression"):
+                config_key = getattr(method, "_cron_config_key", None)
                 self._cron_jobs.append(_CronJob(
                     plugin_name=name,
                     method=method,
                     expression=method._cron_expression,
+                    config_key=config_key,
                 ))
+                extra = f" (configurable via '{config_key}')" if config_key else ""
                 logger.info(
-                    "Plugin '%s' registered cron job: %s [%s]",
-                    name, attr_name, method._cron_expression,
+                    "Plugin '%s' registered cron job: %s [%s]%s",
+                    name, attr_name, method._cron_expression, extra,
                 )
 
         # Update DB status
@@ -974,11 +978,19 @@ class PluginRegistry:
             if key in self._cron_tasks and not self._cron_tasks[key].done():
                 continue
 
+            # Resolve expression: config override takes precedence
+            expression = job.expression
+            if job.config_key:
+                ctx = self._plugins[job.plugin_name].context
+                override = ctx.get_config_value(job.config_key)
+                if override and isinstance(override, str):
+                    expression = override
+
             last_run_dt = (
                 datetime.fromtimestamp(job.last_run, tz=timezone.utc)
                 if job.last_run else None
             )
-            schedule = {"cron": job.expression}
+            schedule = {"cron": expression}
             if matches_schedule(schedule, now=now_dt, last_run=last_run_dt):
                 job.last_run = time.time()
                 ctx = self._plugins[job.plugin_name].context

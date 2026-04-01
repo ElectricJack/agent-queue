@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def cron(expression: str):
+def cron(expression: str, *, config_key: str | None = None):
     """Mark a plugin method as a cron-scheduled function.
 
     The decorated method will be called automatically by the plugin registry
@@ -45,14 +45,29 @@ def cron(expression: str):
         async def periodic_check(self, ctx: PluginContext) -> None:
             ...
 
+    Use ``config_key`` to make the schedule user-configurable.  The
+    expression becomes the default, and the plugin's instance config
+    can override it at runtime without editing code or restarting::
+
+        @cron("0 */4 * * *", config_key="check_schedule")
+        async def periodic_check(self, ctx: PluginContext) -> None:
+            ...
+
+    The user can then change the schedule via
+    ``aq myplugin config check_schedule="0 */2 * * *"`` and the new
+    schedule takes effect on the next orchestrator tick.
+
     Standard 5-field cron syntax is supported (minute, hour, day-of-month,
     month, day-of-week).  See ``src/schedule.py`` for full syntax details.
 
     Args:
-        expression: A 5-field cron expression string.
+        expression: A 5-field cron expression string (default schedule).
+        config_key: Optional config key whose value overrides ``expression``
+                    at runtime.
     """
     def decorator(func: Callable) -> Callable:
         func._cron_expression = expression  # type: ignore[attr-defined]
+        func._cron_config_key = config_key  # type: ignore[attr-defined]
         return func
     return decorator
 
@@ -354,6 +369,18 @@ class PluginContext:
                 return yaml.safe_load(f) or {}
         return {}
 
+    def get_config_value(self, key: str, default: Any = None) -> Any:
+        """Get a single configuration value by key.
+
+        Args:
+            key: Config key to look up.
+            default: Value to return if the key is not set.
+
+        Returns:
+            The config value, or *default*.
+        """
+        return self.get_config().get(key, default)
+
     async def save_config(self, config: dict) -> None:
         """Save the plugin's instance configuration.
 
@@ -365,6 +392,19 @@ class PluginContext:
         config_path = self._install_path / "config.yaml"
         with open(config_path, "w") as f:
             yaml.safe_dump(config, f, default_flow_style=False)
+
+    async def set_config_value(self, key: str, value: Any) -> None:
+        """Set a single configuration value by key.
+
+        Reads the current config, updates the key, and writes it back.
+
+        Args:
+            key: Config key to set.
+            value: Value to store.
+        """
+        config = self.get_config()
+        config[key] = value
+        await self.save_config(config)
 
     # --- Persistent Data (DB-backed) ---
 

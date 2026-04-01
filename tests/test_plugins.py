@@ -847,6 +847,16 @@ class TestCronDecorator:
 
         assert hasattr(my_job, "_cron_expression")
         assert my_job._cron_expression == "0 */4 * * *"
+        assert my_job._cron_config_key is None
+
+    def test_cron_with_config_key(self):
+        """The @cron decorator stores the config_key."""
+        @cron("0 */4 * * *", config_key="check_schedule")
+        async def my_job(ctx):
+            pass
+
+        assert my_job._cron_expression == "0 */4 * * *"
+        assert my_job._cron_config_key == "check_schedule"
 
     def test_cron_on_method(self):
         """The @cron decorator works on class methods."""
@@ -935,6 +945,68 @@ class TestPluginClassAttributes:
                 pass
 
         assert MinimalPlugin().discord_commands() is None
+
+
+# ---------------------------------------------------------------------------
+# Config Helpers Tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfigHelpers:
+    def test_get_config_value(self, tmp_path):
+        """get_config_value reads a single key."""
+        import yaml
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
+
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+        )
+        assert ctx.get_config_value("server") == "imap.example.com"
+        assert ctx.get_config_value("port") == 993
+        assert ctx.get_config_value("missing") is None
+        assert ctx.get_config_value("missing", default="fallback") == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_set_config_value(self, tmp_path):
+        """set_config_value updates a single key without clobbering others."""
+        import yaml
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
+
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+        )
+        await ctx.set_config_value("port", 465)
+        assert ctx.get_config_value("port") == 465
+        assert ctx.get_config_value("server") == "imap.example.com"  # untouched
+
+    @pytest.mark.asyncio
+    async def test_set_config_value_creates_file(self, tmp_path):
+        """set_config_value creates config.yaml if it doesn't exist."""
+        ctx = PluginContext(
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+        )
+        await ctx.set_config_value("schedule", "0 */2 * * *")
+        assert ctx.get_config_value("schedule") == "0 */2 * * *"
 
 
 # ---------------------------------------------------------------------------
