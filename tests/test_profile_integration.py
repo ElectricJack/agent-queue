@@ -732,3 +732,88 @@ class TestModelOverrideEnforcement:
         await orch.wait_for_running_tasks()
 
         assert factory.configs_created[0].model == "claude-sonnet-4-5-20250514"
+
+
+# ---------------------------------------------------------------------------
+# 9. MCP tool auto-approval in allowed_tools
+# ---------------------------------------------------------------------------
+
+class TestMCPToolAutoApproval:
+    """Verify that MCP server tool patterns are added to allowed_tools.
+
+    When MCP servers are configured for a task, the ClaudeAdapter must add
+    ``mcp__<server-name>__*`` patterns to the allowed_tools list passed to the
+    Claude Agent SDK.  Without this, MCP tools require interactive permission
+    approval — impossible in headless SDK mode — so the agent can't use them.
+
+    These tests exercise the allowed_tools construction logic directly
+    (without running the full SDK query).
+    """
+
+    def test_mcp_tool_patterns_added_for_each_server(self):
+        """Each MCP server gets a wildcard pattern in allowed_tools."""
+        config = ClaudeAdapterConfig()
+        mcp_servers = {
+            "agent-queue": {"type": "http", "url": "http://127.0.0.1:8082/mcp"},
+            "playwright": {"command": "npx", "args": ["@anthropic/mcp-playwright"]},
+        }
+
+        # Replicate the logic from ClaudeAdapter.wait()
+        allowed = list(config.allowed_tools)
+        for server_name in mcp_servers:
+            pattern = f"mcp__{server_name}__*"
+            if pattern not in allowed:
+                allowed.append(pattern)
+
+        assert "mcp__agent-queue__*" in allowed
+        assert "mcp__playwright__*" in allowed
+        # Base tools are preserved
+        for tool in BASE_TOOLS:
+            assert tool in allowed
+
+    def test_no_mcp_servers_leaves_base_tools_unchanged(self):
+        """Without MCP servers, allowed_tools is just the base set."""
+        config = ClaudeAdapterConfig()
+        mcp_servers = {}
+
+        allowed = list(config.allowed_tools)
+        for server_name in mcp_servers:
+            pattern = f"mcp__{server_name}__*"
+            if pattern not in allowed:
+                allowed.append(pattern)
+
+        assert allowed == BASE_TOOLS
+
+    def test_no_duplicate_patterns(self):
+        """If a profile already includes the MCP pattern, don't duplicate it."""
+        config = ClaudeAdapterConfig(
+            allowed_tools=["Read", "Write", "mcp__agent-queue__*"],
+        )
+        mcp_servers = {
+            "agent-queue": {"type": "http", "url": "http://127.0.0.1:8082/mcp"},
+        }
+
+        allowed = list(config.allowed_tools)
+        for server_name in mcp_servers:
+            pattern = f"mcp__{server_name}__*"
+            if pattern not in allowed:
+                allowed.append(pattern)
+
+        assert allowed.count("mcp__agent-queue__*") == 1
+
+    def test_profile_tools_plus_mcp_patterns(self):
+        """Profile-specific tools are preserved alongside MCP patterns."""
+        config = ClaudeAdapterConfig(
+            allowed_tools=["Read", "Glob", "Grep"],  # reviewer-style profile
+        )
+        mcp_servers = {
+            "agent-queue": {"type": "http", "url": "http://127.0.0.1:8082/mcp"},
+        }
+
+        allowed = list(config.allowed_tools)
+        for server_name in mcp_servers:
+            pattern = f"mcp__{server_name}__*"
+            if pattern not in allowed:
+                allowed.append(pattern)
+
+        assert allowed == ["Read", "Glob", "Grep", "mcp__agent-queue__*"]

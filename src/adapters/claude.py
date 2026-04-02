@@ -240,8 +240,20 @@ class ClaudeAdapter(AgentAdapter):
             # (either via `claude login` or ANTHROPIC_API_KEY).
             system_claude = shutil.which("claude")
 
+            # Build allowed_tools: start with the configured set, then
+            # auto-approve MCP tools from any configured MCP servers.
+            # Without this, MCP tools would need interactive permission
+            # approval — impossible in headless SDK mode — so the agent
+            # can't discover or use them even though the server is connected.
+            allowed = list(self._config.allowed_tools)
+            if self._task.mcp_servers:
+                for server_name in self._task.mcp_servers:
+                    pattern = f"mcp__{server_name}__*"
+                    if pattern not in allowed:
+                        allowed.append(pattern)
+
             options = ClaudeAgentOptions(
-                allowed_tools=self._config.allowed_tools,
+                allowed_tools=allowed,
                 permission_mode=self._config.permission_mode,
                 max_turns=self._config.max_turns,
                 cwd=self._task.checkout_path or None,
@@ -256,8 +268,10 @@ class ClaudeAdapter(AgentAdapter):
             tokens_used = 0
             current_prompt = self._build_prompt()
 
+            mcp_names = list(self._task.mcp_servers.keys()) if self._task.mcp_servers else []
             print(f"Claude adapter: starting query (session={self._session_id or 'new'}, "
-                  f"prompt={len(current_prompt)} chars)")
+                  f"prompt={len(current_prompt)} chars, "
+                  f"allowed_tools={allowed}, mcp_servers={mcp_names})")
             cli_error: str | None = None
             try:
                 async for message in _resilient_query(prompt=current_prompt, options=options, adapter=self):
