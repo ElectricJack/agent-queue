@@ -1435,6 +1435,39 @@ class GitManager:
         except GitError:
             return ""
 
+    async def ahas_uncommitted_changes(self, checkout_path: str) -> bool:
+        """Return True if the workspace has staged or unstaged changes."""
+        try:
+            output = await self._arun_subprocess(
+                ["git", "status", "--porcelain"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+            return bool(output.stdout and output.stdout.strip())
+        except Exception:
+            return False
+
+    async def afind_open_pr(
+        self, checkout_path: str, branch_name: str,
+    ) -> str | None:
+        """Return the URL of an open PR for *branch_name*, or None."""
+        try:
+            result = await self._arun_subprocess(
+                [
+                    "gh", "pr", "list",
+                    "--head", branch_name,
+                    "--state", "open",
+                    "--json", "url",
+                    "--jq", ".[0].url",
+                ],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+            url = (result.stdout or "").strip()
+            return url if url else None
+        except Exception:
+            return None
+
     async def ahas_non_plan_changes(
         self,
         checkout_path: str,

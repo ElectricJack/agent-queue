@@ -40,7 +40,7 @@ async def run_mcp_server(
     2. Creates a FastMCP instance whose lifespan yields the daemon's existing
        orchestrator, DB, event bus, and command handler — no duplication.
     3. Registers tools, resources, and prompts via the shared registration
-       functions in ``packages.mcp_server.mcp_server``.
+       functions in ``src.mcp_registration``.
     4. Runs uvicorn in a supervised loop with exponential backoff.
        If the MCP server crashes, the orchestrator is unaffected.
     """
@@ -48,7 +48,7 @@ async def run_mcp_server(
     import uvicorn
     from mcp.server import FastMCP
 
-    from packages.mcp_server.mcp_server import (
+    from src.mcp_registration import (
         get_effective_exclusions,
         register_command_tools,
         register_prompts,

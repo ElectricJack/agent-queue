@@ -430,6 +430,68 @@ def test_global_rule_generates_hooks_for_all_projects(storage_root, mock_db):
     assert pids == {"proj-a", "proj-b"}
 
 
+def test_global_rule_hooks_include_project_context(storage_root, mock_db):
+    """Global rule hooks should include per-project context in their prompt."""
+    from src.rule_manager import RuleManager
+    from src.models import Project
+
+    mock_db.list_projects = AsyncMock(return_value=[
+        Project(id="proj-a", name="A"),
+        Project(id="proj-b", name="B"),
+    ])
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-global-ctx",
+            project_id=None,
+            rule_type="active",
+            content=(
+                "# Global Sync\n\n## Trigger\nEvery hour."
+                "\n\n## Logic\nSync workspaces for this project."
+            ),
+        )
+    )
+    assert result["success"] is True
+    assert mock_db.create_hook.call_count == 2
+
+    # Each hook's prompt should include its specific project context
+    for call in mock_db.create_hook.call_args_list:
+        hook = call[0][0]
+        assert f"scoped to project `{hook.project_id}`" in hook.prompt_template
+        assert "MUST target project" in hook.prompt_template
+
+    # Verify proj-a hook mentions proj-a, not proj-b
+    hook_a = mock_db.create_hook.call_args_list[0][0][0]
+    hook_b = mock_db.create_hook.call_args_list[1][0][0]
+    assert f"`{hook_a.project_id}`" in hook_a.prompt_template
+    assert f"`{hook_b.project_id}`" in hook_b.prompt_template
+
+
+def test_project_scoped_rule_no_extra_context(storage_root, mock_db):
+    """Project-scoped rules should NOT add redundant project context prefix."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-scoped",
+            project_id="my-proj",
+            rule_type="active",
+            content=(
+                "# Scoped Rule\n\n## Trigger\nEvery 30 minutes."
+                "\n\n## Logic\nDo project-specific stuff."
+            ),
+        )
+    )
+    assert result["success"] is True
+    assert mock_db.create_hook.call_count == 1
+
+    hook = mock_db.create_hook.call_args_list[0][0][0]
+    # Project-scoped hooks should not have the global context prefix
+    assert "**Project context:**" not in hook.prompt_template
+
+
 def test_global_rule_no_projects_creates_no_hooks(storage_root, mock_db):
     """Global rules with no projects in DB create no hooks."""
     from src.rule_manager import RuleManager

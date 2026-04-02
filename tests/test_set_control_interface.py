@@ -165,15 +165,27 @@ class TestSetControlInterfaceMissingProject:
 
 
 class TestSetControlInterfaceToolDefinition:
-    """Verify set_control_interface was removed from the TOOLS list.
+    """Verify set_control_interface is not a core supervisor tool.
 
     Channel linking is now done through edit_project's discord_channel_id
     parameter. The backend command handler method still exists for internal
-    use (e.g. create_channel_for_project delegates to it).
+    use (e.g. create_channel_for_project delegates to it) and is available
+    via MCP, but the supervisor LLM should not see it as a core tool.
     """
 
-    def test_tool_removed_from_tools_list(self):
-        from src.chat_agent import TOOLS
+    def test_tool_not_in_core_tools(self):
+        from src.tool_registry import ToolRegistry
 
-        tool_names = [t["name"] for t in TOOLS if isinstance(t, dict)]
-        assert "set_control_interface" not in tool_names
+        registry = ToolRegistry()
+        core_names = {t["name"] for t in registry.get_core_tools()}
+        assert "set_control_interface" not in core_names
+
+    def test_tool_description_mentions_deprecated(self):
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        defn = next(
+            (d for d in _ALL_TOOL_DEFINITIONS if d["name"] == "set_control_interface"),
+            None,
+        )
+        assert defn is not None, "set_control_interface should have an explicit tool definition"
+        assert "deprecated" in defn["description"].lower()

@@ -6489,8 +6489,8 @@ feature work stuck on feature branches across multiple workspaces.
             "profile": profile,
         }
 
-    async def _cmd_edit_profile(self, args: dict) -> dict:
-        """Replace the project profile with new content."""
+    async def _cmd_edit_project_profile(self, args: dict) -> dict:
+        """Replace the project memory profile with new content."""
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}

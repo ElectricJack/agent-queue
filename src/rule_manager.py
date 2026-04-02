@@ -581,18 +581,35 @@ class RuleManager:
         new_hook_ids: list[str] = []
         creation_succeeded = True
 
+        is_global = not project_id
+
         for pid in target_project_ids:
             hook_id = f"rule-{rule_id}-{uuid.uuid4().hex[:6]}"
             # Restore last_triggered_at from the old hook (if any) so periodic
             # hooks don't re-fire immediately after reconciliation/restart.
             restored_ts = preserved_timestamps.get(pid)
+
+            # For global rules, prepend project context so each hook knows
+            # which project it's scoped to. Without this, global rules that
+            # reference a specific project in their logic would apply the same
+            # (possibly wrong) project to every hook.
+            if is_global:
+                hook_prompt = (
+                    f"**Project context:** This hook is scoped to project "
+                    f"`{pid}`. All actions (task queries, task creation, "
+                    f"workspace syncs, etc.) MUST target project `{pid}` "
+                    f"only.\n\n{prompt_template}"
+                )
+            else:
+                hook_prompt = prompt_template
+
             hook = Hook(
                 id=hook_id,
                 project_id=pid,
                 name=f"Rule: {title or rule_id}",
                 trigger=json.dumps(trigger_config),
                 context_steps="[]",
-                prompt_template=prompt_template,
+                prompt_template=hook_prompt,
                 cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
                 last_triggered_at=restored_ts,
                 source_hash=new_hash,

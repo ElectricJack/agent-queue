@@ -103,8 +103,19 @@ class TestEditProjectChannelToolDefinition:
         schema = tool["input_schema"]
         assert "discord_channel_id" in schema["properties"]
 
-    def test_set_project_channel_removed_from_tools(self):
-        from src.chat_agent import TOOLS
+    def test_set_project_channel_not_in_core_tools(self):
+        from src.tool_registry import ToolRegistry
 
-        tool_names = [t["name"] for t in TOOLS if isinstance(t, dict)]
-        assert "set_project_channel" not in tool_names
+        registry = ToolRegistry()
+        core_names = {t["name"] for t in registry.get_core_tools()}
+        assert "set_project_channel" not in core_names
+
+    def test_set_project_channel_description_mentions_deprecated(self):
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        defn = next(
+            (d for d in _ALL_TOOL_DEFINITIONS if d["name"] == "set_project_channel"),
+            None,
+        )
+        assert defn is not None
+        assert "deprecated" in defn["description"].lower()

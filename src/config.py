@@ -212,6 +212,7 @@ class AutoTaskConfig:
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
     skip_if_implemented: bool = True    # Skip task generation if branch has substantial code changes
+    max_verification_retries: int = 2   # Max reopen attempts for git verification failures
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

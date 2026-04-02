@@ -27,20 +27,20 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     └── _execute_task_safe(action)        # Background asyncio.Task per assignment
         └── _execute_task_safe_inner()    # Timeout + crash recovery wrapper
             └── _execute_task()           # Full pipeline:
-                ├── _prepare_workspace()  #   Git branch/clone setup
+                ├── _prepare_workspace()  #   Clone + ensure clean default branch
                 ├── adapter.start(ctx)    #   Launch agent process
                 ├── adapter.wait()        #   Stream output + rate-limit retries
-                ├── _complete_workspace() #   Commit/merge/PR post-completion
-                │   ├── _merge_and_push() #     Direct merge path
-                │   └── _create_pr_for_task() # PR-based approval path
-                ├── _discover_and_store_plan()   # Plan discovery + approval flow
+                ├── _run_completion_pipeline() # Post-completion phases:
+                │   ├── _phase_plan_discover() # Plan discovery + approval
+                │   └── _phase_verify()        # Verify git state, reopen if bad
                 └── cleanup               #   Release workspace + free agent
 
 Workspace locking lifecycle::
 
     _schedule() assigns task → _prepare_workspace() acquires lock
-    → agent runs with exclusive workspace access
-    → _complete_workspace() performs git operations
+    → agent runs with exclusive workspace access (handles git branching,
+      merging, and pushing per its prompt instructions)
+    → _phase_verify() checks git state is correct
     → cleanup section releases lock via db.release_workspaces_for_task()
 
     If the task times out, crashes, or is admin-stopped, the lock is
@@ -1773,9 +1773,6 @@ class Orchestrator:
         else:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
-        reuse_branch = task.is_plan_subtask and task.parent_task_id
-        rebase_on_switch = self.config.auto_task.rebase_between_subtasks
-
         # Git operations may fail (network issues, auth errors, merge
         # conflicts) but should never prevent returning the workspace path.
         # The agent can still work in the directory; it just won't have
@@ -1786,11 +1783,15 @@ class Orchestrator:
             #
             # CLONE: The orchestrator manages the full clone lifecycle.
             #   - First use: clone from repo_url into the workspace path.
-            #   - Subsequent uses: fetch + create/switch branch.
+            #   - Subsequent uses: fetch + ensure clean default branch.
             #
             # LINK: The workspace points to a pre-existing local checkout
             #   (e.g. the developer's own repo).  The orchestrator only
-            #   manages branch operations, never clones.
+            #   validates the directory exists.
+            #
+            # In both cases the orchestrator no longer creates task branches.
+            # The agent receives branch-name + default-branch in its prompt
+            # and handles branch creation, merge, and push itself.
             if ws.source_type == RepoSourceType.CLONE:
                 if not await self.git.avalidate_checkout(workspace):
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
@@ -1800,14 +1801,6 @@ class Orchestrator:
                     # The initial detection (above) may have fallen back to
                     # "main" because the workspace didn't exist yet.
                     default_branch = await self._get_default_branch(project, workspace)
-                if reuse_branch:
-                    await self.git.aswitch_to_branch(
-                        workspace, branch_name,
-                        default_branch=default_branch,
-                        rebase=rebase_on_switch,
-                    )
-                else:
-                    await self.git.aprepare_for_task(workspace, branch_name, default_branch)
 
             elif ws.source_type == RepoSourceType.LINK:
                 if not os.path.isdir(workspace):
@@ -1815,15 +1808,23 @@ class Orchestrator:
                         f"**Warning:** Linked workspace path `{workspace}` does not exist.",
                         project_id=task.project_id,
                     )
-                elif await self.git.avalidate_checkout(workspace):
-                    if reuse_branch:
-                        await self.git.aswitch_to_branch(
-                            workspace, branch_name,
-                            default_branch=default_branch,
-                            rebase=rebase_on_switch,
-                        )
-                    else:
-                        await self.git.aprepare_for_task(workspace, branch_name, default_branch)
+
+            # Ensure workspace is on a clean, up-to-date default branch.
+            # The agent will create/switch to the task branch per its prompt.
+            if await self.git.avalidate_checkout(workspace):
+                if await self.git.ahas_remote(workspace):
+                    await self.git._arun(["fetch", "origin"], cwd=workspace)
+                try:
+                    await self.git._arun(
+                        ["checkout", default_branch], cwd=workspace
+                    )
+                except GitError:
+                    pass  # May already be on default branch
+                if await self.git.ahas_remote(workspace):
+                    await self.git._arun(
+                        ["reset", "--hard", f"origin/{default_branch}"],
+                        cwd=workspace,
+                    )
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
@@ -1894,104 +1895,6 @@ class Orchestrator:
                     "Pre-task cleanup: failed to commit plan deletions: %s", e,
                 )
 
-    async def _complete_workspace(self, task: Task, agent) -> str | None:
-        """Post-completion git workflow: commit changes, then merge or open a PR.
-
-        Finds the workspace locked by this task, commits any uncommitted work,
-        then decides the appropriate post-completion path:
-
-        Decision tree::
-
-            Is this a plan subtask?
-            ├── Yes → Is it the LAST subtask in the chain?
-            │   ├── Yes → requires_approval? → Create PR / merge+push
-            │   └── No  → Commit only (+ optional mid-chain rebase)
-            └── No  → requires_approval? → Create PR / merge+push
-
-        For plan subtask chains, all subtasks share a single git branch.
-        Only the final subtask triggers the merge/PR, accumulating all
-        intermediate commits into one reviewable unit of work.
-
-        Returns a PR URL if one was created, otherwise None.
-        """
-        # Find workspace locked by this task
-        ws = await self.db.get_workspace_for_task(task.id)
-        workspace = ws.workspace_path if ws else None
-        if not workspace or not await self.git.avalidate_checkout(workspace):
-            return None
-
-        if not task.branch_name:
-            return None
-
-        project = await self.db.get_project(task.project_id)
-        default_branch = await self._get_default_branch(project, workspace)
-        has_repo = bool(project and project.repo_url)
-
-        # Commit any uncommitted work the agent left behind.  The agent is
-        # instructed to commit its own work (see system context prompt in
-        # _execute_task), but this catch-all ensures nothing is lost if the
-        # agent forgot or was killed before committing.  The commit message
-        # includes the task ID for traceability in git log.
-        committed = await self.git.acommit_all(
-            workspace, f"agent: {task.title}\n\nTask-Id: {task.id}"
-        )
-        if not committed:
-            logger.info("Task %s: no changes to commit on branch %s", task.id, task.branch_name)
-
-        # Build a lightweight repo-like object for _merge_and_push / _create_pr_for_task
-        # that still expects RepoConfig. Use a minimal compat wrapper.
-        from src.models import RepoConfig
-        repo = RepoConfig(
-            id=f"project-{task.project_id}",
-            project_id=task.project_id,
-            source_type=ws.source_type,
-            url=project.repo_url if project else "",
-            default_branch=default_branch,
-        ) if has_repo or ws else None
-
-        # ------------------------------------------------------------------ #
-        # Plan subtask branch strategy:
-        #
-        # Subtasks share a single git branch with their siblings.  Intermediate
-        # subtasks only commit (the commit happened above via commit_all) and
-        # optionally rebase onto the default branch to keep the shared branch
-        # up-to-date (mid-chain sync).  Only the *final* subtask triggers the
-        # merge/PR workflow, because that's when the full plan is complete and
-        # the accumulated work is ready for review.
-        #
-        # This design minimizes human intervention: a 10-step plan produces
-        # 10 commits on one branch with one PR at the end, rather than 10
-        # separate branches and PRs that would require 10 reviews.
-        # ------------------------------------------------------------------ #
-        if task.is_plan_subtask:
-            is_last = await self._is_last_subtask(task)
-            if is_last and repo:
-                parent = await self.db.get_task(task.parent_task_id)
-                if parent and parent.requires_approval:
-                    return await self._create_pr_for_task(task, repo, workspace)
-                else:
-                    await self._merge_and_push(task, repo, workspace)
-            elif not is_last and repo and self.config.auto_task.rebase_between_subtasks:
-                try:
-                    synced = await self.git.amid_chain_sync(
-                        workspace, task.branch_name, default_branch,
-                    )
-                    if synced:
-                        logger.info("Task %s: mid-chain sync OK — branch %s rebased onto origin/%s", task.id, task.branch_name, default_branch)
-                    else:
-                        logger.info("Task %s: mid-chain rebase skipped (conflict) — branch left as-is", task.id)
-                except Exception as e:
-                    logger.warning("Task %s: mid-chain sync failed (non-fatal): %s", task.id, e)
-            return None
-
-        if repo and task.requires_approval:
-            return await self._create_pr_for_task(task, repo, workspace)
-        elif repo:
-            await self._merge_and_push(task, repo, workspace)
-            return None
-
-        return None
-
     async def _is_last_subtask(self, task: Task) -> bool:
         """Check if this subtask is the final one to complete in a plan chain.
 
@@ -2020,23 +1923,10 @@ class Orchestrator:
     ) -> None:
         """Merge the task branch into default and push.
 
-        For repos with a remote origin (CLONE or LINK workspaces backed by a
-        remote), delegates to :meth:`GitManager.sync_and_merge` which handles
-        the full fetch → hard-reset → merge → push-with-retry cycle.
-        The *_max_retries* parameter controls total push attempts (including
-        the initial one); internally this maps to
-        ``max_retries = _max_retries - 1``.
-
-        For repos without a remote (INIT or truly local repos), falls back to
-        a simple local merge via :meth:`GitManager.merge_branch` — no push or
-        retry is needed.
-
-        **Recovery on failure:** If the merge or push fails, the workspace is
-        reset to a clean state so it's ready for the next task.  For repos
-        with a remote this means hard-resetting the default branch to
-        ``origin/<default_branch>`` (discarding any un-pushed merge commits).
-        For local-only repos this means checking out the default branch.
-        Recovery is best-effort — failures are silently ignored.
+        .. deprecated::
+            No longer called by the completion pipeline.  The agent now
+            handles merging and pushing via its prompt instructions.  Kept
+            for manual recovery use cases.
         """
         has_remote = await self.git.ahas_remote(workspace)
 
@@ -2133,6 +2023,10 @@ class Orchestrator:
         self, task: Task, repo: RepoConfig, workspace: str,
     ) -> str | None:
         """Push the task branch and create a PR. Returns the PR URL or None.
+
+        .. deprecated::
+            No longer called by the completion pipeline.  The agent now
+            creates PRs via its prompt instructions.  Kept for manual use.
 
         Uses ``force_with_lease=True`` when pushing the task branch so that
         retries (e.g. after a failed PR creation where the push succeeded)
@@ -2415,9 +2309,8 @@ class Orchestrator:
     ) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
         phases = [
-            ("commit", self._phase_commit),
             ("plan_discover", self._phase_plan_discover),
-            ("merge", self._phase_merge),
+            ("verify", self._phase_verify),
         ]
 
         for name, handler in phases:
@@ -2436,169 +2329,208 @@ class Orchestrator:
 
         return (ctx.pr_url, True)
 
-    async def _phase_commit(self, ctx: PipelineContext) -> PhaseResult:
-        """Pipeline phase: commit any uncommitted work."""
-        if not ctx.workspace_path or not ctx.task.branch_name:
-            return PhaseResult.CONTINUE
-        if not await self.git.avalidate_checkout(ctx.workspace_path):
-            return PhaseResult.CONTINUE
+    async def _phase_verify(self, ctx: PipelineContext) -> PhaseResult:
+        """Pipeline phase: verify the agent left the workspace in the expected git state.
 
-        committed = await self.git.acommit_all(
-            ctx.workspace_path,
-            f"agent: {ctx.task.title}\n\nTask-Id: {ctx.task.id}",
-        )
-        if not committed:
-            logger.info(
-                "Task %s: no changes to commit on branch %s",
-                ctx.task.id, ctx.task.branch_name,
-            )
-        return PhaseResult.CONTINUE
+        Replaces the old _phase_commit + _phase_merge.  The agent is now
+        responsible for committing, merging, and pushing via its prompt
+        instructions.  This phase only *checks* the result and reopens the
+        task with specific feedback when something is off.
 
-    async def _phase_merge(self, ctx: PipelineContext) -> PhaseResult:
-        """Pipeline phase: merge task branch or create PR."""
-        if not ctx.workspace_path or not ctx.task.branch_name:
-            return PhaseResult.CONTINUE
-        if not await self.git.avalidate_checkout(ctx.workspace_path):
-            return PhaseResult.CONTINUE
-        if not ctx.repo:
-            return PhaseResult.CONTINUE
+        Verification scenarios:
 
-        task = ctx.task
-
-        # Plan subtask branch strategy: only the final subtask triggers
-        # merge/PR. Intermediate subtasks just commit (handled by _phase_commit).
-        if task.is_plan_subtask:
-            is_last = await self._is_last_subtask(task)
-            if is_last:
-                parent = await self.db.get_task(task.parent_task_id)
-                if parent and parent.requires_approval:
-                    ctx.pr_url = await self._create_pr_for_task(
-                        task, ctx.repo, ctx.workspace_path,
-                    )
-                    return PhaseResult.CONTINUE
-                else:
-                    return await self._pipeline_merge_and_push(ctx)
-            else:
-                # Mid-chain: optional rebase
-                if ctx.repo and self.config.auto_task.rebase_between_subtasks:
-                    try:
-                        synced = await self.git.amid_chain_sync(
-                            ctx.workspace_path, task.branch_name,
-                            ctx.default_branch,
-                        )
-                        if synced:
-                            logger.info(
-                                "Task %s: mid-chain sync OK", task.id,
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            "Task %s: mid-chain sync failed: %s", task.id, e,
-                        )
-                return PhaseResult.CONTINUE
-
-        # Non-subtask path
-        if task.requires_approval:
-            ctx.pr_url = await self._create_pr_for_task(
-                task, ctx.repo, ctx.workspace_path,
-            )
-            return PhaseResult.CONTINUE
-        else:
-            return await self._pipeline_merge_and_push(ctx)
-
-    async def _pipeline_merge_and_push(self, ctx: PipelineContext) -> PhaseResult:
-        """Core merge+push with failure handling. Returns STOP on failure."""
-        task = ctx.task
-        repo = ctx.repo
+        * **Intermediate subtask** — expect: on task branch, no uncommitted.
+        * **Final task / final subtask, requires_approval** — expect: on task
+          branch, branch pushed, PR exists.
+        * **Final task / final subtask, no approval** — expect: on default
+          branch, no uncommitted, in sync with origin.
+        * **No-change task** — on default branch with no diff → pass.
+        """
         workspace = ctx.workspace_path
-
-        has_remote = await self.git.ahas_remote(workspace)
-
-        if has_remote:
-            success, error = await self.git.async_and_merge(
-                workspace, task.branch_name, repo.default_branch,
-                max_retries=2,
-            )
-            if not success:
-                logger.warning(
-                    "Task %s: merge failed (%s) for branch %s",
-                    task.id, error, task.branch_name,
-                )
-                # Emit event for hook engine to react
-                await self.bus.emit("task.merge_failed", {
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                    "branch_name": task.branch_name,
-                    "workspace_id": ctx.workspace_id,
-                    "workspace_path": workspace,
-                    "default_branch": ctx.default_branch,
-                    "error": error,
-                })
-                # Set preferred_workspace_id so resolution subtask uses same ws
-                await self.db.update_task(
-                    task.id, preferred_workspace_id=ctx.workspace_id,
-                )
-                # Recovery
-                try:
-                    await self.git.arecover_workspace(workspace, repo.default_branch)
-                except Exception:
-                    pass
-                return PhaseResult.STOP
-        else:
-            merged = await self.git.amerge_branch(
-                workspace, task.branch_name, repo.default_branch,
-            )
-            if not merged:
-                rebased = await self.git.arebase_onto(
-                    workspace, task.branch_name, repo.default_branch,
-                )
-                if rebased:
-                    merged = await self.git.amerge_branch(
-                        workspace, task.branch_name, repo.default_branch,
-                    )
-            if not merged:
-                logger.warning(
-                    "Task %s: local merge failed for branch %s",
-                    task.id, task.branch_name,
-                )
-                await self.bus.emit("task.merge_failed", {
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                    "branch_name": task.branch_name,
-                    "workspace_id": ctx.workspace_id,
-                    "workspace_path": workspace,
-                    "default_branch": ctx.default_branch,
-                    "error": "merge_conflict",
-                })
-                await self.db.update_task(
-                    task.id, preferred_workspace_id=ctx.workspace_id,
-                )
-                try:
-                    await self.git._arun(
-                        ["checkout", repo.default_branch], cwd=workspace,
-                    )
-                except Exception:
-                    pass
-                return PhaseResult.STOP
-
-            # Clean up branch after successful local merge
-            try:
-                await self.git.adelete_branch(
-                    workspace, task.branch_name, delete_remote=False,
-                )
-            except Exception:
-                pass
-            logger.info("Task %s: local merge succeeded", task.id)
+        task = ctx.task
+        if not workspace or not await self.git.avalidate_checkout(workspace):
+            return PhaseResult.CONTINUE
+        if not task.branch_name:
             return PhaseResult.CONTINUE
 
-        # Clean up branch after successful remote merge
-        try:
-            await self.git.adelete_branch(
-                workspace, task.branch_name, delete_remote=has_remote,
+        default_branch = ctx.default_branch
+        has_remote = await self.git.ahas_remote(workspace)
+        current_branch = await self.git.aget_current_branch(workspace)
+        has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+
+        # Determine which scenario we're in
+        is_intermediate = task.is_plan_subtask and not await self._is_last_subtask(task)
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            requires_approval = parent.requires_approval if parent else task.requires_approval
+        else:
+            requires_approval = task.requires_approval
+
+        failures: list[str] = []
+
+        if is_intermediate:
+            # Intermediate subtask: should be on task branch with work committed
+            if has_uncommitted:
+                failures.append(
+                    "You left uncommitted changes in the workspace. "
+                    f"Please `git add` and `git commit` your changes on branch `{task.branch_name}`."
+                )
+            if current_branch != task.branch_name and current_branch != default_branch:
+                failures.append(
+                    f"Expected workspace to be on branch `{task.branch_name}` "
+                    f"but found `{current_branch}`. "
+                    f"Please switch to `{task.branch_name}` and commit your work."
+                )
+        elif requires_approval:
+            # PR workflow: should be on task branch, branch pushed, PR exists
+            if has_uncommitted:
+                failures.append(
+                    "You left uncommitted changes. Please commit them on "
+                    f"branch `{task.branch_name}` and push."
+                )
+            # Allow being on default if no changes were made (research task)
+            if current_branch == default_branch:
+                # No-change task — acceptable, skip PR checks
+                pass
+            else:
+                if has_remote:
+                    pr_url = await self.git.afind_open_pr(workspace, task.branch_name)
+                    if pr_url:
+                        ctx.pr_url = pr_url
+                    else:
+                        failures.append(
+                            f"No open PR found for branch `{task.branch_name}`. "
+                            f"Please push your branch and create a PR: "
+                            f"`git push origin {task.branch_name}` then "
+                            f"`gh pr create --base {default_branch} "
+                            f"--head {task.branch_name}`."
+                        )
+        else:
+            # Normal task / final subtask: should be on default, merged, pushed
+            if current_branch == default_branch:
+                # On default branch — check it's clean and in sync
+                if has_uncommitted:
+                    failures.append(
+                        "You left uncommitted changes on "
+                        f"`{default_branch}`. Please commit or discard them."
+                    )
+                if has_remote:
+                    try:
+                        behind = await self.git._arun(
+                            ["rev-list", "HEAD..origin/" + default_branch, "--count"],
+                            cwd=workspace,
+                        )
+                        if behind.strip() != "0":
+                            failures.append(
+                                f"Local `{default_branch}` is behind "
+                                f"`origin/{default_branch}`. "
+                                f"Please `git pull origin {default_branch}`."
+                            )
+                    except GitError:
+                        pass
+                    try:
+                        ahead = await self.git._arun(
+                            ["rev-list", "origin/" + default_branch + "..HEAD", "--count"],
+                            cwd=workspace,
+                        )
+                        if ahead.strip() != "0":
+                            failures.append(
+                                f"Local `{default_branch}` has unpushed commits. "
+                                f"Please `git push origin {default_branch}`."
+                            )
+                    except GitError:
+                        pass
+            else:
+                # Not on default — the agent forgot to merge
+                failures.append(
+                    f"Workspace is on branch `{current_branch}` instead of "
+                    f"`{default_branch}`. Please merge your work into "
+                    f"`{default_branch}` and push:\n"
+                    f"  `git checkout {default_branch} && "
+                    f"git merge {task.branch_name} && "
+                    f"git push origin {default_branch}`"
+                )
+
+        if not failures:
+            logger.info("Task %s: git verification passed", task.id)
+            return PhaseResult.CONTINUE
+
+        # Verification failed — attempt to reopen with feedback
+        logger.warning(
+            "Task %s: git verification failed (%d issues): %s",
+            task.id, len(failures), "; ".join(failures),
+        )
+        reopened = await self._reopen_with_verification_feedback(task, failures)
+        ctx.verification_reopened = reopened
+        return PhaseResult.STOP
+
+    async def _reopen_with_verification_feedback(
+        self, task, failures: list[str],
+    ) -> bool:
+        """Reopen a task with git verification feedback.
+
+        Returns True if the task was reopened (transitioned to READY),
+        False if max retries were exceeded (task left for caller to block).
+        """
+        max_retries = self.config.auto_task.max_verification_retries
+        # Count previous verification attempts from task_context
+        contexts = await self.db.get_task_contexts(task.id)
+        retry_count = sum(
+            1 for c in contexts if c.get("type") == "verification_feedback"
+        )
+
+        if retry_count >= max_retries:
+            logger.warning(
+                "Task %s: verification retries exhausted (%d/%d)",
+                task.id, retry_count, max_retries,
             )
-        except Exception:
-            pass
-        logger.info("Task %s: merge+push succeeded", task.id)
-        return PhaseResult.CONTINUE
+            await self._notify_channel(
+                f"**Verification Failed:** Task `{task.id}` — "
+                f"git state is incorrect after {retry_count} retries. "
+                f"Manual resolution needed.",
+                project_id=task.project_id,
+            )
+            return False
+
+        # Build feedback message
+        bullet_list = "\n".join(f"- {f}" for f in failures)
+        feedback = (
+            f"**Git Verification Feedback (auto-retry "
+            f"{retry_count + 1}/{max_retries}):**\n"
+            f"The system verified the git state after your work and found "
+            f"issues:\n{bullet_list}\n"
+            f"Please fix these issues when the task restarts."
+        )
+
+        separator = "\n\n---\n"
+        updated_description = task.description + separator + feedback
+
+        await self.db.transition_task(
+            task.id,
+            TaskStatus.READY,
+            context="verification_reopen",
+            description=updated_description,
+            retry_count=0,
+            assigned_agent_id=None,
+            pr_url=None,
+            requires_approval=task.requires_approval,
+        )
+        await self.db.add_task_context(
+            task.id,
+            type="verification_feedback",
+            label="Git Verification Feedback",
+            content=feedback,
+        )
+        await self._notify_channel(
+            f"🔄 **Verification reopen:** Task `{task.id}` — "
+            f"reopened with feedback (attempt {retry_count + 1}/{max_retries})",
+            project_id=task.project_id,
+        )
+        logger.info(
+            "Task %s: reopened for verification (attempt %d/%d)",
+            task.id, retry_count + 1, max_retries,
+        )
+        return True
 
     async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
         """Delegate plan discovery to the Supervisor."""
@@ -2658,73 +2590,6 @@ class Orchestrator:
                 )
             ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
-
-    async def _retry_merge_for_task(self, original_task_id: str) -> None:
-        """Retry merge for a task whose previous merge failed.
-
-        Called when a merge-resolution subtask completes successfully.
-        """
-        task = await self.db.get_task(original_task_id)
-        if not task or task.status != TaskStatus.BLOCKED:
-            logger.info(
-                "Skipping merge retry for %s (status=%s)",
-                original_task_id, task.status if task else "None",
-            )
-            return
-
-        ws = await self.db.get_workspace_for_task(task.id)
-        if not ws:
-            # Try preferred_workspace_id
-            if task.preferred_workspace_id:
-                all_ws = await self.db.list_workspaces()
-                ws = next(
-                    (w for w in all_ws if w.id == task.preferred_workspace_id),
-                    None,
-                )
-        if not ws:
-            logger.warning(
-                "Cannot retry merge for %s: no workspace found",
-                original_task_id,
-            )
-            return
-
-        project = await self.db.get_project(task.project_id)
-        default_branch = await self._get_default_branch(project, ws.workspace_path)
-        has_repo = bool(project and project.repo_url)
-        if not has_repo:
-            return
-
-        repo = RepoConfig(
-            id=f"project-{task.project_id}",
-            project_id=task.project_id,
-            source_type=ws.source_type,
-            url=project.repo_url if project else "",
-            default_branch=default_branch,
-        )
-
-        ctx = PipelineContext(
-            task=task,
-            agent=None,  # no agent for retry
-            output=None,
-            workspace_path=ws.workspace_path,
-            workspace_id=ws.id,
-            repo=repo,
-            default_branch=default_branch,
-            project=project,
-        )
-
-        result = await self._pipeline_merge_and_push(ctx)
-        if result == PhaseResult.CONTINUE:
-            await self.db.transition_task(
-                task.id, TaskStatus.COMPLETED, context="merge_retry_succeeded",
-            )
-            await self.bus.emit("task.completed", {
-                "task_id": task.id,
-                "project_id": task.project_id,
-            })
-            logger.info("Task %s: merge retry succeeded", task.id)
-        else:
-            logger.warning("Task %s: merge retry failed again", task.id)
 
     # ── Approval polling constants ─────────────────────────────────────────
     #
@@ -2908,79 +2773,181 @@ class Orchestrator:
     # Task context assembly helpers
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _get_subtask_execution_rules() -> str:
-        """Return execution rules for plan subtasks."""
-        return (
-            "## Important: Execution Rules\n"
-            "You are running autonomously — there is NO interactive user.\n"
-            "Do NOT use plan mode or EnterPlanMode.\n"
-            "Do NOT write implementation plans or plan files.\n"
-            "Your task is one step of an existing implementation plan — write code, not plans.\n"
-            "Implement the changes described below DIRECTLY.\n"
-            "If you encounter ambiguity, make reasonable decisions and document in code comments.\n"
-            "\n## Important: Committing Your Work\n"
-            "When you have finished, you MUST commit your work:\n"
-            "1. `git add` the files you changed\n"
-            "2. `git commit` with a descriptive message\n"
-            "Do NOT push — the system handles pushing and PR creation.\n"
-            "\n## Important: Keeping Your Workspace in Sync\n"
-            "Before starting work, pull the latest changes from the main branch:\n"
-            "1. `git fetch origin`\n"
-            "2. `git rebase origin/main` (if on a task branch)\n"
-            "This ensures you're working with the latest code and reduces merge conflicts.\n"
-            "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
-            "the system will handle conflicts during the merge phase."
-        )
+    def _get_execution_rules(
+        self,
+        *,
+        task,
+        branch_name: str,
+        default_branch: str,
+        has_remote: bool,
+        is_final_subtask: bool,
+        requires_approval: bool,
+    ) -> str:
+        """Return execution rules tailored to the task type and git context.
 
-    @staticmethod
-    def _get_root_task_execution_rules() -> str:
-        """Return execution rules for root tasks."""
-        return (
-            "## Important: Execution Rules\n"
-            "You are running autonomously — there is NO interactive user to approve plans.\n"
-            "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
-            "If the task description contains a plan, execute it immediately — do not re-plan.\n"
-            "\n## Important: Committing Your Work\n"
-            "When you have finished making changes, you MUST commit your work:\n"
-            "1. `git add` the files you changed\n"
-            "2. `git commit` with a descriptive message\n"
-            "Do NOT push — the system handles pushing and PR creation.\n"
-            "\n## Important: Keeping Your Workspace in Sync\n"
-            "Before starting work, pull the latest changes from the main branch:\n"
-            "1. `git fetch origin`\n"
-            "2. `git rebase origin/main` (if on a task branch)\n"
-            "This ensures you're working with the latest code and reduces merge conflicts.\n"
-            "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
-            "the system will handle conflicts during the merge phase.\n"
-            "\n## CRITICAL: Writing Implementation Plans\n"
-            "Most tasks do NOT require writing a plan — just implement the changes directly.\n"
-            "Only write a plan if the task explicitly asks you to create an implementation plan,\n"
-            "investigate and propose changes, or produce a multi-step strategy for follow-up work.\n"
-            "\n"
-            "If you DO need to write a plan, you MUST follow these rules exactly:\n"
-            "1. Write the plan to **`.claude/plan.md`** in the workspace root (preferred)\n"
-            "   or `plan.md` — these are the ONLY locations the system checks first\n"
-            "2. Do NOT write plans to `notes/`, `docs/`, or any other directory — plans\n"
-            "   written elsewhere may not be detected for automatic task splitting\n"
-            "3. Name each implementation phase clearly: `## Phase 1: <title>`,\n"
-            "   `## Phase 2: <title>`, etc.\n"
-            "4. Put ALL background/reference material (design specs, constraints,\n"
-            "   architecture notes) BEFORE the phase headings, NOT as separate phases\n"
-            "5. Keep each phase focused on a single actionable implementation step\n"
-            "6. If you implement the plan yourself (i.e., you both plan AND execute the work\n"
-            "   in a single task), DELETE the plan file before completing. Only leave a plan\n"
-            "   file in the workspace if you want the system to create follow-up tasks from it.\n"
-            "   Alternatively, add `auto_tasks: false` to the plan's YAML frontmatter.\n"
-            "\n"
-            "NOTE: Any plan file left in the workspace when your task completes will be\n"
-            "automatically parsed and converted into follow-up subtasks. If you already\n"
-            "did the work described in the plan, this creates duplicate/unnecessary tasks.\n"
-            "\n"
-            "This is required for the system to automatically split your plan into\n"
-            "follow-up tasks. Plans that mix reference sections with implementation\n"
-            "phases will produce low-quality task splits."
-        )
+        Produces three prompt variants:
+        A) Normal / final subtask (no approval) — branch, merge to default, push
+        B) Requires approval — branch, push, create PR
+        C) Intermediate subtask — branch, commit, stay on branch
+        """
+        # -- Non-git execution rules (shared) --
+        if task.is_plan_subtask:
+            behaviour = (
+                "## Important: Execution Rules\n"
+                "You are running autonomously — there is NO interactive user.\n"
+                "Do NOT use plan mode or EnterPlanMode.\n"
+                "Do NOT write implementation plans or plan files.\n"
+                "Your task is one step of an existing implementation plan — "
+                "write code, not plans.\n"
+                "Implement the changes described below DIRECTLY.\n"
+                "If you encounter ambiguity, make reasonable decisions and "
+                "document in code comments."
+            )
+        else:
+            behaviour = (
+                "## Important: Execution Rules\n"
+                "You are running autonomously — there is NO interactive user "
+                "to approve plans.\n"
+                "Do NOT use plan mode or EnterPlanMode. "
+                "Implement the changes DIRECTLY.\n"
+                "If the task description contains a plan, execute it "
+                "immediately — do not re-plan."
+            )
+
+        # -- Git workflow rules (varies by scenario) --
+        if not branch_name:
+            # No branch assigned (e.g. no repo configured) — skip git rules
+            git_rules = ""
+        elif task.is_plan_subtask and not is_final_subtask:
+            # Intermediate subtask: commit on shared branch, don't merge
+            git_rules = (
+                f"\n\n## Important: Git Workflow (Subtask — more steps follow)\n"
+                f"Shared branch: `{branch_name}`. "
+                f"Default branch: `{default_branch}`.\n"
+                f"\nWhen you start:\n"
+                f"1. Switch to the task branch: `git checkout {branch_name}`\n"
+                f"   If it does not exist yet: "
+                f"`git checkout -b {branch_name}`\n"
+                f"\nWhen you finish:\n"
+                f"1. `git add` the files you changed\n"
+                f"2. `git commit` with a descriptive message\n"
+                f"3. Stay on `{branch_name}` — do NOT merge to "
+                f"`{default_branch}`. A later subtask handles the final merge."
+            )
+        elif requires_approval:
+            # PR workflow: push branch, create PR, don't merge
+            push_cmd = f"`git push origin {branch_name}`"
+            pr_cmd = (
+                f"`gh pr create --base {default_branch} "
+                f"--head {branch_name} "
+                f'--title "<descriptive title>" '
+                f'--body "<summary of changes>"`'
+            )
+            git_rules = (
+                f"\n\n## Important: Git Workflow (PR Required)\n"
+                f"Default branch: `{default_branch}`. "
+                f"Task branch: `{branch_name}`.\n"
+                f"\nWhen you start:\n"
+                f"1. `git checkout -b {branch_name}` "
+                f"(or `git checkout {branch_name}` if it already exists)\n"
+                f"\nWhen you finish (if you made code changes):\n"
+                f"1. Commit all remaining changes on `{branch_name}`\n"
+                f"2. Push your branch: {push_cmd}\n"
+                f"3. Create a pull request: {pr_cmd}\n"
+                f"4. Stay on `{branch_name}` — do NOT merge to "
+                f"`{default_branch}`\n"
+                f"\nIf this task requires NO code changes "
+                f"(research, analysis, investigation):\n"
+                f"- Do not create a branch. Stay on `{default_branch}`.\n"
+                f"- Do not create a PR."
+            )
+        else:
+            # Normal task / final subtask: merge to default + push
+            push_line = (
+                f"4. `git push origin {default_branch}`\n"
+                if has_remote else ""
+            )
+            delete_step = "5" if has_remote else "4"
+            git_rules = (
+                f"\n\n## Important: Git Workflow\n"
+                f"Default branch: `{default_branch}`. "
+                f"Task branch: `{branch_name}`.\n"
+                f"\nWhen you start:\n"
+                f"1. `git checkout -b {branch_name}` "
+                f"(or `git checkout {branch_name}` if it already exists)\n"
+                f"\nWhen you finish (if you made code changes):\n"
+                f"1. Commit all remaining changes on `{branch_name}`\n"
+                f"2. `git checkout {default_branch}`\n"
+                f"3. `git merge {branch_name}` — resolve any conflicts "
+                f"during the merge\n"
+                f"{push_line}"
+                f"{delete_step}. "
+                f"`git branch -d {branch_name}`\n"
+                f"\nIf this task requires NO code changes "
+                f"(research, analysis, investigation):\n"
+                f"- Do not create a branch. Stay on `{default_branch}`.\n"
+                f"\nIf you encounter merge conflicts:\n"
+                f"- Resolve them during the merge step. You wrote the code — "
+                f"you are best positioned to resolve conflicts.\n"
+                f"- After resolving, complete the merge commit"
+                f"{' and push' if has_remote else ''}."
+            )
+
+        # -- Plan-writing rules (root tasks only) --
+        plan_rules = ""
+        if not task.is_plan_subtask:
+            plan_rules = (
+                "\n\n## CRITICAL: Writing Implementation Plans\n"
+                "Most tasks do NOT require writing a plan — just implement "
+                "the changes directly.\n"
+                "Only write a plan if the task explicitly asks you to create "
+                "an implementation plan,\n"
+                "investigate and propose changes, or produce a multi-step "
+                "strategy for follow-up work.\n"
+                "\n"
+                "If you DO need to write a plan, you MUST follow these rules "
+                "exactly:\n"
+                "1. Write the plan to **`.claude/plan.md`** in the workspace "
+                "root (preferred)\n"
+                "   or `plan.md` — these are the ONLY locations the system "
+                "checks first\n"
+                "2. Do NOT write plans to `notes/`, `docs/`, or any other "
+                "directory — plans\n"
+                "   written elsewhere may not be detected for automatic task "
+                "splitting\n"
+                "3. Name each implementation phase clearly: "
+                "`## Phase 1: <title>`,\n"
+                "   `## Phase 2: <title>`, etc.\n"
+                "4. Put ALL background/reference material (design specs, "
+                "constraints,\n"
+                "   architecture notes) BEFORE the phase headings, NOT as "
+                "separate phases\n"
+                "5. Keep each phase focused on a single actionable "
+                "implementation step\n"
+                "6. If you implement the plan yourself (i.e., you both plan "
+                "AND execute the work\n"
+                "   in a single task), DELETE the plan file before completing. "
+                "Only leave a plan\n"
+                "   file in the workspace if you want the system to create "
+                "follow-up tasks from it.\n"
+                "   Alternatively, add `auto_tasks: false` to the plan's YAML "
+                "frontmatter.\n"
+                "\n"
+                "NOTE: Any plan file left in the workspace when your task "
+                "completes will be\n"
+                "automatically parsed and converted into follow-up subtasks. "
+                "If you already\n"
+                "did the work described in the plan, this creates "
+                "duplicate/unnecessary tasks.\n"
+                "\n"
+                "This is required for the system to automatically split your "
+                "plan into\n"
+                "follow-up tasks. Plans that mix reference sections with "
+                "implementation\n"
+                "phases will produce low-quality task splits."
+            )
+
+        return behaviour + git_rules + plan_rules
 
     async def _build_task_context_with_prompt_builder(
         self,
@@ -3005,11 +2972,30 @@ class Orchestrator:
             sys_parts.append(f"- Git branch: {task.branch_name}")
         builder.add_context("system_context", "## System Context\n" + "\n".join(sys_parts))
 
-        # Execution rules
-        if task.is_plan_subtask:
-            builder.add_context("execution_rules", self._get_subtask_execution_rules())
+        # Execution rules — parameterized by git context
+        default_branch = await self._get_default_branch(project, workspace)
+        has_remote = (
+            await self.git.ahas_remote(workspace)
+            if await self.git.avalidate_checkout(workspace)
+            else False
+        )
+        is_final = (not task.is_plan_subtask) or await self._is_last_subtask(task)
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            needs_approval = parent.requires_approval if parent else task.requires_approval
         else:
-            builder.add_context("execution_rules", self._get_root_task_execution_rules())
+            needs_approval = task.requires_approval
+        builder.add_context(
+            "execution_rules",
+            self._get_execution_rules(
+                task=task,
+                branch_name=task.branch_name or "",
+                default_branch=default_branch,
+                has_remote=has_remote,
+                is_final_subtask=is_final,
+                requires_approval=needs_approval,
+            ),
+        )
 
         # Upstream dependency summaries
         dep_ids = await self.db.get_dependencies(task.id)
@@ -4074,31 +4060,28 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 await self._check_plugin_workspace_update(task, ws)
                 # Mark for thread root update
                 _final_root_content = f"✅ **Work completed:** {task.title}"
+            elif ctx.verification_reopened:
+                # Task was already reopened to READY by _phase_verify —
+                # don't transition to BLOCKED.
+                brief = (
+                    f"🔄 Task reopened for git verification: "
+                    f"{task.title} (`{task.id}`)"
+                )
+                await _post(brief)
+                await _notify_brief(brief)
             else:
-                # Pipeline stopped (merge failed) — block the task
+                # Pipeline stopped and could not reopen — block the task
                 await self.db.transition_task(
                     action.task_id, TaskStatus.BLOCKED,
-                    context="merge_failed",
+                    context="verification_failed",
                 )
                 await _post(
-                    f"**Merge failed** for `{task.id}` — awaiting resolution."
+                    f"**Verification failed** for `{task.id}` — "
+                    f"max retries exhausted, manual resolution needed."
                 )
 
             # Re-check DEFINED tasks so newly created subtasks get promoted
             await self._check_defined_tasks()
-
-            # Check if this task is a merge-resolution subtask
-            try:
-                contexts = await self.db.get_task_contexts(task.id)
-                resolution_target = next(
-                    (c for c in contexts if c.get("label") == "merge_resolution_for"),
-                    None,
-                )
-                if resolution_target and completed_ok:
-                    original_task_id = resolution_target["content"]
-                    await self._retry_merge_for_task(original_task_id)
-            except Exception as e:
-                logger.warning("Resolution check failed for %s: %s", task.id, e)
 
             # Save completed task result as a memory for future recall,
             # then revise the project profile and optionally generate notes.
