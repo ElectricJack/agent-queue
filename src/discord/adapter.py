@@ -88,6 +88,19 @@ class DiscordMessagingAdapter(MessagingAdapter):
         )
         return result
 
+    async def get_thread_last_message_url(self, task_id: str) -> str | None:
+        """Return a Discord jump URL to the last message in a task's thread."""
+        return await self._bot.get_thread_last_message_url(task_id)
+
+    async def edit_thread_root_message(
+        self,
+        task_id: str,
+        content: str | None = None,
+        embed: Any = None,
+    ) -> None:
+        """Edit the thread-root message for a task."""
+        await self._bot.edit_thread_root_message(task_id, content=content, embed=embed)
+
     # -------------------------------------------------------------------
     # Component access
     # -------------------------------------------------------------------

@@ -4,14 +4,26 @@ The ChatObserver implements Stage 1 filtering (keyword-based) to identify
 potentially relevant messages, buffers them by channel, and provides batch
 readiness detection for Stage 2 LLM analysis.
 
+The two-stage design keeps costs low: Stage 1 is pure Python (no LLM calls),
+so the vast majority of trivial messages (greetings, acknowledgements) are
+rejected without spending tokens.  Only batches that pass Stage 1 are sent
+to the Supervisor's ``observe()`` method for Stage 2 LLM triage.
+
 Stage 1 Filter Logic:
-    - Reject bot messages
-    - Reject messages from unknown projects
-    - Pass if message length >= 200 chars (detailed discussion)
-    - Pass if message contains project-specific term (from project profile)
-    - Pass if message contains action word (deploy, fix, bug, etc.)
-    - Pass if message contains custom keyword (from config)
-    - Otherwise reject (trivial messages like "ok", "thanks")
+
+- Reject bot messages.
+- Reject messages from unknown projects.
+- Pass if message length >= 200 chars (detailed discussion).
+- Pass if message contains project-specific term (from project profile).
+- Pass if message contains action word (deploy, fix, bug, etc.).
+- Pass if message contains custom keyword (from config).
+- Otherwise reject (trivial messages like "ok", "thanks").
+
+Batching is driven by a background ``asyncio.Task`` that periodically
+checks buffers for readiness (by count or age), then invokes the
+``on_batch_ready`` callback.
+
+See ``specs/chat-observer.md`` for the full behavioral specification.
 """
 from __future__ import annotations
 
@@ -37,7 +49,19 @@ _LENGTH_THRESHOLD = 200
 
 
 class ChatObserver:
-    """Passive chat observer with Stage 1 keyword filtering and batching."""
+    """Passive chat observer with Stage 1 keyword filtering and batching.
+
+    Lifecycle: ``start()`` begins the background batch timer; ``stop()``
+    cancels it.  Between those calls, the Discord layer feeds messages
+    via ``on_message()`` and the batch callback fires automatically.
+
+    Attributes:
+        _config: Observation configuration (thresholds, keywords, enabled).
+        _project_profiles: Mapping of project_id → set of project terms.
+        _buffers: Per-channel message buffers awaiting batch analysis.
+        _buffer_timestamps: Timestamp of the first buffered message per channel.
+        _on_batch_ready: Async callback invoked when a batch is ready.
+    """
 
     def __init__(
         self,
@@ -191,14 +215,20 @@ class ChatObserver:
         return False
 
     async def start(self) -> None:
-        """Start the background batch timer loop."""
+        """Start the background batch timer loop.
+
+        This is a coroutine.  The loop runs until ``stop()`` is called.
+        """
         if not self._config.enabled:
             return
         self._running = True
         self._timer_task = asyncio.create_task(self._batch_loop())
 
     async def stop(self) -> None:
-        """Stop the background batch timer loop."""
+        """Stop the background batch timer loop.
+
+        This is a coroutine.  Safe to call even if the loop is not running.
+        """
         self._running = False
         if self._timer_task and not self._timer_task.done():
             self._timer_task.cancel()

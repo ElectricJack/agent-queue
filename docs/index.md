@@ -17,7 +17,7 @@ You manage everything from Discord on your phone. Queue up a week's worth of tas
 
 ## How it works
 
-Agent Queue runs as a background daemon. You talk to it through a dedicated Discord channel — just type naturally, like you're texting a dev lead who has root access to your machine. It understands context, remembers what you were working on, and acts.
+Agent Queue runs as a background daemon. You talk to it through a dedicated Discord channel — just type naturally, like you're texting a dev lead who has root access to your machine. A Supervisor (LLM-powered conversation interface) understands context, remembers what you were working on, and acts.
 
 ![Agent working in a task thread — reading code, fixing bugs, running tests, committing](img/task-thread.png)
 
@@ -33,7 +33,7 @@ Agent Queue runs as a background daemon. You talk to it through a dedicated Disc
 - **Link your repos.** Point at existing directories, clone remotes, or init new ones. No setup overhead.
 - **Token tracking.** Per-project and per-task usage breakdowns, visible from Discord.
 - **Crash recovery.** SQLite-backed state. Survives restarts. Dead agents detected, tasks rescheduled, timers resumed.
-- **Multi-provider.** Anthropic direct, AWS Bedrock, or Google Vertex AI.
+- **Multi-provider.** Anthropic direct, AWS Bedrock, Google Vertex AI, or Ollama.
 - **Zero orchestration overhead.** No LLM calls for scheduling. Every token goes to agent work.
 
 ![System status and task tree — agents, progress, queued work at a glance](img/system-status-task-list.png)

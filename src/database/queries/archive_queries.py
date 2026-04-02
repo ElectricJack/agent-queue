@@ -27,8 +27,9 @@ class ArchiveQueryMixin:
             "priority, status, verification_type, retry_count, max_retries, "
             "assigned_agent_id, branch_name, resume_after, requires_approval, "
             "pr_url, plan_source, is_plan_subtask, task_type, profile_id, "
-            "preferred_workspace_id, attachments, created_at, updated_at, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "preferred_workspace_id, attachments, auto_approve_plan, "
+            "created_at, updated_at, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -39,6 +40,7 @@ class ArchiveQueryMixin:
              task.profile_id,
              task.preferred_workspace_id,
              json.dumps(task.attachments) if task.attachments else "[]",
+             int(task.auto_approve_plan),
              0.0, 0.0, now),
         )
         # Read original timestamps from the tasks row directly.

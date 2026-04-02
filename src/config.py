@@ -338,64 +338,6 @@ class LoggingConfig:
 
 
 @dataclass
-class ChatAnalyzerConfig:
-    """Configuration for the background chat analyzer agent.
-
-    When enabled, the analyzer watches conversation flow in project channels
-    and proactively suggests answers, tasks, or context when it spots something
-    useful. Runs on the local LLM (Ollama) to avoid burning Claude tokens.
-    """
-
-    enabled: bool = False
-    interval_seconds: int = 300          # How often to analyze (5 min)
-    min_messages_to_analyze: int = 3     # Don't analyze until N new messages
-    confidence_threshold: float = 0.7    # Minimum confidence to suggest
-    max_suggestions_per_hour: int = 5    # Rate limit suggestions
-    provider: str = "ollama"             # Which chat provider to use
-    model: str = "llama3.2"             # Model for analysis
-    base_url: str = "http://localhost:11434/v1"  # Ollama endpoint
-    cooldown_after_dismiss: int = 1800   # Don't suggest again for 30min after dismiss
-
-    # --- Chat history context ---
-    chat_history_window: int = 20        # How many recent messages to include in analysis
-    include_timestamps: bool = True      # Include timestamps in message context
-
-    # --- Memory integration ---
-    memory_integration: bool = True      # Use memory system for richer context
-    memory_search_top_k: int = 3         # Number of memory results per analysis
-    include_profile: bool = True         # Include project profile in analysis context
-
-    # --- Auto-execution ---
-    auto_execute_enabled: bool = False   # Allow auto-executing actions without user approval
-    auto_execute_types: list[str] | None = None  # Suggestion types eligible for auto-execution (e.g. ["task", "answer"])
-    auto_execute_confidence: float = 0.9 # Minimum confidence for auto-execution (higher than normal threshold)
-    auto_execute_max_per_hour: int = 2   # Rate limit for auto-executed actions
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.interval_seconds < 30:
-            errors.append(ConfigError("chat_analyzer", "interval_seconds", "must be >= 30"))
-        if self.min_messages_to_analyze < 1:
-            errors.append(ConfigError("chat_analyzer", "min_messages_to_analyze", "must be >= 1"))
-        if not (0.0 <= self.confidence_threshold <= 1.0):
-            errors.append(ConfigError("chat_analyzer", "confidence_threshold", "must be between 0.0 and 1.0"))
-        if self.max_suggestions_per_hour < 1:
-            errors.append(ConfigError("chat_analyzer", "max_suggestions_per_hour", "must be >= 1"))
-        if self.chat_history_window < 1:
-            errors.append(ConfigError("chat_analyzer", "chat_history_window", "must be >= 1"))
-        if not (0.0 <= self.auto_execute_confidence <= 1.0):
-            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be between 0.0 and 1.0"))
-        if self.auto_execute_confidence < self.confidence_threshold:
-            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be >= confidence_threshold"))
-        valid_auto_types = {"answer", "task", "context", "warning"}
-        if self.auto_execute_types:
-            for t in self.auto_execute_types:
-                if t not in valid_auto_types:
-                    errors.append(ConfigError("chat_analyzer", "auto_execute_types", f"invalid type '{t}'"))
-        return errors
-
-
-@dataclass
 class ReflectionConfig:
     """Configuration for the Supervisor's action-reflect cycle."""
     level: str = "full"
@@ -443,14 +385,11 @@ class SupervisorConfig:
     """Top-level Supervisor configuration."""
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
-    max_tool_rounds: int = 1000  # 100x the original default of 10
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.reflection.validate())
         errors.extend(self.observation.validate())
-        if self.max_tool_rounds < 1:
-            errors.append(ConfigError("supervisor", "max_tool_rounds", "must be >= 1"))
         return errors
 
 
@@ -471,6 +410,7 @@ class ChatProviderConfig:
     model: str = ""              # Empty = provider default
     base_url: str = ""           # For Ollama
     keep_alive: str = "1h"       # Ollama: how long to keep model loaded after last request
+    num_ctx: int = 0             # Ollama: context window size (0 = model default)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -485,6 +425,66 @@ class ChatProviderConfig:
                 "chat_provider", "base_url",
                 "base_url is required when provider is 'ollama'"
             ))
+        return errors
+
+
+@dataclass
+class McpServerConfig:
+    """Configuration for the MCP server exposed by the agent-queue system.
+
+    When ``enabled`` is True, the daemon embeds a streamable-http MCP server
+    on ``host:port`` so that MCP clients (e.g. Claude Code) can connect via
+    URL instead of spawning a separate process.
+
+    ``excluded_commands`` lists command names that should NOT be registered as
+    MCP tools.  These are merged with ``DEFAULT_EXCLUDED_COMMANDS`` (hardcoded
+    safe defaults) and the ``AGENT_QUEUE_MCP_EXCLUDED`` environment variable
+    (comma-separated) to produce the final exclusion set.
+
+    When ``inject_into_tasks`` is True (default when ``enabled`` is True), the
+    daemon automatically adds the agent-queue MCP server as an HTTP MCP server
+    in every task's ``mcp_servers`` dict.  This gives agents access to all
+    agent-queue commands (task management, project operations, etc.) without
+    requiring manual ``.mcp.json`` files in each workspace.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8081
+    excluded_commands: list[str] = field(default_factory=list)
+    inject_into_tasks: bool | None = None  # None = auto (True when enabled)
+
+    @property
+    def should_inject_into_tasks(self) -> bool:
+        """Whether to auto-inject the MCP server into task contexts."""
+        if self.inject_into_tasks is not None:
+            return self.inject_into_tasks
+        return self.enabled  # default: inject when enabled
+
+    def task_mcp_entry(self) -> dict[str, dict]:
+        """Return the MCP server config dict to merge into task contexts.
+
+        Returns an empty dict if injection is disabled or the server isn't
+        enabled. Otherwise returns ``{"agent-queue": {"type": "http", "url": ...}}``.
+        """
+        if not self.enabled or not self.should_inject_into_tasks:
+            return {}
+        url = f"http://{self.host}:{self.port}/mcp"
+        return {"agent-queue": {"type": "http", "url": url}}
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.enabled and not (1 <= self.port <= 65535):
+            errors.append(ConfigError(
+                "mcp_server", "port",
+                f"must be between 1 and 65535, got {self.port}"
+            ))
+        for cmd in self.excluded_commands:
+            if not isinstance(cmd, str) or not cmd.strip():
+                errors.append(ConfigError(
+                    "mcp_server", "excluded_commands",
+                    f"excluded command names must be non-empty strings, got: {cmd!r}"
+                ))
         return errors
 
 
@@ -591,13 +591,13 @@ class AppConfig:
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
-    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    mcp_server: McpServerConfig = field(default_factory=McpServerConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -663,8 +663,7 @@ class AppConfig:
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
-        errors.extend(self.chat_analyzer.validate())
-
+        errors.extend(self.mcp_server.validate())
         # Agent profiles
         for profile in self.agent_profiles:
             errors.extend(profile.validate())
@@ -697,12 +696,6 @@ class AppConfig:
     def check_deprecations(self) -> list[str]:
         """Check for deprecated config sections and return warning messages."""
         warnings = []
-        if self.chat_analyzer.enabled:
-            warnings.append(
-                "DEPRECATED: 'chat_analyzer' config section is deprecated. "
-                "Use 'supervisor.observation' instead. The chat_analyzer "
-                "section will be ignored when supervisor.observation is active."
-            )
         return warnings
 
     def reload_non_critical(self) -> "AppConfig":
@@ -737,7 +730,6 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.hook_engine = fresh.hook_engine
-        updated.chat_analyzer = fresh.chat_analyzer
         updated.llm_logging = fresh.llm_logging
 
         return updated
@@ -750,7 +742,7 @@ class AppConfig:
 HOT_RELOADABLE_SECTIONS = {
     "scheduling", "monitoring", "hook_engine", "archive",
     "llm_logging", "pause_retry", "agents_config", "auto_task",
-    "logging", "agent_profiles", "rate_limits", "chat_analyzer",
+    "logging", "agent_profiles", "rate_limits",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -766,7 +758,7 @@ _SECTION_FIELDS = {
     "data_dir", "workspace_dir", "database_path", "profile", "env",
     "messaging_platform", "discord", "telegram", "agents_config",
     "scheduling", "pause_retry",
-    "chat_provider", "hook_engine", "chat_analyzer", "health_check", "logging",
+    "chat_provider", "hook_engine", "health_check", "logging",
     "monitoring", "archive", "auto_task", "memory", "llm_logging",
     "agent_profiles", "global_token_budget_daily", "rate_limits",
 }
@@ -1147,6 +1139,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             model=cp.get("model", ""),
             base_url=cp.get("base_url", ""),
             keep_alive=cp.get("keep_alive", "1h"),
+            num_ctx=cp.get("num_ctx", 0),
         )
 
     if "supervisor" in raw:
@@ -1167,7 +1160,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 max_buffer_size=observation.get("max_buffer_size", 20),
                 stage1_keywords=observation.get("stage1_keywords", []),
             ),
-            max_tool_rounds=s.get("max_tool_rounds", 1000),
         )
 
     if "hook_engine" in raw:
@@ -1178,20 +1170,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             file_watcher_enabled=h.get("file_watcher_enabled", True),
             file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
             file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
-        )
-
-    if "chat_analyzer" in raw:
-        ca = raw["chat_analyzer"]
-        config.chat_analyzer = ChatAnalyzerConfig(
-            enabled=ca.get("enabled", False),
-            interval_seconds=ca.get("interval_seconds", 300),
-            min_messages_to_analyze=ca.get("min_messages_to_analyze", 3),
-            confidence_threshold=float(ca.get("confidence_threshold", 0.7)),
-            max_suggestions_per_hour=ca.get("max_suggestions_per_hour", 5),
-            provider=ca.get("provider", "ollama"),
-            model=ca.get("model", "llama3.2"),
-            base_url=ca.get("base_url", "http://localhost:11434/v1"),
-            cooldown_after_dismiss=ca.get("cooldown_after_dismiss", 1800),
         )
 
     if "logging" in raw:
@@ -1259,6 +1237,16 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             compact_interval_hours=mem.get("compact_interval_hours", 24),
             index_notes=mem.get("index_notes", True),
             index_sessions=mem.get("index_sessions", False),
+        )
+
+    if "mcp_server" in raw:
+        ms = raw["mcp_server"]
+        config.mcp_server = McpServerConfig(
+            enabled=ms.get("enabled", False),
+            host=ms.get("host", "127.0.0.1"),
+            port=ms.get("port", 8081),
+            excluded_commands=ms.get("excluded_commands", []),
+            inject_into_tasks=ms.get("inject_into_tasks", None),
         )
 
     if "llm_logging" in raw:

@@ -37,6 +37,8 @@ The template system is intentionally lightweight — it uses the same
 ``{{placeholder}}`` syntax already used by the hook engine, keeping the
 codebase consistent.  For advanced logic (conditionals, loops), users
 should compose multiple templates or use the hook context-step pipeline.
+
+See ``specs/prompt-system.md`` for the template format specification.
 """
 
 from __future__ import annotations

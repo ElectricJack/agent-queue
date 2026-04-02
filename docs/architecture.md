@@ -9,24 +9,36 @@ Agent Queue is a single-process Python daemon that orchestrates AI coding agents
 ```mermaid
 graph TD
     Discord["Discord Interface<br/><i>Bot + Commands + Notifications</i>"]
-    Chat["Chat Agent<br/><i>Natural language → commands</i>"]
+    Supervisor["Supervisor<br/><i>Natural language → commands</i>"]
+    PB["PromptBuilder<br/><i>5-layer prompt assembly</i>"]
+    RM["RuleManager<br/><i>Active + passive rules</i>"]
+    Reflect["ReflectionEngine<br/><i>Post-action review</i>"]
+    ChatObs["ChatObserver<br/><i>Passive observation</i>"]
     Orch["Orchestrator<br/><i>Task lifecycle + agent management</i>"]
     Sched[Scheduler]
     SM[State Machine]
     EB[Event Bus]
     PP[Plan Parser]
+    Hooks["Hook Engine<br/><i>Event + periodic automation</i>"]
     Adapter["Adapter<br/><i>(Claude)</i>"]
     Git["Git Manager"]
     DB["Database<br/><i>(SQLite)</i>"]
+    Memory["Memory Manager<br/><i>Semantic search + context</i>"]
 
-    Discord --> Chat --> Orch
+    Discord --> Supervisor --> Orch
+    Supervisor --- PB
+    Supervisor --- Reflect
+    Supervisor --- ChatObs
+    PB --- RM
     Orch --- Sched
     Orch --- SM
     Orch --- EB
     Orch --- PP
+    Orch --- Hooks
     Orch --> Adapter
     Orch --> Git
     Orch --> DB
+    Orch --- Memory
 ```
 
 ## Key Design Decisions
@@ -54,18 +66,23 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/main.py` | Entry point, signal handling, restart support |
 | `src/orchestrator.py` | Core task/agent lifecycle management |
 | `src/models.py` | Data models (Task, Agent, Project, Hook, etc.) |
-| `src/database.py` | SQLite persistence layer (14 tables) |
+| `src/database.py` | SQLite persistence layer (19 tables) |
 | `src/config.py` | YAML config loading with environment variable substitution |
 | `src/scheduler.py` | Proportional credit-weight scheduling |
 | `src/state_machine.py` | Task state transitions and DAG validation |
 | `src/event_bus.py` | Async pub/sub with wildcard support |
 | `src/plan_parser.py` | Plan file parsing (regex + LLM) |
 | `src/hooks.py` | Hook engine for automation |
-| `src/chat_agent.py` | LLM-powered Discord conversation interface |
+| `src/supervisor.py` | LLM-powered conversation interface (Supervisor) |
+| `src/prompt_builder.py` | 5-layer prompt assembly pipeline |
+| `src/rule_manager.py` | Active/passive rule system with hook generation |
+| `src/reflection.py` | Post-action reflection engine |
+| `src/chat_observer.py` | Passive observation (ignore/memory/suggest) |
+| `src/memory.py` | Semantic search and context retrieval |
 | `src/adapters/` | Agent adapter interface and implementations |
 | `src/chat_providers/` | LLM provider abstraction (Anthropic, Ollama) |
 | `src/discord/` | Discord bot, commands, and notifications |
-| `src/git/` | Git operations (branch management, worktrees) |
+| `src/git/` | Git operations (branch management, worktrees, sync-merge) |
 | `src/tokens/` | Token budget tracking |
 
 For detailed API documentation, see the [API Reference](api/index.md).

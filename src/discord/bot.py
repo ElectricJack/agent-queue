@@ -123,11 +123,11 @@ class AgentQueueBot(commands.Bot):
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
+        self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
-        # Guard against concurrent rule reconciliation (on_ready can fire
-        # multiple times on Discord reconnections).
-        self._reconciliation_task: asyncio.Task | None = None
+        # Reconciliation is now lock-protected in RuleManager — no need
+        # for a task guard here.
         # Chat observer for passive channel observation (Phase 5)
         self._chat_observer: ChatObserver | None = None
         if config.supervisor.observation.enabled:
@@ -468,6 +468,8 @@ class AgentQueueBot(commands.Bot):
                     if self.orchestrator._notify is None:
                         self.orchestrator.set_notify_callback(self._send_message)
                         self.orchestrator.set_create_thread_callback(self._create_task_thread)
+                        self.orchestrator.set_get_thread_url_callback(self.get_thread_last_message_url)
+                        self.orchestrator.set_edit_thread_root_callback(self.edit_thread_root_message)
                         # Pass command handler ref so interactive views
                         # (Retry/Skip/Approve buttons) can execute commands.
                         self.orchestrator.set_command_handler(self.agent.handler)
@@ -494,9 +496,9 @@ class AgentQueueBot(commands.Bot):
         await self._reattach_notes_views()
 
         # Reconcile rules → hooks in the background now that supervisor is available.
-        # Guard against concurrent runs — on_ready fires on every reconnect.
-        if self._reconciliation_task is None or self._reconciliation_task.done():
-            self._reconciliation_task = asyncio.create_task(self._reconcile_rules())
+        # RuleManager._reconcile_lock prevents concurrent runs, so we can
+        # safely fire-and-forget on every reconnect without a task guard.
+        asyncio.create_task(self._reconcile_rules())
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
@@ -942,14 +944,14 @@ class AgentQueueBot(commands.Bot):
                 async def notify_main_channel(
                     text: str, *, embed: discord.Embed | None = None
                 ) -> None:
-                    """Reply in thread only — no main channel noise for reopened tasks."""
-                    try:
-                        if embed is not None:
-                            await thread.send(embed=embed)
-                        else:
-                            await self._send_long_message(thread, text)
-                    except Exception as e:
-                        print(f"Thread notify error: {e}")
+                    """No-op for reopened tasks — avoid duplicating messages in the thread.
+
+                    The thread already receives result info from thread_send
+                    (failure details, PR info, etc.) and the completion embed
+                    via the orchestrator's _post helper.  Sending the brief
+                    notification here as well would duplicate the information.
+                    """
+                    pass
 
                 return send_to_thread, notify_main_channel
             except Exception as e:
@@ -983,10 +985,6 @@ class AgentQueueBot(commands.Bot):
             )
             if thread is None:
                 return None
-            await self._safe_api_call(
-                thread.send(initial_message),
-                critical=True, context="create_task_thread initial",
-            )
         except Exception as e:
             print(f"Thread creation failed: {e}")
             return None
@@ -996,6 +994,7 @@ class AgentQueueBot(commands.Bot):
         if task_id:
             self._task_threads[thread.id] = task_id
             self._task_thread_objects[task_id] = thread
+            self._task_root_messages[task_id] = msg
 
         async def send_to_thread(text: str) -> None:
             try:
@@ -1029,6 +1028,64 @@ class AgentQueueBot(commands.Bot):
                     print(f"Fallback notify error: {e2}")
 
         return send_to_thread, notify_main_channel
+
+    def get_task_thread_urls(self) -> dict[str, str]:
+        """Return a mapping of task_id → thread jump_url for all tracked tasks.
+
+        Uses the thread's jump_url property which links to the thread itself
+        (not a specific message).  This is fast — no API calls required.
+        """
+        urls: dict[str, str] = {}
+        for task_id, thread in self._task_thread_objects.items():
+            try:
+                urls[task_id] = thread.jump_url
+            except Exception:
+                pass
+        return urls
+
+    async def get_thread_last_message_url(self, task_id: str) -> str | None:
+        """Return a Discord jump URL to the last message in a task's thread.
+
+        Used by the plan approval embed to link directly to the agent's final
+        output (which contains the full plan summary) instead of showing a
+        truncated preview.
+        """
+        thread = self._task_thread_objects.get(task_id)
+        if not thread:
+            return None
+        try:
+            # Fetch the most recent message in the thread
+            messages = [msg async for msg in thread.history(limit=1)]
+            if messages:
+                return messages[0].jump_url
+        except Exception as e:
+            print(f"Could not get last message URL for task {task_id}: {e}")
+        return None
+
+    async def edit_thread_root_message(
+        self,
+        task_id: str,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        """Edit the thread-root message for a task.
+
+        Used to update the "Agent working: ..." message to reflect task
+        completion or failure status.
+        """
+        root_msg = self._task_root_messages.get(task_id)
+        if not root_msg:
+            return
+        try:
+            kwargs: dict[str, Any] = {}
+            if content is not None:
+                kwargs["content"] = content
+            if embed is not None:
+                kwargs["embed"] = embed
+            if kwargs:
+                await root_msg.edit(**kwargs)
+        except Exception as e:
+            print(f"Could not edit thread root for task {task_id}: {e}")
 
     async def _handle_task_thread_message(
         self, message: discord.Message, task_id: str
@@ -1106,7 +1163,7 @@ class AgentQueueBot(commands.Bot):
                 await message.reply(f"⚠️ Error saving feedback: {e}")
 
         else:
-            # READY, ASSIGNED, DEFINED, PAUSED, VERIFYING, WAITING_INPUT, etc.
+            # READY, ASSIGNED, DEFINED, PAUSED, WAITING_INPUT, etc.
             # Append to description so the agent sees it when the task runs.
             try:
                 separator = "\n\n---\n**Thread Feedback:**\n"

@@ -84,7 +84,7 @@ Update `src/adapters/__init__.py` to include your adapter type.
 
 | Result | Orchestrator Action |
 |--------|-------------------|
-| `COMPLETED` | Task → VERIFYING |
+| `COMPLETED` | Task → COMPLETED (or AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL / BLOCKED depending on outcome) |
 | `FAILED` | Task → FAILED, increment retry_count |
 | `PAUSED_TOKENS` | Task → PAUSED with resume_after |
 | `PAUSED_RATE_LIMIT` | Task → PAUSED with backoff |

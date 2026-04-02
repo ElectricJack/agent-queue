@@ -332,3 +332,192 @@ def test_system_prompt_is_compact():
     assert line_count < 500, (
         f"System prompt is {line_count} lines -- should be compact"
     )
+
+
+# -------------------------------------------------------------------
+# Tool search tests (prompt-based category pre-loading)
+# -------------------------------------------------------------------
+
+def test_search_relevant_categories_git_query():
+    """Git-related queries should return the git category."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("commit and push my changes")
+    assert "git" in cats
+
+
+def test_search_relevant_categories_project_query():
+    """Project management queries should return the project category."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("create a new project with workspace")
+    assert "project" in cats
+
+
+def test_search_relevant_categories_files_query():
+    """File-related queries should return the files category."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("read the file and grep for errors")
+    assert "files" in cats
+
+
+def test_search_relevant_categories_hooks_query():
+    """Hook-related queries should return the hooks category."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("create a hook that fires on schedule")
+    assert "hooks" in cats
+
+
+def test_search_relevant_categories_memory_query():
+    """Memory-related queries should return the memory category."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("reindex memory and compact notes")
+    assert "memory" in cats
+
+
+def test_search_relevant_categories_empty_query():
+    """Empty query should return no categories."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories("")
+    assert cats == []
+
+
+def test_search_relevant_categories_max_limit():
+    """Should return at most max_categories results."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories(
+        "commit project files hooks memory agent system",
+        max_categories=2,
+    )
+    assert len(cats) <= 2
+
+
+def test_search_relevant_categories_respects_min_score():
+    """Very unrelated queries should return few or no categories."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    cats = registry.search_relevant_categories(
+        "xyzzy plugh frobozz", min_score=0.5
+    )
+    assert len(cats) == 0
+
+
+def test_tokenize_splits_underscores():
+    """Tokenizer should split on underscores and filter short words."""
+    tokens = ToolRegistry._tokenize("git_create_branch some_tool")
+    assert "git" in tokens
+    assert "create" in tokens
+    assert "branch" in tokens
+    assert "tool" in tokens
+
+
+def test_search_with_sample_tools(registry):
+    """Search should work with the sample tool set (minimal descriptions)."""
+    # Sample tools have descriptions like "Tool: git_push"
+    cats = registry.search_relevant_categories("push")
+    # "push" appears in git_push's name → git category
+    assert "git" in cats
+
+
+# ------------------------------------------------------------------
+# Tool schema compression
+# ------------------------------------------------------------------
+
+
+class TestCompressToolSchema:
+    """Tests for compress_tool_schema() and compressed flag on getters."""
+
+    def test_compress_strips_param_descriptions(self):
+        tool = {
+            "name": "my_tool",
+            "description": "A tool that does something very specific and wonderful.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The name of the thing to create",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "How many items to process",
+                        "default": 10,
+                    },
+                },
+                "required": ["name"],
+            },
+        }
+        compressed = ToolRegistry.compress_tool_schema(tool)
+        assert compressed["name"] == "my_tool"
+        # Param descriptions should be stripped
+        assert "description" not in compressed["input_schema"]["properties"]["name"]
+        assert "description" not in compressed["input_schema"]["properties"]["count"]
+        # Type and default preserved
+        assert compressed["input_schema"]["properties"]["name"]["type"] == "string"
+        assert compressed["input_schema"]["properties"]["count"]["default"] == 10
+        # Required preserved
+        assert compressed["input_schema"]["required"] == ["name"]
+
+    def test_compress_truncates_long_description(self):
+        tool = {
+            "name": "verbose_tool",
+            "description": "A" * 200,
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        compressed = ToolRegistry.compress_tool_schema(tool)
+        assert len(compressed["description"]) <= 80
+
+    def test_compress_keeps_first_sentence(self):
+        tool = {
+            "name": "multi_sentence",
+            "description": "First sentence. Second sentence with more details.",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        compressed = ToolRegistry.compress_tool_schema(tool)
+        assert compressed["description"] == "First sentence."
+
+    def test_compress_preserves_enums(self):
+        tool = {
+            "name": "enum_tool",
+            "description": "Tool with enum.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fast", "slow"],
+                        "description": "Processing mode",
+                    },
+                },
+            },
+        }
+        compressed = ToolRegistry.compress_tool_schema(tool)
+        assert compressed["input_schema"]["properties"]["mode"]["enum"] == ["fast", "slow"]
+
+    def test_get_core_tools_compressed_with_real_tools(self):
+        """Compressed real tools should be significantly smaller."""
+        reg = ToolRegistry()  # uses real _ALL_TOOL_DEFINITIONS
+        full = reg.get_core_tools(compressed=False)
+        comp = reg.get_core_tools(compressed=True)
+        assert len(full) == len(comp)
+        import json
+        full_size = len(json.dumps(full))
+        comp_size = len(json.dumps(comp))
+        assert comp_size < full_size
+        # Should save at least 30%
+        assert comp_size < full_size * 0.7
+
+    def test_get_category_tools_compressed_with_real_tools(self):
+        """Compressed real category tools should be smaller."""
+        reg = ToolRegistry()  # uses real _ALL_TOOL_DEFINITIONS
+        full = reg.get_category_tools("git", compressed=False)
+        comp = reg.get_category_tools("git", compressed=True)
+        assert full is not None and comp is not None
+        assert len(full) == len(comp)
+        import json
+        assert len(json.dumps(comp)) < len(json.dumps(full))

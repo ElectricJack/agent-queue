@@ -321,6 +321,7 @@ class TestArchiveCommands:
         config = AppConfig(
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=ws_dir,
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
         )
         orchestrator = Orchestrator(config)
@@ -467,7 +468,7 @@ class TestArchiveCommands:
 # ---------------------------------------------------------------------------
 
 class TestArchiveMarkdownNotes:
-    """Tests that archiving writes markdown reference notes to workspace."""
+    """Tests that archiving writes markdown reference notes to data dir."""
 
     @pytest.fixture
     async def handler(self, db, tmp_path):
@@ -475,6 +476,7 @@ class TestArchiveMarkdownNotes:
         config = AppConfig(
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=ws_dir,
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
         )
         orchestrator = Orchestrator(config)
@@ -597,7 +599,8 @@ class TestArchiveMarkdownNotes:
         result = await handler.execute("archive_task", {"task_id": "t-1"})
         assert "error" not in result
 
-        note_path = os.path.join(ws, "archived_tasks", "t-1.md")
+        data_dir = str(tmp_path / "data")
+        note_path = os.path.join(data_dir, "archived_tasks", "p-1", "t-1.md")
         assert os.path.isfile(note_path)
         with open(note_path) as f:
             content = f.read()

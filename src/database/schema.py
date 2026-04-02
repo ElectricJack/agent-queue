@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     plan_source TEXT,
     is_plan_subtask INTEGER NOT NULL DEFAULT 0,
     task_type TEXT,
+    auto_approve_plan INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -168,6 +169,7 @@ CREATE TABLE IF NOT EXISTS hooks (
     cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
     max_tokens_per_run INTEGER,
     last_triggered_at REAL,
+    source_hash TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -241,6 +243,7 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
     plan_source TEXT,
     is_plan_subtask INTEGER NOT NULL DEFAULT 0,
     task_type TEXT,
+    auto_approve_plan INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     archived_at REAL NOT NULL
@@ -294,6 +297,9 @@ MIGRATIONS = [
     "ALTER TABLE archived_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
     "ALTER TABLE hooks ADD COLUMN last_triggered_at REAL",
     "ALTER TABLE hooks ADD COLUMN plugin_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN auto_approve_plan INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE archived_tasks ADD COLUMN auto_approve_plan INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hooks ADD COLUMN source_hash TEXT",
 ]
 
 # Indexes created after migrations (idempotent).

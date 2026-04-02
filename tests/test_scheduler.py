@@ -1,6 +1,6 @@
 import pytest
 from src.models import (
-    Project, Task, Agent, TaskStatus, AgentState, ProjectStatus,
+    Project, Task, Agent, TaskStatus, AgentState, ProjectStatus, TaskType,
 )
 from src.scheduler import Scheduler, SchedulerState, AssignAction
 
@@ -297,3 +297,99 @@ class TestWorkspaceAffinity:
         actions = Scheduler.schedule(state)
         assert len(actions) == 1
         assert actions[0].task_id == "t-normal"
+
+
+class TestSyncTaskExclusivity:
+    """SYNC tasks block all other tasks from being scheduled for the same project."""
+
+    def test_ready_sync_blocks_regular_tasks(self):
+        """When a SYNC task is READY, only the SYNC task should be scheduled."""
+        state = SchedulerState(
+            projects=[make_project(max_agents=3)],
+            tasks=[
+                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC),
+                make_task(id="t-regular1", priority=50),
+                make_task(id="t-regular2", priority=100),
+            ],
+            agents=[make_agent(id="a-1"), make_agent(id="a-2"), make_agent(id="a-3")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-sync"
+
+    def test_assigned_sync_blocks_new_tasks(self):
+        """When a SYNC task is ASSIGNED (not yet executing), no new tasks should start."""
+        state = SchedulerState(
+            projects=[make_project(max_agents=3)],
+            tasks=[
+                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
+                          status=TaskStatus.ASSIGNED),
+                make_task(id="t-regular", priority=50),
+            ],
+            agents=[make_agent(id="a-1"), make_agent(id="a-2")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+
+    def test_in_progress_sync_blocks_new_tasks(self):
+        """When a SYNC task is IN_PROGRESS, no new tasks should start."""
+        state = SchedulerState(
+            projects=[make_project(max_agents=3)],
+            tasks=[
+                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
+                          status=TaskStatus.IN_PROGRESS),
+                make_task(id="t-regular", priority=50),
+            ],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+
+    def test_sync_does_not_block_other_projects(self):
+        """A SYNC task in project A should not block tasks in project B."""
+        state = SchedulerState(
+            projects=[
+                make_project(id="p-1", name="alpha"),
+                make_project(id="p-2", name="beta"),
+            ],
+            tasks=[
+                make_task(id="t-sync", project_id="p-1", priority=1,
+                          task_type=TaskType.SYNC),
+                make_task(id="t-regular", project_id="p-2", priority=50),
+            ],
+            agents=[make_agent(id="a-1"), make_agent(id="a-2")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 2
+        task_ids = {a.task_id for a in actions}
+        assert task_ids == {"t-sync", "t-regular"}
+
+    def test_completed_sync_does_not_block(self):
+        """A completed SYNC task should not block new tasks."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[
+                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
+                          status=TaskStatus.COMPLETED),
+                make_task(id="t-regular", priority=50),
+            ],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-regular"

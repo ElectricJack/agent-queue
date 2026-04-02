@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
-"""Interactive setup wizard for agent-queue."""
+"""Interactive setup wizard for agent-queue.
+
+Walks the user through first-time configuration: Discord bot token, API keys,
+default project creation, and agent provisioning.  Run automatically by
+``setup.sh`` or manually via ``python -m src.setup_wizard``.
+
+The wizard follows a linear multi-step flow:
+
+1. **Directories** — workspace and database paths.
+2. **Discord** — bot token, guild ID, channel names, connectivity test.
+3. **Claude Code** — agent binary detection, API key or local model.
+4. **Chat provider** — which LLM backend the chat bot uses.
+5. **Scheduling & budget** — scheduling interval and optional token budget.
+6. **Config generation** — writes ``~/.agent-queue/config.yaml``.
+
+All secrets are stored in ``~/.agent-queue/.env`` (mode 0600) rather than
+in the YAML config.  The wizard is idempotent — it detects existing config
+values and pre-fills them, only prompting for missing fields.
+
+See ``specs/setup.md`` for the configuration specification.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +40,8 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
-def banner():
+def banner() -> None:
+    """Print the setup wizard banner with ANSI styling."""
     print(f"""
 {BOLD}{CYAN}╔══════════════════════════════════════╗
 ║        agent-queue setup wizard      ║
@@ -28,33 +49,61 @@ def banner():
 """)
 
 
-def step_header(num: int, title: str):
+def step_header(num: int, title: str) -> None:
+    """Print a numbered step header with ANSI styling.
+
+    Args:
+        num: Step number.
+        title: Step title text.
+    """
     print(f"\n{BOLD}{CYAN}── Step {num}: {title} ──{RESET}\n")
 
 
-def success(msg: str):
+def success(msg: str) -> None:
+    """Print a green success message."""
     print(f"  {GREEN}✓{RESET} {msg}")
 
 
-def warn(msg: str):
+def warn(msg: str) -> None:
+    """Print a yellow warning message."""
     print(f"  {YELLOW}!{RESET} {msg}")
 
 
-def error(msg: str):
+def error(msg: str) -> None:
+    """Print a red error message."""
     print(f"  {RED}✗{RESET} {msg}")
 
 
-def info(msg: str):
+def info(msg: str) -> None:
+    """Print a dim informational message."""
     print(f"  {DIM}{msg}{RESET}")
 
 
 def prompt(label: str, default: str = "") -> str:
+    """Prompt the user for text input with an optional default.
+
+    Args:
+        label: Prompt label shown to the user.
+        default: Default value shown in brackets; returned when input is empty.
+
+    Returns:
+        User's input, or *default* if empty.
+    """
     suffix = f" [{default}]" if default else ""
     value = input(f"  {label}{suffix}: ").strip()
     return value or default
 
 
 def prompt_yes_no(label: str, default: bool = True) -> bool:
+    """Prompt the user for a yes/no answer.
+
+    Args:
+        label: Prompt label shown to the user.
+        default: Default value when input is empty.
+
+    Returns:
+        ``True`` for yes, ``False`` for no.
+    """
     hint = "Y/n" if default else "y/N"
     value = input(f"  {label} [{hint}]: ").strip().lower()
     if not value:
@@ -63,6 +112,15 @@ def prompt_yes_no(label: str, default: bool = True) -> bool:
 
 
 def prompt_secret(label: str, existing: str = "") -> str:
+    """Prompt for a secret value (hidden input), showing masked existing value.
+
+    Args:
+        label: Prompt label.
+        existing: Previously saved value (shown masked).
+
+    Returns:
+        New secret, or *existing* if input is empty.
+    """
     if existing:
         masked = existing[:4] + "..." + existing[-4:] if len(existing) > 12 else "****"
         value = input(f"  {label} [{masked}]: ").strip()
@@ -169,6 +227,14 @@ def _load_existing_config() -> dict:
 
 
 def step_directories(existing: dict) -> tuple[str, str]:
+    """Step 1: Configure workspace and database paths.
+
+    Args:
+        existing: Pre-loaded config values from ``_load_existing_config()``.
+
+    Returns:
+        Tuple of ``(workspace_dir, db_path)``.
+    """
     yaml_cfg = existing.get("_yaml", {})
     default_workspace = (
         existing.get("WORKSPACE_DIR")
@@ -218,6 +284,17 @@ def step_directories(existing: dict) -> tuple[str, str]:
 
 
 def step_discord(existing: dict) -> dict:
+    """Step 2: Configure Discord bot token, guild, and channels.
+
+    Collects the bot token and guild ID (prompting if not already saved),
+    tests connectivity, and returns the Discord configuration dict.
+
+    Args:
+        existing: Pre-loaded config values.
+
+    Returns:
+        Dict with ``token``, ``guild_id``, and ``channels`` keys.
+    """
     yaml_cfg = existing.get("_yaml", {})
     discord_cfg = yaml_cfg.get("discord", {})
     existing_channels = discord_cfg.get("channels", {})

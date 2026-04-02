@@ -32,6 +32,7 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
             model=config.model or "qwen3.5:35b",
             base_url=config.base_url or "http://localhost:11434/v1",
             keep_alive=config.keep_alive or "1h",
+            num_ctx=config.num_ctx or 0,
         )
 
     # Default: anthropic

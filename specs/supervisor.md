@@ -15,17 +15,51 @@ It replaces the former `ChatAgent` class. All LLM reasoning flows through it.
 **initialize() → bool**
 Creates the LLM provider. Returns True if ready.
 
-**chat(text, user_name, history=None, on_progress=None) → str**
-Main entry point for direct address. Processes user message through
-multi-turn tool-use loop. If tools were used, triggers a reflection pass.
-Starts with core tools only; expands via `load_tools`.
+**is_ready** (property)
+Returns whether the provider is initialized (`_provider is not None`).
 
-**reflect(trigger, action_summary, action_results, messages, active_tools) → None**
+**model** (property)
+Returns the provider's model name, or `None` if no provider is set.
+
+**is_model_loaded() → bool**
+Async method that checks if the LLM model is loaded and ready (delegates to provider).
+
+**set_active_project(project_id: str | None) → None**
+Sets the active project on the command handler.
+
+**reload_credentials() → bool**
+Re-creates the LLM provider (e.g. after token refresh). Returns True on success.
+
+**chat(text, user_name, history=None, on_progress=None, _reflection_trigger="user.request") → str**
+Main entry point for direct address. Processes user message through
+multi-turn tool-use loop. The loop is structured around the LLM calling
+a `reply_to_user` tool to deliver its final response — if the LLM stops
+without calling it, a nudge mechanism (up to 2 nudges) prompts it to
+use the tool. If tools were used prior to `reply_to_user`, triggers a
+reflection pass. Starts with core tools only; expands via `load_tools`.
+
+When reflection returns a verdict that did not pass, the supervisor
+recursively calls `chat()` with a retry prompt (self-correction loop).
+
+Supports cancellation via an internal `cancel_event` — checked between
+rounds and after tool execution. Returns `"Cancelled."` if cancelled.
+
+Serializes conversation context via `_serialize_conversation_context()`
+so tasks created during a chat session inherit the conversation thread.
+
+**cancel() → None**
+Cancels a running `chat()` call via an internal `asyncio.Event`.
+
+**is_chatting** (property)
+Returns True while a `chat()` call is in progress.
+
+**reflect(trigger, action_summary, action_results, messages, active_tools) → ReflectionVerdict | None**
 Runs a reflection pass for the given trigger. Called after actions complete.
 Evaluates results, checks rules, may take follow-up actions (depth-limited).
-Never raises — all exceptions are caught internally.
+Never raises — all exceptions are caught internally. Returns a verdict
+that the caller uses to decide whether to trigger a reflection retry loop.
 
-**process_hook_llm(hook_context, rendered_prompt, project_id, hook_name, on_progress) → str**
+**process_hook_llm(hook_context, rendered_prompt, project_id=None, hook_name="unknown", on_progress=None) → str**
 Entry point for hook engine LLM invocations. Sets active project,
 combines context with prompt, processes through `chat()` with
 `_reflection_trigger="hook.completed"`.
@@ -44,6 +78,17 @@ to `process_task_completion` command to discover plan files, then runs
 a reflection pass. Returns dict with `plan_found` (bool) so the
 orchestrator can transition to AWAITING_PLAN_APPROVAL if needed.
 Never raises — returns `{"plan_found": False}` on error.
+
+**break_plan_into_tasks(raw_plan, parent_task_id, project_id, ...) → list[dict]**
+Sends a plan to the LLM to break into executable tasks via tool calls.
+Substantial method (~100 lines) with significant business logic including
+task post-processing, dependency chaining, and conversation context
+propagation. Used by the plan approval workflow.
+
+**expand_rule_prompt(rule_content, project_id) → str | None**
+Uses the LLM to expand a rule's natural language description into an
+actionable hook prompt. Used by the rule system when creating hooks
+from rules.
 
 **summarize(transcript) → str | None**
 Summarizes a conversation transcript.

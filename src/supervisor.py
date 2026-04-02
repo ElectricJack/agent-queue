@@ -16,6 +16,8 @@ Design boundaries:
     - The system prompt shapes the LLM's persona and operating rules.
       It is NOT a code-worker prompt; it instructs the LLM to act as a
       dispatcher that plans and delegates to agents via the tool interface.
+
+See ``specs/supervisor.md`` for the full behavioral specification.
 """
 from __future__ import annotations
 
@@ -129,20 +131,25 @@ class Supervisor:
 
     def __init__(self, orchestrator: Orchestrator, config: AppConfig,
                  llm_logger: LLMLogger | None = None):
+        """Initialise the supervisor.
+
+        Args:
+            orchestrator: The running orchestrator instance — used for
+                accessing the database and creating the ``CommandHandler``.
+            config: Application configuration (chat provider, reflection, etc.).
+            llm_logger: Optional logger for capturing all LLM interactions.
+        """
         self.orchestrator = orchestrator
         self.config = config
         self._provider: ChatProvider | None = None
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
-        # Per-call cancel events for concurrent safety.  Each chat() call
-        # creates its own Event and adds it to this set.  cancel() sets ALL
-        # active events.  This avoids a race where one call's finally block
-        # clears the event while another call is still checking it.
-        self._cancel_events: set[asyncio.Event] = set()
-        # Backward-compat alias — points to the most-recently-created event
-        # (or None if no chat is in progress).  Read-only external use.
-        self._cancel_event: asyncio.Event | None = None
+        # Stack of cancel events — one per concurrent chat() call.
+        # Using a stack instead of a single event prevents concurrent/recursive
+        # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
+        # clobbering each other's cancel state.
+        self._cancel_events: list[asyncio.Event] = []
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready."""
@@ -180,22 +187,31 @@ class Supervisor:
         return self.initialize()
 
     def cancel(self) -> None:
-        """Cancel all in-progress chat() calls.
+        """Cancel all active chat() calls.
 
-        Sets every active cancel event so all response loops exit
-        immediately at the next checkpoint.  Safe to call from any
-        coroutine — the events are checked between LLM calls and tool
+        Sets all internal cancel events so every in-flight response loop
+        exits immediately at the next checkpoint.  Safe to call from any
+        coroutine — events are checked between LLM calls and tool
         executions.
         """
-        for evt in list(self._cancel_events):
-            evt.set()
+        for ev in self._cancel_events:
+            ev.set()
 
     @property
     def is_chatting(self) -> bool:
         """True while at least one ``chat()`` call is in progress."""
-        return any(not evt.is_set() for evt in self._cancel_events)
+        return any(not ev.is_set() for ev in self._cancel_events)
 
     def _build_system_prompt(self) -> str:
+        """Build the system prompt for the current conversation.
+
+        Uses ``PromptBuilder`` to assemble identity + active project context.
+        Called before every LLM call so the prompt always reflects the
+        current project scope.
+
+        Returns:
+            Assembled system prompt string.
+        """
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
@@ -309,21 +325,19 @@ class Supervisor:
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
 
-        # Per-call cancel event — safe for concurrent hook invocations.
+        # Each chat() call gets its own cancel event on the stack so that
+        # concurrent calls (hook LLM + user chat) or recursive calls
+        # (reflection retry) don't clobber each other's cancellation state.
         cancel_event = asyncio.Event()
-        self._cancel_events.add(cancel_event)
-        self._cancel_event = cancel_event  # backward compat alias
+        self._cancel_events.append(cancel_event)
 
         try:
             return await self._chat_inner(
                 text, user_name, history, on_progress, _reflection_trigger,
-                _cancel_event=cancel_event,
+                cancel_event=cancel_event,
             )
         finally:
-            self._cancel_events.discard(cancel_event)
-            # Only clear the alias if it still points to OUR event
-            if self._cancel_event is cancel_event:
-                self._cancel_event = None
+            self._cancel_events.remove(cancel_event)
             # Clear conversation context so it doesn't leak to future calls
             self.handler._current_conversation_context = None
 
@@ -357,17 +371,36 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
-        _cancel_event: asyncio.Event | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
-        the cancel event lifecycle in a try/finally."""
+        the cancel event lifecycle in a try/finally.
+
+        ``cancel_event`` is the per-call event created in ``chat()``.
+        Using a stack-based list avoids races where concurrent or recursive
+        ``chat()`` calls clobber each other's cancellation state.
+        """
         from src.tool_registry import ToolRegistry
         registry = ToolRegistry()
 
+        # Use compressed schemas for local LLMs with small context windows
+        compressed = self.config.chat_provider.provider == "ollama"
+
         # Mutable tool set — starts with core, expands via load_tools
         active_tools: dict[str, dict] = {
-            t["name"]: t for t in registry.get_core_tools()
+            t["name"]: t for t in registry.get_core_tools(compressed=compressed)
         }
+
+        # Pre-load categories relevant to the user's prompt so the LLM
+        # doesn't need to spend a turn calling browse_tools/load_tools.
+        preloaded_categories: list[str] = []
+        relevant_cats = registry.search_relevant_categories(text)
+        for cat_name in relevant_cats:
+            cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
+            if cat_tools:
+                for t in cat_tools:
+                    active_tools[t["name"]] = t
+                preloaded_categories.append(cat_name)
 
         messages = list(history) if history else []
 
@@ -388,17 +421,14 @@ class Supervisor:
         tool_actions: list[str] = []
         # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []
-        max_rounds = self.config.supervisor.max_tool_rounds
         # Track how many times we've nudged the LLM to call reply_to_user
         nudge_count = 0
         max_nudges = 2
 
-        # Use per-call cancel event if provided, fall back to instance attr
-        cancel_evt = _cancel_event or self._cancel_event
-
-        for round_num in range(max_rounds):
+        round_num = 0
+        while True:  # No step limit — agents run until they finish
             # Check for cancellation before each round
-            if cancel_evt is not None and cancel_evt.is_set():
+            if cancel_event and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -482,7 +512,9 @@ class Supervisor:
                 # If load_tools was called, expand active tool set
                 if tool_use.name == "load_tools" and "loaded" in result:
                     category = result["loaded"]
-                    cat_tools = registry.get_category_tools(category)
+                    cat_tools = registry.get_category_tools(
+                        category, compressed=compressed,
+                    )
                     if cat_tools:
                         for t in cat_tools:
                             active_tools[t["name"]] = t
@@ -496,7 +528,7 @@ class Supervisor:
             messages.append({"role": "user", "content": tool_results})
 
             # Check for cancellation after tool execution
-            if cancel_evt is not None and cancel_evt.is_set():
+            if cancel_event and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -552,8 +584,7 @@ class Supervisor:
 
                 return response if response else "Done."
 
-        # Max rounds exhausted — return whatever text we have or a fallback
-        return "I was unable to complete processing your request within the allowed number of steps. Please try again or simplify your request."
+            round_num += 1
 
     async def summarize(self, transcript: str) -> str | None:
         """Summarize a conversation transcript. Returns None on failure."""
@@ -709,6 +740,14 @@ class Supervisor:
                 "task depends on the previous one (task N+1 depends on task N). "
                 "This ensures they execute in order.\n"
             )
+        else:
+            dep_instructions = (
+                "- Use add_dependency to set dependencies between tasks based on "
+                "the plan's logical ordering. If a phase builds on work from a "
+                "previous phase, add a dependency so it executes after its "
+                "prerequisite. Not every task needs a dependency, but tasks that "
+                "depend on prior work MUST declare it.\n"
+            )
 
         ws_instructions = ""
         if workspace_id:
@@ -761,12 +800,21 @@ Read the plan below and create one task per implementation phase using the creat
             saved_conv_ctx = self.handler._current_conversation_context
             self.handler._current_conversation_context = None
 
-            response = await self.chat(
-                text=prompt,
-                user_name="system:plan-splitter",
-                on_progress=on_progress,
-                _reflection_trigger="plan.split",
-            )
+            # Create plan subtasks directly as DEFINED so the orchestrator
+            # won't schedule them before the blocking dependency on the
+            # parent is established.  This eliminates the need for
+            # project-wide plan processing locks.
+            self.handler._plan_subtask_creation_mode = True
+
+            try:
+                response = await self.chat(
+                    text=prompt,
+                    user_name="system:plan-splitter",
+                    on_progress=on_progress,
+                    _reflection_trigger="plan.split",
+                )
+            finally:
+                self.handler._plan_subtask_creation_mode = False
 
             # Restore (chat() finally-block clears it, so just ensure clean)
             self.handler._current_conversation_context = saved_conv_ctx
@@ -784,6 +832,7 @@ Read the plan below and create one task per implementation phase using the creat
                 "break_plan_into_tasks: supervisor chat failed for parent %s: %s",
                 parent_task_id, e, exc_info=True,
             )
+            self.handler._plan_subtask_creation_mode = False
             return []
 
         # Find newly created tasks by diffing against the snapshot
@@ -811,11 +860,9 @@ Read the plan below and create one task per implementation phase using the creat
         except Exception:
             pass  # Non-fatal
 
-        # Post-process: set parent_task_id and is_plan_subtask on new tasks,
-        # then demote from READY to DEFINED.  create_task creates tasks as
-        # READY, but plan subtasks must stay in DEFINED until the blocking
-        # dependency on the parent (added by _cmd_process_plan after this
-        # method returns) allows promotion.
+        # Post-process: set parent_task_id and is_plan_subtask on new tasks.
+        # Tasks are already created as DEFINED (via _plan_subtask_creation_mode)
+        # so no demotion is needed.
         created_info = []
         for task in new_tasks:
             try:
@@ -824,13 +871,6 @@ Read the plan below and create one task per implementation phase using the creat
                     parent_task_id=parent_task_id,
                     is_plan_subtask=1,
                 )
-                # Demote to DEFINED so the plan processing lock and the
-                # parent dependency gate both protect this task.
-                if task.status == TaskStatus.READY:
-                    await self.handler.db.transition_task(
-                        task.id, TaskStatus.DEFINED,
-                        context="plan_subtask_demote",
-                    )
                 # Propagate parent conversation context to subtask
                 if parent_conv_ctx:
                     await self.handler.db.add_task_context(
@@ -994,7 +1034,15 @@ Read the plan below and create one task per implementation phase using the creat
             return {"action": "ignore"}
 
     def _parse_observe_response(self, text: str) -> dict:
-        """Parse the LLM's observation response into a structured dict."""
+        """Parse the LLM's observation response into a structured dict.
+
+        Args:
+            text: Raw LLM response text (expected to be a JSON object).
+
+        Returns:
+            Parsed dict with ``action`` key, or ``{"action": "ignore"}``
+            on parse failure.
+        """
         import json as _json
         if text.startswith("```"):
             lines = text.split("\n")

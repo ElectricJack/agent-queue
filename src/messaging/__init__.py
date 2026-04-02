@@ -24,6 +24,7 @@ from src.messaging.types import (
     NotifyCallback,
     ThreadSendCallback,
     CreateThreadCallback,
+    EditThreadRootCallback,
 )
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "NotifyCallback",
     "ThreadSendCallback",
     "CreateThreadCallback",
+    "EditThreadRootCallback",
 ]

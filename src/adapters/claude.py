@@ -493,22 +493,13 @@ class ClaudeAdapter(AgentAdapter):
                     return f"```\n{content_val}\n```"
             return None
 
-        # ResultMessage — final completion
+        # ResultMessage — final completion.
+        # Do NOT stream this to the thread: the orchestrator posts its own
+        # completion/failure summary (embed or detailed failure lines) after
+        # the task finishes, so streaming the ResultMessage would duplicate
+        # the result information in the thread.
         if isinstance(message, _ResultMessage):
-            result = getattr(message, "result", None)
-            cost = getattr(message, "total_cost_usd", None)
-            usage = getattr(message, "usage", None)
-            parts = []
-            if result:
-                parts.append(f"**Result:** {result}")
-            if cost is not None:
-                parts.append(f"Cost: ${cost:.4f}")
-            if usage and isinstance(usage, dict):
-                input_t = usage.get("input_tokens", 0)
-                output_t = usage.get("output_tokens", 0)
-                if input_t or output_t:
-                    parts.append(f"Tokens: {input_t:,} in / {output_t:,} out")
-            return "\n".join(parts) if parts else None
+            return None
 
         return None
 

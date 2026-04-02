@@ -18,12 +18,12 @@ class HookQueryMixin:
         await self._db.execute(
             "INSERT INTO hooks (id, project_id, name, enabled, trigger, "
             "context_steps, prompt_template, llm_config, cooldown_seconds, "
-            "max_tokens_per_run, last_triggered_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_tokens_per_run, last_triggered_at, source_hash, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (hook.id, hook.project_id, hook.name, int(hook.enabled),
              hook.trigger, hook.context_steps, hook.prompt_template,
              hook.llm_config, hook.cooldown_seconds, hook.max_tokens_per_run,
-             hook.last_triggered_at, now, now),
+             hook.last_triggered_at, hook.source_hash, now, now),
         )
         await self._db.commit()
 
@@ -121,6 +121,7 @@ class HookQueryMixin:
             cooldown_seconds=row["cooldown_seconds"],
             max_tokens_per_run=row["max_tokens_per_run"],
             last_triggered_at=row["last_triggered_at"],
+            source_hash=row["source_hash"] if "source_hash" in row.keys() else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

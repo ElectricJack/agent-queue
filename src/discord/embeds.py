@@ -88,7 +88,6 @@ STATUS_COLORS: dict[str, int] = {
     TaskStatus.IN_PROGRESS.value:        0xF39C12,  # Amber
     TaskStatus.WAITING_INPUT.value:      0x1ABC9C,  # Teal
     TaskStatus.PAUSED.value:             0x7F8C8D,  # Dark gray
-    TaskStatus.VERIFYING.value:          0x2980B9,  # Dark blue
     TaskStatus.AWAITING_APPROVAL.value:  0xE67E22,  # Orange
     TaskStatus.AWAITING_PLAN_APPROVAL.value: 0xF39C12,  # Amber
     TaskStatus.COMPLETED.value:          0x2ECC71,  # Green
@@ -103,7 +102,6 @@ STATUS_EMOJIS: dict[str, str] = {
     TaskStatus.IN_PROGRESS.value:        "\U0001F7E1",    # yellow circle
     TaskStatus.WAITING_INPUT.value:      "\U0001F4AC",    # speech balloon
     TaskStatus.PAUSED.value:             "\u23F8\uFE0F",  # pause button
-    TaskStatus.VERIFYING.value:          "\U0001F50D",    # magnifying glass
     TaskStatus.AWAITING_APPROVAL.value:  "\u231B",        # hourglass
     TaskStatus.AWAITING_PLAN_APPROVAL.value: "\U0001F4CB",  # clipboard
     TaskStatus.COMPLETED.value:          "\U0001F7E2",    # green circle
@@ -782,7 +780,6 @@ def tree_view_embed(
     # Build a concise status breakdown line for non-completed subtask statuses
     _SUBTASK_STAT_ORDER: list[tuple[str, str]] = [
         ("IN_PROGRESS", "in progress"),
-        ("VERIFYING", "verifying"),
         ("ASSIGNED", "assigned"),
         ("AWAITING_APPROVAL", "awaiting approval"),
         ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),

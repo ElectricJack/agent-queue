@@ -1,7 +1,25 @@
 """Unified prompt assembly pipeline.
 
-Replaces prompt_registry.py and scattered string concatenation across
-orchestrator, adapters, supervisor, and hooks.
+Assembles system prompts from composable sections for the Supervisor and hook
+LLM calls.  Replaces ``prompt_registry.py`` and scattered string concatenation
+across orchestrator, adapters, supervisor, and hooks.  Each prompt is built by
+stacking named sections (identity, rules, memory context, tool instructions)
+with YAML-driven templates that can be overridden per-project.
+
+The pipeline has five layers, assembled in order:
+
+1. **Identity** — who the LLM is (loaded from a Markdown template).
+2. **Project context** — project profile from the memory system.
+3. **Rules** — applicable active/passive rules from the RuleManager.
+4. **Context blocks** — arbitrary named sections (task depth, active
+   project, dependency results, etc.).
+5. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
+
+Templates live in ``src/prompts/*.md`` as Markdown files with YAML
+frontmatter.  The ``{{variable}}`` placeholders use Mustache-style
+syntax for variable substitution.
+
+See ``specs/prompt-system.md`` for the full design specification.
 """
 
 from __future__ import annotations
@@ -46,6 +64,19 @@ class PromptBuilder:
         rule_manager: Any | None = None,
         prompts_dir: Path | str | None = None,
     ):
+        """Initialise the builder with optional integrations.
+
+        Args:
+            project_id: Active project for context loading.  When set,
+                layers 2 (project context) and 3 (rules) can auto-load
+                relevant data.
+            memory_manager: A ``MemoryManager`` instance for loading project
+                profiles (layer 2).  May be ``None`` — layer 2 is skipped.
+            rule_manager: A ``RuleManager`` instance for loading applicable
+                rules (layer 3).  May be ``None`` — layer 3 is skipped.
+            prompts_dir: Override for the template directory.  Defaults to
+                ``src/prompts/``.
+        """
         self._project_id = project_id
         self._memory_manager = memory_manager
         self._rule_manager = rule_manager
@@ -78,6 +109,15 @@ class PromptBuilder:
                 self._templates[tpl.name] = tpl
 
     def _parse_template_file(self, path: Path) -> _TemplateCache | None:
+        """Parse a single Markdown template file into a ``_TemplateCache``.
+
+        Args:
+            path: Path to the ``.md`` file.
+
+        Returns:
+            A ``_TemplateCache`` with name, body, and metadata, or ``None``
+            if the file could not be read.
+        """
         try:
             content = path.read_text(encoding="utf-8")
         except OSError:
@@ -98,6 +138,15 @@ class PromptBuilder:
 
     @staticmethod
     def _split_frontmatter(content: str) -> tuple[dict, str]:
+        """Split YAML frontmatter from Markdown body.
+
+        Args:
+            content: Raw file content starting with ``---``.
+
+        Returns:
+            Tuple of ``(metadata_dict, body_string)``.  Returns
+            ``({}, content)`` when no valid frontmatter is found.
+        """
         if not content.startswith("---"):
             return {}, content
         parts = content.split("---", 2)
@@ -110,6 +159,15 @@ class PromptBuilder:
         return meta, parts[2]
 
     def _render_variables(self, body: str, variables: dict[str, str] | None) -> str:
+        """Substitute ``{{placeholder}}`` tokens in *body*.
+
+        Args:
+            body: Template string with ``{{variable}}`` placeholders.
+            variables: Mapping of variable name → replacement value.
+
+        Returns:
+            The rendered string.  Unknown placeholders are left as-is.
+        """
         if not variables:
             return body
 
@@ -243,7 +301,13 @@ class PromptBuilder:
     # ------------------------------------------------------------------
 
     def build(self) -> tuple[str, list[dict]]:
-        """Assemble all layers into (system_prompt, tools)."""
+        """Assemble all layers into a system prompt and tool list.
+
+        Returns:
+            Tuple of ``(system_prompt, tools)`` where *system_prompt*
+            is a single string with layers separated by ``---`` dividers
+            and *tools* is the list of JSON Schema tool dicts.
+        """
         sections: list[str] = []
 
         if self._identity:
@@ -259,6 +323,11 @@ class PromptBuilder:
         return system_prompt, list(self._tools)
 
     def build_task_prompt(self) -> str:
-        """Assemble into a flat prompt string (for task execution)."""
+        """Assemble into a flat prompt string (for task execution).
+
+        Returns:
+            The system prompt string only, discarding tool definitions.
+            Used by adapters that manage their own tool sets.
+        """
         prompt, _ = self.build()
         return prompt

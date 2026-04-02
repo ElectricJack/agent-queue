@@ -4,11 +4,20 @@
 
 ## 1. Overview
 
-`GitManager` is a thin synchronous wrapper around the `git` CLI and the `gh` (GitHub CLI) tool. All git operations are executed as subprocesses via `subprocess.run`. There are no direct calls to any git library (e.g. GitPython or libgit2).
+`GitManager` is a wrapper around the `git` CLI and the `gh` (GitHub CLI) tool. It provides both synchronous and asynchronous APIs. There are no direct calls to any git library (e.g. GitPython or libgit2).
 
 - Standard repository operations (clone, branch, commit, push, merge, worktree) use `git` subcommands.
 - GitHub-specific operations (creating pull requests, checking PR status) use the `gh` CLI and are therefore only available in environments where `gh` is installed and authenticated.
 - The class is instantiated with no arguments and holds no state. All methods accept an explicit `checkout_path` (or `source_path`) to identify which repository to operate on.
+
+### Dual Sync/Async API
+
+`GitManager` provides two parallel APIs:
+
+- **Synchronous API:** Original methods using `subprocess.run` (e.g. `_run`, `create_checkout`, `push_branch`). Retained for backward compatibility and non-async contexts.
+- **Asynchronous API:** Every public method has an async counterpart prefixed with `a` (e.g. `acreate_checkout`, `apush_branch`). The core async methods are `_arun` and `_arun_subprocess`, which use `asyncio.create_subprocess_exec()` instead of `subprocess.run`.
+
+**All production callers have been migrated to the async API.** The orchestrator, command handler, and Discord commands exclusively use the `a`-prefixed methods. The synchronous API is retained for backward compatibility and tests only — no production code path calls the sync methods.
 
 ## Source Files
 - `src/git/manager.py`
@@ -21,21 +30,43 @@
 
 `GitError` is the single exception type raised by this module. It inherits directly from `Exception`.
 
-Any `git` subprocess that exits with a non-zero return code causes `_run` to raise:
+Any `git` subprocess that exits with a non-zero return code causes `_run` (or `_arun`) to raise:
 
 ```
 GitError("git <args> failed: <stderr>")
 ```
 
-`gh` subcommands (`create_pr`, `check_pr_merged`) are not routed through `_run`. They call `subprocess.run` directly and raise `GitError` manually when `returncode != 0`.
+`gh` subcommands (`create_pr`, `check_pr_merged`) are not routed through `_run`/`_arun`. They use `subprocess.run` (sync) or `_arun_subprocess` (async) directly and raise `GitError` manually when `returncode != 0`.
 
-### `_run` (internal)
+### `_run` (internal, synchronous)
 
 ```python
-def _run(self, args: list[str], cwd: str | None = None) -> str
+def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str
 ```
 
-Executes `["git"] + args` in the given working directory. Captures both stdout and stderr. On success returns `stdout.strip()`. On failure raises `GitError` with the stderr content.
+Executes `["git"] + args` in the given working directory via `subprocess.run`. Captures both stdout and stderr. Uses `timeout` (defaults to `_GIT_TIMEOUT` = 120 seconds) and raises `GitError` on timeout. On success returns `stdout.strip()`. On failure raises `GitError` with the stderr content.
+
+Not used by any production code — all event-loop callers use `_arun` instead.
+
+### `_arun` (internal, asynchronous)
+
+```python
+async def _arun(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str
+```
+
+Async equivalent of `_run`. Executes `["git"] + args` using `asyncio.create_subprocess_exec()` with `asyncio.wait_for()` for timeout handling (defaults to `_GIT_TIMEOUT` = 120 seconds). On timeout, the subprocess is killed via `proc.kill()` to avoid orphaned processes, then raises `GitError`. On success returns decoded `stdout.strip()`. On failure raises `GitError` with the stderr content.
+
+This is the method used by all production code for git operations. All event-loop callers (command handler, orchestrator, Discord commands) use `_arun` exclusively.
+
+### `_arun_subprocess` (internal, asynchronous)
+
+```python
+async def _arun_subprocess(self, cmd: list[str], cwd: str | None = None, timeout: int | None = None) -> CompletedProcess
+```
+
+Async helper for non-git commands (e.g. `gh` CLI). Uses `asyncio.create_subprocess_exec()` with `asyncio.wait_for()` for timeout handling. Returns a `subprocess.CompletedProcess` with decoded `stdout` and `stderr` strings. On timeout, kills the subprocess and raises `subprocess.TimeoutExpired`. On missing executable, raises `FileNotFoundError`.
+
+Used by async counterparts of `create_pr`, `check_pr_merged`, `check_gh_auth`, `create_github_repo`, and `commit_all` (for `git diff --cached --quiet`).
 
 Several public methods intentionally catch `GitError` and suppress it (e.g. a failed `pull` that has no upstream tracking is silently ignored). Each such suppression is documented in the relevant method section below.
 
@@ -200,13 +231,14 @@ Removes a linked worktree.
 
 ### `commit_all(checkout_path, message)`
 
-Stages all changes and creates a commit. Returns `True` if a commit was made, `False` if the working tree was clean.
+Stages all changes and creates a commit. Returns `True` if a commit was made, `False` if the working tree was clean. Async counterpart: `acommit_all`.
 
 1. Runs `git add -A` to stage all tracked and untracked changes.
-2. Runs `git diff --cached --quiet` directly via `subprocess.run` (bypassing `_run`) to check whether anything is staged. Exit code `0` means nothing staged.
-3. If nothing is staged, returns `False` without creating a commit.
-4. Otherwise runs `git commit -m <message>` and returns `True`.
-5. Raises `GitError` if the commit fails.
+2. **Unstages plan files** — iterates over `_PLAN_FILE_EXCLUDES` (`.claude/plan.md`, `.claude/plans/`, `plan.md`) and runs `git reset HEAD -- <pattern>` for each. Errors are silently ignored (pattern may not be staged or may not exist). This prevents plan files from being committed to target repos.
+3. Runs `git diff --cached --quiet` directly via `subprocess.run` (sync) or `_arun_subprocess` (async) — bypassing `_run`/`_arun` — to check whether anything is staged. Exit code `0` means nothing staged.
+4. If nothing is staged, returns `False` without creating a commit.
+5. Otherwise runs `git commit -m <message>` and returns `True`.
+6. Raises `GitError` if the commit fails.
 
 ### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
@@ -314,9 +346,9 @@ is ready for the next task. The orchestrator's `_merge_and_push` calls `recover_
 
 ---
 
-## 7. GitHub PR Operations
+## 7. GitHub PR and Repo Operations
 
-These methods use the `gh` CLI rather than `git`. They require `gh` to be installed and authenticated with appropriate repository access. Both methods call `subprocess.run` directly and raise `GitError` manually on non-zero exit codes.
+These methods use the `gh` CLI rather than `git`. They require `gh` to be installed and authenticated with appropriate repository access. The synchronous versions call `subprocess.run` directly; the async versions use `_arun_subprocess`. Both raise `GitError` on non-zero exit codes (except `check_gh_auth` which returns a boolean).
 
 ### `create_pr(checkout_path, branch, title, body, base="main")`
 
@@ -343,6 +375,24 @@ Polls the state of a pull request. Returns one of three values:
 - `False` if `state == "OPEN"`.
 - `None` for all other states (e.g. `"CLOSED"`).
 - Raises `GitError` if `gh` exits with a non-zero code.
+
+### `check_gh_auth()`
+
+Checks whether the `gh` CLI is authenticated. Returns `True` if `gh auth status` exits successfully, `False` otherwise (including timeout and missing executable). Async counterpart: `acheck_gh_auth`.
+
+- Used to pre-validate before attempting repository creation, so callers can surface a helpful error message rather than a cryptic `gh` failure.
+- Uses a 30-second timeout (shorter than the default `_GIT_TIMEOUT`).
+- Does not raise exceptions; always returns a boolean.
+
+### `create_github_repo(name, *, private=True, org=None, description="")`
+
+Creates a GitHub repository via the `gh` CLI. Returns the HTTPS URL of the newly created repository. Async counterpart: `acreate_github_repo`.
+
+- Constructs `gh repo create <org/name or name>` with `--private` or `--public` and `--yes` (non-interactive).
+- Optionally includes `--description <description>`.
+- Uses a 60-second timeout.
+- Parses the URL from stdout (or stderr for some `gh` versions) by scanning for lines starting with `https://` or `http://`.
+- Raises `GitError` if `gh` exits with a non-zero code, times out, or if no URL is found in the output.
 
 ---
 
@@ -376,6 +426,30 @@ Returns the name of the currently checked-out branch.
 
 - Runs `git rev-parse --abbrev-ref HEAD`.
 - Returns `""` on `GitError` (e.g. repository has no commits yet).
+
+### `has_non_plan_changes(checkout_path, default_branch="main", min_files=3, min_lines=50)`
+
+Checks if the branch has substantial code changes beyond plan files. Returns `True` if the diff exceeds the given thresholds, `False` otherwise.
+
+1. Finds the merge-base between `HEAD` and `origin/<default_branch>`. Returns `False` on error (e.g. shallow clone, no remote).
+2. Runs `git diff --stat <merge_base>..HEAD` excluding plan file paths (`.claude/plan.md`, `plan.md`, `.claude/plans/`).
+3. Parses the summary line for files changed, insertions, and deletions.
+4. Returns `True` if `files_changed >= min_files` or `total_lines >= min_lines`.
+
+Returns `False` (conservative) on any git error so callers fall through to normal task-generation behavior. Used by the orchestrator to detect when a plan was already implemented by a prior subtask.
+
+### `get_default_branch(checkout_path)`
+
+Detects the default branch for the repository. Returns the branch name, or `"main"` as a last resort.
+
+Uses three strategies in order:
+
+1. **Remote HEAD symbolic ref:** Runs `git symbolic-ref refs/remotes/origin/HEAD` and extracts the branch name from the `refs/remotes/origin/<branch>` output. Most reliable when the remote has a HEAD ref set.
+2. **Common branch names (local):** Checks for `main`, `master`, `develop`, `trunk` by running `git rev-parse --verify <branch>` for each. Returns the first one that exists locally.
+3. **Common branch names (remote):** Runs `git ls-remote --heads origin` and checks for the same branch names in the remote refs.
+4. **Current branch fallback:** Returns the currently checked-out branch via `get_current_branch`, or `"main"` if that also fails.
+
+Returns a string (never raises). Used by the orchestrator to determine the correct merge target when projects use non-standard default branch names.
 
 ### `get_recent_commits(checkout_path, count=5)`
 
@@ -417,7 +491,76 @@ Combines a task ID and a title into a full branch name.
 
 ---
 
-## 10. Design Principles — Workspace Sync
+## 10. Async API Reference
+
+Every public method on `GitManager` has an async counterpart prefixed with `a`. The async methods use `_arun` (for git commands) or `_arun_subprocess` (for non-git commands like `gh`) instead of `subprocess.run`. The behavior and semantics are identical to the synchronous versions.
+
+### Async Method Mapping
+
+| Sync Method | Async Method |
+|---|---|
+| `create_checkout` | `acreate_checkout` |
+| `validate_checkout` | `avalidate_checkout` |
+| `has_remote` | `ahas_remote` |
+| `create_branch` | `acreate_branch` |
+| `checkout_branch` | `acheckout_branch` |
+| `list_branches` | `alist_branches` |
+| `pull_latest_main` | `apull_latest_main` |
+| `prepare_for_task` | `aprepare_for_task` |
+| `switch_to_branch` | `aswitch_to_branch` |
+| `mid_chain_sync` | `amid_chain_sync` |
+| `pull_branch` | `apull_branch` |
+| `push_branch` | `apush_branch` |
+| `rebase_onto` | `arebase_onto` |
+| `merge_branch` | `amerge_branch` |
+| `sync_and_merge` | `async_and_merge` |
+| `recover_workspace` | `arecover_workspace` |
+| `delete_branch` | `adelete_branch` |
+| `create_worktree` | `acreate_worktree` |
+| `remove_worktree` | `aremove_worktree` |
+| `init_repo` | `ainit_repo` |
+| `get_diff` | `aget_diff` |
+| `get_changed_files` | `aget_changed_files` |
+| `commit_all` | `acommit_all` |
+| `create_pr` | `acreate_pr` |
+| `check_pr_merged` | `acheck_pr_merged` |
+| `get_status` | `aget_status` |
+| `get_current_branch` | `aget_current_branch` |
+| `has_non_plan_changes` | `ahas_non_plan_changes` |
+| `get_default_branch` | `aget_default_branch` |
+| `get_recent_commits` | `aget_recent_commits` |
+| `check_gh_auth` | `acheck_gh_auth` |
+| `create_github_repo` | `acreate_github_repo` |
+| `_is_worktree` | `_ais_worktree` |
+| `_rebase_onto_default` | `_arebase_onto_default` |
+
+### Usage
+
+All production callers (orchestrator, command handler, Discord commands) use the async API exclusively. The synchronous API is retained for backward compatibility and tests only — no production code path invokes the sync methods.
+
+```python
+# Production code (async — all event-loop callers use this):
+branch = await git.aget_current_branch(workspace_path)
+await git.apush_branch(workspace_path, branch, force_with_lease=True)
+
+# Tests and non-async contexts only:
+branch = git.get_current_branch(workspace_path)
+git.push_branch(workspace_path, branch, force_with_lease=True)
+```
+
+### Migration Status
+
+The async migration is **complete**. Prior to this migration, all git operations used `subprocess.run()` which blocked the asyncio event loop for up to 120 seconds per call. This caused:
+
+- Discord slash commands to time out (3-second interaction timeout)
+- The orchestrator's 5-second cycle to be delayed
+- All other async tasks to freeze
+
+The migration converted all production callers to the async API, which uses `asyncio.create_subprocess_exec()` and yields control back to the event loop during subprocess execution.
+
+---
+
+## 11. Design Principles — Workspace Sync
 
 These principles govern how `GitManager` and the orchestrator's workspace methods
 interact to keep agent workspaces synchronized. They serve as invariants that must
@@ -510,7 +653,7 @@ a branch was already deleted (e.g. by GitHub's "delete branch after merge" setti
 
 ---
 
-## 11. Known Gaps — Workspace Sync
+## 12. Known Gaps — Workspace Sync
 
 These are identified weaknesses in the current git sync workflow that cause
 failures or data staleness when multiple agents work concurrently. Each gap is

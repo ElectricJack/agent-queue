@@ -30,12 +30,14 @@ class OllamaChatProvider(ChatProvider):
         model: str = "qwen2.5:32b-instruct-q3_K_M",
         base_url: str = "http://localhost:11434/v1",
         keep_alive: str = "1h",
+        num_ctx: int = 0,
     ):
         from openai import AsyncOpenAI
 
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
         self._model = model
         self._keep_alive = keep_alive
+        self._num_ctx = num_ctx
         self._keep_alive_seconds = self._parse_duration(keep_alive)
         self._last_request_at: float = 0.0  # monotonic timestamp of last successful response
         # Derive Ollama API root by stripping /v1 suffix
@@ -97,7 +99,10 @@ class OllamaChatProvider(ChatProvider):
             "model": self._model,
             "max_tokens": max_tokens,
             "messages": openai_messages,
-            "extra_body": {"keep_alive": self._keep_alive},
+            "extra_body": {
+                "keep_alive": self._keep_alive,
+                **({"options": {"num_ctx": self._num_ctx}} if self._num_ctx > 0 else {}),
+            },
         }
         if tools:
             kwargs["tools"] = anthropic_tools_to_openai(tools)

@@ -209,31 +209,31 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-    # --- sync_workspaces ---
+    # --- queue_sync_workspaces ---
     TestCase(
         id="ws-sync-all",
-        description="Sync all workspaces with their remotes",
+        description="Queue sync task for all workspaces",
         category="workspaces",
         difficulty=Difficulty.EASY,
-        tags=["sync_workspaces"],
+        tags=["queue_sync_workspaces"],
         turns=[
             Turn(
                 user_message="sync all workspaces",
-                expected_tools=[ExpectedTool(name="sync_workspaces")],
+                expected_tools=[ExpectedTool(name="queue_sync_workspaces")],
             ),
         ],
     ),
     TestCase(
         id="ws-sync-project",
-        description="Sync workspaces for a specific project",
+        description="Queue sync task for a specific project's workspaces",
         category="workspaces",
         difficulty=Difficulty.EASY,
-        tags=["sync_workspaces"],
+        tags=["queue_sync_workspaces"],
         turns=[
             Turn(
                 user_message="sync the workspaces for project p-1",
                 expected_tools=[
-                    ExpectedTool(name="sync_workspaces", args={"project_id": "p-1"}),
+                    ExpectedTool(name="queue_sync_workspaces", args={"project_id": "p-1"}),
                 ],
             ),
         ],

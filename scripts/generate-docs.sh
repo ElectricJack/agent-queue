@@ -5,6 +5,10 @@
 #   ./scripts/generate-docs.sh          # Build static docs into docs_out/
 #   ./scripts/generate-docs.sh serve    # Start a local dev server with live reload
 #   ./scripts/generate-docs.sh install  # Install documentation dependencies only
+#   ./scripts/generate-docs.sh sync     # Sync specs/ → docs/specs/ only
+#
+# The build and serve commands automatically sync specs/ → docs/specs/ first.
+# specs/ is the source of truth; docs/specs/ is the mirror for MkDocs.
 
 set -euo pipefail
 
@@ -22,7 +26,14 @@ install_deps() {
     echo "✅ Dependencies installed."
 }
 
+sync_specs() {
+    echo "🔄 Syncing specs/ → docs/specs/ ..."
+    rsync -a --delete specs/ docs/specs/
+    echo "✅ Specs synced."
+}
+
 build_docs() {
+    sync_specs
     echo "📖 Building documentation..."
     mkdocs build --site-dir docs_out --strict 2>&1 || {
         echo ""
@@ -44,8 +55,12 @@ case "${1:-build}" in
     install)
         install_deps
         ;;
+    sync)
+        sync_specs
+        ;;
     serve)
         install_deps
+        sync_specs
         serve_docs
         ;;
     build)

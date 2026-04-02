@@ -84,7 +84,7 @@ from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
-    format_task_started, format_task_completed, format_task_failed,
+    format_task_started, format_task_failed,
     format_task_blocked, format_pr_created, format_agent_question,
     format_chain_stuck, format_stuck_defined_task,
     format_budget_warning,
@@ -100,12 +100,14 @@ from src.messaging.types import (
     NotifyCallback as _NotifyCallbackType,
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
+    GetThreadUrlCallback as _GetThreadUrlCallbackType,
+    EditThreadRootCallback as _EditThreadRootCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
     AgentOutput, AgentProfile, AgentResult, AgentState,
-    PhaseResult, PipelineContext, RepoConfig, RepoSourceType,
-    Task, TaskStatus, TaskContext, Workspace,
+    PhaseResult, PipelineContext, ProjectStatus, RepoConfig, RepoSourceType,
+    Task, TaskStatus, TaskContext, TaskType, Workspace,
 )
 from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
@@ -122,6 +124,8 @@ logger = logging.getLogger(__name__)
 NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
+GetThreadUrlCallback = _GetThreadUrlCallbackType
+EditThreadRootCallback = _EditThreadRootCallbackType
 
 
 class Orchestrator:
@@ -182,6 +186,8 @@ class Orchestrator:
         self._task_exec_start: dict[str, float] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        self._get_thread_url: GetThreadUrlCallback | None = None
+        self._edit_thread_root: EditThreadRootCallback | None = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
@@ -249,11 +255,6 @@ class Orchestrator:
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
         # Project IDs currently undergoing plan processing (supervisor is
-        # creating subtasks).  ``_check_defined_tasks`` skips DEFINED tasks
-        # in these projects to prevent race conditions where subtasks are
-        # promoted to READY before the blocking dependency on the parent
-        # plan task has been established.
-        self._plan_processing_locks: set[str] = set()
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
@@ -436,6 +437,20 @@ class Orchestrator:
         """
         self._create_thread = callback
 
+    def set_get_thread_url_callback(self, callback: GetThreadUrlCallback) -> None:
+        """Inject a callback that returns a Discord jump URL to the last message
+        in a task's thread.  Used by the plan approval flow to link to the
+        agent's final output instead of showing truncated plan content."""
+        self._get_thread_url = callback
+
+    def set_edit_thread_root_callback(self, callback: EditThreadRootCallback) -> None:
+        """Inject a callback that edits the thread-root message for a task.
+
+        Used to update the "Agent working: ..." message to reflect task
+        completion or failure (e.g. "✅ Work completed: ...").
+        """
+        self._edit_thread_root = callback
+
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
 
@@ -555,6 +570,15 @@ class Orchestrator:
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s",
+                             task_id, e)
+        # Update the thread root message to reflect the stop
+        if self._edit_thread_root:
+            try:
+                await self._edit_thread_root(
+                    task_id, f"🛑 **Work stopped:** {task.title}", None,
+                )
+            except Exception as e:
+                logger.debug("Could not edit thread root for %s: %s",
                              task_id, e)
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
@@ -789,6 +813,13 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Default rule installation failed: %s", e)
 
+        # Start rule file watcher — monitors rule directories for changes
+        # and triggers per-rule reconciliation automatically.
+        try:
+            await self.rule_manager.start_file_watcher(self.bus)
+        except Exception as e:
+            logger.warning("Rule file watcher startup failed: %s", e)
+
         # Start config file watcher for hot-reloading
         if self.config._config_path:
             self._config_watcher = ConfigWatcher(
@@ -934,6 +965,11 @@ class Orchestrator:
         await self.wait_for_running_tasks(timeout=10)
         if self._config_watcher:
             await self._config_watcher.stop()
+        if self.rule_manager:
+            try:
+                await self.rule_manager.stop_file_watcher()
+            except Exception as e:
+                logger.warning("Rule file watcher shutdown error: %s", e)
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:
@@ -1241,12 +1277,6 @@ class Orchestrator:
         """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         for task in defined:
-            # Skip tasks in projects where plan processing is in-flight.
-            # The supervisor is creating subtasks and the blocking dependency
-            # on the parent hasn't been established yet.
-            if task.project_id in self._plan_processing_locks:
-                continue
-
             # Defense-in-depth: skip plan subtasks whose parent plan hasn't
             # been approved yet, even if the dependency was somehow missed.
             if task.is_plan_subtask and task.parent_task_id:
@@ -1571,19 +1601,6 @@ class Orchestrator:
         projects = await self.db.list_projects()
         tasks = await self.db.list_tasks()
         agents = await self.db.list_agents()
-
-        # Exclude READY tasks in projects with active plan processing.
-        # create_task creates tasks as READY, so the lock check in
-        # _check_defined_tasks (which only applies to DEFINED → READY
-        # promotion) doesn't protect them.  We must also filter here
-        # to prevent the scheduler from assigning plan subtasks before
-        # the blocking dependency on the parent has been established.
-        if self._plan_processing_locks:
-            tasks = [
-                t for t in tasks
-                if t.status != TaskStatus.READY
-                or t.project_id not in self._plan_processing_locks
-            ]
 
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
@@ -2648,7 +2665,7 @@ class Orchestrator:
         Called when a merge-resolution subtask completes successfully.
         """
         task = await self.db.get_task(original_task_id)
-        if not task or task.status != TaskStatus.VERIFYING:
+        if not task or task.status != TaskStatus.BLOCKED:
             logger.info(
                 "Skipping merge retry for %s (status=%s)",
                 original_task_id, task.status if task else "None",
@@ -3055,6 +3072,316 @@ class Orchestrator:
 
         return builder.build_task_prompt()
 
+    # ------------------------------------------------------------------ #
+    # Sync Workflow — orchestrator-managed workspace synchronization
+    # ------------------------------------------------------------------ #
+
+    async def _execute_sync_workflow(
+        self,
+        action: AssignAction,
+        task: Task,
+        agent,
+    ) -> None:
+        """Orchestrator-managed sync workflow (bypasses normal agent execution).
+
+        This method handles tasks with ``task_type=SYNC``.  Instead of
+        launching a regular agent, it coordinates a multi-phase workflow:
+
+        1. **Pause project** — prevent new tasks from being queued.
+        2. **Wait for active tasks** — poll until all IN_PROGRESS tasks
+           (other than this sync task) have completed.
+        3. **Merge feature branches** — acquire a workspace and launch a
+           Claude Code agent to merge all feature branches into the default
+           branch across all project workspaces.
+        4. **Cleanup & resume** — release workspaces, resume the project.
+        """
+        project = await self.db.get_project(action.project_id)
+        if not project:
+            logger.error("Sync workflow: project %s not found", action.project_id)
+            await self.db.transition_task(
+                action.task_id, TaskStatus.FAILED, context="project_not_found")
+            await self.db.update_agent(action.agent_id, state=AgentState.IDLE,
+                                       current_task_id=None)
+            return
+
+        default_branch = project.repo_default_branch or "main"
+        workspaces = await self.db.list_workspaces(project_id=action.project_id)
+        merge_succeeded = False  # Track merge outcome for final status
+
+        async def _notify(msg: str) -> None:
+            await self._notify_channel(msg, project_id=action.project_id)
+
+        await _notify(
+            f"🔄 **Sync Workspaces started:** `{task.id}`\n"
+            f"Phase 1/4 — Pausing project `{action.project_id}`…"
+        )
+
+        # ── Phase 1: Pause the project ──────────────────────────────────
+        await self.db.update_project(action.project_id, status=ProjectStatus.PAUSED)
+        logger.info("Sync workflow %s: project %s paused", task.id, action.project_id)
+
+        try:
+            # ── Phase 2: Wait for active tasks ──────────────────────────
+            await _notify(
+                f"🔄 **Sync `{task.id}`** — Phase 2/4: "
+                f"Waiting for active tasks to complete…"
+            )
+
+            max_wait = 3600  # 1 hour max wait
+            poll_interval = 10  # seconds between checks
+            waited = 0
+
+            while waited < max_wait:
+                active_tasks = await self.db.list_active_tasks(
+                    project_id=action.project_id,
+                    exclude_statuses={TaskStatus.COMPLETED, TaskStatus.FAILED,
+                                      TaskStatus.BLOCKED},
+                )
+                # Filter out this sync task itself and tasks that aren't running
+                running = [
+                    t for t in active_tasks
+                    if t.id != task.id
+                    and t.status in (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
+                ]
+
+                if not running:
+                    break
+
+                if waited % 60 == 0 and waited > 0:  # Log progress every minute
+                    running_ids = ", ".join(f"`{t.id}`" for t in running[:5])
+                    await _notify(
+                        f"🔄 **Sync `{task.id}`** — Still waiting for "
+                        f"{len(running)} task(s): {running_ids}"
+                    )
+
+                await asyncio.sleep(poll_interval)
+                waited += poll_interval
+
+            if waited >= max_wait:
+                await _notify(
+                    f"⚠️ **Sync `{task.id}`** — Timed out waiting for active tasks "
+                    f"after {max_wait}s. Aborting sync."
+                )
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.FAILED,
+                    context="sync_timeout_waiting_for_tasks")
+                return
+
+            logger.info("Sync workflow %s: all active tasks completed", task.id)
+
+            # ── Phase 3: Merge feature branches ─────────────────────────
+            await _notify(
+                f"🔄 **Sync `{task.id}`** — Phase 3/4: "
+                f"Merging feature branches into `{default_branch}`…"
+            )
+
+            # Gather workspace info for the merge task description.
+            workspace_info_lines = []
+            for ws in workspaces:
+                workspace_info_lines.append(
+                    f"  - Path: {ws.workspace_path} "
+                    f"(id: {ws.id}, name: {ws.name or '—'})"
+                )
+            workspace_info = "\n".join(workspace_info_lines)
+
+            merge_description = f"""## Merge All Feature Branches — {action.project_id}
+
+You are a workspace synchronization agent. Your job is to merge ALL feature
+branches into the default branch (`{default_branch}`) across all project workspaces,
+then ensure every workspace is on `{default_branch}` with no remaining feature branches.
+
+### Project Workspaces (absolute paths):
+{workspace_info}
+
+### Default Branch: `{default_branch}`
+
+### Instructions:
+
+For EACH workspace listed above, perform these steps IN ORDER:
+
+1. **Navigate to the workspace directory** using the absolute path above.
+2. **Fetch latest changes**: `git fetch origin`
+3. **Identify all local branches**: `git branch` — look for any branches other than `{default_branch}`.
+4. **Checkout the default branch**: `git checkout {default_branch} && git pull origin {default_branch}`
+5. **For each feature branch** (branches that are NOT `{default_branch}`):
+   a. Ensure the feature branch has all its changes committed and pushed.
+   b. Merge the feature branch into `{default_branch}`:
+      `git merge <feature-branch> --no-ff -m "Merge <feature-branch> into {default_branch}"`
+   c. If there are merge conflicts, resolve them intelligently:
+      - Prefer to preserve feature functionality
+      - Keep both changes when possible
+      - If truly duplicated code, keep the more complete version
+   d. After successful merge, delete the feature branch:
+      `git branch -d <feature-branch>`
+      `git push origin --delete <feature-branch>` (if it exists on remote)
+6. **Push the updated default branch**: `git push origin {default_branch}`
+7. **Pull updates before moving to the next workspace** to ensure each subsequent
+   workspace has the latest merged changes.
+
+### CRITICAL Rules:
+- Process workspaces ONE AT A TIME, in the order listed above
+- ALWAYS pull the latest `{default_branch}` before starting work on each workspace
+- Preserve ALL feature work unless it's genuinely duplicated or made irrelevant
+- After completion, every workspace should be on `{default_branch}` with no feature branches
+- If a workspace has no feature branches, just ensure it's on `{default_branch}` and up to date
+- Commit and push after merging each feature branch (don't batch)
+
+### Error Handling:
+- If a merge has unresolvable conflicts, document what you tried and move on
+- If a workspace path doesn't exist or isn't a git repo, skip it and report the issue
+- Always try to complete as many workspaces as possible even if some fail
+"""
+
+            # Acquire a workspace for the merge agent to execute in.
+            # All workspaces should be free since we waited for active tasks.
+            workspace = None
+            try:
+                workspace = await self._prepare_workspace(task, agent)
+            except Exception as e:
+                logger.error("Sync workflow %s: workspace prep failed: %s",
+                             task.id, e)
+
+            if not workspace:
+                # Try to find any workspace path to use as working dir
+                if workspaces:
+                    workspace = workspaces[0].workspace_path
+                    logger.warning("Sync workflow %s: using fallback workspace %s",
+                                   task.id, workspace)
+                else:
+                    await _notify(
+                        f"❌ **Sync `{task.id}`** — No workspace available for merge agent."
+                    )
+                    await self.db.transition_task(
+                        action.task_id, TaskStatus.FAILED,
+                        context="no_workspace_for_merge")
+                    return
+
+            # Launch the Claude Code agent for the merge work.
+            if not self._adapter_factory:
+                await _notify(
+                    f"❌ **Sync `{task.id}`** — No adapter factory configured."
+                )
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.FAILED,
+                    context="no_adapter_factory")
+                return
+
+            profile = await self._resolve_profile(task)
+            adapter = self._adapter_factory.create("claude", profile=profile)
+            self._adapters[action.agent_id] = adapter
+
+            ctx = TaskContext(
+                task_id=task.id,
+                description=merge_description,
+                checkout_path=workspace,
+                branch_name=default_branch,
+            )
+
+            # Create a thread for streaming output.
+            thread_send = None
+            if self._create_thread:
+                try:
+                    start_msg = (
+                        f"🔄 **Sync Workspaces** — Merge agent starting\n"
+                        f"Task: `{task.id}` | Agent: {agent.name}"
+                    )
+                    thread_name = f"{task.id} | Sync Workspaces"[:100]
+                    thread_result = await self._create_thread(
+                        thread_name, start_msg, action.project_id, task.id)
+                    if thread_result:
+                        thread_send = thread_result[0]
+                except Exception as e:
+                    logger.error("Sync workflow: thread creation failed: %s", e)
+
+            await adapter.start(ctx)
+
+            # Stream agent output.
+            async def forward_msg(text: str) -> None:
+                if thread_send:
+                    await thread_send(text)
+
+            output = await adapter.wait(on_message=forward_msg)
+
+            # Record token usage.
+            if output.tokens_used > 0:
+                await self.db.record_token_usage(
+                    project_id=action.project_id,
+                    task_id=task.id,
+                    agent_id=action.agent_id,
+                    tokens=output.tokens_used,
+                )
+
+            merge_succeeded = output.result == AgentResult.COMPLETED
+            if merge_succeeded:
+                logger.info("Sync workflow %s: merge completed successfully", task.id)
+            else:
+                logger.warning("Sync workflow %s: merge agent result=%s",
+                               task.id, output.result)
+                await _notify(
+                    f"⚠️ **Sync `{task.id}`** — Merge agent finished with "
+                    f"result: {output.result.value}. Proceeding to cleanup."
+                )
+
+        finally:
+            # ── Phase 4: Cleanup & Resume ───────────────────────────────
+            await _notify(
+                f"🔄 **Sync `{task.id}`** — Phase 4/4: Cleanup & resume…"
+            )
+
+            # Release all workspace locks for this project (belt and suspenders).
+            for ws in workspaces:
+                if ws.locked_by_task_id == task.id:
+                    try:
+                        await self.db.release_workspace(ws.id)
+                    except Exception:
+                        pass
+
+            # Also release via standard task cleanup.
+            await self.db.release_workspaces_for_task(action.task_id)
+
+            # Resume the project.
+            await self.db.update_project(
+                action.project_id, status=ProjectStatus.ACTIVE)
+            logger.info("Sync workflow %s: project %s resumed",
+                        task.id, action.project_id)
+
+            # Free the agent.
+            post_agent = await self.db.get_agent(action.agent_id)
+            next_state = (AgentState.PAUSED
+                          if post_agent and post_agent.state == AgentState.PAUSED
+                          else AgentState.IDLE)
+            await self.db.update_agent(action.agent_id,
+                                       state=next_state,
+                                       current_task_id=None)
+
+            # Remove adapter reference.
+            self._adapters.pop(action.agent_id, None)
+
+            # Complete or fail the sync task.
+            # Check if we got here via the normal path or an exception.
+            try:
+                current_task = await self.db.get_task(task.id)
+                if current_task and current_task.status == TaskStatus.IN_PROGRESS:
+                    if merge_succeeded:
+                        await self.db.transition_task(
+                            action.task_id, TaskStatus.COMPLETED,
+                            context="sync_completed")
+                        await _notify(
+                            f"✅ **Sync Workspaces completed:** `{task.id}` — "
+                            f"All workspaces synchronized to `{default_branch}`."
+                        )
+                    else:
+                        await self.db.transition_task(
+                            action.task_id, TaskStatus.COMPLETED,
+                            context="sync_completed_with_warnings")
+                        await _notify(
+                            f"⚠️ **Sync Workspaces finished:** `{task.id}` — "
+                            f"Completed with warnings. Check thread for details."
+                        )
+            except Exception as e:
+                logger.error("Sync workflow %s: final status update failed: %s",
+                             task.id, e)
+
     async def _execute_task(self, action: AssignAction) -> None:
         """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
 
@@ -3115,6 +3442,14 @@ class Orchestrator:
 
         task = await self.db.get_task(action.task_id)
         agent = await self.db.get_agent(action.agent_id)
+
+        # ── Sync workflow interception ───────────────────────────────────
+        # Sync tasks (task_type=SYNC) are orchestrator-managed workflows,
+        # not regular agent tasks.  They coordinate: pause project → wait
+        # for active tasks → launch merge agent → resume project.
+        if task.task_type == TaskType.SYNC:
+            await self._execute_sync_workflow(action, task, agent)
+            return
 
         # Prepare workspace (repo checkout/worktree/init)
         project = await self.db.get_project(action.project_id)
@@ -3253,16 +3588,20 @@ class Orchestrator:
             task, workspace, project, profile
         )
 
+        # Merge MCP servers: start with the daemon's own MCP server (if
+        # inject_into_tasks is enabled), then layer profile-specific servers
+        # on top.  Profile servers win on name collisions.
+        task_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
+        if profile and profile.mcp_servers:
+            task_mcp.update(profile.mcp_servers)
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
-            mcp_servers=(
-                dict(profile.mcp_servers)
-                if profile and profile.mcp_servers else {}
-            ),
+            mcp_servers=task_mcp,
         )
 
         # Memory recall: inject relevant historical context from memsearch.
@@ -3443,10 +3782,13 @@ class Orchestrator:
         #   PAUSED_*         → schedule a resume_after timestamp
         #   WAITING_INPUT    → pause and notify for human response
         # ------------------------------------------------------------------ #
-        if output.result == AgentResult.COMPLETED:
-            await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
-                                          context="agent_completed")
 
+        # Track the final root text for updating the thread root message
+        # on completion.  Set in the result branches below; consumed in the
+        # cleanup section.
+        _final_root_content: str | None = None  # replaces "Agent working: ..." text
+
+        if output.result == AgentResult.COMPLETED:
             # Build pipeline context
             ws = await self.db.get_workspace_for_task(task.id)
             project = await self.db.get_project(task.project_id)
@@ -3525,26 +3867,146 @@ class Orchestrator:
                 if health_server and self.config.health_check.enabled:
                     plan_url = health_server.get_plan_url(task.id)
 
-                # Steps will be empty here — the supervisor creates draft
-                # subtasks in the parse-first workflow (_cmd_process_plan).
-                # This auto-detection path only stores the raw plan; the
-                # approval embed shows the raw content via plan_url.
-                parsed_steps: list[dict] = []
+                # Auto pre-create draft subtasks so approval uses the fast
+                # path (plan_draft_subtasks context exists).  This mirrors
+                # the logic in _cmd_process_plan.  Failure is non-fatal —
+                # approval can still fall back to the legacy path.
+                created_info: list[dict] = []
+                try:
+                    supervisor = self._supervisor
+                    if supervisor and supervisor.is_ready and raw_ctx:
+                        config = self.config.auto_task
+                        workspace_id = ws.id if ws else None
+                        self._plan_processing_locks.add(action.project_id)
+                        try:
+                            created_info = await supervisor.break_plan_into_tasks(
+                                raw_plan=raw_ctx["content"],
+                                parent_task_id=task.id,
+                                project_id=action.project_id,
+                                workspace_id=workspace_id,
+                                chain_dependencies=config.chain_dependencies,
+                                requires_approval=(
+                                    task.requires_approval
+                                    if config.inherit_approval
+                                    else False
+                                ),
+                                base_priority=task.priority,
+                            )
 
-                plan_embed = format_plan_approval_embed(
-                    task,
-                    raw_content=raw_ctx["content"] if raw_ctx else "",
-                    plan_url=plan_url,
-                    parsed_steps=parsed_steps,
-                )
-                await self._notify_channel(
-                    f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
-                    project_id=action.project_id,
-                    embed=plan_embed,
-                    view=plan_view,
-                )
-                brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
-                await _notify_brief(brief)
+                            if created_info:
+                                # Block first subtask on parent so chain stays
+                                # blocked until plan is approved.
+                                first_subtask_id = created_info[0]["id"]
+                                try:
+                                    await self.db.add_dependency(
+                                        first_subtask_id, depends_on=task.id
+                                    )
+                                    logger.info(
+                                        "Task %s: added blocking dep %s → %s (parent)",
+                                        task.id, first_subtask_id, task.id,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "Task %s: failed to add blocking dep "
+                                        "%s → %s: %s",
+                                        task.id, first_subtask_id, task.id, e,
+                                    )
+
+                                # Store draft subtask IDs for approve/delete/reject
+                                import json as _json
+                                await self.db.add_task_context(
+                                    task.id,
+                                    type="plan_draft_subtasks",
+                                    label="Draft Subtask IDs",
+                                    content=_json.dumps(created_info),
+                                )
+
+                                logger.info(
+                                    "Task %s: auto-created %d draft subtasks",
+                                    task.id, len(created_info),
+                                )
+                        finally:
+                            self._plan_processing_locks.discard(action.project_id)
+                except Exception:
+                    logger.exception(
+                        "Task %s: failed to auto-create draft subtasks "
+                        "(approval will use legacy path)",
+                        task.id,
+                    )
+
+                # ── Auto-approve if task has auto_approve_plan set ──
+                if task.auto_approve_plan and created_info:
+                    logger.info(
+                        "Task %s: auto_approve_plan=True — auto-approving plan "
+                        "with %d subtask(s)",
+                        task.id, len(created_info),
+                    )
+                    handler = self._get_handler()
+                    approve_result = await handler._cmd_approve_plan(
+                        {"task_id": task.id}
+                    )
+                    if "error" in approve_result:
+                        logger.warning(
+                            "Task %s: auto-approve failed: %s — falling back "
+                            "to manual approval",
+                            task.id, approve_result["error"],
+                        )
+                        # Fall through to manual approval below
+                    else:
+                        if thread_send:
+                            await thread_send(
+                                f"✅ **Plan auto-approved** — "
+                                f"{len(created_info)} subtask(s) activated"
+                            )
+                        await self._notify_channel(
+                            f"✅ **Plan auto-approved:** `{task.id}` — "
+                            f"{task.title} ({len(created_info)} subtask(s))",
+                            project_id=action.project_id,
+                        )
+                        brief = (
+                            f"✅ Plan auto-approved: {task.title} "
+                            f"(`{task.id}`) — {len(created_info)} subtask(s)"
+                        )
+                        await _notify_brief(brief)
+                        # Skip manual approval flow — jump to the next branch
+                        # (the elif/else below handles pr_url and normal completion)
+                        # We need to skip past the manual approval notification,
+                        # so we use a flag.
+                        ctx.plan_needs_approval = False
+
+                if ctx.plan_needs_approval:
+                    # Populate parsed_steps from auto-created subtasks (if any).
+                    # If none were created, the embed shows raw content via plan_url.
+                    parsed_steps: list[dict] = [
+                        {"title": t["title"], "description": ""}
+                        for t in created_info
+                    ]
+
+                    # Get a link to the last message in the thread — the agent's
+                    # final output contains the complete plan summary, so we link
+                    # to it instead of showing a truncated preview in the embed.
+                    thread_url = ""
+                    if self._get_thread_url:
+                        try:
+                            thread_url = await self._get_thread_url(task.id) or ""
+                        except Exception as e:
+                            logger.debug("Could not get thread URL for %s: %s", task.id, e)
+
+                    plan_embed = format_plan_approval_embed(
+                        task,
+                        raw_content=raw_ctx["content"] if raw_ctx else "",
+                        plan_url=plan_url,
+                        parsed_steps=parsed_steps,
+                        thread_url=thread_url,
+                    )
+                    await self._notify_channel(
+                        f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
+                        project_id=action.project_id,
+                        embed=plan_embed,
+                        view=plan_view,
+                    )
+                    brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
+                    await _notify_brief(brief)
             elif pr_url:
                 # PR-based approval workflow
                 await self.db.transition_task(
@@ -3589,30 +4051,19 @@ class Orchestrator:
                                         project_id=action.project_id,
                                         task_id=action.task_id,
                                         agent_id=action.agent_id)
-                if thread_send:
-                    summary_lines = [
-                        f"**Task Completed:** `{task.id}` — {task.title}",
-                        f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
-                    ]
-                    if output.summary:
-                        summary_lines.append(f"\n**Summary:**\n{output.summary}")
-                    if output.files_changed:
-                        summary_lines.append(
-                            f"\n**Files changed:** {', '.join(output.files_changed)}"
-                        )
-                    await thread_send("\n".join(summary_lines))
-                else:
-                    await self._notify_channel(
-                        format_task_completed(task, agent, output),
-                        project_id=action.project_id,
-                        embed=format_task_completed_embed(task, agent, output),
-                    )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 from datetime import datetime, timezone as _tz
                 log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
                 log_path = f"logs/llm/{log_date}/tasks/{task.id}.jsonl"
                 brief_embed = format_task_completed_embed(task, agent, output)
                 brief_embed.set_footer(text=f"Log: {log_path}")
+                # Post brief completion text to the thread so it always has a
+                # clear completion indicator (the ResultMessage is no longer
+                # streamed to avoid duplication with this summary).
+                await _post(brief)
+                # Notify main channel (for new threads, this replies to the
+                # thread root; for reopened threads this is a no-op since the
+                # thread already received the brief via _post above).
                 await _notify_brief(brief, embed=brief_embed)
                 await self.bus.emit("task.completed", {
                     "task_id": task.id,
@@ -3621,8 +4072,14 @@ class Orchestrator:
 
                 # Auto-reload plugin if the task modified a plugin workspace
                 await self._check_plugin_workspace_update(task, ws)
+                # Mark for thread root update
+                _final_root_content = f"✅ **Work completed:** {task.title}"
             else:
-                # Pipeline stopped (merge failed) — task stays in VERIFYING
+                # Pipeline stopped (merge failed) — block the task
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.BLOCKED,
+                    context="merge_failed",
+                )
                 await _post(
                     f"**Merge failed** for `{task.id}` — awaiting resolution."
                 )
@@ -3734,6 +4191,12 @@ class Orchestrator:
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)
 
+            # Mark for thread root update
+            if new_retry >= task.max_retries:
+                _final_root_content = f"🚫 **Work blocked:** {task.title}"
+            else:
+                _final_root_content = f"⚠️ **Work failed (retrying):** {task.title}"
+
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:
                 await self._notify_stuck_chain(task)
@@ -3843,9 +4306,7 @@ class Orchestrator:
         self._adapters.pop(action.agent_id, None)
         self._task_exec_start.pop(action.task_id, None)
 
-        # Delete the task-added and task-started notifications from Discord to
-        # reduce chat clutter — the completion/failure message provides the
-        # relevant info.
+        # Delete the task-added notification — it's fully superseded.
         added_msg = self._task_added_messages.pop(action.task_id, None)
         if added_msg is not None:
             try:
@@ -3853,6 +4314,9 @@ class Orchestrator:
             except Exception as e:
                 logger.debug("Could not delete task-added message for %s: %s",
                              action.task_id, e)
+
+        # Delete the Task Started message — the Task Completed/Failed embed
+        # posted above is the only one we want to keep.
         started_msg = self._task_started_messages.pop(action.task_id, None)
         if started_msg is not None:
             try:
@@ -3921,3 +4385,13 @@ class Orchestrator:
                 "task_id": task.id,
                 "error": str(e),
             })
+
+        # Update the thread-root message ("Agent working: ..." → final status).
+        if _final_root_content is not None and self._edit_thread_root:
+            try:
+                await self._edit_thread_root(
+                    action.task_id, _final_root_content, None,
+                )
+            except Exception as e:
+                logger.debug("Could not edit thread root for %s: %s",
+                             action.task_id, e)

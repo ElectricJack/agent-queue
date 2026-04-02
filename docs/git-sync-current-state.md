@@ -18,7 +18,7 @@ during refactoring.
 
 Each `(agent, project)` pair gets its own cloned directory, stored at
 `{workspace_dir}/{project_id}/{agent.name}/{repo_name}`. This is cached in the
-`agent_workspaces` SQLite table so the mapping is stable across restarts.
+`workspaces` SQLite table so the mapping is stable across restarts.
 
 **Why it matters:** Two agents working on the same project never touch the same
 working tree, eliminating an entire class of filesystem-level conflicts (dirty
@@ -165,7 +165,7 @@ the user being notified.
 
 | Capability | Implementation |
 |---|---|
-| Workspace isolation | Per-agent clone directories, cached in SQLite |
+| Workspace isolation | Per-agent clone directories, cached in `workspaces` table |
 | Branch isolation | Unique `<task-id>/<slug>` branches per task |
 | Fresh starting point | `git fetch` + `git pull` before each task |
 | Worktree support | Detects worktrees, avoids default-branch checkout conflicts |
@@ -185,98 +185,35 @@ The following gaps have been identified in the current workflow. Each is
 labeled G1–G7 for traceability. See `specs/git/git.md` §11 for the formal
 gap catalogue with affected code references and violated design principles.
 
-### G1. `_merge_and_push` Never Pulls Main Before Merging
+### G1. `_merge_and_push` Never Pulls Main Before Merging — **RESOLVED**
 
-The direct-merge path executes `checkout main → merge branch → push main`,
-but skips `pull origin main` before the merge. If another agent pushed to
-`main` since the workspace's last fetch, the push fails with a
-non-fast-forward error. The failure is notified but not recovered from —
-the local `main` is left with a merge commit that the remote doesn't have.
+Now delegates to `sync_and_merge()` which does fetch → hard-reset → merge → push with retry.
 
-**Scenario:** Agent A completes task and pushes to `main`. Agent B
-(whose `main` is behind) tries to merge and push. Agent B's push fails.
-Agent B's next task starts from a diverged `main` that includes both the
-old merge commit and whatever `origin/main` has moved to.
+### G2. Push Failures Leave Workspace in a Dirty State — **RESOLVED**
 
-### G2. Push Failures Leave Workspace in a Dirty State
+`recover_workspace()` resets to `origin/<default_branch>` after any failure. `prepare_for_task()` also uses hard-reset instead of pull.
 
-After a failed push in `_merge_and_push`, there is no `git reset` to undo the
-local merge. The workspace's `main` branch contains a merge commit that only
-exists locally. Subsequent tasks from the same agent inherit this dirty state.
+### G3. No Merge Conflict Recovery Strategy — **RESOLVED**
 
-**Compounding effect:** Each failed push adds another local-only merge commit.
-Over time the workspace's `main` diverges further from `origin/main`, making
-future merges and pushes increasingly unlikely to succeed.
+`sync_and_merge()` attempts rebase-before-merge when the initial merge fails, then retries.
 
-### G3. No Merge Conflict Recovery Strategy
+### G4. Retried Tasks Don't Rebase onto Latest Main — **RESOLVED**
 
-When `merge_branch()` detects conflicts, it aborts the merge and notifies the
-user. There is no automated attempt to:
-
-1. Rebase the task branch onto the latest `origin/main`.
-2. Retry the merge after the rebase.
-3. Create a PR instead (as a fallback for manual resolution).
-
-The agent's completed work is stranded on its task branch until a human
-resolves the conflict manually.
-
-### G4. Retried Tasks Don't Rebase onto Latest Main
-
-When `prepare_for_task()` finds the task branch already exists (retry after
-crash or failure), it falls back to `git checkout <branch_name>` without
-rebasing onto `origin/main`. The agent resumes work on code that may be
-many commits behind the current remote state.
-
-This applies to both the normal-clone and worktree paths in
-`prepare_for_task()`.
+`prepare_for_task()` now calls `_rebase_onto_default()` when the branch already exists.
 
 ### G5. No `--force-with-lease` for PR Branch Pushes — **RESOLVED**
 
-~~`push_branch()` uses `git push origin <branch>`. On retry — where the branch
-was already pushed in a previous attempt — the push fails.~~
+`push_branch()` accepts `force_with_lease=True` for idempotent PR branch pushes.
 
-**Resolution:** `push_branch()` now accepts `force_with_lease=True`, which adds
-`--force-with-lease` to the push command. The orchestrator uses this when pushing
-task branches for PR creation, making retries idempotent while still preventing
-accidental overwrites of other people's changes.
+### G6. Subtask Chains Accumulate Drift — **RESOLVED**
 
-### G6. Subtask Chains Accumulate Drift
+`switch_to_branch()` accepts a `rebase` parameter. Enable with `auto_task.rebase_between_subtasks: true` in config.
 
-Plan subtasks share a branch and commit sequentially via `switch_to_branch()`.
-While this correctly picks up the previous subtask's commits, it never rebases
-onto the latest `origin/main`. Over a long chain (5–10 subtasks), the branch
-drifts progressively further from `main`.
+### G7. LINK Repos with Shared Filesystem — OPEN
 
-**Example timeline:**
-```mermaid
-gitGraph
-    commit id: "A"
-    branch task-branch
-    commit id: "X1" tag: "subtask 1"
-    commit id: "X2" tag: "subtask 2"
-    commit id: "X3" tag: "subtask 3"
-    commit id: "X4" tag: "subtask 4"
-    checkout main
-    commit id: "B"
-    commit id: "C"
-    commit id: "D"
-    commit id: "E"
-    commit id: "F"
-```
-
-By the time the final subtask merges, the branch is 5 commits behind `main`
-and 4 commits ahead, maximizing conflict surface.
-
-### G7. LINK Repos with Shared Filesystem
-
-LINK repos use the source path directly as the workspace for all agents:
-```
-workspace = repo.source_path    # same for every agent
-```
-
-Without worktrees or per-agent clones, concurrent agents on a LINK repo
-share the git index, staging area, and working tree. Operations from one
-agent (e.g. `git checkout`, `git add -A`) directly interfere with the other.
+LINK repos use the source path directly as the workspace for all agents.
+Without worktrees or per-agent clones, concurrent agents share the git index,
+staging area, and working tree.
 
 **Current mitigation:** Low probability — most LINK projects are single-agent.
 But the system does not *enforce* this constraint, so it is a latent failure
@@ -286,12 +223,12 @@ mode.
 
 ## Gap Summary
 
-| Gap | Severity | Single-Agent Impact | Multi-Agent Impact |
-|-----|----------|--------------------|--------------------|
-| G1 | High | None (only one pusher) | Push failures on every non-first merge |
-| G2 | High | None | Cascading workspace drift after first push failure |
-| G3 | Medium | Rare conflicts | Frequent conflicts as main moves fast |
-| G4 | Medium | Stale retry | Stale retry with higher conflict risk |
-| G5 | ~~Low~~ | ~~Rare~~ | **RESOLVED** — `push_branch` supports `--force-with-lease` |
-| G6 | Medium | No drift (only agent) | Branch falls behind during long chains |
-| G7 | High | N/A | Filesystem corruption between concurrent agents |
+| Gap | Severity | Status |
+|-----|----------|--------|
+| G1 | ~~High~~ | **RESOLVED** — `sync_and_merge()` fetches + hard-resets before merging |
+| G2 | ~~High~~ | **RESOLVED** — `recover_workspace()` cleans up after failures |
+| G3 | ~~Medium~~ | **RESOLVED** — rebase-before-merge recovery in `sync_and_merge()` |
+| G4 | ~~Medium~~ | **RESOLVED** — `prepare_for_task()` rebases on retry |
+| G5 | ~~Low~~ | **RESOLVED** — `push_branch` supports `--force-with-lease` |
+| G6 | ~~Medium~~ | **RESOLVED** — configurable rebase between subtasks |
+| G7 | **High** | **OPEN** — LINK repos share filesystem across agents |

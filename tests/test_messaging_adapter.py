@@ -291,7 +291,7 @@ class TestAppConfigMessagingPlatform:
         config.archive = MagicMock(validate=MagicMock(return_value=[]))
         config.llm_logging = MagicMock(validate=MagicMock(return_value=[]))
         config.memory = MagicMock(validate=MagicMock(return_value=[]))
-        config.chat_analyzer = MagicMock(validate=MagicMock(return_value=[]))
+
 
         errors = config.validate()
         error_strs = [str(e) for e in errors]
@@ -314,7 +314,7 @@ class TestAppConfigMessagingPlatform:
         config.archive = MagicMock(validate=MagicMock(return_value=[]))
         config.llm_logging = MagicMock(validate=MagicMock(return_value=[]))
         config.memory = MagicMock(validate=MagicMock(return_value=[]))
-        config.chat_analyzer = MagicMock(validate=MagicMock(return_value=[]))
+
 
         errors = config.validate()
         error_strs = [str(e) for e in errors]

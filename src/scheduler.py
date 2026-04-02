@@ -67,7 +67,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from src.models import (
-    Agent, AgentState, Project, ProjectStatus, Task, TaskStatus,
+    Agent, AgentState, Project, ProjectStatus, Task, TaskStatus, TaskType,
 )
 
 
@@ -185,6 +185,38 @@ class Scheduler:
         # This determines which task the scheduler picks when a project is selected.
         for tasks in ready_by_project.values():
             tasks.sort(key=lambda t: (t.priority, t.id))
+
+        # ── SYNC-task exclusivity ──────────────────────────────────────
+        # When a SYNC task exists for a project (in any active state), it
+        # needs exclusive access to the project's workspaces.  Block all
+        # non-SYNC tasks from being scheduled:
+        #
+        # • SYNC task is READY → only schedule the SYNC task, nothing else
+        # • SYNC task is ASSIGNED/IN_PROGRESS → don't schedule anything
+        #   new (the sync workflow will pause the project once it starts,
+        #   but there's a window between assignment and execution where
+        #   the project is still ACTIVE)
+        #
+        # This prevents the race where resuming a project with a queued
+        # sync task causes regular tasks to start alongside (or before)
+        # the sync workflow.
+        projects_with_active_sync: set[str] = set()
+        for task in state.tasks:
+            if (
+                task.task_type == TaskType.SYNC
+                and task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            ):
+                projects_with_active_sync.add(task.project_id)
+
+        for pid in list(ready_by_project):
+            if pid in projects_with_active_sync:
+                # SYNC task already running/assigned — block ALL new tasks
+                del ready_by_project[pid]
+            elif any(t.task_type == TaskType.SYNC for t in ready_by_project[pid]):
+                # SYNC task is READY — only allow the SYNC task to be scheduled
+                ready_by_project[pid] = [
+                    t for t in ready_by_project[pid] if t.task_type == TaskType.SYNC
+                ]
 
         # Filter to active projects with ready tasks
         active_projects = [

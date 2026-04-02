@@ -702,7 +702,8 @@ class MenuView(discord.ui.View):
                 if working_on:
                     lines.append(
                         f"• **{a['name']}** ({a['state']}) → "
-                        f"`{working_on['task_id']}`"
+                        f"**{working_on['project_id']}** / "
+                        f"`{working_on['task_id']}` — {working_on['title']}"
                     )
                 else:
                     lines.append(f"• **{a['name']}** ({a['state']})")
@@ -836,15 +837,23 @@ class MenuView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        # list_agents requires project_id — use active project from handler
         result = await self._handler.execute("list_agents", {})
+        if "error" in result:
+            await interaction.followup.send(f"⚠️ {result['error']}", ephemeral=True)
+            return
         agents = result.get("agents", [])
         if not agents:
-            await interaction.followup.send("No agents configured.", ephemeral=True)
+            await interaction.followup.send("No agent slots (workspaces) configured.", ephemeral=True)
             return
-        lines = ["**Agents:**"]
+        lines = [f"**Agent Slots** (project: `{result.get('project_id', '?')}`)"]
         for a in agents:
-            task_info = f" → `{a['current_task']}`" if a.get("current_task") else ""
-            lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
+            task_info = ""
+            if a.get("current_task_id"):
+                title = a.get("current_task_title", "")
+                task_info = f" → `{a['current_task_id']}`" + (f" — {title}" if title else "")
+            state_emoji = "🔴" if a["state"] == "busy" else "🟢"
+            lines.append(f"• {state_emoji} **{a['name']}** ({a['state']}){task_info}")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     # --- Row 2: Actions ---
@@ -1025,6 +1034,32 @@ class MenuView(discord.ui.View):
                 "▶ Orchestrator **resumed** — task scheduling is active.",
                 ephemeral=True,
             )
+
+    @discord.ui.button(
+        label="Rules",
+        style=discord.ButtonStyle.secondary,
+        emoji="📏",
+        row=2,
+    )
+    async def rules_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show all rules with an interactive browsing view."""
+        await interaction.response.defer(ephemeral=True)
+        project_id = (
+            self._bot.get_project_for_channel(interaction.channel_id)
+            or getattr(self._handler, "_active_project_id", None)
+        )
+        result = await self._handler.execute(
+            "browse_rules", {"project_id": project_id} if project_id else {}
+        )
+        rules = result.get("rules", [])
+        if not rules:
+            await interaction.followup.send("No rules configured.", ephemeral=True)
+            return
+        view = RulesListView(rules, self._handler)
+        msg = view.build_content()
+        await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1475,13 +1510,73 @@ class _HookCustomEventEditModal(discord.ui.Modal, title="Custom Event Type"):
             await self._refresh_callback(interaction)
 
 
+class _HookViewSourceRuleButton(discord.ui.Button):
+    """Button to view the source rule for a rule-backed hook."""
+
+    def __init__(self, hook: dict, handler, *, row: int = 0) -> None:
+        label = hook.get("name", hook["id"])
+        if len(label) > 50:
+            label = label[:47] + "..."
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label=f"📏 {label}",
+            custom_id=f"hooks:rule:{hook['id']}",
+            row=row,
+        )
+        self._hook = hook
+        self._handler = handler
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        hook_id = self._hook["id"]
+        # Extract rule ID from hook ID: "rule-{rule_id}-{6hex}"
+        # Rule IDs themselves start with "rule-", so we strip the leading "rule-"
+        # prefix and the trailing "-{6hex}" suffix.
+        rule_id = None
+        if hook_id.startswith("rule-") and len(hook_id) > 12:
+            # Strip "rule-" prefix, then remove the last "-{6hex}" suffix
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            if last_dash > 0:
+                rule_id = without_prefix[:last_dash]
+        if not rule_id:
+            await interaction.response.send_message(
+                f"⚠️ Could not determine source rule for hook `{hook_id}`.",
+                ephemeral=True,
+            )
+            return
+        result = await self._handler.execute("load_rule", {"id": rule_id})
+        if "error" in result:
+            await interaction.response.send_message(
+                f"⚠️ {result['error']}", ephemeral=True,
+            )
+            return
+        rule_type = result.get("type", "passive")
+        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
+        scope = result.get("project_id") or "global"
+        hooks = result.get("hooks", [])
+        content = result.get("content", "")
+        if len(content) > 1500:
+            content = content[:1500] + "\n\n_...truncated_"
+        lines = [
+            f"## 📏 Source Rule: {rule_id}",
+            f"**Type:** {type_label}",
+            f"**Scope:** `{scope}`",
+            f"**Hooks:** {len(hooks)}",
+            "",
+            content,
+        ]
+        await interaction.response.send_message(
+            "\n".join(lines), ephemeral=True,
+        )
+
+
 class _HookEditButton(discord.ui.Button):
-    """Per-hook ✏️ Edit button shown in the hooks list view."""
+    """Per-hook ✏️ Edit button shown for legacy (non-rule-backed) hooks only."""
 
     def __init__(self, hook: dict, handler, *, row: int = 0, refresh_callback=None) -> None:
         label = hook.get("name", hook["id"])
-        if len(label) > 60:
-            label = label[:57] + "..."
+        if len(label) > 50:
+            label = label[:47] + "..."
         super().__init__(
             style=discord.ButtonStyle.secondary,
             label=f"✏️ {label}",
@@ -1517,17 +1612,24 @@ class HooksListView(discord.ui.View):
         start = self.page * _HOOKS_PER_PAGE
         page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
 
-        # Add edit buttons — 2 per row, up to 4 rows for hooks
+        # Add buttons — rule-backed hooks get "View Source Rule",
+        # legacy hooks get "Edit"
         for i, h in enumerate(page_hooks):
             row = i // 3  # 3 buttons per row, up to ~4 rows
             if row > 3:
                 break  # Reserve row 4 for nav buttons
-            self.add_item(
-                _HookEditButton(
-                    h, self._handler, row=row,
-                    refresh_callback=self._refresh_list,
+            hook_id = h.get("id", "")
+            if hook_id.startswith("rule-"):
+                self.add_item(
+                    _HookViewSourceRuleButton(h, self._handler, row=row)
                 )
-            )
+            else:
+                self.add_item(
+                    _HookEditButton(
+                        h, self._handler, row=row,
+                        refresh_callback=self._refresh_list,
+                    )
+                )
 
         # Navigation row (row 4)
         if self.total_pages > 1:
@@ -1555,7 +1657,7 @@ class HooksListView(discord.ui.View):
         """Build the text content for the hooks list message."""
         if not self._hooks:
             return "**No hooks configured.**"
-        lines = [f"**🪝 Hooks ({len(self._hooks)}):**"]
+        lines = [f"**🪝 Hooks ({len(self._hooks)}):** _(generated from rules)_"]
         start = self.page * _HOOKS_PER_PAGE
         page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
         for h in page_hooks:
@@ -1572,9 +1674,11 @@ class HooksListView(discord.ui.View):
                 trigger_desc = f"on `{event}`"
             else:
                 trigger_desc = trigger_type
+            hook_id = h.get("id", "")
+            source = "📏 rule" if hook_id.startswith("rule-") else "⚠️ legacy"
             lines.append(
-                f"{status} **{h['name']}** (`{h['id']}`) — {trigger_desc} "
-                f"• project: `{h.get('project_id', '?')}`"
+                f"{status} **{h['name']}** (`{hook_id}`) — {trigger_desc} "
+                f"• {source} • project: `{h.get('project_id', '?')}`"
             )
         if self.total_pages > 1:
             lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
@@ -1594,6 +1698,235 @@ class HooksListView(discord.ui.View):
                 await msg.edit(content=self.build_content(), view=self)
         except Exception:
             pass
+
+    async def _prev_page(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+
+    async def _next_page(self, interaction: discord.Interaction) -> None:
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rules list view with View buttons
+# ---------------------------------------------------------------------------
+
+_RULES_PER_PAGE = 10
+
+
+class _RuleViewButton(discord.ui.Button):
+    """Button to view a rule's full content."""
+
+    def __init__(self, rule: dict, handler, *, row: int = 0) -> None:
+        rule_type = rule.get("type", "passive")
+        emoji = "⚡" if rule_type == "active" else "📖"
+        label = (rule.get("name") or rule.get("id", "?"))[:40]
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=label,
+            emoji=emoji,
+            row=row,
+        )
+        self._rule = rule
+        self._handler = handler
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        rule_id = self._rule.get("id")
+        result = await self._handler.execute("load_rule", {"id": rule_id})
+        if "error" in result:
+            await interaction.response.send_message(
+                f"⚠️ {result['error']}", ephemeral=True,
+            )
+            return
+        view = _RuleContentView(result, self._rule, self._handler)
+        await interaction.response.send_message(
+            view.build_content(), ephemeral=True, view=view,
+        )
+
+
+class _RuleContentView(discord.ui.View):
+    """Rule content preview with delete action."""
+
+    def __init__(self, result: dict, rule: dict, handler) -> None:
+        super().__init__(timeout=300)
+        self._result = result
+        self._rule = rule
+        self._handler = handler
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        delete_btn = discord.ui.Button(
+            label="Delete Rule",
+            style=discord.ButtonStyle.danger,
+            emoji="🗑️",
+            row=0,
+        )
+        delete_btn.callback = self._delete_callback
+        self.add_item(delete_btn)
+
+        close_btn = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        close_btn.callback = self._close_callback
+        self.add_item(close_btn)
+
+    def build_content(self) -> str:
+        rule_id = self._rule.get("id")
+        result = self._result
+        rule_type = result.get("type", "passive")
+        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
+        scope = result.get("project_id") or "global"
+        hooks = result.get("hooks", [])
+        content = result.get("content", "")
+        if len(content) > 1500:
+            content = content[:1500] + "\n\n_...truncated_"
+
+        lines = [
+            f"## 📏 Rule: {self._rule.get('name', rule_id)}",
+            f"**ID:** `{rule_id}`",
+            f"**Type:** {type_label}",
+            f"**Scope:** `{scope}`",
+            f"**Hooks:** {len(hooks)}",
+            f"**Updated:** {result.get('updated', 'unknown')}",
+            "",
+            content,
+        ]
+        return "\n".join(lines)
+
+    async def _delete_callback(self, interaction: discord.Interaction) -> None:
+        """Show confirmation before deleting the rule and its hooks."""
+        confirm_view = discord.ui.View(timeout=60)
+        yes_btn = discord.ui.Button(
+            label="Yes, delete it",
+            style=discord.ButtonStyle.danger,
+        )
+        no_btn = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        async def _confirm(confirm_interaction: discord.Interaction) -> None:
+            rule_id = self._rule.get("id")
+            result = await self._handler.execute("delete_rule", {"id": rule_id})
+            if "error" in result:
+                await confirm_interaction.response.edit_message(
+                    content=f"❌ {result['error']}", view=None,
+                )
+                return
+            hooks_removed = result.get("hooks_removed", [])
+            rule_name = self._rule.get("name", rule_id)
+            msg = f"🗑️ Rule **{rule_name}** deleted"
+            if hooks_removed:
+                msg += f" ({len(hooks_removed)} hook(s) removed)"
+            msg += "."
+            await confirm_interaction.response.edit_message(
+                content=msg, view=None,
+            )
+
+        async def _cancel(cancel_interaction: discord.Interaction) -> None:
+            self._rebuild()
+            await cancel_interaction.response.edit_message(
+                content=self.build_content(), view=self,
+            )
+
+        yes_btn.callback = _confirm
+        no_btn.callback = _cancel
+        confirm_view.add_item(yes_btn)
+        confirm_view.add_item(no_btn)
+
+        rule_name = self._rule.get("name", self._rule.get("id"))
+        hooks = self._result.get("hooks", [])
+        warning = f"⚠️ Are you sure you want to delete rule **{rule_name}**?"
+        if hooks:
+            warning += f"\n\nThis will also remove **{len(hooks)}** generated hook(s)."
+        warning += "\n\nThis cannot be undone."
+        await interaction.response.edit_message(
+            content=warning, view=confirm_view,
+        )
+
+    async def _close_callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            content="Rule view closed.", view=None,
+        )
+
+
+class RulesListView(discord.ui.View):
+    """Interactive rules list with per-rule View buttons and pagination."""
+
+    def __init__(self, rules: list[dict], handler, *, page: int = 0) -> None:
+        super().__init__(timeout=300)
+        self._rules = rules
+        self._handler = handler
+        self.page = page
+        self.total_pages = max(
+            1, (len(rules) + _RULES_PER_PAGE - 1) // _RULES_PER_PAGE
+        )
+        self._rebuild_components()
+
+    def _rebuild_components(self) -> None:
+        self.clear_items()
+        start = self.page * _RULES_PER_PAGE
+        page_rules = self._rules[start : start + _RULES_PER_PAGE]
+
+        # Add view buttons — 3 per row, up to 4 rows
+        for i, r in enumerate(page_rules):
+            row = i // 3
+            if row > 3:
+                break  # Reserve row 4 for nav buttons
+            self.add_item(_RuleViewButton(r, self._handler, row=row))
+
+        # Navigation row (row 4)
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="◀ Prev",
+                custom_id="rules:page:prev",
+                disabled=(self.page == 0),
+                row=4,
+            )
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Next ▶",
+                custom_id="rules:page:next",
+                disabled=(self.page >= self.total_pages - 1),
+                row=4,
+            )
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+    def build_content(self) -> str:
+        """Build the text content for the rules list message."""
+        if not self._rules:
+            return "**No rules configured.**"
+        lines = [f"**📏 Rules ({len(self._rules)}):**"]
+        start = self.page * _RULES_PER_PAGE
+        page_rules = self._rules[start : start + _RULES_PER_PAGE]
+        for r in page_rules:
+            rule_type = r.get("type", "passive")
+            type_icon = "⚡" if rule_type == "active" else "📖"
+            scope = r.get("project_id") or "global"
+            hook_count = r.get("hook_count", 0)
+            name = r.get("name") or r.get("id", "?")
+            lines.append(
+                f"{type_icon} **{name}** (`{r['id']}`) — "
+                f"{rule_type} • scope: `{scope}` • hooks: {hook_count}"
+            )
+        if self.total_pages > 1:
+            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
+        return "\n".join(lines)
 
     async def _prev_page(self, interaction: discord.Interaction) -> None:
         self.page = max(0, self.page - 1)
@@ -1760,12 +2093,12 @@ def setup_commands(bot: commands.Bot) -> None:
     _STATUS_ORDER = [
         "IN_PROGRESS", "ASSIGNED", "READY", "DEFINED",
         "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
-        "AWAITING_PLAN_APPROVAL", "VERIFYING",
+        "AWAITING_PLAN_APPROVAL",
         "FAILED", "BLOCKED", "COMPLETED",
     ]
     _STATUS_DISPLAY: dict[str, str] = {
         "DEFINED": "Defined", "READY": "Ready", "ASSIGNED": "Assigned",
-        "IN_PROGRESS": "In Progress", "VERIFYING": "Verifying",
+        "IN_PROGRESS": "In Progress",
         "COMPLETED": "Completed", "PAUSED": "Paused",
         "WAITING_INPUT": "Waiting Input", "FAILED": "Failed",
         "BLOCKED": "Blocked", "AWAITING_APPROVAL": "Awaiting Approval",
@@ -1856,6 +2189,28 @@ def setup_commands(bot: commands.Bot) -> None:
             view.tasks_by_status = tasks_by_status
             view.total = result.get("total", len(tasks))
             view._all_tasks = tasks
+            # Refresh thread URLs
+            view._thread_urls = bot.get_task_thread_urls()
+            # Refresh header lines if this is a status view
+            if view._show_agent_header:
+                status_result = await self._handler.execute("get_status", {})
+                header: list[str] = []
+                if status_result.get("orchestrator_paused"):
+                    header.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
+                agents = status_result.get("agents", [])
+                if agents:
+                    header.append("**Agents:**")
+                    for a in agents:
+                        working_on = a.get("working_on")
+                        if working_on:
+                            header.append(
+                                f"• **{a['name']}** ({a['state']}) → "
+                                f"**{working_on['project_id']}** / "
+                                f"`{working_on['task_id']}` — {working_on['title']}"
+                            )
+                        else:
+                            header.append(f"• **{a['name']}** ({a['state']})")
+                view._header_lines = header
             # Rebuild subtask maps
             view._subtask_ids = set()
             view._subtask_map = {}
@@ -1869,118 +2224,8 @@ def setup_commands(bot: commands.Bot) -> None:
                 content=view.build_content(), view=view,
             )
 
-    class _StatusRefreshButton(discord.ui.Button):
-        """Refreshes the status report by re-fetching system status."""
-
-        def __init__(self, handler) -> None:
-            super().__init__(
-                style=discord.ButtonStyle.secondary,
-                label="Refresh",
-                emoji="🔄",
-                row=0,
-            )
-            self._handler = handler
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            await interaction.response.defer()
-            result = await self._handler.execute("get_status", {})
-            view: StatusReportView = self.view
-            view._result = result
-            await interaction.edit_original_response(
-                content=view.build_content(), view=view,
-            )
-
-    class StatusReportView(discord.ui.View):
-        """Status report view with a refresh button."""
-
-        def __init__(self, result: dict, handler) -> None:
-            super().__init__(timeout=600)
-            self._result = result
-            self._handler = handler
-            self.add_item(_StatusRefreshButton(handler))
-
-        def build_content(self) -> str:
-            result = self._result
-            tasks = result["tasks"]
-            by_status = tasks.get("by_status", {})
-            total = tasks.get("total", 0)
-            completed = by_status.get("COMPLETED", 0)
-            in_progress = by_status.get("IN_PROGRESS", 0)
-            failed = by_status.get("FAILED", 0)
-
-            lines = []
-            if result.get("orchestrator_paused"):
-                lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
-                lines.append("")
-            lines.append("## System Status")
-
-            if total > 0:
-                bar = progress_bar(completed, total, width=12)
-                lines.append(f"**Progress:** {bar}")
-
-            pending = by_status.get('DEFINED', 0)
-            ready_count = by_status.get('READY', 0)
-            assigned = by_status.get('ASSIGNED', 0)
-            active = in_progress + assigned
-            waiting = by_status.get('WAITING_INPUT', 0)
-            paused = by_status.get('PAUSED', 0)
-            verifying = by_status.get('VERIFYING', 0)
-            awaiting = by_status.get('AWAITING_APPROVAL', 0)
-            awaiting_plan = by_status.get('AWAITING_PLAN_APPROVAL', 0)
-            blocked = by_status.get('BLOCKED', 0)
-
-            parts = []
-            if pending:
-                parts.append(f"{pending} pending")
-            if active:
-                parts.append(f"{active} active")
-            if ready_count:
-                parts.append(f"{ready_count} ready")
-            if waiting:
-                parts.append(f"{waiting} waiting input")
-            if paused:
-                parts.append(f"{paused} paused")
-            if verifying:
-                parts.append(f"{verifying} verifying")
-            if awaiting:
-                parts.append(f"{awaiting} awaiting approval")
-            if awaiting_plan:
-                parts.append(f"{awaiting_plan} awaiting plan approval")
-            if completed:
-                parts.append(f"{completed} completed")
-            if failed:
-                parts.append(f"{failed} failed")
-            if blocked:
-                parts.append(f"{blocked} blocked")
-
-            lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
-            lines.append("")
-
-            agents = result.get("agents", [])
-            if agents:
-                lines.append("**Agents:**")
-                for a in agents:
-                    working_on = a.get("working_on")
-                    if working_on:
-                        lines.append(
-                            f"• **{a['name']}** ({a['state']}) → "
-                            f"working on `{working_on['task_id']}` — {working_on['title']}"
-                        )
-                    else:
-                        lines.append(f"• **{a['name']}** ({a['state']})")
-            else:
-                lines.append("**Agents:** none registered")
-
-            ready = tasks.get("ready_to_work", [])
-            if ready:
-                lines.append("")
-                lines.append(f"**Queued ({len(ready)}):**")
-                for t in ready[:5]:
-                    lines.append(f"• `{t['id']}` {t['title']}")
-                if len(ready) > 5:
-                    lines.append(f"_...and {len(ready) - 5} more_")
-
-            return "\n".join(lines)
+    # StatusReportView removed — /status now uses TaskReportView with
+    # agent info in header_lines for a consolidated view.
 
     class TaskReportView(discord.ui.View):
         """Grouped task report with collapsible status sections and detail select.
@@ -1997,12 +2242,17 @@ def setup_commands(bot: commands.Bot) -> None:
             all_tasks: list | None = None,
             handler=None,
             project_id: str | None = None,
+            thread_urls: dict[str, str] | None = None,
+            header_lines: list[str] | None = None,
         ) -> None:
             super().__init__(timeout=600)
             self.tasks_by_status = tasks_by_status
             self.total = total
             self._handler = handler
             self._project_id = project_id
+            self._thread_urls: dict[str, str] = thread_urls or {}
+            self._header_lines: list[str] = header_lines or []
+            self._show_agent_header: bool = header_lines is not None
             # Build parent→subtask lookup for tree view
             self._all_tasks = all_tasks or []
             self._subtask_ids: set[str] = set()
@@ -2075,7 +2325,10 @@ def setup_commands(bot: commands.Bot) -> None:
             """Format a task with optional tree-view subtasks."""
             tag = self._get_type_tag(t)
             tag_str = f"{tag} " if tag else ""
-            lines = [f"{tag_str}**{t['title']}** `{t['id']}`"]
+            # Add thread link for active/completed tasks
+            thread_url = self._thread_urls.get(t["id"])
+            thread_link = f" — [thread]({thread_url})" if thread_url else ""
+            lines = [f"{tag_str}**{t['title']}** `{t['id']}`{thread_link}"]
 
             # Show inline subtask count if parent has children
             children = self._subtask_map.get(t["id"], [])
@@ -2102,6 +2355,10 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def build_content(self) -> str:
             lines: list[str] = []
+            # Add optional header (e.g. agent status, orchestrator state)
+            if self._header_lines:
+                lines.extend(self._header_lines)
+                lines.append("")
             # Add progress summary at top — use _all_tasks for accurate totals
             # since tasks_by_status may be filtered (e.g. completed hidden).
             if self._all_tasks:
@@ -2119,7 +2376,6 @@ def setup_commands(bot: commands.Bot) -> None:
                 # Ordered by visual priority: active work → needs attention → queued.
                 _STAT_LABELS: list[tuple[str, str]] = [
                     ("IN_PROGRESS", "In Progress"),
-                    ("VERIFYING", "Verifying"),
                     ("ASSIGNED", "Assigned"),
                     ("AWAITING_APPROVAL", "Awaiting Approval"),
                     ("AWAITING_PLAN_APPROVAL", "Awaiting Plan Approval"),
@@ -2330,9 +2586,83 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="status", description="Show system status overview")
     async def status_command(interaction: discord.Interaction):
-        result = await handler.execute("get_status", {})
-        view = StatusReportView(result, handler)
-        await interaction.response.send_message(view.build_content(), view=view)
+        await interaction.response.defer()
+        try:
+            # Resolve project from channel context (like /tasks does)
+            project_id = await _resolve_project_from_context(interaction, None)
+
+            # Get agent/orchestrator status for the header (scoped to project)
+            status_args: dict = {}
+            if project_id:
+                status_args["project_id"] = project_id
+            status_result = await handler.execute("get_status", status_args)
+
+            # Build header lines from status info
+            header_lines: list[str] = []
+            if status_result.get("orchestrator_paused"):
+                header_lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
+
+            agents = status_result.get("agents", [])
+            if agents:
+                header_lines.append("**Agents:**")
+                for a in agents:
+                    working_on = a.get("working_on")
+                    if working_on:
+                        header_lines.append(
+                            f"• **{a['name']}** ({a['state']}) → "
+                            f"**{working_on['project_id']}** / "
+                            f"`{working_on['task_id']}` — {working_on['title']}"
+                        )
+                    else:
+                        header_lines.append(f"• **{a['name']}** ({a['state']})")
+
+            # Fetch tasks using the same backend as /tasks
+            args: dict = {
+                "include_completed": True,
+                "display_mode": "flat",
+            }
+            if project_id:
+                args["project_id"] = project_id
+
+            result = await handler.execute("list_tasks", args)
+
+            if "error" in result:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=result["error"]),
+                )
+                return
+
+            tasks = result.get("tasks", [])
+
+            # Get thread URLs from the bot
+            thread_urls = bot.get_task_thread_urls()
+
+            if not tasks:
+                # Still show header even if no tasks
+                content = "\n".join(header_lines) if header_lines else "No tasks found."
+                await interaction.followup.send(content)
+                return
+
+            # Group tasks by status for the interactive report view
+            tasks_by_status: dict[str, list] = {}
+            for t in tasks:
+                tasks_by_status.setdefault(t["status"], []).append(t)
+            total = result.get("total", len(tasks))
+            view_widget = TaskReportView(
+                tasks_by_status, total,
+                all_tasks=tasks, handler=handler, project_id=project_id,
+                thread_urls=thread_urls, header_lines=header_lines,
+            )
+            content = view_widget.build_content()
+            await interaction.followup.send(content, view=view_widget)
+        except Exception as e:
+            print(f"ERROR in /status: {e!r}\n{traceback.format_exc()}")
+            try:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=f"Failed to get status: {e}"),
+                )
+            except Exception:
+                pass
 
     @bot.tree.command(name="projects", description="List all projects")
     async def projects_command(interaction: discord.Interaction):
@@ -2349,17 +2679,34 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(line)
         await interaction.response.send_message("\n".join(lines))
 
-    @bot.tree.command(name="agents", description="List all agents")
-    async def agents_command(interaction: discord.Interaction):
-        result = await handler.execute("list_agents", {})
+    @bot.tree.command(name="agents", description="List agent slots for a project")
+    @app_commands.describe(project_id="Project ID (optional if active project is set)")
+    async def agents_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+    ):
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("list_agents", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
         agents = result.get("agents", [])
         if not agents:
-            await _send_info(interaction, "No Agents", description="No agents configured.")
+            await _send_info(
+                interaction, "No Agent Slots",
+                description=f"No workspaces configured for project `{result.get('project_id', '?')}`.",
+            )
             return
-        lines = []
+        lines = [f"**Agent Slots** — project `{result.get('project_id', '?')}`"]
         for a in agents:
-            task_info = f" → `{a['current_task']}`" if a.get("current_task") else ""
-            lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
+            task_info = ""
+            if a.get("current_task_id"):
+                title = a.get("current_task_title", "")
+                task_info = f" → `{a['current_task_id']}`" + (f" — {title}" if title else "")
+            state_emoji = "🔴" if a["state"] == "busy" else "🟢"
+            lines.append(f"• {state_emoji} **{a['name']}** ({a['state']}){task_info}")
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(
@@ -2827,8 +3174,7 @@ def setup_commands(bot: commands.Bot) -> None:
             if not tasks:
                 desc = "No tasks found"
                 if project_id:
-                    desc += f" for project `{project_id}`"
-                    desc += ". Check `/status` for a cross-project overview."
+                    desc += f" for project `{project_id}`."
                 else:
                     desc += "."
                 await interaction.followup.send(
@@ -2836,12 +3182,19 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 return
 
+            # Get thread URLs from the bot
+            thread_urls = bot.get_task_thread_urls()
+
             # Group tasks by status for the interactive report view
             tasks_by_status: dict[str, list] = {}
             for t in tasks:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
-            view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks, handler=handler, project_id=project_id)
+            view_widget = TaskReportView(
+                tasks_by_status, total,
+                all_tasks=tasks, handler=handler, project_id=project_id,
+                thread_urls=thread_urls,
+            )
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
@@ -3519,24 +3872,14 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="create-agent", description="Register a new agent")
     @app_commands.describe(
         name="Agent display name (leave empty for auto-generated creative name)",
-        agent_type="Agent type (claude, codex, cursor, aider)",
     )
-    @app_commands.choices(agent_type=[
-        app_commands.Choice(name="claude", value="claude"),
-        app_commands.Choice(name="codex",  value="codex"),
-        app_commands.Choice(name="cursor", value="cursor"),
-        app_commands.Choice(name="aider",  value="aider"),
-    ])
     async def create_agent_command(
         interaction: discord.Interaction,
         name: str | None = None,
-        agent_type: app_commands.Choice[str] | None = None,
     ):
         args: dict = {}
         if name:
             args["name"] = name
-        if agent_type:
-            args["agent_type"] = agent_type.value
         result = await handler.execute("create_agent", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3544,7 +3887,6 @@ def setup_commands(bot: commands.Bot) -> None:
         agent_fields: list[tuple[str, str, bool]] = [
             ("Name", result.get("name", name), True),
             ("ID", f"`{result['created']}`", True),
-            ("Type", args.get("agent_type", "claude"), True),
             ("State", result.get("state", "IDLE"), True),
         ]
         embed = success_embed("Agent Registered", fields=agent_fields)
@@ -3764,49 +4106,31 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="sync-workspaces",
-        description="Sync all project workspaces to the latest main branch",
+        description="Queue a sync task to merge all feature branches and synchronize workspaces",
     )
     async def sync_workspaces_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        await interaction.response.defer()
-        result = await handler.execute("sync_workspaces", {"project_id": project_id})
+        result = await handler.execute(
+            "queue_sync_workspaces", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
+            await _send_error(interaction, result["error"])
             return
 
-        total = result.get("total_workspaces", 0)
-        synced = result.get("synced", 0)
-        skipped = result.get("skipped", 0)
-        errors = result.get("errors", 0)
-
-        lines = [
-            f"## Workspace Sync — `{project_id}`",
-            f"**{synced}** synced · **{skipped}** skipped · **{errors}** errors "
-            f"(of {total} total)",
-            "",
-        ]
-        for ws in result.get("workspaces", []):
-            status = ws.get("status", "unknown")
-            name = ws.get("workspace_name") or ws.get("workspace_id", "?")
-            if status == "synced":
-                emoji = "✅"
-            elif status == "skipped":
-                emoji = "⏭️"
-            elif status == "conflict":
-                emoji = "⚠️"
-            else:
-                emoji = "❌"
-
-            detail = ws.get("action") or ws.get("reason") or ""
-            branch = ws.get("current_branch", "")
-            branch_str = f" (`{branch}`)" if branch else ""
-            lines.append(f"{emoji} **{name}**{branch_str}: {detail}")
-
-        msg = "\n".join(lines)
-        await _send_long_interaction(msg, interaction.followup.send)
+        embed = success_embed(
+            "Sync Workspaces Queued",
+            fields=[
+                ("Task ID", f"`{result['queued']}`", True),
+                ("Project", f"`{result['project_id']}`", True),
+                ("Priority", str(result.get("priority", 1)), True),
+                ("Workspaces", str(result.get("workspace_count", 0)), True),
+                ("Default Branch", f"`{result.get('default_branch', 'main')}`", True),
+            ],
+        )
+        embed.description = result.get("message", "")
+        await interaction.response.send_message(embed=embed)
 
     # ===================================================================
     # GIT COMMANDS
@@ -3829,34 +4153,153 @@ def setup_commands(bot: commands.Bot) -> None:
 
         project_name = result.get("project_name", project_id)
         repo_statuses = result.get("repos", [])
-        sections: list[str] = []
+
+        # ----- Build compact summary for the channel -----
+        summary_lines: list[str] = []
+        for rs in repo_statuses:
+            ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
+            if "error" in rs:
+                summary_lines.append(f"⚠️ **{ws_label}** — {rs['error']}")
+                continue
+
+            branch = rs.get("branch", "?")
+            status_raw = rs.get("status", "(clean)")
+            is_clean = status_raw.strip() in ("(clean)", "") or (
+                "nothing to commit" in status_raw
+                and "working tree clean" in status_raw
+            )
+
+            # Build compact one-line status indicators
+            indicators: list[str] = []
+            if is_clean:
+                indicators.append("✅ clean")
+            else:
+                # Count changed/untracked files from porcelain-like output
+                changed = sum(
+                    1
+                    for line in status_raw.splitlines()
+                    if line.strip()
+                    and not line.startswith("On branch")
+                    and not line.startswith("Your branch")
+                    and not line.startswith("nothing to commit")
+                    and not line.startswith("Changes")
+                    and not line.startswith("Untracked")
+                    and not line.startswith("  (use")
+                    and not line.startswith("no changes")
+                )
+                if changed:
+                    indicators.append(f"📝 {changed} changed")
+                else:
+                    indicators.append("📝 dirty")
+
+            ahead = rs.get("ahead", 0)
+            behind = rs.get("behind", 0)
+            if ahead:
+                indicators.append(f"⬆ {ahead}")
+            if behind:
+                indicators.append(f"⬇ {behind}")
+
+            stash_count = rs.get("stash_count", 0)
+            if stash_count:
+                indicators.append(f"📦 {stash_count} stash")
+
+            agent_id = rs.get("locked_by_agent_id")
+            task_title = rs.get("current_task_title")
+            if agent_id:
+                task_hint = f" — *{task_title}*" if task_title else ""
+                indicators.append(f"🔒 {agent_id}{task_hint}")
+
+            status_str = " · ".join(indicators)
+            summary_lines.append(f"**{ws_label}** `{branch}` — {status_str}")
+
+        summary = (
+            f"## 📊 Git Status: {project_name}\n"
+            + "\n".join(summary_lines)
+            + "\n\n*See thread for full details ↓*"
+        )
+        await interaction.followup.send(summary)
+
+        # ----- Create thread with detailed per-workspace breakdown -----
+        msg = await interaction.original_response()
+        thread = await msg.create_thread(
+            name=f"Git Status: {project_name}"[:100],
+            auto_archive_duration=60,
+        )
 
         for rs in repo_statuses:
+            ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
             if "error" in rs:
-                ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
-                sections.append(
-                    f"### Workspace: `{ws_label}`\n⚠️ {rs['error']}"
-                )
+                await thread.send(f"### ⚠️ Workspace: `{ws_label}`\n{rs['error']}")
                 continue
+
             ws_name = rs.get("workspace_name")
             ws_id = rs.get("workspace_id") or "?"
-            header = f"### Workspace: `{ws_name}`" if ws_name else f"### Workspace: `{ws_id}`"
-            if ws_name:
-                header += f" (`{ws_id}`)"
-            lines = [header]
+            ws_header = (
+                f"`{ws_name}` (`{ws_id}`)" if ws_name else f"`{ws_id}`"
+            )
+            lines: list[str] = [f"### 📁 Workspace: {ws_header}"]
+
             if rs.get("path"):
                 lines.append(f"**Path:** `{rs['path']}`")
             if rs.get("branch"):
-                lines.append(f"**Branch:** `{rs['branch']}`")
-            status_output = rs.get("status", "(clean)")
-            lines.append(f"\n**Status:**\n```\n{status_output}\n```")
-            if rs.get("recent_commits"):
-                lines.append(f"**Recent commits:**\n```\n{rs['recent_commits']}\n```")
-            sections.append("\n".join(lines))
+                branch_line = f"**Branch:** `{rs['branch']}`"
+                ahead = rs.get("ahead", 0)
+                behind = rs.get("behind", 0)
+                if ahead or behind:
+                    parts = []
+                    if ahead:
+                        parts.append(f"{ahead} ahead")
+                    if behind:
+                        parts.append(f"{behind} behind")
+                    branch_line += f" ({', '.join(parts)})"
+                lines.append(branch_line)
 
-        header = f"## Git Status: {project_name} (`{project_id}`)\n"
-        full_message = header + "\n\n".join(sections)
-        await _send_long(interaction, full_message, followup=True)
+            # Lock / active-task info
+            agent_id = rs.get("locked_by_agent_id")
+            if agent_id:
+                task_title = rs.get("current_task_title")
+                lock_line = f"**Agent:** `{agent_id}`"
+                if task_title:
+                    lock_line += f" — *{task_title}*"
+                lines.append(lock_line)
+
+            stash_count = rs.get("stash_count", 0)
+            if stash_count:
+                lines.append(f"**Stashes:** {stash_count}")
+
+            # Working-tree status
+            status_output = rs.get("status", "(clean)")
+            lines.append(f"\n**Working tree:**\n```\n{status_output}\n```")
+
+            # Diff stat (files changed vs default branch)
+            diff_stat = rs.get("diff_stat", "")
+            if diff_stat:
+                lines.append(f"**Diff vs default branch:**\n```\n{diff_stat}\n```")
+
+            # Recent commits
+            if rs.get("recent_commits"):
+                lines.append(
+                    f"**Recent commits:**\n```\n{rs['recent_commits']}\n```"
+                )
+
+            detail_msg = "\n".join(lines)
+            # Split if too long for Discord
+            if len(detail_msg) <= 2000:
+                await thread.send(detail_msg)
+            else:
+                chunks, current = [], ""
+                for line in detail_msg.split("\n"):
+                    candidate = current + ("\n" if current else "") + line
+                    if len(candidate) > 2000:
+                        if current:
+                            chunks.append(current)
+                        current = line
+                    else:
+                        current = candidate
+                if current:
+                    chunks.append(current)
+                for chunk in chunks:
+                    await thread.send(chunk)
 
     # -------------------------------------------------------------------
     # GIT MANAGEMENT COMMANDS
@@ -4635,7 +5078,7 @@ def setup_commands(bot: commands.Bot) -> None:
     # HOOK COMMANDS
     # ===================================================================
 
-    @bot.tree.command(name="hooks", description="List automation hooks")
+    @bot.tree.command(name="hooks", description="List automation hooks (read-only — manage via /rules)")
     async def hooks_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         args = {}
@@ -4650,755 +5093,97 @@ def setup_commands(bot: commands.Bot) -> None:
         msg = view.build_content()
         await _send_long_interaction(msg, interaction.response.send_message, view=view)
 
-    # --- Hook wizard state management ---
-    # In-memory store keyed by Discord user ID.
-    _hook_wizard_states: dict[int, dict] = {}
+    # --- Hook wizard REMOVED ---
+    # Direct hook creation is no longer supported. All automation goes through rules.
+    # The old wizard classes (_HookWizardStartView, _HookPeriodicUnitView, etc.)
+    # have been removed. Use /create-rule or save_rule instead.
 
+    # ---- /create-rule slash command with modal ----
 
-    # Context step types available in the wizard.
-    _HOOK_STEP_TYPES: list[tuple[str, str]] = [
-        ("shell", "Run a shell command"),
-        ("read_file", "Read a file"),
-        ("http", "HTTP request"),
-        ("db_query", "Database query"),
-        ("git_diff", "Git diff"),
-        ("memory_search", "Search memory"),
-        ("create_task", "Create a new task"),
-        ("run_tests", "Run test suite"),
-        ("list_files", "List files in directory"),
-        ("file_diff", "Diff a specific file"),
-    ]
+    class _CreateRuleModal(discord.ui.Modal, title="Create Automation Rule"):
+        """Modal for quickly creating a new rule."""
 
-    def _wizard_state(user_id: int) -> dict:
-        """Get or create wizard state for a user."""
-        if user_id not in _hook_wizard_states:
-            _hook_wizard_states[user_id] = {
-                "name": None,
-                "project_id": None,
-                "trigger": None,
-                "context_steps": [],
-                "prompt_template": None,
-                "cooldown_seconds": 3600,
-                "llm_config": None,
-            }
-        return _hook_wizard_states[user_id]
-
-    def _wizard_summary(state: dict) -> str:
-        """Build a summary string for the current wizard state."""
-        lines = ["## 🪝 Hook Wizard"]
-        if state.get("name"):
-            lines.append(f"**Name:** {state['name']}")
-        if state.get("project_id"):
-            lines.append(f"**Project:** `{state['project_id']}`")
-        if state.get("trigger"):
-            t = state["trigger"]
-            if t["type"] == "periodic":
-                secs = t["interval_seconds"]
-                if secs >= 86400:
-                    lines.append(f"**Trigger:** every {secs // 86400}d")
-                elif secs >= 3600:
-                    lines.append(f"**Trigger:** every {secs // 3600}h")
-                elif secs >= 60:
-                    lines.append(f"**Trigger:** every {secs // 60}m")
-                else:
-                    lines.append(f"**Trigger:** every {secs}s")
-            else:
-                lines.append(f"**Trigger:** event `{t.get('event_type', '?')}`")
-        if state.get("context_steps"):
-            step_list = ", ".join(
-                s.get("type", "?") for s in state["context_steps"]
-            )
-            lines.append(f"**Context steps:** {step_list}")
-        if state.get("prompt_template"):
-            tmpl = state["prompt_template"]
-            preview = tmpl[:80] + ("…" if len(tmpl) > 80 else "")
-            lines.append(f"**Prompt:** {preview}")
-        lines.append(f"**Cooldown:** {state.get('cooldown_seconds', 3600)}s")
-        if state.get("llm_config"):
-            lines.append(f"**LLM config:** custom override set")
-        return "\n".join(lines)
-
-    # ---- Wizard views & components ----
-
-    class _HookWizardStartView(discord.ui.View):
-        """Step 1: Choose hook type (periodic vs event)."""
-
-        def __init__(self) -> None:
-            super().__init__(timeout=300)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + "\n\n**Choose the hook type:**"
-
-        @discord.ui.button(label="⏱️ Periodic", style=discord.ButtonStyle.primary, row=0)
-        async def periodic_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookPeriodicUnitView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="📡 Event", style=discord.ButtonStyle.primary, row=0)
-        async def event_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookEventCategoryView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
-        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            _hook_wizard_states.pop(interaction.user.id, None)
-            await interaction.response.edit_message(
-                content="🪝 Hook wizard cancelled.", view=None,
-            )
-
-    class _HookPeriodicUnitView(discord.ui.View):
-        """Step 2a: Choose interval unit for periodic hooks."""
-
-        def __init__(self) -> None:
-            super().__init__(timeout=300)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + "\n\n**Choose interval unit:**"
-
-        @discord.ui.button(label="Minutes", style=discord.ButtonStyle.secondary, row=0)
-        async def minutes_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["_interval_unit"] = "minutes"
-            view = _HookPeriodicValueView("minutes")
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="Hours", style=discord.ButtonStyle.secondary, row=0)
-        async def hours_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["_interval_unit"] = "hours"
-            view = _HookPeriodicValueView("hours")
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="Days", style=discord.ButtonStyle.secondary, row=0)
-        async def days_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["_interval_unit"] = "days"
-            view = _HookPeriodicValueView("days")
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=1)
-        async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookWizardStartView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
-        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            _hook_wizard_states.pop(interaction.user.id, None)
-            await interaction.response.edit_message(
-                content="🪝 Hook wizard cancelled.", view=None,
-            )
-
-    class _HookPeriodicValueView(discord.ui.View):
-        """Step 2b: Choose interval value with preset buttons + custom."""
-
-        def __init__(self, unit: str) -> None:
-            super().__init__(timeout=300)
-            self._unit = unit
-            multiplier = {"minutes": 60, "hours": 3600, "days": 86400}[unit]
-            presets = {"minutes": [5, 10, 15, 30], "hours": [1, 2, 4, 12], "days": [1, 2, 7]}[unit]
-            for val in presets:
-                btn = discord.ui.Button(
-                    label=f"{val} {unit}",
-                    style=discord.ButtonStyle.primary,
-                    row=0,
-                )
-                secs = val * multiplier
-                btn.callback = self._make_preset_callback(secs)
-                self.add_item(btn)
-            # Custom button
-            custom_btn = discord.ui.Button(
-                label="Custom…",
-                style=discord.ButtonStyle.secondary,
-                row=0,
-            )
-            custom_btn.callback = self._custom_callback
-            self.add_item(custom_btn)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + f"\n\n**Choose interval ({self._unit}):**"
-
-        def _make_preset_callback(self, seconds: int):
-            async def callback(interaction: discord.Interaction) -> None:
-                state = _wizard_state(interaction.user.id)
-                state["trigger"] = {"type": "periodic", "interval_seconds": seconds}
-                view = _HookConfigView()
-                await interaction.response.edit_message(
-                    content=view.build_content(state), view=view,
-                )
-            return callback
-
-        async def _custom_callback(self, interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(_HookCustomIntervalModal(self._unit))
-
-    class _HookCustomIntervalModal(discord.ui.Modal, title="Custom Interval"):
-        """Modal for entering a custom periodic interval value."""
-
-        interval_value = discord.ui.TextInput(
-            label="Interval value (number)",
-            placeholder="e.g. 45",
-            required=True,
-            max_length=10,
-        )
-
-        def __init__(self, unit: str) -> None:
-            super().__init__()
-            self._unit = unit
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            try:
-                val = int(self.interval_value.value)
-                if val <= 0:
-                    raise ValueError
-            except ValueError:
-                await interaction.response.send_message(
-                    "Please enter a positive integer.", ephemeral=True,
-                )
-                return
-            multiplier = {"minutes": 60, "hours": 3600, "days": 86400}[self._unit]
-            state = _wizard_state(interaction.user.id)
-            state["trigger"] = {"type": "periodic", "interval_seconds": val * multiplier}
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookEventCategoryView(discord.ui.View):
-        """Step 2c: Choose event category, then event type."""
-
-        def __init__(self, page: int = 0) -> None:
-            super().__init__(timeout=300)
-            self.page = page
-            self._rebuild()
-
-        def _rebuild(self) -> None:
-            self.clear_items()
-            # Build a flat list of all events grouped for select menu
-            options = []
-            for cat, events in _HOOK_EVENT_CATEGORIES:
-                for evt in events:
-                    label = evt
-                    desc = f"{cat} event"
-                    options.append(discord.SelectOption(label=label, value=evt, description=desc))
-            # Discord select menus support up to 25 options — we're well under.
-            select = discord.ui.Select(
-                placeholder="Select an event type…",
-                options=options,
-                row=0,
-            )
-            select.callback = self._select_callback
-            self.add_item(select)
-            # Custom event type
-            custom_btn = discord.ui.Button(
-                label="Custom event type…",
-                style=discord.ButtonStyle.secondary,
-                row=1,
-            )
-            custom_btn.callback = self._custom_callback
-            self.add_item(custom_btn)
-            # Back
-            back_btn = discord.ui.Button(
-                label="◀ Back",
-                style=discord.ButtonStyle.secondary,
-                row=2,
-            )
-            back_btn.callback = self._back_callback
-            self.add_item(back_btn)
-            # Cancel
-            cancel_btn = discord.ui.Button(
-                label="Cancel",
-                style=discord.ButtonStyle.danger,
-                row=2,
-            )
-            cancel_btn.callback = self._cancel_callback
-            self.add_item(cancel_btn)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + "\n\n**Select the event type to trigger on:**"
-
-        async def _select_callback(self, interaction: discord.Interaction) -> None:
-            event_type = interaction.data.get("values", [None])[0]
-            if not event_type:
-                return
-            state = _wizard_state(interaction.user.id)
-            state["trigger"] = {"type": "event", "event_type": event_type}
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        async def _custom_callback(self, interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(_HookCustomEventModal())
-
-        async def _back_callback(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookWizardStartView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        async def _cancel_callback(self, interaction: discord.Interaction) -> None:
-            _hook_wizard_states.pop(interaction.user.id, None)
-            await interaction.response.edit_message(
-                content="🪝 Hook wizard cancelled.", view=None,
-            )
-
-    class _HookCustomEventModal(discord.ui.Modal, title="Custom Event Type"):
-        """Modal for entering a custom event type string."""
-
-        event_type = discord.ui.TextInput(
-            label="Event type",
-            placeholder="e.g. task.completed or custom.my_event",
-            required=True,
-            max_length=100,
-        )
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["trigger"] = {"type": "event", "event_type": self.event_type.value.strip()}
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookConfigView(discord.ui.View):
-        """Step 3: Main configuration hub — add steps, set prompt, options."""
-
-        def __init__(self) -> None:
-            super().__init__(timeout=300)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + "\n\n**Configure your hook:**"
-
-        @discord.ui.button(label="📝 Set Prompt", style=discord.ButtonStyle.primary, row=0)
-        async def prompt_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            await interaction.response.send_modal(_HookPromptModal())
-
-        @discord.ui.button(label="➕ Add Context Step", style=discord.ButtonStyle.secondary, row=0)
-        async def add_step_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookStepTypeView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="⏱️ Set Cooldown", style=discord.ButtonStyle.secondary, row=1)
-        async def cooldown_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            await interaction.response.send_modal(_HookCooldownModal())
-
-        @discord.ui.button(label="🤖 LLM Config", style=discord.ButtonStyle.secondary, row=1)
-        async def llm_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            await interaction.response.send_modal(_HookLLMConfigModal())
-
-        @discord.ui.button(label="✅ Create Hook", style=discord.ButtonStyle.success, row=2)
-        async def create_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            # Validate required fields
-            missing = []
-            if not state.get("name"):
-                missing.append("name")
-            if not state.get("trigger"):
-                missing.append("trigger")
-            if not state.get("prompt_template"):
-                missing.append("prompt template")
-            if missing:
-                await interaction.response.send_message(
-                    f"Missing required fields: {', '.join(missing)}. "
-                    "Please complete them before creating.",
-                    ephemeral=True,
-                )
-                return
-            # Build the hook
-            import json as _json
-            args = {
-                "project_id": state["project_id"],
-                "name": state["name"],
-                "trigger": state["trigger"],
-                "prompt_template": state["prompt_template"],
-                "cooldown_seconds": state.get("cooldown_seconds", 3600),
-            }
-            if state.get("context_steps"):
-                args["context_steps"] = state["context_steps"]
-            if state.get("llm_config"):
-                args["llm_config"] = state["llm_config"]
-            result = await handler.execute("create_hook", args)
-            _hook_wizard_states.pop(interaction.user.id, None)
-            if "error" in result:
-                await interaction.response.edit_message(
-                    content=f"❌ Error creating hook: {result['error']}", view=None,
-                )
-                return
-            await interaction.response.edit_message(
-                content=(
-                    f"✅ Hook **{state['name']}** (`{result['created']}`) "
-                    f"created in `{state['project_id']}`!"
-                ),
-                view=None,
-            )
-
-        @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=2)
-        async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookWizardStartView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
-        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-            _hook_wizard_states.pop(interaction.user.id, None)
-            await interaction.response.edit_message(
-                content="🪝 Hook wizard cancelled.", view=None,
-            )
-
-    class _HookPromptModal(discord.ui.Modal, title="Hook Prompt Template"):
-        """Modal for setting the prompt template."""
-
-        prompt = discord.ui.TextInput(
-            label="Prompt template",
-            style=discord.TextStyle.long,
-            placeholder="Use {{step_0}}, {{event}}, {{event.field}} placeholders…",
-            required=True,
-            max_length=2000,
-        )
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["prompt_template"] = self.prompt.value
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookCooldownModal(discord.ui.Modal, title="Set Cooldown"):
-        """Modal for setting cooldown seconds."""
-
-        cooldown = discord.ui.TextInput(
-            label="Cooldown (seconds)",
-            placeholder="3600",
-            required=True,
-            max_length=10,
-            default="3600",
-        )
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            try:
-                val = int(self.cooldown.value)
-                if val < 0:
-                    raise ValueError
-            except ValueError:
-                await interaction.response.send_message(
-                    "Cooldown must be a non-negative integer.", ephemeral=True,
-                )
-                return
-            state = _wizard_state(interaction.user.id)
-            state["cooldown_seconds"] = val
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookLLMConfigModal(discord.ui.Modal, title="LLM Config Override"):
-        """Modal for optional LLM config override."""
-
-        provider = discord.ui.TextInput(
-            label="Provider",
-            placeholder="anthropic",
-            required=False,
-            max_length=50,
-        )
-        model = discord.ui.TextInput(
-            label="Model",
-            placeholder="claude-sonnet-4-20250514",
-            required=False,
-            max_length=100,
-        )
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            prov = self.provider.value.strip()
-            mdl = self.model.value.strip()
-            if prov or mdl:
-                config = {}
-                if prov:
-                    config["provider"] = prov
-                if mdl:
-                    config["model"] = mdl
-                state["llm_config"] = config
-            else:
-                state["llm_config"] = None
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookStepTypeView(discord.ui.View):
-        """Choose context step type to add."""
-
-        def __init__(self) -> None:
-            super().__init__(timeout=300)
-            options = [
-                discord.SelectOption(label=stype, value=stype, description=desc)
-                for stype, desc in _HOOK_STEP_TYPES
-            ]
-            select = discord.ui.Select(
-                placeholder="Choose step type…",
-                options=options,
-                row=0,
-            )
-            select.callback = self._select_callback
-            self.add_item(select)
-            back_btn = discord.ui.Button(
-                label="◀ Back",
-                style=discord.ButtonStyle.secondary,
-                row=1,
-            )
-            back_btn.callback = self._back_callback
-            self.add_item(back_btn)
-
-        def build_content(self, state: dict) -> str:
-            return _wizard_summary(state) + "\n\n**Choose context step type to add:**"
-
-        async def _select_callback(self, interaction: discord.Interaction) -> None:
-            step_type = interaction.data.get("values", [None])[0]
-            if not step_type:
-                return
-            await interaction.response.send_modal(_HookStepConfigModal(step_type))
-
-        async def _back_callback(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    class _HookStepConfigModal(discord.ui.Modal, title="Configure Context Step"):
-        """Modal to configure a context step based on its type."""
-
-        param1 = discord.ui.TextInput(
-            label="Primary parameter",
-            style=discord.TextStyle.short,
-            required=True,
-            max_length=500,
-        )
-        param2 = discord.ui.TextInput(
-            label="Secondary parameter (optional)",
-            style=discord.TextStyle.short,
-            required=False,
-            max_length=500,
-        )
-        skip_condition = discord.ui.TextInput(
-            label="Short-circuit condition (optional)",
-            placeholder="skip_llm_if_exit_zero / skip_llm_if_empty / skip_llm_if_status_ok",
-            required=False,
-            max_length=100,
-        )
-
-        _PARAM_LABELS = {
-            "shell": ("Command (e.g. npm test)", "Timeout seconds (default 60)"),
-            "read_file": ("File path", "Max lines (default 500)"),
-            "http": ("URL", "Timeout seconds (default 30)"),
-            "db_query": ("Query name (recent_task_results / task_detail / ...)", "Params JSON (optional)"),
-            "git_diff": ("Workspace path (default .)", "Base branch (default main)"),
-            "memory_search": ("Search query", "Top K results (default 3)"),
-        }
-
-        def __init__(self, step_type: str) -> None:
-            super().__init__()
-            self._step_type = step_type
-            labels = self._PARAM_LABELS.get(step_type, ("Value", "Extra (optional)"))
-            self.param1.label = labels[0]
-            self.param2.label = labels[1]
-            # Set useful placeholders per type
-            placeholders = {
-                "shell": ("npm test", "60"),
-                "read_file": ("./README.md", "500"),
-                "http": ("https://api.example.com/status", "30"),
-                "db_query": ("recent_task_results", '{"task_id": "{{event.task_id}}"}'),
-                "git_diff": (".", "main"),
-                "memory_search": ("API endpoints", "3"),
-            }
-            ph = placeholders.get(step_type, ("", ""))
-            self.param1.placeholder = ph[0]
-            self.param2.placeholder = ph[1]
-
-        async def on_submit(self, interaction: discord.Interaction) -> None:
-            import json as _json
-            step: dict = {"type": self._step_type}
-            p1 = self.param1.value.strip()
-            p2 = self.param2.value.strip()
-            skip = self.skip_condition.value.strip()
-
-            if self._step_type == "shell":
-                step["command"] = p1
-                if p2:
-                    try:
-                        step["timeout"] = int(p2)
-                    except ValueError:
-                        pass
-            elif self._step_type == "read_file":
-                step["path"] = p1
-                if p2:
-                    try:
-                        step["max_lines"] = int(p2)
-                    except ValueError:
-                        pass
-            elif self._step_type == "http":
-                step["url"] = p1
-                if p2:
-                    try:
-                        step["timeout"] = int(p2)
-                    except ValueError:
-                        pass
-            elif self._step_type == "db_query":
-                step["query"] = p1
-                if p2:
-                    try:
-                        step["params"] = _json.loads(p2)
-                    except _json.JSONDecodeError:
-                        pass
-            elif self._step_type == "git_diff":
-                step["workspace"] = p1 or "."
-                step["base_branch"] = p2 or "main"
-            elif self._step_type == "memory_search":
-                step["query"] = p1
-                if p2:
-                    try:
-                        step["top_k"] = int(p2)
-                    except ValueError:
-                        pass
-
-            if skip:
-                step[skip] = True
-
-            state = _wizard_state(interaction.user.id)
-            state["context_steps"].append(step)
-            view = _HookConfigView()
-            await interaction.response.edit_message(
-                content=view.build_content(state), view=view,
-            )
-
-    # ---- Wizard entry point (slash command) ----
-
-    @bot.tree.command(name="create-hook", description="Create an automation hook")
-    async def create_hook_command(interaction: discord.Interaction):
-        project_id = await _resolve_project_from_context(interaction, None)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        # Initialize wizard state
-        state = _wizard_state(interaction.user.id)
-        state["project_id"] = project_id
-        state["name"] = None
-        state["trigger"] = None
-        state["context_steps"] = []
-        state["prompt_template"] = None
-        state["cooldown_seconds"] = 3600
-        state["llm_config"] = None
-        # Show name modal first
-        await interaction.response.send_modal(_HookNameModal())
-
-    @bot.tree.command(name="add-hook", description="Create an automation hook (interactive wizard)")
-    async def add_hook_command(interaction: discord.Interaction):
-        project_id = await _resolve_project_from_context(interaction, None)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        # Initialize wizard state
-        state = _wizard_state(interaction.user.id)
-        state["project_id"] = project_id
-        state["name"] = None
-        state["trigger"] = None
-        state["context_steps"] = []
-        state["prompt_template"] = None
-        state["cooldown_seconds"] = 3600
-        state["llm_config"] = None
-        # Show name modal first
-        await interaction.response.send_modal(_HookNameModal())
-
-    class _HookNameModal(discord.ui.Modal, title="Name Your Hook"):
-        """First modal: enter the hook name."""
-
-        hook_name = discord.ui.TextInput(
-            label="Hook name",
+        rule_name = discord.ui.TextInput(
+            label="Rule name",
             placeholder="e.g. post-failure-analysis",
             required=True,
             max_length=100,
         )
+        rule_type_input = discord.ui.TextInput(
+            label="Type (active or passive)",
+            placeholder="active",
+            required=True,
+            max_length=10,
+            default="active",
+        )
+        trigger_input = discord.ui.TextInput(
+            label="Trigger (for active rules)",
+            placeholder="e.g. 'Check every 5 minutes' or 'When task.completed'",
+            required=False,
+            max_length=200,
+        )
+        logic_input = discord.ui.TextInput(
+            label="Logic / prompt",
+            style=discord.TextStyle.long,
+            placeholder="What should this rule do when triggered?",
+            required=True,
+            max_length=2000,
+        )
+
+        def __init__(self, project_id: str) -> None:
+            super().__init__()
+            self._project_id = project_id
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
-            state = _wizard_state(interaction.user.id)
-            state["name"] = self.hook_name.value.strip()
-            view = _HookWizardStartView()
+            name = self.rule_name.value.strip()
+            rule_type = self.rule_type_input.value.strip().lower()
+            if rule_type not in ("active", "passive"):
+                await interaction.response.send_message(
+                    "Type must be 'active' or 'passive'.", ephemeral=True,
+                )
+                return
+
+            # Build rule markdown content
+            lines = [f"# {name}"]
+            trigger_text = self.trigger_input.value.strip()
+            if trigger_text:
+                lines.append(f"\n## Trigger\n\n{trigger_text}")
+            lines.append(f"\n## Logic\n\n{self.logic_input.value}")
+            content = "\n".join(lines)
+
+            result = await handler.execute("save_rule", {
+                "project_id": self._project_id,
+                "type": rule_type,
+                "content": content,
+            })
+            if "error" in result:
+                await interaction.response.send_message(
+                    f"Error creating rule: {result['error']}", ephemeral=True,
+                )
+                return
+
+            rule_id = result.get("id", "unknown")
+            hooks = result.get("hooks", [])
+            hook_msg = f" ({len(hooks)} hook(s) generated)" if hooks else ""
             await interaction.response.send_message(
-                content=view.build_content(state), view=view,
+                f"Rule **{name}** (`{rule_id}`) created{hook_msg}!",
                 ephemeral=True,
             )
 
-    @bot.tree.command(name="edit-hook", description="Edit an automation hook")
-    @app_commands.describe(
-        hook_id="Hook ID",
-        name="New hook name (optional)",
-        enabled="Enable or disable the hook",
-        prompt_template="New prompt template (optional)",
-        cooldown_seconds="New cooldown in seconds (optional)",
-        max_tokens_per_run="Max tokens per run (optional, 0 to clear)",
+    @bot.tree.command(
+        name="create-rule",
+        description="Create a new automation rule (replaces create-hook)",
     )
-    async def edit_hook_command(
-        interaction: discord.Interaction,
-        hook_id: str,
-        name: str | None = None,
-        enabled: bool | None = None,
-        prompt_template: str | None = None,
-        cooldown_seconds: int | None = None,
-        max_tokens_per_run: int | None = None,
-    ):
-        args: dict = {"hook_id": hook_id}
-        if name is not None:
-            args["name"] = name
-        if enabled is not None:
-            args["enabled"] = enabled
-        if prompt_template is not None:
-            args["prompt_template"] = prompt_template
-        if cooldown_seconds is not None:
-            args["cooldown_seconds"] = cooldown_seconds
-        if max_tokens_per_run is not None:
-            args["max_tokens_per_run"] = max_tokens_per_run if max_tokens_per_run > 0 else None
-        result = await handler.execute("edit_hook", args)
-        if "error" in result:
-            await _send_error(interaction, result['error'])
+    async def create_rule_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        fields = ", ".join(result.get("fields", []))
-        await _send_success(
-            interaction, "Hook Updated",
-            description=f"Hook `{hook_id}` updated: {fields}",
-        )
+        await interaction.response.send_modal(_CreateRuleModal(project_id))
 
-    @bot.tree.command(name="delete-hook", description="Delete an automation hook")
-    @app_commands.describe(hook_id="Hook ID to delete")
-    async def delete_hook_command(interaction: discord.Interaction, hook_id: str):
-        result = await handler.execute("delete_hook", {"hook_id": hook_id})
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        await _send_success(
-            interaction, "Hook Deleted",
-            description=f"Hook **{result.get('name', hook_id)}** (`{hook_id}`) deleted.",
-        )
+    # Legacy /create-hook and /add-hook removed — use /create-rule instead.
+    # Legacy /edit-hook removed — edit the source rule via /rule <id>.
+    # Legacy /delete-hook removed — delete the source rule via /delete-rule.
 
     @bot.tree.command(name="hook-runs", description="Show recent execution history for a hook")
     @app_commands.describe(
@@ -5478,6 +5263,108 @@ def setup_commands(bot: commands.Bot) -> None:
                     f"**{changed}** of **{total}** hook(s) in `{project}` {action}."
                 ),
             )
+
+    # ===================================================================
+    # RULES COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="rules", description="Browse rules for a project")
+    @app_commands.describe(project_id="Project ID (optional if active project is set)")
+    async def rules_command(
+        interaction: discord.Interaction, project_id: str | None = None
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        args = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("list_rules", args)
+        rules = result.get("rules", [])
+        if not rules:
+            await _send_info(
+                interaction, "No Rules",
+                description="No rules configured for this scope.",
+            )
+            return
+        view = RulesListView(rules, handler)
+        msg = view.build_content()
+        await _send_long_interaction(
+            msg, interaction.response.send_message, view=view,
+        )
+
+    @bot.tree.command(name="rule", description="View full details of a rule")
+    @app_commands.describe(rule_id="Rule ID")
+    async def rule_command(interaction: discord.Interaction, rule_id: str):
+        result = await handler.execute("load_rule", {"id": rule_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        rule_type = result.get("type", "passive")
+        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
+        scope = result.get("project_id") or "global"
+        hooks = result.get("hooks", [])
+        content = result.get("content", "")
+        if len(content) > 1500:
+            content = content[:1500] + "\n\n_...truncated_"
+
+        lines = [
+            f"## 📏 Rule: {rule_id}",
+            f"**Type:** {type_label}",
+            f"**Scope:** `{scope}`",
+            f"**Hooks:** {len(hooks)}",
+            f"**Created:** {result.get('created', 'unknown')}",
+            f"**Updated:** {result.get('updated', 'unknown')}",
+            "",
+            content,
+        ]
+        await _send_long_interaction(
+            "\n".join(lines), interaction.response.send_message,
+        )
+
+    @bot.tree.command(name="delete-rule", description="Delete a rule and its hooks")
+    @app_commands.describe(rule_id="Rule ID to delete")
+    async def delete_rule_command(interaction: discord.Interaction, rule_id: str):
+        result = await handler.execute("delete_rule", {"id": rule_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        hooks_removed = result.get("hooks_removed", [])
+        await _send_success(
+            interaction,
+            "Rule Deleted",
+            description=(
+                f"Rule `{rule_id}` deleted"
+                + (f" ({len(hooks_removed)} hook(s) removed)." if hooks_removed else ".")
+            ),
+        )
+
+    @bot.tree.command(
+        name="refresh-hooks",
+        description="Reconcile hooks from current rule files",
+    )
+    async def refresh_hooks_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("refresh_hooks", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        scanned = result.get("rules_scanned", 0)
+        active = result.get("active_rules", 0)
+        regenerated = result.get("hooks_regenerated", 0)
+        unchanged = result.get("hooks_unchanged", 0)
+        errors = result.get("errors", 0)
+        parts = [f"Scanned **{scanned}** rule(s) (**{active}** active)"]
+        if regenerated:
+            parts.append(f"regenerated **{regenerated}** hook(s)")
+        if unchanged:
+            parts.append(f"**{unchanged}** hook(s) unchanged")
+        if not regenerated and not unchanged:
+            parts.append("no hooks to update")
+        desc = ", ".join(parts) + "."
+        if errors:
+            desc += f"\n⚠️ {errors} error(s) during reconciliation."
+        await interaction.followup.send(
+            f"✅ **Hooks Refreshed**\n{desc}"
+        )
 
     # ===================================================================
     # NOTES COMMANDS

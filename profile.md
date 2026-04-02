@@ -12,7 +12,7 @@ Single Python asyncio process. Event-driven state machine. SQLite (WAL mode) for
 
 ```
 asyncio event loop
-├── Discord Bot          — commands/messages, delegates to ChatAgent
+├── Discord Bot          — commands/messages, delegates to Supervisor
 ├── Orchestrator Loop    — runs every ~5s, manages task lifecycle
 │   ├── Promote DEFINED → READY (dependency check)
 │   ├── Detect dead agents (heartbeat)
@@ -27,7 +27,7 @@ asyncio event loop
 ### Task State Machine
 
 ```
-DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED
+DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
                                   │
                         ┌─────────┼──────────┐
                         ▼         ▼          ▼
@@ -52,18 +52,32 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/main.py` | Entry point — CLI args, starts async loop |
 | `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
 | `src/command_handler.py` | **Unified command execution** — 50+ commands, single entry point |
-| `src/chat_agent.py` | LLM-powered Discord interface — tools, context, streaming |
-| `src/database.py` | SQLite persistence — 14 tables, CRUD, migrations |
+| `src/supervisor.py` | **Supervisor** — multi-turn LLM conversation loop, tool dispatch, streaming |
+| `src/chat_agent.py` | Backward-compat shim — re-exports `Supervisor` as `ChatAgent` (deprecated) |
+| `src/database.py` | SQLite persistence — 19 tables, CRUD, migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Hook, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
 | `src/scheduler.py` | Proportional credit-weight scheduling |
 | `src/state_machine.py` | Formal state transitions, DAG cycle detection |
 | `src/event_bus.py` | Async pub/sub with wildcard support |
+| `src/tool_registry.py` | Central registry of all Supervisor tools — definitions and metadata |
+| `src/prompt_builder.py` | Assembles the Supervisor system prompt from context tiers |
+| `src/prompt_manager.py` | Manages prompt templates and variants |
+| `src/rule_manager.py` | User-defined rules injected into Supervisor prompts |
+| `src/reflection.py` | Post-task reflection — summarizes work, extracts lessons learned |
+| `src/chat_observer.py` | Observes agent chat streams, detects questions and key events |
+| `src/llm_logger.py` | Logs all LLM API calls for debugging and token accounting |
+| `src/schedule.py` | Scheduled/recurring task support |
 | `src/memory.py` | Smart-forge memory — profiles, notes, semantic search, compaction |
 | `src/hooks.py` | Hook engine — event/periodic triggers, context steps, LLM invocation |
 | `src/plan_parser.py` | Parses plan files into structured steps for task generation |
+| `src/health.py` | System health checks and diagnostics |
 | `src/file_watcher.py` | Mtime-based change detection, emits file/folder events |
 | `src/task_names.py` | Human-readable task IDs (adjective-noun, ~900 combos) |
+| `src/agent_names.py` | Creative agent name generation for personality-rich identifiers |
+| `src/known_tools.py` | Registry of known Claude Code tools and MCP servers for validation |
+| `src/logging_config.py` | Structured JSON logging with correlation IDs |
+| `src/setup_wizard.py` | Interactive first-time setup — Discord token, API keys, agent provisioning |
 
 ### Subsystems
 
@@ -77,7 +91,8 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/prompts/` | System prompts and templates (chat agent, memory revision, etc.) |
 | `src/messaging/` | Cross-platform messaging abstraction |
 | `src/telegram/` | Telegram bot integration |
-| `packages/mcp_server/` | MCP server with streaming capabilities |
+| `src/plugins/` | Plugin system for extensibility |
+| `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
 | `specs/` | Behavioral specifications (source of truth) |
 | `docs/` | Generated documentation (mkdocs) |
 
@@ -87,13 +102,13 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi.
 
 ### Why zero LLM for orchestration?
-On throttled plans, every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution, (2) chat interface, (3) hooks, (4) memory revision.
+On throttled plans, every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution, (2) Supervisor chat, (3) hooks, (4) memory revision, (5) reflection.
 
 ### Why Discord as control plane?
-Users manage from their phone. Natural language via ChatAgent backed by LLM tools. Each task gets a thread for live streaming. Reply to threads to unblock agents.
+Users manage from their phone. Natural language via Supervisor backed by LLM tools. Each task gets a thread for live streaming. Reply to threads to unblock agents.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Discord slash commands and ChatAgent tools both delegate here — ensures feature parity and consistent error handling.
+`CommandHandler` is the single execution point for all operations. Discord slash commands and Supervisor tools both delegate here — ensures feature parity and consistent error handling.
 
 ### Why the Adapter Pattern?
 `AgentAdapter` interface allows pluggable agent types. Currently Claude Code; designed for extensibility.
@@ -106,7 +121,7 @@ Per-project `profile.md` (stored in `~/.agent-queue/memory/{project_id}/`) captu
 
 ## Database Schema
 
-14 tables. Core: `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`. Supporting: `task_criteria`, `task_context`, `task_tools`, `task_results`, `hooks`, `hook_runs`, `system_config`.
+19 tables. Core: `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`. Supporting: `task_criteria`, `task_context`, `task_tools`, `task_results`, `hooks`, `hook_runs`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`.
 
 ## Configuration
 
@@ -131,7 +146,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - **Docker:** Not currently containerized — runs as a background daemon via `run.sh`
 - **Discord bot:** Primary interface, requires bot token + guild ID + channel config
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
-- **MCP server:** `packages/mcp_server/` provides tool access via Model Context Protocol
+- **MCP server:** `packages/mcp_server/` auto-exposes all CommandHandler commands (~100 tools) via Model Context Protocol, with configurable exclusions (see `specs/mcp-server.md`)
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI for LLM calls
 
 ## Known Architectural Notes

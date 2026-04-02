@@ -16,6 +16,7 @@ from src.config import (
     ConfigValidationError,
     DiscordConfig,
     LLMLoggingConfig,
+    McpServerConfig,
     MemoryConfig,
     PauseRetryConfig,
     SchedulingConfig,
@@ -412,3 +413,64 @@ class TestValidateConfigOnly:
     def test_missing_file_returns_one(self):
         from src.main import _validate_config_only
         assert _validate_config_only("/nonexistent/config.yaml") == 1
+
+
+# ── McpServerConfig injection helpers ─────────────────────────────────
+
+
+class TestMcpServerConfigInjection:
+    """Unit tests for McpServerConfig.should_inject_into_tasks and task_mcp_entry."""
+
+    def test_should_inject_defaults_to_enabled_state(self):
+        cfg = McpServerConfig(enabled=True, port=8082)
+        assert cfg.should_inject_into_tasks is True
+
+        cfg_off = McpServerConfig(enabled=False)
+        assert cfg_off.should_inject_into_tasks is False
+
+    def test_explicit_inject_overrides_default(self):
+        cfg = McpServerConfig(enabled=True, port=8082, inject_into_tasks=False)
+        assert cfg.should_inject_into_tasks is False
+
+        cfg2 = McpServerConfig(enabled=False, inject_into_tasks=True)
+        assert cfg2.should_inject_into_tasks is True
+
+    def test_task_mcp_entry_when_enabled(self):
+        cfg = McpServerConfig(enabled=True, host="127.0.0.1", port=8082)
+        entry = cfg.task_mcp_entry()
+        assert entry == {
+            "agent-queue": {"type": "http", "url": "http://127.0.0.1:8082/mcp"},
+        }
+
+    def test_task_mcp_entry_custom_host_port(self):
+        cfg = McpServerConfig(enabled=True, host="0.0.0.0", port=9999)
+        entry = cfg.task_mcp_entry()
+        assert entry["agent-queue"]["url"] == "http://0.0.0.0:9999/mcp"
+
+    def test_task_mcp_entry_when_disabled(self):
+        cfg = McpServerConfig(enabled=False)
+        assert cfg.task_mcp_entry() == {}
+
+    def test_task_mcp_entry_when_inject_false(self):
+        cfg = McpServerConfig(enabled=True, port=8082, inject_into_tasks=False)
+        assert cfg.task_mcp_entry() == {}
+
+    def test_task_mcp_entry_when_enabled_false_but_inject_true(self):
+        """Even with inject_into_tasks=True, disabled server produces empty entry."""
+        cfg = McpServerConfig(enabled=False, inject_into_tasks=True)
+        assert cfg.task_mcp_entry() == {}
+
+    def test_inject_into_tasks_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "discord": {"bot_token": "tok", "guild_id": "123"},
+            "mcp_server": {
+                "enabled": True,
+                "port": 8082,
+                "inject_into_tasks": False,
+            },
+        }))
+        cfg = load_config(str(config_file))
+        assert cfg.mcp_server.enabled is True
+        assert cfg.mcp_server.inject_into_tasks is False
+        assert cfg.mcp_server.should_inject_into_tasks is False

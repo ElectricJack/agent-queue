@@ -62,20 +62,17 @@ async def run_single_case(
     provider: ChatProvider,
     case: TestCase,
     verbose: bool = False,
-    max_tool_rounds: int = 10,
+    **_kwargs,
 ) -> TestCaseResult:
     """Execute a single test case and evaluate results.
 
     Each case gets a fresh Supervisor to prevent cross-contamination.
-    *max_tool_rounds* caps the tool-use loop in chat() — lower values
-    fail faster when the model is off-track.
     """
     # Fresh agent per case — use a wrapper for verbose logging so we never
     # monkey-patch the shared provider object.
     wrapper = _VerboseProviderWrapper(provider) if verbose else None
     agent = Supervisor(orchestrator, config)
     agent._provider = wrapper if wrapper else provider
-    config.supervisor.max_tool_rounds = max_tool_rounds
 
     recorder = RecordingCommandHandler(orchestrator, config)
     agent.handler = recorder
@@ -154,7 +151,7 @@ async def run_eval(
     verbose: bool = False,
     output_dir: str = "",
     concurrency: int = 1,
-    max_tool_rounds: int = 10,
+    **_kwargs,
 ) -> EvalRunResult:
     """Run all cases and return aggregated results.
 
@@ -164,9 +161,6 @@ async def run_eval(
     *concurrency* controls how many cases run in parallel.  With a local
     Ollama model, 2-3 can help overlap Python/network overhead even though
     GPU inference is mostly sequential.
-
-    *max_tool_rounds* caps the tool-use loop per turn — lower values fail
-    faster when the model is off-track (default 10, recommended 3 for eval).
     """
     from pathlib import Path
 
@@ -200,7 +194,7 @@ async def run_eval(
             case_start = time.monotonic()
             result = await run_single_case(
                 orchestrator, config, provider, case,
-                verbose=verbose, max_tool_rounds=max_tool_rounds,
+                verbose=verbose,
             )
             case_elapsed = time.monotonic() - case_start
 
@@ -301,12 +295,11 @@ async def _main(args: argparse.Namespace) -> None:
                 cases = cases[:args.limit]
 
             print(f"Running {len(cases)} test cases with {provider.model_name} "
-                  f"(concurrency={args.concurrency}, max_rounds={args.max_rounds})...")
+                  f"(concurrency={args.concurrency})...")
             run_result = await run_eval(orch, config, cases, provider,
                                         verbose=args.verbose,
                                         output_dir=args.output,
-                                        concurrency=args.concurrency,
-                                        max_tool_rounds=args.max_rounds)
+                                        concurrency=args.concurrency)
 
             # Save results
             output_dir = Path(args.output)
@@ -339,8 +332,6 @@ def main():
                         help="Run only the first N cases (0 = all)")
     parser.add_argument("--concurrency", "-j", type=int, default=1,
                         help="Run N cases in parallel (default: 1)")
-    parser.add_argument("--max-rounds", type=int, default=3,
-                        help="Max tool-use rounds per turn (default: 3, production: 10)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show per-turn LLM call progress")
     args = parser.parse_args()

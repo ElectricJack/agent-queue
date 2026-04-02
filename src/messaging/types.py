@@ -29,3 +29,20 @@ CreateThreadCallback = Callable[
     [str, str, str | None, str | None],
     Awaitable[tuple[ThreadSendCallback, ThreadSendCallback] | None],
 ]
+
+# Returns a Discord jump URL pointing to the last message in the thread
+# for a given task_id, so embeds can link directly to the agent's final
+# output instead of showing truncated content.
+# Args: (task_id)
+# Returns: URL string, or None if no thread/message is available.
+GetThreadUrlCallback = Callable[[str], Awaitable[str | None]]
+
+# Edits the thread-root message (the "Agent working: ..." message that
+# serves as the parent for the task thread).  Used to update the root
+# message text when a task completes or fails.
+# Args: (task_id, content | None, embed | None)
+# Returns: None
+EditThreadRootCallback = Callable[
+    [str, str | None, Any],
+    Awaitable[None],
+]

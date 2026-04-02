@@ -1,15 +1,36 @@
 """Tiered tool registry for on-demand tool loading.
 
 Splits the monolithic TOOLS list into core tools (always loaded) and
-named categories (loaded on demand via browse_tools/load_tools).
+named categories (loaded on demand via ``browse_tools``/``load_tools``).
+This keeps the LLM's initial context window small — only ~10 core tools
+are loaded at conversation start.  When the LLM needs specialised tools
+(git, hooks, memory, etc.) it calls ``browse_tools`` to discover categories,
+then ``load_tools`` to inject that category's definitions into the active
+tool set for subsequent turns.
 
-The registry only manages tool *definitions* (JSON Schema dicts).
-Execution still flows through CommandHandler.execute() regardless
-of whether a tool is "loaded" in the LLM's context.
+The registry only manages tool *definitions* (JSON Schema dicts that
+describe each tool's name, description, and input schema).  Execution
+still flows through ``CommandHandler.execute()`` regardless of whether
+a tool is "loaded" in the LLM's context — the loading mechanism is
+purely an attention/context optimisation.
+
+Key components:
+
+- ``CATEGORIES`` — named groups (git, project, agent, hooks, memory,
+  files, system) with human-readable descriptions.
+- ``_TOOL_CATEGORIES`` — mapping of tool name → category.  Tools not
+  listed here are "core" (always loaded).
+- ``_ALL_TOOL_DEFINITIONS`` — the master list of ~80 tool JSON Schema
+  dicts.  Each entry corresponds to a ``CommandHandler._cmd_*`` method.
+- ``ToolRegistry`` — the public API: ``get_core_tools()``,
+  ``get_category_tools(cat)``, ``get_all_tools()``.
+
+See ``specs/supervisor.md`` for the tool-use loop that drives loading.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -102,15 +123,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
     "remove_workspace": "project",
-    "sync_workspaces": "project",
+    "queue_sync_workspaces": "project",
     "set_active_project": "project",
-    # agent
+    # agent (workspace-as-agent model — CRUD commands removed)
     "list_agents": "agent",
-    "create_agent": "agent",
-    "edit_agent": "agent",
-    "pause_agent": "agent",
-    "resume_agent": "agent",
-    "delete_agent": "agent",
     "get_agent_error": "agent",
     "list_profiles": "agent",
     "create_profile": "agent",
@@ -122,11 +138,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
-    # hooks
-    "create_hook": "hooks",
+    # hooks (read-only / execution — all creation goes through rules)
     "list_hooks": "hooks",
-    "edit_hook": "hooks",
-    "delete_hook": "hooks",
     "list_hook_runs": "hooks",
     "fire_hook": "hooks",
     "hook_schedules": "hooks",
@@ -547,6 +560,14 @@ _ALL_TOOL_DEFINITIONS = [
                         "read these files using the Read tool."
                     ),
                 },
+                "auto_approve_plan": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, any plan this task generates will be "
+                        "automatically approved without waiting for human review."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["title"],
         },
@@ -648,109 +669,41 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "sync_workspaces",
+        "name": "queue_sync_workspaces",
         "description": (
-            "Synchronize all project workspaces to the latest main branch. "
-            "Fetches latest changes, pushes any unpushed local commits, and rebases "
-            "feature branches onto the updated main. Locked workspaces (in use by agents) "
-            "are skipped. Workspaces with unresolvable conflicts are reported for manual "
-            "intervention. Returns a per-workspace status report."
+            "Queue a high-priority Sync Workspaces task that orchestrates a full "
+            "workspace synchronization workflow. When executed, the task will: "
+            "(1) pause the project, (2) wait for all active tasks to complete, "
+            "(3) launch a Claude Code agent to merge all feature branches into the "
+            "default branch across all workspaces, (4) resume the project. "
+            "Use this when workspaces have drifted from the default branch and "
+            "feature work is stuck on feature branches that need consolidation."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID to sync workspaces for (optional if active project is set)",
-                },
-                "skip_locked": {
-                    "type": "boolean",
-                    "description": "Skip workspaces locked by an agent (default: true). Set to false to sync all workspaces.",
+                    "description": "Project ID to sync (optional if active project is set)",
                 },
             },
         },
     },
     {
         "name": "list_agents",
-        "description": "List all configured agents and their current state.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "create_agent",
         "description": (
-            "Register a new agent. If no name is provided, a creative unique "
-            "name is auto-generated. Agents start in IDLE state and immediately "
-            "begin receiving tasks. Agents dynamically acquire workspace locks "
-            "from available project workspaces when assigned tasks."
+            "List agent slots for a project. Each workspace is an agent slot: "
+            "locked workspaces are 'busy', unlocked are 'idle'. "
+            "Requires project_id (or an active project)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {
+                "project_id": {
                     "type": "string",
-                    "description": "Agent display name. Leave empty to auto-generate a creative name.",
-                },
-                "agent_type": {
-                    "type": "string",
-                    "description": "Agent type (claude, codex, cursor, aider)",
-                    "default": "claude",
+                    "description": "Project ID to list agents for (optional if active project is set)",
                 },
             },
-        },
-    },
-    {
-        "name": "edit_agent",
-        "description": (
-            "Edit an agent's properties: name or agent_type. "
-            "Use this to rename agents or change their type."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID"},
-                "name": {"type": "string", "description": "New display name (optional)"},
-                "agent_type": {
-                    "type": "string",
-                    "description": "New agent type: claude, codex, cursor, aider (optional)",
-                },
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "pause_agent",
-        "description": (
-            "Pause an agent so it stops receiving new tasks. If the agent is "
-            "currently BUSY, it will finish its current task then stay paused."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to pause"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "resume_agent",
-        "description": "Resume a paused agent so it can receive tasks again.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to resume"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "delete_agent",
-        "description": "Delete an agent and all its workspace mappings. Cannot delete a BUSY agent — stop its task first.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to delete"},
-            },
-            "required": ["agent_id"],
         },
     },
     {
@@ -781,9 +734,9 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
-            "status, max_retries, verification_type, or profile_id. Use this to move a task "
-            "to a different project, rename tasks, change priority, override status (admin), "
-            "assign a profile, or adjust retry/verification settings."
+            "status, max_retries, verification_type, profile_id, or auto_approve_plan. Use this "
+            "to move a task to a different project, rename tasks, change priority, override status "
+            "(admin), assign a profile, or adjust retry/verification settings."
         ),
         "input_schema": {
             "type": "object",
@@ -812,6 +765,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": ["string", "null"],
                     "description": "Agent profile ID (optional, set to null to clear)",
+                },
+                "auto_approve_plan": {
+                    "type": "boolean",
+                    "description": "If true, any plan this task generates will be automatically approved without human review (optional)",
                 },
             },
             "required": ["task_id"],
@@ -881,8 +838,8 @@ _ALL_TOOL_DEFINITIONS = [
             "Archive completed tasks to clear them from active task lists. "
             "Tasks are moved to the archived_tasks DB table (viewable with "
             "list_archived, restorable with restore_task) and a markdown "
-            "reference note is written to the project workspace. Optionally "
-            "also archive FAILED and BLOCKED tasks."
+            "reference note is written to ~/.agent-queue/archived_tasks/. "
+            "Optionally also archive FAILED and BLOCKED tasks."
         ),
         "input_schema": {
             "type": "object",
@@ -1350,89 +1307,16 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "create_hook",
-        "description": (
-            "Create a hook that automatically triggers actions. Hooks gather context "
-            "(shell commands, file reads, HTTP checks, DB queries) and send a prompt "
-            "to an LLM that has access to all system tools (create_task, list_tasks, etc.). "
-            "Trigger types: 'periodic' (interval_seconds), 'event' (event_type). "
-            "Context step types: 'shell' (command, timeout, skip_llm_if_exit_zero), "
-            "'read_file' (path, max_lines), 'http' (url, skip_llm_if_status_ok), "
-            "'db_query' (query name, params), 'git_diff' (workspace, base_branch). "
-            "Use {{step_0}}, {{step_1}}, {{event}} in prompt_template."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {"type": "string", "description": "Hook name (used as ID slug)"},
-                "trigger": {
-                    "type": "object",
-                    "description": "Trigger config: {type: 'periodic', interval_seconds: N} or {type: 'event', event_type: '...'}",
-                },
-                "context_steps": {
-                    "type": "array",
-                    "description": "Array of context step configs",
-                    "items": {"type": "object"},
-                },
-                "prompt_template": {
-                    "type": "string",
-                    "description": "Prompt template with {{step_N}} and {{event}} placeholders",
-                },
-                "cooldown_seconds": {
-                    "type": "integer",
-                    "description": "Min seconds between runs (default 3600)",
-                    "default": 3600,
-                },
-                "llm_config": {
-                    "type": "object",
-                    "description": "Optional LLM config override: {provider, model, base_url}",
-                },
-            },
-            "required": ["project_id", "name", "trigger", "prompt_template"],
-        },
-    },
-    {
         "name": "list_hooks",
-        "description": "List hooks, optionally filtered by project.",
+        "description": (
+            "List hooks (generated from rules), optionally filtered by project. "
+            "Hooks are internal execution artifacts — to create automation, use save_rule instead."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Filter by project ID (optional)"},
             },
-        },
-    },
-    {
-        "name": "edit_hook",
-        "description": (
-            "Edit a hook's configuration: name, enabled, trigger, context_steps, "
-            "prompt_template, cooldown_seconds, llm_config, or max_tokens_per_run."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID"},
-                "name": {"type": "string", "description": "New hook name (optional)"},
-                "enabled": {"type": "boolean", "description": "Enable/disable the hook"},
-                "trigger": {"type": "object", "description": "New trigger config"},
-                "context_steps": {"type": "array", "description": "New context steps", "items": {"type": "object"}},
-                "prompt_template": {"type": "string", "description": "New prompt template"},
-                "cooldown_seconds": {"type": "integer", "description": "New cooldown"},
-                "llm_config": {"type": "object", "description": "New LLM config override"},
-                "max_tokens_per_run": {"type": ["integer", "null"], "description": "Max tokens per run (null to clear)"},
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "delete_hook",
-        "description": "Delete a hook and its run history.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID to delete"},
-            },
-            "required": ["hook_id"],
         },
     },
     {
@@ -1522,7 +1406,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "context_steps": {
                     "type": "array",
-                    "description": "Optional context-gathering steps (same as create_hook)",
+                    "description": "Optional context-gathering steps",
                     "items": {"type": "object"},
                 },
                 "llm_config": {
@@ -2496,8 +2380,22 @@ _ALL_TOOL_DEFINITIONS = [
 class ToolRegistry:
     """Registry that categorizes tools into core and on-demand categories.
 
-    Initialized with a list of tool definition dicts (JSON Schema format).
-    Each tool is either "core" (always loaded) or belongs to a named category.
+    Initialised with a list of tool definition dicts (JSON Schema format).
+    Each tool is either "core" (always loaded) or belongs to a named
+    category that can be loaded on demand via ``load_tools``.
+
+    Usage::
+
+        registry = ToolRegistry()
+        core = registry.get_core_tools()          # always-on tools
+        git  = registry.get_category_tools("git")  # on-demand category
+
+    The registry is stateless — it doesn't track which categories are
+    currently "loaded" in a conversation.  That state lives in the
+    Supervisor's ``active_tools`` dict.
+
+    Attributes:
+        _all_tools: Mapping of tool name → tool definition dict.
     """
 
     def __init__(self, tools: list[dict] | None = None):
@@ -2519,8 +2417,13 @@ class ToolRegistry:
         self._plugin_registry = plugin_registry
 
     def _ensure_navigation_tools(self) -> None:
-        """Add browse_tools, load_tools, send_message, and rule stubs
-        if not already present."""
+        """Add browse_tools, load_tools, send_message, reply_to_user, and rule stubs if absent.
+
+        These tools are synthesised at init time rather than being defined in
+        ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
+        Supervisor's tool-use loop (e.g. ``load_tools`` expands the active set,
+        ``reply_to_user`` terminates the loop).
+        """
         if "browse_tools" not in self._all_tools:
             self._all_tools["browse_tools"] = {
                 "name": "browse_tools",
@@ -2609,19 +2512,26 @@ class ToolRegistry:
                     "required": ["message"],
                 },
             }
-        # Rule stubs (Phase 2 placeholders)
-        for rule_tool in self._get_rule_tool_stubs():
+        # Rule tools — primary automation interface
+        for rule_tool in self._get_rule_tools():
             if rule_tool["name"] not in self._all_tools:
                 self._all_tools[rule_tool["name"]] = rule_tool
 
     @staticmethod
-    def _get_rule_tool_stubs() -> list[dict]:
-        """Return stub tool definitions for Phase 2 rule tools."""
+    def _get_rule_tools() -> list[dict]:
+        """Return tool definitions for the rule-based automation interface.
+
+        Rules are the primary (and only) way to create automation. Hooks are
+        internal execution artifacts generated from rules automatically.
+        """
         return [
             {
-                "name": "browse_rules",
+                "name": "list_rules",
                 "description": (
-                    "List active rules for current project and globals."
+                    "List all automation rules for the current project and globals. "
+                    "Rules are the ONLY way to create automation — each active rule "
+                    "generates hooks that execute automatically. "
+                    "Alias: browse_rules"
                 ),
                 "input_schema": {
                     "type": "object",
@@ -2638,7 +2548,10 @@ class ToolRegistry:
             },
             {
                 "name": "load_rule",
-                "description": "Load a specific rule's full detail.",
+                "description": (
+                    "Load a specific rule's full content and metadata, "
+                    "including its generated hook IDs."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2652,7 +2565,15 @@ class ToolRegistry:
             },
             {
                 "name": "save_rule",
-                "description": "Create or update a rule.",
+                "description": (
+                    "Create or update an automation rule. This is the ONLY way to "
+                    "create automation — never create hooks directly. Active rules with "
+                    "triggers automatically generate hooks that execute on schedule or "
+                    "in response to events. Passive rules influence reasoning without "
+                    "triggering actions. "
+                    "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
+                    "'When a task is completed'), and ## Logic section in the content."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2665,17 +2586,20 @@ class ToolRegistry:
                         "project_id": {
                             "type": "string",
                             "description": (
-                                "Project ID (null = global)"
+                                "Project ID (null = global rule visible to all projects)"
                             ),
                         },
                         "type": {
                             "type": "string",
                             "enum": ["active", "passive"],
-                            "description": "Rule type",
+                            "description": (
+                                "Rule type: 'active' for triggered automation, "
+                                "'passive' for reasoning guidance"
+                            ),
                         },
                         "content": {
                             "type": "string",
-                            "description": "Rule content (markdown)",
+                            "description": "Rule content (markdown with # Title, ## Trigger, ## Logic sections)",
                         },
                     },
                     "required": ["type", "content"],
@@ -2683,7 +2607,10 @@ class ToolRegistry:
             },
             {
                 "name": "delete_rule",
-                "description": "Remove a rule.",
+                "description": (
+                    "Remove an automation rule and all its generated hooks. "
+                    "This is the only way to remove automation — do not delete hooks directly."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2695,17 +2622,96 @@ class ToolRegistry:
                     "required": ["id"],
                 },
             },
+            {
+                "name": "refresh_hooks",
+                "description": (
+                    "Force reconciliation of all rules and their hooks. "
+                    "Re-reads all rule files, regenerates hooks for active rules, "
+                    "and cleans up orphaned hooks. Normally not needed — the file "
+                    "watcher auto-reconciles when rule files change on disk."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
         ]
 
-    def get_core_tools(self) -> list[dict]:
-        """Return tool definitions that are always loaded."""
-        return [
+    # ------------------------------------------------------------------
+    # Schema compression for small-context LLMs
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compress_tool_schema(tool: dict) -> dict:
+        """Return a minimal version of a tool definition for small-context LLMs.
+
+        Strips verbose descriptions down to short phrases and removes
+        parameter descriptions where the name is self-explanatory.
+        Keeps: name, compressed description, input_schema with types/required/enums.
+        """
+        compressed = {"name": tool["name"]}
+
+        # Compress description to first sentence, max ~80 chars
+        desc = tool.get("description", "")
+        # Take first sentence
+        for sep in [". ", ".\n", ".  "]:
+            if sep in desc:
+                desc = desc[:desc.index(sep) + 1]
+                break
+        # Truncate if still long
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        compressed["description"] = desc
+
+        # Compress input_schema: keep types, required, enums; drop descriptions
+        schema = tool.get("input_schema", {})
+        if not schema.get("properties"):
+            compressed["input_schema"] = {"type": "object", "properties": {}}
+            return compressed
+
+        compressed_props = {}
+        for prop_name, prop_def in schema.get("properties", {}).items():
+            if not isinstance(prop_def, dict):
+                compressed_props[prop_name] = prop_def
+                continue
+            # Keep only structural info: type, enum, default, items
+            compact = {}
+            for key in ("type", "enum", "default", "items"):
+                if key in prop_def:
+                    compact[key] = prop_def[key]
+            compressed_props[prop_name] = compact
+
+        compressed_schema = {"type": "object", "properties": compressed_props}
+        if "required" in schema:
+            compressed_schema["required"] = schema["required"]
+        compressed["input_schema"] = compressed_schema
+        return compressed
+
+    def get_core_tools(self, compressed: bool = False) -> list[dict]:
+        """Return tool definitions that are always loaded.
+
+        Args:
+            compressed: If True, return minimal schemas for small-context LLMs.
+
+        Returns:
+            List of tool definition dicts for tools not assigned to any
+            category (i.e. not present in ``_TOOL_CATEGORIES``).
+        """
+        tools = [
             t for name, t in self._all_tools.items()
             if name not in _TOOL_CATEGORIES
         ]
+        if compressed:
+            return [self.compress_tool_schema(t) for t in tools]
+        return tools
 
     def get_categories(self) -> list[dict]:
-        """Return category metadata list for browse_tools response."""
+        """Return category metadata list for ``browse_tools`` response.
+
+        Returns:
+            List of dicts with ``name``, ``description``, and ``tool_count``
+            keys — one per registered category.
+        """
         result = []
         for cat_name, meta in CATEGORIES.items():
             tools = self.get_category_tools(cat_name)
@@ -2716,21 +2722,42 @@ class ToolRegistry:
             })
         return result
 
-    def get_category_tools(self, category: str) -> list[dict] | None:
-        """Return all tool definitions for a category, or None if
-        unknown."""
+    def get_category_tools(
+        self, category: str, compressed: bool = False,
+    ) -> list[dict] | None:
+        """Return all tool definitions for a category.
+
+        Args:
+            category: Category name (e.g. ``"git"``, ``"hooks"``).
+            compressed: If True, return minimal schemas for small-context LLMs.
+
+        Returns:
+            List of tool definition dicts, or ``None`` if the category
+            name is not recognised.
+        """
         if category not in CATEGORIES:
             return None
-        return [
+        tools = [
             self._all_tools[name]
             for name, cat in _TOOL_CATEGORIES.items()
             if cat == category and name in self._all_tools
         ]
+        if compressed:
+            return [self.compress_tool_schema(t) for t in tools]
+        return tools
 
     def get_category_tool_names(
         self, category: str
     ) -> list[str] | None:
-        """Return tool names for a category, or None if unknown."""
+        """Return tool names for a category.
+
+        Args:
+            category: Category name (e.g. ``"git"``, ``"hooks"``).
+
+        Returns:
+            List of tool name strings, or ``None`` if the category
+            name is not recognised.
+        """
         if category not in CATEGORIES:
             return None
         return [
@@ -2739,8 +2766,110 @@ class ToolRegistry:
         ]
 
     def get_all_tools(self) -> list[dict]:
-        """Return all tool definitions (core + all categories + plugins)."""
+        """Return all tool definitions (core + all categories + plugins).
+
+        Returns:
+            List of every tool definition dict known to the registry,
+            including any tools contributed by loaded plugins.
+        """
         tools = list(self._all_tools.values())
         if self._plugin_registry:
             tools.extend(self._plugin_registry.get_all_tool_definitions())
         return tools
+
+    # ------------------------------------------------------------------
+    # Prompt-based tool search
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Tokenize text into lowercase words, splitting on underscores too.
+
+        Filters out very short tokens (len < 3) and common stop words to
+        reduce noise in keyword matching.
+        """
+        _STOP_WORDS = frozenset({
+            "the", "and", "for", "this", "that", "with", "from", "are",
+            "was", "were", "been", "have", "has", "had", "not", "but",
+            "can", "will", "all", "its", "use", "set", "get", "new",
+            "one", "two", "any", "our", "you", "your",
+        })
+        # Split on non-alphanumeric, underscores, and hyphens
+        words = re.split(r"[^a-zA-Z0-9]+", text.lower())
+        return {w for w in words if len(w) >= 3 and w not in _STOP_WORDS}
+
+    def _tool_search_text(self, tool: dict) -> str:
+        """Build searchable text from a tool definition.
+
+        Combines the tool name (with underscores split into words) and
+        the tool description into a single string for keyword matching.
+        """
+        name = tool.get("name", "")
+        desc = tool.get("description", "")
+        # Also include property names/descriptions from input_schema
+        schema_parts: list[str] = []
+        schema = tool.get("input_schema", {})
+        for prop_name, prop_def in schema.get("properties", {}).items():
+            schema_parts.append(prop_name)
+            if isinstance(prop_def, dict) and "description" in prop_def:
+                schema_parts.append(prop_def["description"])
+        return f"{name} {desc} {' '.join(schema_parts)}"
+
+    def search_relevant_categories(
+        self,
+        query: str,
+        max_categories: int = 3,
+        min_score: float = 0.15,
+    ) -> list[str]:
+        """Search tool definitions and return categories relevant to a query.
+
+        Scores each non-core tool against the query using keyword overlap
+        between the query tokens and the tool's name + description + schema.
+        Categories are ranked by a composite of their best-matching tool's
+        score (primary) and the sum of all tool scores (tiebreaker).
+
+        Args:
+            query: The user's prompt or search query.
+            max_categories: Maximum number of categories to return.
+            min_score: Minimum score threshold (0-1) for a category to be
+                included. Categories whose best tool score falls below this
+                are excluded.
+
+        Returns:
+            List of category names, ordered by relevance (best first).
+            May be empty if no categories score above ``min_score``.
+        """
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+
+        # Score each categorized tool, track best and sum per category
+        category_best: dict[str, float] = {}
+        category_sum: dict[str, float] = {}
+        for tool_name, category in _TOOL_CATEGORIES.items():
+            tool = self._all_tools.get(tool_name)
+            if not tool:
+                continue
+            tool_tokens = self._tokenize(self._tool_search_text(tool))
+            if not tool_tokens:
+                continue
+
+            # Score: fraction of query tokens found in tool text
+            matches = query_tokens & tool_tokens
+            score = len(matches) / len(query_tokens)
+
+            if score > 0:
+                category_sum[category] = category_sum.get(category, 0.0) + score
+                if score > category_best.get(category, 0.0):
+                    category_best[category] = score
+
+        # Rank by (best_score, sum_score) so ties are broken by breadth
+        ranked = sorted(
+            category_best.items(),
+            key=lambda x: (x[1], category_sum.get(x[0], 0.0)),
+            reverse=True,
+        )
+        return [
+            cat for cat, score in ranked[:max_categories]
+            if score >= min_score
+        ]

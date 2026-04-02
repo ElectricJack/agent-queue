@@ -10,13 +10,12 @@ This document catalogs every migration and its removal criteria.
 
 ```
 Database.initialize()
-├── SCHEMA (DDL)                          — CREATE TABLE IF NOT EXISTS (14 tables)
-├── Column migrations (ALTER TABLE)       — 11 one-liners
+├── SCHEMA (DDL)                          — CREATE TABLE IF NOT EXISTS (19 tables)
+├── Column migrations (ALTER TABLE)       — 12 one-liners
 ├── Index creation                        — 2 indexes
-├── _migrate_agent_workspaces()           — agents.checkout_path → agent_workspaces
+├── _drop_legacy_agent_workspaces()       — DROP TABLE IF EXISTS agent_workspaces
 ├── _migrate_repos_to_projects()          — repos table → projects.repo_url columns
-├── _migrate_agent_workspaces_to_workspaces()  — agent_workspaces → workspaces
-├── _cleanup_cross_project_workspaces()   — fix stale cross-project entries
+├── _normalize_workspace_paths()          — resolve relative paths to absolute
 └── COMMIT
 ```
 
@@ -46,27 +45,10 @@ Database.initialize()
 6. Remove `_migrate_repos_to_projects()`
 7. Remove `RepoConfig` from models.py
 
-### `agent_workspaces` table
-**Schema location:** `database.py` line ~179
-**Created:** Intermediate migration step (agents had per-project workspace assignments)
-**Superseded by:** `workspaces` table (project-scoped, agent-agnostic with dynamic locking)
-**Migration that replaced it:** `_migrate_agent_workspaces_to_workspaces()`
-**Still referenced by:**
-- `_migrate_agent_workspaces()` — writes into it from `agents.checkout_path`
-- `_migrate_agent_workspaces_to_workspaces()` — reads from it to populate `workspaces`
-- `delete_agent()` cascade — `DELETE FROM agent_workspaces WHERE agent_id = ?`
-- `delete_project()` cascade — `DELETE FROM agent_workspaces WHERE project_id = ?`
-
-**Known bug (fixed):** This table contained a stale row mapping
-`(agent-queue-worker, moss-and-spade-inventory-manager) → /mnt/d/Dev/agent-queue2`
-which caused the migration to re-create a bogus workspace entry on every restart,
-sending agents to the wrong project directory.
-
-**Removal plan:**
-1. Remove `_migrate_agent_workspaces()` method
-2. Remove `_migrate_agent_workspaces_to_workspaces()` method
-3. Remove cascade DELETEs in `delete_agent()` and `delete_project()`
-4. Drop `agent_workspaces` table from SCHEMA
+### `agent_workspaces` table — ✅ DROPPED
+**Status:** Fully removed. `_drop_legacy_agent_workspaces()` runs `DROP TABLE IF EXISTS agent_workspaces` on every startup for backward compatibility with old databases.
+**Previously:** Intermediate migration step between `agents.checkout_path` and the `workspaces` table.
+**Migration methods removed:** `_migrate_agent_workspaces()`, `_migrate_agent_workspaces_to_workspaces()`, `_cleanup_cross_project_workspaces()`.
 
 ---
 
@@ -96,7 +78,7 @@ sending agents to the wrong project directory.
 
 ## Column Migrations (ALTER TABLE)
 
-All in `Database.initialize()` lines ~298-311. Each runs in a try/except that
+All in `Database.initialize()`. Each runs in a try/except that
 swallows "column already exists" errors.
 
 | # | Migration SQL | Target | Status |
@@ -123,35 +105,30 @@ be removed.
 
 ## Data Migration Methods
 
-### `_migrate_agent_workspaces()`
-**Location:** `database.py` line ~337
-**Purpose:** Copy `agents.checkout_path` + `agents.repo_id` into `agent_workspaces` table
-**Source:** `agents` table (columns: `checkout_path`, `repo_id`, `current_task_id`)
-**Destination:** `agent_workspaces` table
-**Guard:** Returns early if `checkout_path` column no longer exists in `agents`
-**Status:** **Removable** — intermediate step, feeds into `_migrate_agent_workspaces_to_workspaces`
+### `_migrate_agent_workspaces()` — ✅ REMOVED
+Previously copied `agents.checkout_path` + `agents.repo_id` into `agent_workspaces` table.
+Removed along with the `agent_workspaces` table.
 
 ### `_migrate_repos_to_projects()`
-**Location:** `database.py` line ~420
+**Location:** `database.py`
 **Purpose:** Copy first repo's `url`/`default_branch` into `projects.repo_url`/`repo_default_branch`
 **Source:** `repos` table
 **Destination:** `projects` table
 **Guard:** Only writes to projects where `repo_url IS NULL OR repo_url = ''`
 **Status:** **Removable** once `repos` table is dropped and all projects have `repo_url` populated
 
-### `_migrate_agent_workspaces_to_workspaces()`
-**Location:** `database.py` line ~444
-**Purpose:** Deduplicate `agent_workspaces` rows into the canonical `workspaces` table
-**Source:** `agent_workspaces` table
-**Destination:** `workspaces` table
-**Guard:** `INSERT OR IGNORE` + `UNIQUE(project_id, workspace_path)` constraint. Skips entries where workspace path belongs to a different project.
-**Status:** **Removable** once `agent_workspaces` table is dropped
+### `_migrate_agent_workspaces_to_workspaces()` — ✅ REMOVED
+Previously deduplicated `agent_workspaces` rows into the canonical `workspaces` table.
+Removed along with the `agent_workspaces` table.
 
-### `_cleanup_cross_project_workspaces()`
-**Location:** `database.py` line ~500
-**Purpose:** Remove workspace entries where the same path is claimed by multiple projects
-**Trigger:** Runs every startup to catch stale data from old migrations
-**Status:** **Keep for now** — defensive cleanup. Can be removed once `agent_workspaces` table (the source of bad data) is dropped.
+### `_cleanup_cross_project_workspaces()` — ✅ REMOVED
+Previously removed workspace entries where the same path was claimed by multiple projects.
+No longer needed since the `agent_workspaces` table (the source of bad data) has been dropped.
+
+### `_normalize_workspace_paths()` — NEW
+**Location:** `database.py`
+**Purpose:** Resolve any relative `workspace_path` entries to absolute paths and remove cross-project duplicates.
+**Runs:** Every startup.
 
 ---
 
@@ -159,13 +136,13 @@ be removed.
 
 When you're ready to clean up, do this in order:
 
-### Phase 1: Drop `agent_workspaces` (safest, highest value)
-- [ ] Remove `_migrate_agent_workspaces()` method
-- [ ] Remove `_migrate_agent_workspaces_to_workspaces()` method
-- [ ] Remove `_cleanup_cross_project_workspaces()` method (no longer needed)
-- [ ] Remove `DELETE FROM agent_workspaces` in `delete_agent()` and `delete_project()`
-- [ ] Remove `agent_workspaces` from SCHEMA DDL
-- [ ] Remove migration call chain from `initialize()`
+### Phase 1: Drop `agent_workspaces` — ✅ COMPLETED
+- [x] Remove `_migrate_agent_workspaces()` method
+- [x] Remove `_migrate_agent_workspaces_to_workspaces()` method
+- [x] Remove `_cleanup_cross_project_workspaces()` method
+- [x] Remove `DELETE FROM agent_workspaces` in `delete_agent()` and `delete_project()`
+- [x] Remove `agent_workspaces` from SCHEMA DDL
+- [x] Added `_drop_legacy_agent_workspaces()` to drop the table from old databases
 
 ### Phase 2: Drop `repos` table
 - [ ] Refactor `_resolve_repo_path()` to use only `workspaces` table (no `repos` fallback)

@@ -134,7 +134,7 @@ async def _discover_and_create_subtasks(orch, task, workspace: str) -> list:
 
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
-        """DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED"""
+        """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
         await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
@@ -1309,7 +1309,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-1", project_id="p-1", title="Test",
                     description="test", branch_name="feature-1",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-1")
 
@@ -1343,7 +1343,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-2", project_id="p-1", title="Test",
                     description="test", branch_name="feature-2",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-2")
 
@@ -1372,7 +1372,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-3", project_id="p-1", title="Test",
                     description="test", branch_name="feature-3",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-3")
 
@@ -1391,8 +1391,8 @@ class TestCompletionPipeline:
         pr_url, ok = await orch._run_completion_pipeline(ctx)
         assert ok is False  # should not crash
 
-    async def test_merge_failure_keeps_task_in_verifying(self, pipeline_orch):
-        """Merge failure should leave task in VERIFYING status."""
+    async def test_merge_failure_keeps_task_in_progress(self, pipeline_orch):
+        """Merge failure should leave task in IN_PROGRESS status (pipeline doesn't change status)."""
         orch = pipeline_orch
         from src.models import PipelineContext
 
@@ -1400,7 +1400,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-4", project_id="p-1", title="Test",
                     description="test", branch_name="feature-4",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-4")
 
@@ -1419,9 +1419,9 @@ class TestCompletionPipeline:
         pr_url, ok = await orch._run_completion_pipeline(ctx)
         assert ok is False
 
-        # Task should still be VERIFYING (not COMPLETED)
+        # Task should still be IN_PROGRESS (pipeline doesn't change status)
         t = await orch.db.get_task("t-4")
-        assert t.status == TaskStatus.VERIFYING
+        assert t.status == TaskStatus.IN_PROGRESS
 
     async def test_merge_success_returns_continue(self, pipeline_orch):
         """Successful merge should return completed_ok=True."""
@@ -1430,7 +1430,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-5", project_id="p-1", title="Test",
                     description="test", branch_name="feature-5",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-5")
 
@@ -1458,7 +1458,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-6", project_id="p-1", title="Test",
                     description="test", branch_name="feature-6",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-6")
 
@@ -1491,7 +1491,7 @@ class TestCompletionPipeline:
 
         task = Task(id="t-7", project_id="p-1", title="Test",
                     description="test", branch_name="feature-7",
-                    status=TaskStatus.VERIFYING)
+                    status=TaskStatus.IN_PROGRESS)
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-7")
 

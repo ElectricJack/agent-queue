@@ -134,6 +134,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # its own registration.
         orch.set_notify_callback(adapter.send_message)
         orch.set_create_thread_callback(adapter.create_task_thread)
+        orch.set_get_thread_url_callback(adapter.get_thread_last_message_url)
+        orch.set_edit_thread_root_callback(adapter.edit_thread_root_message)
         orch.set_command_handler(adapter.get_command_handler())
         orch.set_supervisor(adapter.get_supervisor())
 
@@ -144,6 +146,21 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             except asyncio.TimeoutError:
                 pass
 
+    # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
+    # (~3s) inside the task so it never blocks orchestrator startup.
+    mcp_task: asyncio.Task | None = None
+    if config.mcp_server.enabled:
+        async def run_mcp():
+            try:
+                from src.embedded_mcp import run_mcp_server
+                await run_mcp_server(orch, config, shutdown_event)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Embedded MCP server failed (non-fatal)")
+
+        mcp_task = asyncio.create_task(run_mcp())
+
     bot_task = asyncio.create_task(run_bot())
     scheduler_task = asyncio.create_task(run_scheduler())
 
@@ -151,10 +168,16 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # Wait until shutdown is signaled
         await shutdown_event.wait()
     finally:
-        # Shut down adapter, health server, and orchestrator
+        # Shut down adapter, health server, MCP server, and orchestrator
         restart = orch._restart_requested
         await health_server.stop()
         await adapter.close()
+        if mcp_task is not None:
+            mcp_task.cancel()
+            try:
+                await mcp_task
+            except (asyncio.CancelledError, Exception):
+                pass
         bot_task.cancel()
         scheduler_task.cancel()
         await orch.shutdown()

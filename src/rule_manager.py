@@ -1,16 +1,35 @@
 """Rule system for persistent autonomous behaviors.
 
 Rules are structured markdown files with YAML frontmatter stored in the
-memory filesystem. Active rules generate hooks for automated execution.
-Passive rules influence reasoning via semantic search.
+memory filesystem.  There are two rule types:
 
-Storage layout:
+- **Active rules** generate hooks for automated execution.  When an active
+  rule is saved, the ``RuleManager`` creates (or updates) a corresponding
+  hook in the hook engine so the rule's intent is carried out on a
+  schedule or in response to events.
+- **Passive rules** influence reasoning via semantic search.  They are
+  injected into the Supervisor's system prompt when relevant to the
+  current conversation.
+
+Storage layout::
+
     ~/.agent-queue/memory/{project_id}/rules/{rule_id}.md
     ~/.agent-queue/memory/global/rules/{rule_id}.md
+
+File format: YAML frontmatter (``id``, ``type``, ``project_id``, ``hooks``,
+``created``, ``updated``) followed by Markdown body content.
+
+The rule system intentionally keeps the rule file as the single source of
+truth.  Hooks are derived artifacts — ``reconcile_hooks()`` can always
+reconstruct the hook set from the rule files.
+
+See ``specs/rules.md`` for the full behavioral specification.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -20,16 +39,46 @@ from typing import Any
 
 import yaml
 
+from src.event_bus import EventBus
+from src.file_watcher import FileWatcher, WatchRule
+
 logger = logging.getLogger(__name__)
 
 _GLOBAL_SCOPE = "global"
 
 
+def _compute_source_hash(trigger_config: dict, prompt_content: str) -> str:
+    """Compute a stable content hash from trigger config + prompt content.
+
+    Used for idempotent reconciliation — if the hash hasn't changed,
+    hooks don't need to be regenerated.
+    """
+    import json
+
+    # Sort keys for deterministic JSON serialisation
+    canonical = json.dumps(trigger_config, sort_keys=True) + "\n" + prompt_content
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
 class RuleManager:
     """Manages rule file I/O, hook generation, and reconciliation.
 
-    Rules are the source of truth. Hooks are derived artifacts that
-    implement active rules via the existing hook engine.
+    Rules are the source of truth.  Hooks are derived artifacts that
+    implement active rules via the existing hook engine.  The manager
+    provides CRUD operations for rule files and coordinates with the
+    hook engine and database when rules change.
+
+    Usage::
+
+        mgr = RuleManager("~/.agent-queue", db=db, hook_engine=hooks)
+        result = mgr.save_rule(None, "my-project", "active", "# Check tests\\n...")
+        await mgr.generate_hooks_for_rule(result["id"], "my-project")
+
+    Attributes:
+        _storage_root: Base directory for rule file storage.
+        _db: Database instance for hook metadata queries.
+        _hook_engine: Hook engine for creating/deleting derived hooks.
+        _orchestrator: Orchestrator reference for LLM-based rule expansion.
     """
 
     def __init__(
@@ -39,20 +88,43 @@ class RuleManager:
         hook_engine: Any | None = None,
         orchestrator: Any | None = None,
     ):
+        """Initialise the rule manager.
+
+        Args:
+            storage_root: Base directory (e.g. ``~/.agent-queue``).
+                Rule files are stored under ``{storage_root}/memory/``.
+            db: Optional database for hook metadata queries.
+            hook_engine: Optional hook engine for creating derived hooks.
+            orchestrator: Optional orchestrator for LLM-based rule prompt
+                expansion.
+        """
         self._storage_root = os.path.expanduser(storage_root)
         self._db = db
         self._hook_engine = hook_engine
         self._orchestrator = orchestrator
+        # Prevents concurrent reconciliation runs (e.g. rapid Discord reconnects)
+        self._reconcile_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Path helpers
     # ------------------------------------------------------------------
 
     def _rules_dir(self, project_id: str | None) -> str:
+        """Return the directory containing rules for a given scope.
+
+        Args:
+            project_id: Project ID, or ``None`` for global scope.
+        """
         scope = project_id or _GLOBAL_SCOPE
         return os.path.join(self._storage_root, "memory", scope, "rules")
 
     def _rule_path(self, rule_id: str, project_id: str | None) -> str:
+        """Return the full filesystem path for a rule file.
+
+        Args:
+            rule_id: Unique rule identifier (used as filename stem).
+            project_id: Project scope, or ``None`` for global.
+        """
         return os.path.join(self._rules_dir(project_id), f"{rule_id}.md")
 
     def _find_rule_path(self, rule_id: str) -> tuple[str, str | None] | None:
@@ -90,6 +162,15 @@ class RuleManager:
 
     @staticmethod
     def _build_file_content(meta: dict, body: str) -> str:
+        """Serialise metadata and body into a frontmatter Markdown file.
+
+        Args:
+            meta: YAML frontmatter dict.
+            body: Markdown body content.
+
+        Returns:
+            Complete file content string with ``---`` delimiters.
+        """
         frontmatter = yaml.dump(
             meta, default_flow_style=False, sort_keys=False
         ).strip()
@@ -138,8 +219,19 @@ class RuleManager:
     ) -> dict:
         """Write a rule file with YAML frontmatter.
 
-        If id matches an existing rule, it is updated. Otherwise a new
-        rule is created. Auto-generates id from title if omitted.
+        If *id* matches an existing rule, it is updated (preserving
+        ``created`` timestamp and hook associations).  Otherwise a new
+        rule is created.  Auto-generates id from the first ``# Title``
+        heading if omitted.
+
+        Args:
+            id: Rule identifier, or ``None`` to auto-generate.
+            project_id: Project scope, or ``None`` for global.
+            rule_type: ``"active"`` or ``"passive"``.
+            content: Markdown body content for the rule.
+
+        Returns:
+            Dict with ``success``, ``id``, and ``hooks_generated`` keys.
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -186,7 +278,16 @@ class RuleManager:
         }
 
     def load_rule(self, rule_id: str) -> dict | None:
-        """Load a rule by ID, searching all scopes."""
+        """Load a rule by ID, searching all scopes.
+
+        Args:
+            rule_id: The rule identifier to look up.
+
+        Returns:
+            Dict with ``id``, ``type``, ``project_id``, ``hooks``,
+            ``content``, ``created``, ``updated`` keys — or ``None``
+            if the rule was not found.
+        """
         found = self._find_rule_path(rule_id)
         if not found:
             return None
@@ -207,7 +308,14 @@ class RuleManager:
         }
 
     def delete_rule(self, rule_id: str) -> dict:
-        """Delete a rule file. Hook cleanup handled by async wrapper."""
+        """Delete a rule file.  Hook cleanup is handled by the async wrapper.
+
+        Args:
+            rule_id: The rule identifier to delete.
+
+        Returns:
+            Dict with ``success`` and ``hooks_removed`` keys.
+        """
         found = self._find_rule_path(rule_id)
         if not found:
             return {"success": False, "error": f"Rule '{rule_id}' not found"}
@@ -223,7 +331,16 @@ class RuleManager:
         }
 
     def browse_rules(self, project_id: str | None = None) -> list[dict]:
-        """List rules for a project plus all global rules."""
+        """List rules for a project plus all global rules.
+
+        Args:
+            project_id: Project to list rules for.  Global rules are
+                always included regardless of this value.
+
+        Returns:
+            List of rule summary dicts with ``id``, ``type``,
+            ``project_id``, ``title``, ``summary``, and ``hooks`` keys.
+        """
         results = []
         dirs_to_scan = []
 
@@ -365,10 +482,9 @@ class RuleManager:
     ) -> list[str]:
         """Generate hooks from an active rule's trigger and logic.
 
-        Parses the rule content to extract trigger parameters, then uses the
-        supervisor's LLM to expand the rule into a specific, actionable prompt.
-        Falls back to a static template when the supervisor is unavailable
-        (e.g. during startup reconciliation).
+        Uses content-hash based reconciliation to skip regeneration when
+        the rule hasn't changed. When regeneration IS needed, uses atomic
+        replacement: create new hooks first, verify success, then delete old.
 
         For global rules (project_id=None), creates one hook per active project.
         """
@@ -381,11 +497,13 @@ class RuleManager:
             logger.info("No parseable trigger in rule %s", rule_id)
             return []
 
-        # Capture last_triggered_at from existing hooks before deleting,
-        # so periodic hooks don't re-fire immediately after reconciliation.
-        # We store the most recent timestamp per project_id since new hooks
-        # are created per-project.
+        # Compute content hash for this rule's current state
+        new_hash = _compute_source_hash(trigger_config, content)
+
+        # Check existing hooks — if all share the same source_hash,
+        # the rule hasn't changed and we can skip regeneration entirely.
         prefix = f"rule-{rule_id}-"
+        existing_hooks = []
         preserved_timestamps: dict[str, float] = {}  # project_id -> last_triggered_at
         try:
             existing_hooks = await self._db.list_hooks_by_id_prefix(prefix)
@@ -396,35 +514,20 @@ class RuleManager:
                         preserved_timestamps[old_hook.project_id] = old_hook.last_triggered_at
         except Exception as e:
             logger.debug(
-                "Could not read old hook timestamps for rule %s: %s",
-                rule_id, e,
+                "Could not read old hooks for rule %s: %s", rule_id, e,
             )
 
-        # Delete ALL hooks for this rule by ID prefix.  This catches
-        # orphaned hooks left behind by concurrent reconciliation runs
-        # (on_ready fires on every Discord reconnect, and two overlapping
-        # reconciliations can each create hooks that the other doesn't
-        # track in the frontmatter).
-        try:
-            deleted = await self._db.delete_hooks_by_id_prefix(prefix)
-            if deleted:
+        # Content-hash check: skip regeneration if all existing hooks match
+        if existing_hooks:
+            all_match = all(h.source_hash == new_hash for h in existing_hooks)
+            if all_match:
                 logger.debug(
-                    "Deleted %d existing hooks for rule %s (prefix: %s)",
-                    deleted, rule_id, prefix,
+                    "Rule %s unchanged (hash=%s), skipping hook regeneration",
+                    rule_id, new_hash,
                 )
-        except Exception as e:
-            logger.warning(
-                "Prefix-based hook cleanup failed for rule %s: %s",
-                rule_id, e,
-            )
-            # Fall back to frontmatter-based cleanup
-            loaded = self.load_rule(rule_id)
-            old_hooks = loaded.get("hooks", []) if loaded else []
-            for hid in old_hooks:
-                try:
-                    await self._db.delete_hook(hid)
-                except Exception:
-                    pass
+                return []
+
+        # --- Regeneration needed ---
 
         # Try LLM expansion via the supervisor (done once, shared across hooks)
         prompt_template = None
@@ -467,14 +570,16 @@ class RuleManager:
                 )
                 return []
 
-        # Create one hook per target project
+        # ATOMIC REPLACEMENT: Create new hooks first, then delete old ones.
+        # This prevents the window where no hooks exist for a rule.
         import json
         import uuid
 
         from src.models import Hook
 
         title = self._extract_title(content)
-        all_hook_ids: list[str] = []
+        new_hook_ids: list[str] = []
+        creation_succeeded = True
 
         for pid in target_project_ids:
             hook_id = f"rule-{rule_id}-{uuid.uuid4().hex[:6]}"
@@ -490,52 +595,99 @@ class RuleManager:
                 prompt_template=prompt_template,
                 cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
                 last_triggered_at=restored_ts,
+                source_hash=new_hash,
             )
-            await self._db.create_hook(hook)
-            all_hook_ids.append(hook_id)
+            try:
+                await self._db.create_hook(hook)
+                new_hook_ids.append(hook_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to create hook %s for rule %s: %s",
+                    hook_id, rule_id, e,
+                )
+                creation_succeeded = False
+                break
 
-        if not project_id:
+        if not creation_succeeded:
+            # Clean up any partially created new hooks
+            for hid in new_hook_ids:
+                try:
+                    await self._db.delete_hook(hid)
+                except Exception:
+                    pass
+            logger.error(
+                "Atomic hook creation failed for rule %s, keeping old hooks",
+                rule_id,
+            )
+            return [h.id for h in existing_hooks]
+
+        # New hooks created successfully — now delete old hooks
+        old_hook_ids = [h.id for h in existing_hooks]
+        for hid in old_hook_ids:
+            try:
+                await self._db.delete_hook(hid)
+            except Exception as e:
+                logger.warning(
+                    "Failed to delete old hook %s during atomic replacement: %s",
+                    hid, e,
+                )
+
+        if not project_id and len(new_hook_ids) > 1:
             logger.info(
                 "Global rule %s: created %d hooks (one per project)",
-                rule_id, len(all_hook_ids),
+                rule_id, len(new_hook_ids),
             )
 
-        # Update rule frontmatter with hook references
-        self._update_rule_hooks(rule_id, all_hook_ids)
+        # Update rule frontmatter with new hook references atomically
+        self._update_rule_hooks(rule_id, new_hook_ids)
 
-        return all_hook_ids
+        return new_hook_ids
 
     @staticmethod
     def _parse_trigger(content: str) -> dict | None:
         """Parse trigger configuration from rule content.
 
         Looks for patterns like "every N minutes/hours" in the Trigger section.
+        Supports multiple section name variants (## Trigger, ## Triggers,
+        ## Trigger Schedule) and inline **Trigger:** markers.
         """
-        # Find the Trigger section
+        # Find the Trigger section — accept "## Trigger", "## Triggers",
+        # "## Trigger Schedule", etc.
         trigger_section = ""
         in_trigger = False
         for line in content.split("\n"):
-            if line.strip().startswith("## Trigger"):
+            stripped = line.strip()
+            if re.match(r"^##\s+Trigger", stripped, re.IGNORECASE):
                 in_trigger = True
                 continue
             if in_trigger:
-                if line.strip().startswith("## "):
+                if stripped.startswith("## "):
                     break
                 trigger_section += line + "\n"
+
+        # Fallback: look for inline **Trigger:** or **Trigger** markers
+        if not trigger_section.strip():
+            for line in content.split("\n"):
+                m = re.match(r"\*\*Trigger:?\*\*:?\s*(.*)", line.strip())
+                if m:
+                    trigger_section = m.group(1) + "\n"
+                    break
 
         if not trigger_section.strip():
             return None
 
         text = trigger_section.lower().strip()
 
-        # Parse "every N minutes/hours"
+        # Parse "every N minutes/hours/days" (with explicit number)
         match = re.search(
-            r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec)s?", text
+            r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
         )
         if match:
             value = int(match.group(1))
             unit = match.group(2)
-            if unit.startswith("hour") or unit.startswith("hr"):
+            if unit.startswith("day"):
+                seconds = value * 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
                 seconds = value * 3600
             elif unit.startswith("min"):
                 seconds = value * 60
@@ -543,30 +695,373 @@ class RuleManager:
                 seconds = value
             return {"type": "periodic", "interval_seconds": seconds}
 
-        # Parse event-based triggers
+        # Parse "every hour/minute/day" (no number — implies 1)
+        match = re.search(
+            r"every\s+(hour|hr|minute|min|second|sec|day)s?", text
+        )
+        if match:
+            unit = match.group(1)
+            if unit.startswith("day"):
+                seconds = 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
+                seconds = 3600
+            elif unit.startswith("min"):
+                seconds = 60
+            else:
+                seconds = 1
+            return {"type": "periodic", "interval_seconds": seconds}
+
+        # Parse "weekly" / "daily" / "hourly" shorthand
+        if re.search(r"\bweekly\b", text):
+            return {"type": "periodic", "interval_seconds": 604800}
+        if re.search(r"\bdaily\b", text):
+            return {"type": "periodic", "interval_seconds": 86400}
+        if re.search(r"\bhourly\b", text):
+            return {"type": "periodic", "interval_seconds": 3600}
+
+        # Check N hours/minutes/seconds (without "every")
+        match = re.search(
+            r"(?:check\s+)?(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
+        )
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+            if unit.startswith("day"):
+                seconds = value * 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
+                seconds = value * 3600
+            elif unit.startswith("min"):
+                seconds = value * 60
+            else:
+                seconds = value
+            return {"type": "periodic", "interval_seconds": seconds}
+
+        # Parse event-based triggers — broad pattern matching
         event_match = re.search(
             r"when\s+(?:a\s+)?task\s+(?:is\s+)?completed", text
         )
         if event_match:
             return {"type": "event", "event_type": "task.completed"}
 
-        event_match = re.search(r"when\s+(?:a\s+)?task\s+fails", text)
+        event_match = re.search(
+            r"when\s+(?:a\s+)?task\s+(?:is\s+)?(?:failed|fails)", text
+        )
         if event_match:
             return {"type": "event", "event_type": "task.failed"}
 
+        # Match "when error", "when agent crash", "error.X" event references
+        event_match = re.search(
+            r"when\s+(?:an?\s+)?(?:agent\s+)?(?:crash|error)", text
+        )
+        if event_match:
+            return {"type": "event", "event_type": "error.agent_crash"}
+
+        # Match explicit event type references like `error.agent_crash`
+        event_match = re.search(r"`?([\w]+\.[\w.]+)`?", text)
+        if event_match:
+            return {"type": "event", "event_type": event_match.group(1)}
+
+        # Parse cron expressions
+        cron_match = re.search(r"cron[:\s]+`?([*\d/,\-\s]{9,})`?", text)
+        if cron_match:
+            return {"type": "cron", "cron": cron_match.group(1).strip()}
+
         return None
+
+    # ------------------------------------------------------------------
+    # Orphan hook migration
+    # ------------------------------------------------------------------
+
+    async def migrate_orphan_hooks(self) -> dict:
+        """Migrate direct/orphan hooks into rule-backed hooks.
+
+        Queries all hooks from the database and converts any hook whose ID
+        does **not** start with ``rule-`` into a proper rule markdown file.
+        After the rule file is saved, the original orphan hook is deleted.
+        Subsequent reconciliation will regenerate rule-backed hooks from the
+        new rule files.
+
+        This method is idempotent: if a rule file already exists for a given
+        hook name, the hook is simply deleted (the rule is the source of
+        truth).
+
+        Returns:
+            Dict with ``migrated``, ``skipped``, and ``errors`` counts.
+        """
+        import json
+
+        stats = {"migrated": 0, "skipped": 0, "errors": 0}
+
+        if not self._db:
+            return stats
+
+        try:
+            all_hooks = await self._db.list_hooks()
+        except Exception as e:
+            logger.error("Failed to list hooks for orphan migration: %s", e)
+            return stats
+
+        for hook in all_hooks:
+            if hook.id.startswith("rule-"):
+                stats["skipped"] += 1
+                continue
+
+            try:
+                # Build rule content from hook config
+                title = hook.name or hook.id
+                body_parts = [f"# {title}"]
+
+                # Reverse-parse trigger JSON into natural language
+                trigger_section = self._reverse_parse_trigger(hook.trigger)
+                if hook.cooldown_seconds:
+                    trigger_section += f"\nCooldown: {hook.cooldown_seconds} seconds."
+                body_parts.append(f"\n## Trigger\n\n{trigger_section}")
+
+                # Use prompt_template as the Logic section
+                logic = hook.prompt_template or "No logic defined."
+                body_parts.append(f"\n## Logic\n\n{logic}")
+
+                content = "\n".join(body_parts)
+
+                # Derive a rule ID from the hook name/id.
+                # Strip common prefixes like "Rule: " to avoid creating
+                # rule-rule-* IDs that duplicate existing rule-* rules.
+                clean_title = re.sub(r"^Rule:\s*", "", title)
+                rule_id = self._id_from_title(clean_title)
+
+                # Check if a rule already exists for this hook (idempotent)
+                if self.load_rule(rule_id):
+                    logger.info(
+                        "Rule %s already exists for orphan hook %s, deleting hook only",
+                        rule_id, hook.id,
+                    )
+                else:
+                    # Save the rule file
+                    result = self.save_rule(
+                        id=rule_id,
+                        project_id=hook.project_id,
+                        rule_type="active",
+                        content=content,
+                    )
+                    if not result.get("success"):
+                        logger.warning(
+                            "Failed to save rule for orphan hook %s: %s",
+                            hook.id, result,
+                        )
+                        stats["errors"] += 1
+                        continue
+
+                    logger.info(
+                        "Migrated orphan hook %s → rule %s",
+                        hook.id, rule_id,
+                    )
+
+                # Delete the original orphan hook
+                await self._db.delete_hook(hook.id)
+                stats["migrated"] += 1
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to migrate orphan hook %s: %s", hook.id, e,
+                )
+                stats["errors"] += 1
+
+        if stats["migrated"]:
+            logger.info(
+                "Orphan hook migration complete: %d migrated, %d skipped, %d errors",
+                stats["migrated"], stats["skipped"], stats["errors"],
+            )
+
+        return stats
+
+    @staticmethod
+    def _reverse_parse_trigger(trigger_json: str) -> str:
+        """Convert a hook trigger JSON string back into natural language.
+
+        Args:
+            trigger_json: JSON string like ``{"type": "periodic", "interval_seconds": 3600}``.
+
+        Returns:
+            Human-readable trigger description for a rule's ``## Trigger`` section.
+        """
+        import json
+
+        try:
+            trigger = json.loads(trigger_json) if trigger_json else {}
+        except (json.JSONDecodeError, TypeError):
+            return "Unknown trigger configuration."
+
+        if not trigger:
+            return "No trigger defined."
+
+        trigger_type = trigger.get("type", "unknown")
+
+        if trigger_type == "periodic":
+            seconds = trigger.get("interval_seconds", 0)
+            if seconds >= 86400 and seconds % 86400 == 0:
+                value = seconds // 86400
+                unit = "day" if value == 1 else "days"
+            elif seconds >= 3600 and seconds % 3600 == 0:
+                value = seconds // 3600
+                unit = "hour" if value == 1 else "hours"
+            elif seconds >= 60 and seconds % 60 == 0:
+                value = seconds // 60
+                unit = "minute" if value == 1 else "minutes"
+            else:
+                value = seconds
+                unit = "second" if value == 1 else "seconds"
+            return f"Every {value} {unit}."
+
+        if trigger_type == "event":
+            event_type = trigger.get("event_type", "unknown")
+            # Convert dotted event types to natural language
+            readable = event_type.replace(".", " ").replace("_", " ")
+            return f"When {readable}."
+
+        if trigger_type == "cron":
+            expression = trigger.get("cron", trigger.get("expression", ""))
+            return f"Cron schedule: `{expression}`."
+
+        # Fallback for unknown trigger types
+        return f"Trigger type: {trigger_type}."
+
+    async def _cleanup_duplicate_rules(self) -> int:
+        """Remove duplicate rule-rule-* files that mirror existing rule-* files.
+
+        Earlier versions of ``migrate_orphan_hooks`` would convert a hook
+        named "Rule: Restart Daemon When Idle" into a rule file called
+        ``rule-rule-restart-daemon-when-idle.md``, duplicating the
+        canonical ``rule-restart-daemon-when-idle.md``.  This method
+        detects such duplicates and removes them (plus their DB hooks).
+
+        Returns:
+            Number of duplicate rule files removed.
+        """
+        memory_root = os.path.join(self._storage_root, "memory")
+        if not os.path.isdir(memory_root):
+            return 0
+
+        removed = 0
+        for scope_dir in os.listdir(memory_root):
+            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+            if not os.path.isdir(rules_dir):
+                continue
+
+            filenames = [f for f in os.listdir(rules_dir) if f.endswith(".md")]
+
+            for filename in filenames:
+                # Detect rule-rule-* pattern: the rule ID starts with
+                # "rule-rule-" and a canonical file without the extra
+                # "rule-" prefix exists.
+                rule_id = filename[:-3]  # strip .md
+
+                if not rule_id.startswith("rule-rule-"):
+                    continue
+
+                # Derive the canonical rule ID by stripping the extra "rule-"
+                canonical_id = rule_id[5:]  # "rule-rule-x" → "rule-x"
+                canonical_path = os.path.join(rules_dir, f"{canonical_id}.md")
+
+                if not os.path.isfile(canonical_path):
+                    continue  # No canonical rule — this isn't a duplicate
+
+                duplicate_path = os.path.join(rules_dir, filename)
+                logger.info(
+                    "Removing duplicate rule file %s (canonical: %s)",
+                    filename, f"{canonical_id}.md",
+                )
+
+                # Read duplicate's hook IDs before deleting
+                try:
+                    with open(duplicate_path) as f:
+                        meta, _ = self._split_frontmatter(f.read())
+                    hook_ids = meta.get("hooks", [])
+                except Exception:
+                    hook_ids = []
+
+                # Delete the duplicate file
+                try:
+                    os.remove(duplicate_path)
+                    removed += 1
+                except Exception as e:
+                    logger.warning(
+                        "Failed to remove duplicate rule %s: %s",
+                        duplicate_path, e,
+                    )
+                    continue
+
+                # Clean up hooks associated with the duplicate rule
+                if self._db:
+                    for hid in hook_ids:
+                        try:
+                            await self._db.delete_hook(hid)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to delete hook %s from duplicate rule: %s",
+                                hid, e,
+                            )
+
+                    # Also delete any orphan hooks by prefix that weren't
+                    # listed in the frontmatter (e.g. from TOCTOU races)
+                    prefix = f"rule-{rule_id}-"
+                    try:
+                        await self._db.delete_hooks_by_id_prefix(prefix)
+                    except Exception as e:
+                        logger.debug(
+                            "Prefix cleanup for %s: %s", prefix, e,
+                        )
+
+        return removed
 
     async def reconcile(self) -> dict:
         """Startup reconciliation: regenerate hooks for all active rules.
 
-        Scans all rule files and unconditionally regenerates hooks from each
-        active rule.  This ensures hooks stay in sync with rule content even
-        if the rule files or database were edited outside the running system.
+        Uses an asyncio.Lock to prevent concurrent reconciliation runs
+        (e.g. from rapid Discord reconnects). Content-hash based comparison
+        in _generate_hooks_for_rule skips regeneration for unchanged rules.
+
+        Also migrates any orphan hooks (created directly, not via rules) into
+        rule files before reconciliation, so that all automation has a rule
+        file as its source of truth.
         """
+        if self._reconcile_lock.locked():
+            logger.info("Reconciliation already in progress, skipping")
+            return {
+                "rules_scanned": 0,
+                "hooks_regenerated": 0,
+                "errors": 0,
+                "skipped": True,
+            }
+
+        async with self._reconcile_lock:
+            return await self._reconcile_inner()
+
+    async def _reconcile_inner(self) -> dict:
+        """Inner reconciliation logic, called under the reconcile lock."""
+        # Migrate orphan hooks first (idempotent — safe to run every startup)
+        migration_stats = await self.migrate_orphan_hooks()
+        if migration_stats["migrated"]:
+            logger.info(
+                "Pre-reconciliation migration: %d orphan hooks converted to rules",
+                migration_stats["migrated"],
+            )
+
+        # Clean up duplicate rule-rule-* files that were created by
+        # earlier versions of migrate_orphan_hooks
+        duplicates_removed = await self._cleanup_duplicate_rules()
+        if duplicates_removed:
+            logger.info(
+                "Pre-reconciliation cleanup: removed %d duplicate rule-rule-* files",
+                duplicates_removed,
+            )
+
         stats = {
             "rules_scanned": 0,
+            "active_rules": 0,
             "hooks_regenerated": 0,
+            "hooks_unchanged": 0,
             "errors": 0,
+            "orphan_hooks_migrated": migration_stats["migrated"],
         }
 
         memory_root = os.path.join(self._storage_root, "memory")
@@ -593,6 +1088,8 @@ class RuleManager:
                     if meta.get("type") != "active":
                         continue
 
+                    stats["active_rules"] += 1
+
                     if not self._db:
                         continue
 
@@ -604,6 +1101,16 @@ class RuleManager:
                         )
                         if new_hooks:
                             stats["hooks_regenerated"] += len(new_hooks)
+                        else:
+                            # Count existing unchanged hooks for this rule
+                            prefix = f"rule-{meta.get('id', filename[:-3])}-"
+                            try:
+                                existing = await self._db.list_hooks_by_id_prefix(
+                                    prefix
+                                )
+                                stats["hooks_unchanged"] += len(existing)
+                            except Exception:
+                                pass
                     except Exception as e:
                         logger.warning(
                             "Hook regen failed for %s: %s",
@@ -666,3 +1173,206 @@ class RuleManager:
             installed.append(rule_id)
 
         return installed
+
+    # ------------------------------------------------------------------
+    # Rule file watcher — auto-reconcile on disk changes
+    # ------------------------------------------------------------------
+
+    def _get_all_rule_dirs(self) -> list[tuple[str, str | None]]:
+        """Return all existing rule directories as (abs_path, project_id|None).
+
+        Scans ``{storage_root}/memory/`` for scope directories containing
+        a ``rules/`` subfolder.
+        """
+        memory_root = os.path.join(self._storage_root, "memory")
+        if not os.path.isdir(memory_root):
+            return []
+        result = []
+        for scope_dir in os.listdir(memory_root):
+            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+            if os.path.isdir(rules_dir):
+                pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
+                result.append((rules_dir, pid))
+        return result
+
+    async def start_file_watcher(self, bus: EventBus) -> None:
+        """Start watching all rule directories for changes.
+
+        Creates a :class:`FileWatcher` that monitors every
+        ``{storage_root}/memory/*/rules/`` directory for ``.md`` file
+        changes.  When changes are detected (debounced at 5 s), the
+        affected rules are individually reconciled — new/modified files
+        trigger hook regeneration; deleted files trigger hook cleanup.
+
+        The watcher emits ``folder.changed`` events on the shared
+        EventBus.  This method subscribes a handler that filters for
+        rule-watcher events (by ``watch_id`` prefix).
+
+        Args:
+            bus: The application EventBus instance.
+        """
+        self._rule_watcher_bus = bus
+        self._rule_file_watcher = FileWatcher(
+            bus=bus,
+            debounce_seconds=5.0,
+            poll_interval=5.0,
+        )
+
+        # Register a folder watch for each rule directory
+        for rules_dir, pid in self._get_all_rule_dirs():
+            watch_id = f"rule-watcher-{pid or _GLOBAL_SCOPE}"
+            self._rule_file_watcher.add_watch(WatchRule(
+                watch_id=watch_id,
+                project_id=pid or _GLOBAL_SCOPE,
+                paths=[rules_dir],
+                recursive=False,
+                extensions=[".md"],
+                watch_type="folder",
+            ))
+            logger.info(
+                "Rule file watcher: monitoring %s (scope=%s)",
+                rules_dir, pid or _GLOBAL_SCOPE,
+            )
+
+        # Subscribe to folder.changed events for rule directory changes
+        bus.subscribe("folder.changed", self._on_rule_folder_changed)
+
+        # Start the background polling loop
+        self._watcher_task = asyncio.create_task(self._rule_watcher_loop())
+        logger.info("Rule file watcher started")
+
+    async def stop_file_watcher(self) -> None:
+        """Stop the rule file watcher and clean up resources."""
+        task = getattr(self, "_watcher_task", None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._rule_file_watcher = None
+        logger.info("Rule file watcher stopped")
+
+    async def _rule_watcher_loop(self) -> None:
+        """Background loop that polls the rule file watcher."""
+        watcher = self._rule_file_watcher
+        if not watcher:
+            return
+        while True:
+            try:
+                await asyncio.sleep(5.0)
+                await watcher.check()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Rule file watcher poll error: %s", e)
+
+    async def _on_rule_folder_changed(self, data: dict) -> None:
+        """Handle folder.changed events for rule directories.
+
+        Filters events by ``watch_id`` prefix (``rule-watcher-``) to
+        ignore file-watcher events from the hook engine.  For each
+        changed ``.md`` file, triggers per-rule reconciliation:
+
+        - **created / modified**: parse the rule file and regenerate its
+          hooks (via ``_generate_hooks_for_rule``).
+        - **deleted**: clean up hooks whose ID starts with the rule's
+          prefix (``rule-{rule_id}-``).
+        """
+        watch_id = data.get("watch_id", "")
+        if not watch_id.startswith("rule-watcher-"):
+            return  # Not a rule directory watch — ignore
+
+        changes = data.get("changes", [])
+        if not changes:
+            return
+
+        watch_dir = data.get("path", "")
+        # Determine project_id from the watch_id
+        scope = watch_id.replace("rule-watcher-", "", 1)
+        project_id = None if scope == _GLOBAL_SCOPE else scope
+
+        for change in changes:
+            rel_path = change.get("path", "")
+            operation = change.get("operation", "")
+
+            if not rel_path.endswith(".md"):
+                continue
+
+            rule_id = rel_path[:-3]  # strip .md extension
+
+            if operation in ("created", "modified"):
+                await self._reconcile_single_rule(
+                    rule_id, project_id, watch_dir
+                )
+            elif operation == "deleted":
+                await self._cleanup_deleted_rule(rule_id)
+
+    async def _reconcile_single_rule(
+        self,
+        rule_id: str,
+        project_id: str | None,
+        rules_dir: str,
+    ) -> None:
+        """Reconcile a single rule after a file change on disk.
+
+        Reads the rule file, and if it is an active rule, regenerates
+        its hooks.  Passive rules are ignored (they have no hooks).
+        """
+        filepath = os.path.join(rules_dir, f"{rule_id}.md")
+        if not os.path.isfile(filepath):
+            return
+
+        try:
+            with open(filepath) as f:
+                raw = f.read()
+            meta, body = self._split_frontmatter(raw)
+
+            if meta.get("type") != "active":
+                logger.debug(
+                    "Rule %s is not active, skipping hook reconciliation",
+                    rule_id,
+                )
+                return
+
+            if not self._db:
+                return
+
+            rid = meta.get("id", rule_id)
+            new_hooks = await self._generate_hooks_for_rule(
+                rid, project_id, body
+            )
+            if new_hooks:
+                logger.info(
+                    "Rule file watcher: reconciled rule %s → %d hooks",
+                    rid, len(new_hooks),
+                )
+        except Exception as e:
+            logger.warning(
+                "Rule file watcher: failed to reconcile rule %s: %s",
+                rule_id, e,
+            )
+
+    async def _cleanup_deleted_rule(self, rule_id: str) -> None:
+        """Clean up hooks for a rule whose file was deleted from disk.
+
+        Deletes all hooks whose ID starts with ``rule-{rule_id}-``.
+        """
+        if not self._db:
+            return
+
+        prefix = f"rule-{rule_id}-"
+        try:
+            deleted = await self._db.delete_hooks_by_id_prefix(prefix)
+            if deleted:
+                logger.info(
+                    "Rule file watcher: deleted %d orphan hooks for "
+                    "removed rule %s",
+                    deleted, rule_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Rule file watcher: hook cleanup failed for deleted "
+                "rule %s: %s",
+                rule_id, e,
+            )

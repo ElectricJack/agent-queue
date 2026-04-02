@@ -245,7 +245,6 @@ All task statuses have associated emoji and hex color values used in embeds and 
 | IN_PROGRESS | 🟡 | #f39c12 |
 | WAITING_INPUT | 💬 | #1abc9c |
 | PAUSED | ⏸️ | #7f8c8d |
-| VERIFYING | 🔍 | #2980b9 |
 | AWAITING_APPROVAL | ⏳ | #e67e22 |
 | COMPLETED | 🟢 | #2ecc71 |
 | FAILED | 🔴 | #e74c3c |
@@ -293,18 +292,6 @@ Output includes event type, project ID, task ID, and timestamp.
 ---
 
 ### 3.2 Project Management Commands
-
-#### `/create-project`
-Creates a new project. If `auto_create_channels` is true (or set to true in config), the response is deferred because channel creation may take more than 3 seconds.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `name` | str | Project display name |
-| `credit_weight` | float (optional, default 1.0) | Scheduling weight |
-| `max_concurrent_agents` | int (optional, default 2) | Max simultaneous agents |
-| `auto_create_channels` | bool (optional) | Override config auto-channel creation flag |
-
-Returns an embed with project ID, workspace path, and channel info if channels were auto-created. When `per_project_channels.private` is `True`, both the auto-created category and channels are created with permission overwrites that deny `view_channel` to `@everyone` and grant `view_channel` + `send_messages` to the bot.
 
 #### `/edit-project`
 Edits an existing project's settings.
@@ -856,7 +843,42 @@ Deletes a project note by title.
 
 ---
 
-### 3.10 System / Admin Commands
+### 3.10 File Browsing Commands
+
+#### `/browse`
+Opens an interactive file browser for a project workspace. The initial listing is fetched via `handler.execute("list_directory", ...)`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | str (optional) | Starting subdirectory path |
+| `workspace` | str (optional, autocomplete) | Workspace name or ID (defaults to first workspace) |
+
+**Behavior:**
+1. Resolves the project from channel context.
+2. Calls `list_directory` to fetch the directory listing, which resolves the workspace path to an absolute path via `os.path.realpath()`.
+3. Creates a `_FileBrowserView` — a persistent interactive view (5-minute timeout) with:
+   - **Parent directory button** (row 0): navigates up one level (hidden at root).
+   - **Directory dropdown** (row 1): select a subdirectory to navigate into, paginated at 20 items per page.
+   - **File dropdown** (row 2): select a file to view its info (size, path) with action buttons, paginated at 20 items per page.
+   - **Pagination buttons** (row 3): "◀ Prev Dirs/Files" and "Next Dirs/Files ▶" when entries exceed one page.
+4. The embed shows:
+   - Title: `📂 <current path>`
+   - Description: project ID and workspace name
+   - Contents field: directory and file counts
+   - Footer: resolved absolute workspace path (for transparency)
+
+**Refresh / Navigation:** All directory navigation (parent, subdirectory selection) goes through `_refresh`, which calls `handler.execute("list_directory", ...)` with the workspace name. This ensures consistent workspace path resolution through the same code path as the initial load, rather than doing inline filesystem listing.
+
+**File view:** Selecting a file shows an ephemeral embed with file path and size, plus action buttons via `_FileInfoView`.
+
+**Workspace autocomplete:** The `workspace` parameter provides autocomplete that lists all workspaces for the resolved project, showing lock status (🔒) for workspaces in use by agents.
+
+#### `/edit-file`
+Opens a text editor modal dialog for editing a file in the project workspace. Not documented in detail here — see the source for the full implementation.
+
+---
+
+### 3.11 System / Admin Commands
 
 #### `/orchestrator`
 Pauses, resumes, or queries the orchestrator's scheduling state.
@@ -868,13 +890,39 @@ Pauses, resumes, or queries the orchestrator's scheduling state.
 Status response shows current state (PAUSED or RUNNING) and number of running tasks.
 
 #### `/restart`
-Signals the daemon to restart. Sets `bot._restart_requested = True` and calls `handler.execute("restart_daemon", {})`.
+Signals the daemon to restart. Gathers git context (current commit hash, commits behind origin) before initiating the restart.
 
-No parameters.
+| Parameter | Type | Description |
+|---|---|---|
+| `reason` | str (required) | Why the restart is being requested |
+
+**Behavior:**
+1. Constructs a `full_reason` string including the user's display name and their stated reason.
+2. Gathers git info for the restart message via `asyncio.to_thread(subprocess.run, ...)`:
+   - Gets the short commit hash via `git rev-parse --short HEAD`.
+   - Fetches remote and counts commits behind upstream via `git rev-list --count HEAD..@{u}`.
+3. Sends a warning embed showing the reason and git context (commit hash, how many commits behind origin if any).
+4. Calls `handler.execute("restart_daemon", {"reason": full_reason})`.
 
 ---
 
-### 3.11 UI Components — `TaskReportView`
+#### `/update`
+Pulls latest source, installs dependencies, and restarts the daemon.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `reason` | str (optional) | Why the update is being requested (auto-filled if omitted) |
+
+**Behavior:**
+1. Defers the interaction (non-ephemeral).
+2. Records the current commit hash before pulling.
+3. Calls `handler.execute("update_and_restart", {"reason": full_reason})`.
+4. On error, sends an error embed.
+5. On success, records the new commit hash, shows a summary of what changed (`{before_hash} → {after_hash}` or "Already up to date"), and sends a success embed with abbreviated pull output.
+
+---
+
+### 3.12 UI Components — `TaskReportView`
 
 `/tasks` renders an interactive `discord.ui.View` with collapsible status sections.
 
@@ -889,7 +937,7 @@ A `discord.ui.View` with `timeout=600` (10 minutes).
 
 **Initial expansion:** Active and actionable statuses are expanded by default — `IN_PROGRESS`, `ASSIGNED`, `READY`, `FAILED`, `BLOCKED`, `PAUSED`, `WAITING_INPUT`, `AWAITING_APPROVAL`. If none of those have tasks, the first non-empty status in `_STATUS_ORDER` is expanded.
 
-Status display order: `IN_PROGRESS`, `ASSIGNED`, `READY`, `DEFINED`, `PAUSED`, `WAITING_INPUT`, `AWAITING_APPROVAL`, `VERIFYING`, `FAILED`, `BLOCKED`, `COMPLETED`.
+Status display order: `IN_PROGRESS`, `ASSIGNED`, `READY`, `DEFINED`, `PAUSED`, `WAITING_INPUT`, `AWAITING_APPROVAL`, `AWAITING_PLAN_APPROVAL`, `FAILED`, `BLOCKED`, `COMPLETED`.
 
 #### `StatusToggleButton`
 

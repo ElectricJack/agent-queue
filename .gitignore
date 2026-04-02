@@ -17,6 +17,7 @@ site/
 docs_out/
 eval_results
 .agent-queue-lock
+archived_tasks/
 .claude
 plan.md
 .claude

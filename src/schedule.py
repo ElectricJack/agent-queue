@@ -36,11 +36,14 @@ The ``cron`` field uses standard 5-field cron syntax::
     * * * * *
 
 Supported cron features:
+
 - ``*`` (any value)
 - ``*/N`` (every N)
 - ``N-M`` (range)
 - ``N,M,O`` (list)
 - ``N`` (exact value)
+
+See ``specs/hooks.md`` for the periodic hook trigger specification.
 """
 from __future__ import annotations
 

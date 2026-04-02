@@ -1,13 +1,13 @@
 # Hook Pipeline Guide
 
 Hooks enable automated workflows that react to task lifecycle events or run
-on schedules. Each hook follows a five-stage pipeline:
+on schedules. Each hook follows a simple pipeline:
 
 ```
-trigger → gather context → short-circuit check → render prompt → invoke LLM
+trigger → render prompt → invoke LLM
 ```
 
-The LLM invocation uses a full ChatAgent with all tools available, so hooks
+The LLM invocation uses a full Supervisor with all tools available, so hooks
 can create tasks, check status, send notifications — anything a human user
 can do via Discord chat, a hook can do autonomously.
 
@@ -26,134 +26,41 @@ Fires on a timer, checked every orchestrator cycle (~5 seconds):
 Fires when a matching EventBus event arrives:
 
 ```json
-{"type": "event", "event_type": "task_completed"}
+{"type": "event", "event_type": "task.completed"}
 ```
 
-Available events: `task_completed`, `task_failed`, `task_blocked`,
-`agent_question`, `pr_created`, `task_skipped`, `budget_warning`
+Available events: `task.completed`, `task.failed`, `note.created`,
+`note.updated`, `note.deleted`, `file.changed`, `folder.changed`
 
-## Context Steps
+### Scheduled
 
-Steps gather information before the LLM is invoked. They run **sequentially**,
-and each step's output is available to subsequent steps via template
-placeholders (`{{step_0}}`, `{{step_1}}`, etc.).
-
-### Shell Step
-
-Execute a shell command and capture stdout/stderr/exit_code:
+Fires once at a specific epoch timestamp, then auto-deletes itself. Used
+for deferred one-shot work (e.g. "remind me to check the deploy in
+30 minutes"). Created via the `schedule_hook` command:
 
 ```json
-{"type": "shell", "command": "git log --oneline -5", "timeout": 60}
-```
-
-Output fields: `stdout`, `stderr`, `exit_code`
-
-### Read File Step
-
-Read a file's contents (with optional line limit):
-
-```json
-{"type": "read_file", "path": "/path/to/file.txt", "max_lines": 500}
-```
-
-Output fields: `content`
-
-### HTTP Step
-
-Make an HTTP GET request:
-
-```json
-{"type": "http", "url": "https://api.example.com/status", "timeout": 30}
-```
-
-Output fields: `body`, `status_code`
-
-### Database Query Step
-
-Run a pre-defined named query (raw SQL is not allowed for safety):
-
-```json
-{"type": "db_query", "query": "recent_task_results", "params": {}}
-```
-
-Available named queries:
-- `recent_task_results` — last 20 task results with status and token usage
-- `task_detail` — detailed info for a specific task (params: `{"task_id": "..."}`)
-- `recent_events` — last 50 system events
-- `hook_runs` — last 10 runs for a specific hook (params: `{"hook_id": "..."}`)
-
-Parameters support template placeholders from event data:
-```json
-{"type": "db_query", "query": "task_detail", "params": {"task_id": "{{event.task_id}}"}}
-```
-
-### Git Diff Step
-
-Get git diff output between a branch and HEAD:
-
-```json
-{"type": "git_diff", "workspace": "/path/to/repo", "base_branch": "main"}
-```
-
-Output fields: `diff`, `exit_code`
-
-### Memory Search Step
-
-Semantic search against a project's memory index:
-
-```json
-{"type": "memory_search", "project_id": "my-project", "query": "error handling", "top_k": 3}
-```
-
-Output fields: `content` (formatted results), `count`
-
-Supports template placeholders in `project_id` and `query`:
-```json
-{"type": "memory_search", "project_id": "{{event.project_id}}", "query": "{{event.task_title}}"}
-```
-
-## Short-Circuit Conditions
-
-Short-circuit conditions let you skip the LLM invocation entirely when a
-context step indicates "nothing to do". This saves tokens when the hook
-determines there's no action needed.
-
-Add these flags to any context step:
-
-| Condition | Triggers When | Use Case |
-|-----------|--------------|----------|
-| `skip_llm_if_exit_zero` | Shell command exits with code 0 | Skip when health check passes |
-| `skip_llm_if_empty` | stdout or content is empty | Skip when no errors found |
-| `skip_llm_if_status_ok` | HTTP status is 2xx | Skip when service is healthy |
-
-Example — only invoke the LLM when tests fail:
-```json
-{
-    "type": "shell",
-    "command": "cd /path/to/project && npm test 2>&1",
-    "timeout": 120,
-    "skip_llm_if_exit_zero": true
-}
+{"type": "scheduled", "fire_at": 1711929600}
 ```
 
 ## Prompt Templates
 
 Use `{{placeholder}}` syntax in the `prompt_template` field. Placeholders
-are resolved after context steps complete but before LLM invocation.
+are resolved before LLM invocation.
 
 | Placeholder | Resolves To |
 |-------------|-------------|
-| `{{step_0}}` | First step's primary output (auto-selects stdout/content/body/diff) |
-| `{{step_N.field}}` | Specific field from step N (e.g., `{{step_0.exit_code}}`) |
 | `{{event}}` | Full event data as JSON |
 | `{{event.field}}` | Specific event field (e.g., `{{event.task_id}}`) |
 
-Primary output auto-detection order: `stdout` → `content` → `body` → `diff`
+Since the Supervisor has full tool access, it can gather any context it needs
+(run shell commands, read files, query the database, etc.) as part of its
+tool-use loop. The prompt template should contain clear instructions for
+what the Supervisor should do.
 
 ## LLM Configuration
 
 Hooks use the system's default chat provider by default, but can override
-the provider and model:
+the provider and model per hook:
 
 ```json
 {
@@ -193,12 +100,8 @@ tasks if issues are found:
 ```json
 {
     "name": "auto-review",
-    "trigger": {"type": "event", "event_type": "task_completed"},
-    "context_steps": [
-        {"type": "db_query", "query": "task_detail", "params": {"task_id": "{{event.task_id}}"}},
-        {"type": "git_diff", "workspace": "/path/to/project", "base_branch": "main"}
-    ],
-    "prompt_template": "Task {{event.task_id}} just completed.\n\nTask details:\n{{step_0}}\n\nCode changes:\n{{step_1}}\n\nReview the changes for bugs, security issues, or code quality problems. If you find issues, create a bugfix task describing the problem and fix.",
+    "trigger": {"type": "event", "event_type": "task.completed"},
+    "prompt_template": "Task {{event.task_id}} just completed in project {{event.project_id}}.\n\nLook up the task details, then get the git diff of the task branch against main. Review the changes for bugs, security issues, or code quality problems. If you find issues, create a bugfix task describing the problem and fix.",
     "cooldown_seconds": 60
 }
 ```
@@ -211,15 +114,7 @@ Check system health every 2 hours and create an alert task if services are degra
 {
     "name": "health-monitor",
     "trigger": {"type": "periodic", "interval_seconds": 7200},
-    "context_steps": [
-        {
-            "type": "http",
-            "url": "http://localhost:8080/health",
-            "timeout": 10,
-            "skip_llm_if_status_ok": true
-        }
-    ],
-    "prompt_template": "Health check returned a non-OK status:\n{{step_0}}\n\nAnalyze the health check results and create a task to investigate any degraded components.",
+    "prompt_template": "Run a health check by executing 'curl -s http://localhost:8080/health' in the project workspace. If the response indicates any degraded or unhealthy components, create a task to investigate.",
     "cooldown_seconds": 3600
 }
 ```
@@ -231,13 +126,8 @@ When a task fails, check if it's a recurring pattern and suggest fixes:
 ```json
 {
     "name": "failure-analysis",
-    "trigger": {"type": "event", "event_type": "task_failed"},
-    "context_steps": [
-        {"type": "db_query", "query": "task_detail", "params": {"task_id": "{{event.task_id}}"}},
-        {"type": "db_query", "query": "recent_task_results"},
-        {"type": "memory_search", "project_id": "{{event.project_id}}", "query": "task failure error", "top_k": 5}
-    ],
-    "prompt_template": "Task {{event.task_id}} in project {{event.project_id}} just failed.\n\nFailed task details:\n{{step_0}}\n\nRecent task history:\n{{step_1}}\n\nRelated memories:\n{{step_2}}\n\nAnalyze whether this is a recurring failure pattern. If so, create a task to address the root cause.",
+    "trigger": {"type": "event", "event_type": "task.failed"},
+    "prompt_template": "Task {{event.task_id}} in project {{event.project_id}} just failed.\n\nLook up the task details and recent task history. Search project memory for related failures. Analyze whether this is a recurring failure pattern. If so, create a task to address the root cause.",
     "cooldown_seconds": 600
 }
 ```
@@ -250,32 +140,20 @@ Generate a daily project status summary:
 {
     "name": "daily-summary",
     "trigger": {"type": "periodic", "interval_seconds": 86400},
-    "context_steps": [
-        {"type": "db_query", "query": "recent_task_results"},
-        {"type": "db_query", "query": "recent_events"}
-    ],
-    "prompt_template": "Generate a brief daily summary of project activity.\n\nRecent task results:\n{{step_0}}\n\nRecent events:\n{{step_1}}\n\nSummarize: tasks completed vs failed, token usage trends, and any issues that need attention.",
+    "prompt_template": "Generate a brief daily summary of project activity. Check the system status to see recent task results, token usage, and any events. Summarize: tasks completed vs failed, token usage trends, and any issues that need attention. Post the summary to the project channel.",
     "cooldown_seconds": 82800
 }
 ```
 
-### Test Gate — Skip LLM When Tests Pass
+### Test Gate After Completion
 
-Only involve the LLM when tests fail, saving tokens on healthy runs:
+Run tests after a task completes and create a bugfix task if they fail:
 
 ```json
 {
     "name": "test-gate",
-    "trigger": {"type": "event", "event_type": "task_completed"},
-    "context_steps": [
-        {
-            "type": "shell",
-            "command": "cd /path/to/project && npm test 2>&1",
-            "timeout": 120,
-            "skip_llm_if_exit_zero": true
-        }
-    ],
-    "prompt_template": "Tests failed after task {{event.task_id}} completed.\n\nTest output:\n{{step_0}}\n\nAnalyze the failures and create a bugfix task with the specific fixes needed.",
+    "trigger": {"type": "event", "event_type": "task.completed"},
+    "prompt_template": "Task {{event.task_id}} just completed. Run the project's test suite in the workspace. If any tests fail, analyze the failures and create a bugfix task with specific fixes needed.",
     "cooldown_seconds": 120
 }
 ```

@@ -180,7 +180,66 @@ Maps to `AutoTaskConfig`. The YAML key is `auto_task`.
 | `use_llm_parser` | `bool` | `False` | When `True`, an LLM (Claude) is invoked to parse plan files instead of the deterministic parser. |
 | `llm_parser_model` | `str` | `""` | Model name to use when `use_llm_parser` is `True`. An empty string means the system uses its default model. |
 
-### 4.10 `rate_limits` Section
+### 4.10 `memory` Section
+
+Maps to `MemoryConfig`. The YAML key is `memory`.
+
+This section configures the optional semantic memory subsystem powered by [memsearch](https://github.com/zilliztech/memsearch). When enabled, agents automatically receive relevant context from past task results and project notes at task start, and completed task results are saved as searchable memories.
+
+The subsystem is **disabled by default** — set `enabled: true` to activate it. When disabled (or when the `memsearch` package is not installed), all memory operations are no-ops with no impact on normal operation.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Whether the memory subsystem is active. Must be explicitly set to `true` to enable. |
+| `embedding_provider` | `str` | `"openai"` | Embedding provider for vector generation. Valid values: `"openai"`, `"google"`, `"voyage"`, `"ollama"`, `"local"`. |
+| `embedding_model` | `str` | `""` | Embedding model name. Empty string uses the provider's default model. |
+| `embedding_base_url` | `str` | `""` | Base URL for the embedding API. Primarily used for Ollama or custom embedding endpoints. |
+| `embedding_api_key` | `str` | `""` | API key for the embedding provider. Supports `${ENV_VAR}` substitution (e.g., `${OPENAI_API_KEY}`). |
+| `milvus_uri` | `str` | `"~/.agent-queue/memsearch/milvus.db"` | Milvus connection URI. A file path activates Milvus Lite (embedded); an `http://` or `https://` URI connects to a Milvus Server instance. |
+| `milvus_token` | `str` | `""` | Authentication token for Milvus Server or Zilliz Cloud. Not needed for Milvus Lite. |
+| `max_chunk_size` | `int` | `1500` | Maximum size (in characters) for each indexed text chunk. |
+| `overlap_lines` | `int` | `2` | Number of overlapping lines between consecutive chunks to preserve context across chunk boundaries. |
+| `auto_remember` | `bool` | `True` | When `true`, completed and failed task results are automatically saved as markdown memory files and indexed. |
+| `auto_recall` | `bool` | `True` | When `true`, relevant memories are automatically injected into task context at task start. |
+| `recall_top_k` | `int` | `5` | Number of memory chunks to inject during automatic recall. |
+| `compact_enabled` | `bool` | `False` | Whether periodic LLM-based memory compaction is active. |
+| `compact_interval_hours` | `int` | `24` | Hours between compaction runs when `compact_enabled` is `true`. |
+| `index_notes` | `bool` | `True` | When `true`, markdown files in the project's `notes/` directory are included in the memory index. |
+| `index_sessions` | `bool` | `False` | When `true`, session transcripts are included in the memory index. |
+
+#### Storage Layout
+
+Each project's memories are stored in its workspace under `memory/tasks/`. The memory index uses a per-project Milvus collection named `aq_{project_id}_memory` (with hyphens and spaces replaced by underscores).
+
+#### Example Configurations
+
+**Minimal (local, no API key needed):**
+```yaml
+memory:
+  enabled: true
+  embedding_provider: local
+```
+
+**OpenAI embeddings:**
+```yaml
+memory:
+  enabled: true
+  embedding_provider: openai
+  embedding_api_key: ${OPENAI_API_KEY}
+```
+
+**Production (Milvus Server):**
+```yaml
+memory:
+  enabled: true
+  embedding_provider: openai
+  embedding_api_key: ${OPENAI_API_KEY}
+  milvus_uri: http://milvus-server:19530
+  milvus_token: ${MILVUS_TOKEN}
+  recall_top_k: 10
+```
+
+### 4.11 `rate_limits` Section
 
 Maps directly to `AppConfig.rate_limits` as a raw dict. The YAML key is `rate_limits`.
 

@@ -540,7 +540,151 @@ class TestProjectDefaultProfileEnforcement:
 
 
 # ---------------------------------------------------------------------------
-# 7. Model override enforcement
+# 7. MCP auto-injection from daemon server config
+# ---------------------------------------------------------------------------
+
+class TestMCPAutoInjection:
+    """Verify the daemon's own MCP server is auto-injected into task contexts
+    when mcp_server.enabled is True (inject_into_tasks defaults to True)."""
+
+    @pytest.fixture
+    async def env_with_mcp(self, tmp_path):
+        from src.config import McpServerConfig
+        factory = CapturingAdapterFactory()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
+        )
+        orch = Orchestrator(config, adapter_factory=factory)
+        await orch.initialize()
+        yield orch, factory
+        await orch.wait_for_running_tasks(timeout=5)
+        await orch.shutdown()
+
+    @pytest.fixture
+    async def env_mcp_disabled(self, tmp_path):
+        from src.config import McpServerConfig
+        factory = CapturingAdapterFactory()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            mcp_server=McpServerConfig(enabled=False),
+        )
+        orch = Orchestrator(config, adapter_factory=factory)
+        await orch.initialize()
+        yield orch, factory
+        await orch.wait_for_running_tasks(timeout=5)
+        await orch.shutdown()
+
+    @pytest.fixture
+    async def env_inject_disabled(self, tmp_path):
+        from src.config import McpServerConfig
+        factory = CapturingAdapterFactory()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            mcp_server=McpServerConfig(
+                enabled=True, host="127.0.0.1", port=8082,
+                inject_into_tasks=False,
+            ),
+        )
+        orch = Orchestrator(config, adapter_factory=factory)
+        await orch.initialize()
+        yield orch, factory
+        await orch.wait_for_running_tasks(timeout=5)
+        await orch.shutdown()
+
+    async def test_auto_injects_when_mcp_enabled(self, env_with_mcp):
+        """When mcp_server.enabled=True, every task gets agent-queue MCP."""
+        orch, factory = env_with_mcp
+        await _setup_project_and_agent(orch.db)
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Do work",
+            description="Details", status=TaskStatus.READY,
+        ))
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+
+        adapter = factory.adapters_created[0]
+        assert "agent-queue" in adapter.task_context.mcp_servers
+        aq = adapter.task_context.mcp_servers["agent-queue"]
+        assert aq["type"] == "http"
+        assert aq["url"] == "http://127.0.0.1:8082/mcp"
+
+    async def test_no_injection_when_mcp_disabled(self, env_mcp_disabled):
+        """When mcp_server.enabled=False, no auto-injection."""
+        orch, factory = env_mcp_disabled
+        await _setup_project_and_agent(orch.db)
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Do work",
+            description="Details", status=TaskStatus.READY,
+        ))
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+
+        adapter = factory.adapters_created[0]
+        assert adapter.task_context.mcp_servers == {}
+
+    async def test_no_injection_when_inject_false(self, env_inject_disabled):
+        """When inject_into_tasks=False, no auto-injection even if enabled."""
+        orch, factory = env_inject_disabled
+        await _setup_project_and_agent(orch.db)
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Do work",
+            description="Details", status=TaskStatus.READY,
+        ))
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+
+        adapter = factory.adapters_created[0]
+        assert adapter.task_context.mcp_servers == {}
+
+    async def test_profile_mcp_merged_with_daemon_mcp(self, env_with_mcp):
+        """Profile MCP servers are layered on top of the daemon's MCP server."""
+        orch, factory = env_with_mcp
+        await orch.db.create_profile(AgentProfile(
+            id="web-dev", name="Web Dev",
+            mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
+        ))
+        await _setup_project_and_agent(orch.db)
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Build page",
+            description="Build", status=TaskStatus.READY,
+            profile_id="web-dev",
+        ))
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+
+        mcp = factory.adapters_created[0].task_context.mcp_servers
+        # Both the daemon's server and the profile's server are present
+        assert "agent-queue" in mcp
+        assert mcp["agent-queue"]["type"] == "http"
+        assert "playwright" in mcp
+        assert mcp["playwright"]["command"] == "npx"
+
+    async def test_profile_can_override_daemon_mcp_name(self, env_with_mcp):
+        """A profile that defines an 'agent-queue' MCP server overrides the daemon's."""
+        orch, factory = env_with_mcp
+        await orch.db.create_profile(AgentProfile(
+            id="custom", name="Custom",
+            mcp_servers={"agent-queue": {"type": "http", "url": "http://other:9999/mcp"}},
+        ))
+        await _setup_project_and_agent(orch.db)
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Custom",
+            description="Custom task", status=TaskStatus.READY,
+            profile_id="custom",
+        ))
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+
+        mcp = factory.adapters_created[0].task_context.mcp_servers
+        assert mcp["agent-queue"]["url"] == "http://other:9999/mcp"
+
+
+# ---------------------------------------------------------------------------
+# 8. Model override enforcement
 # ---------------------------------------------------------------------------
 
 class TestModelOverrideEnforcement:

@@ -23,6 +23,8 @@ their results.  Each result should be a dict with at least an ``ok`` key::
         "agents": {"ok": True, "active": 2, "idle": 1},
         "tasks": {"ok": True, "in_progress": 3, "ready": 5},
     }
+
+See ``specs/health.md`` for the endpoint specification.
 """
 
 from __future__ import annotations

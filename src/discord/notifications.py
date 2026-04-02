@@ -10,10 +10,9 @@ task metadata.  The orchestrator passes both versions through the notification
 callback so the bot can choose the appropriate format.
 
 **Interactive views** (``TaskFailedView``, ``TaskApprovalView``,
-``AgentQuestionView``, ``ChatAnalyzerSuggestionView``) attach action buttons
-to notification embeds so users can retry, skip, approve tasks, reply to
-agent questions, or accept/dismiss analyzer suggestions directly from Discord
-without memorizing slash commands.
+``AgentQuestionView``) attach action buttons
+to notification embeds so users can retry, skip, approve tasks, or reply to
+agent questions directly from Discord without memorizing slash commands.
 
 ``classify_error`` pattern-matches raw error messages against known failure modes
 and returns an actionable fix suggestion -- this turns opaque stack traces into
@@ -1406,6 +1405,19 @@ class PlanApprovalView(discord.ui.View):
             )
             return
         await interaction.response.defer(ephemeral=True)
+
+        # Immediately update the message to remove buttons and show processing
+        # state — this makes the interaction feel responsive even if the
+        # backend work takes a few seconds.
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed is not None:
+            embed.title = "⏳ Approving Plan..."
+            embed.color = 0xF1C40F  # yellow/pending
+        try:
+            await interaction.message.edit(embed=embed, view=None)
+        except Exception:
+            pass  # Best-effort; the final update below will fix it
+
         result = await self._handler.execute(
             "approve_plan", {"task_id": self.task_id}
         )
@@ -1413,6 +1425,14 @@ class PlanApprovalView(discord.ui.View):
             await interaction.followup.send(
                 f"Could not approve plan: {result['error']}", ephemeral=True
             )
+            # Restore the buttons on error so user can retry
+            if embed is not None:
+                embed.title = "📋 Plan Awaiting Approval"
+                embed.color = 0x3498DB  # blue
+            try:
+                await interaction.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
         else:
             count = result.get("subtask_count", 0)
             await interaction.followup.send(
@@ -1420,12 +1440,14 @@ class PlanApprovalView(discord.ui.View):
                 f"{count} subtask(s) created.",
                 ephemeral=True,
             )
-            # Update the message: remove buttons and mark as approved
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            # Final update with the actual subtask count
             if embed is not None:
                 embed.title = f"✅ Plan Approved — {count} Subtask(s) Created"
                 embed.color = 0x2ECC71  # green
-            await interaction.message.edit(embed=embed, view=None)
+            try:
+                await interaction.message.edit(embed=embed, view=None)
+            except Exception:
+                pass  # Already removed buttons in the immediate update
 
     @discord.ui.button(
         label="Request Changes",
@@ -1484,13 +1506,16 @@ def format_plan_approval_embed(
     raw_content: str = "",
     plan_url: str = "",
     parsed_steps: list[dict] | None = None,
+    thread_url: str = "",
 ) -> discord.Embed:
     """Rich embed showing a plan awaiting user approval.
 
-    Shows a high-level summary and the list of tasks that will be
-    generated, with a link to the full plan for detailed review.
+    Shows a high-level summary with links to the full plan — either a
+    Discord thread jump URL (preferred, since the agent's final messages
+    contain the complete plan summary) or a browser link to the health
+    server's rendered plan page.
     """
-    # --- Build description: summary + plan link ---
+    # --- Build description: summary + links ---
     desc_lines = [
         f"Task `{task.id}` generated a **{len(parsed_steps or [])}-phase implementation plan**.",
     ]
@@ -1504,8 +1529,12 @@ def format_plan_approval_embed(
 
     desc_lines.append("")
 
+    # Link to the thread where the agent posted the full plan summary
+    if thread_url:
+        desc_lines.append(f"\U0001f4ac [**View Plan Summary in Thread**]({thread_url})")
     if plan_url:
         desc_lines.append(f"\U0001f4c4 [**View Full Plan**]({plan_url})")
+    if thread_url or plan_url:
         desc_lines.append("")
 
     description = "\n".join(desc_lines)
@@ -1531,8 +1560,8 @@ def format_plan_approval_embed(
             truncate(task_list, LIMIT_FIELD_VALUE),
             False,
         ))
-    elif raw_content:
-        # Fallback: no parsed steps available, show a brief preview
+    elif not thread_url and raw_content:
+        # Fallback: no thread URL and no parsed steps — show a brief preview
         preview = raw_content.strip()
         if len(preview) > 400:
             cut = preview[:400].rfind("\n")
@@ -1542,8 +1571,8 @@ def format_plan_approval_embed(
                 preview = preview[:400] + "..."
         fields.append(("Preview", truncate(f"```md\n{preview}\n```", LIMIT_FIELD_VALUE), False))
 
-    # Link to full plan (if not already in description)
-    if plan_url and not parsed_steps:
+    # Link to full plan in browser (only if not already in description)
+    if plan_url and not parsed_steps and not thread_url:
         fields.append(("Full Plan", f"[View in browser]({plan_url})", False))
 
     _PLAN_APPROVAL_COLOR = 0xF39C12  # amber/orange to indicate "needs attention"
@@ -1581,11 +1610,3 @@ _SUGGESTION_TYPE_COLORS = {
 _DISMISSED_COLOR = 0x95A5A6
 
 
-# ChatAnalyzer suggestion UI migrated to src/discord/views.py (Phase 5/6).
-# Re-export for backward compatibility.
-from src.discord.views import (  # noqa: E402
-    SuggestionView as ChatAnalyzerSuggestionView,
-    format_suggestion_embed as format_analyzer_suggestion_embed,
-)
-
-AnalyzerSuggestionView = ChatAnalyzerSuggestionView

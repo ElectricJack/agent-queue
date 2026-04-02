@@ -106,6 +106,28 @@ class MessagingAdapter(ABC):
             or None if thread creation failed.
         """
 
+    async def get_thread_last_message_url(self, task_id: str) -> str | None:
+        """Return a jump URL to the last message in a task's thread.
+
+        Override in platform-specific adapters.  Default returns None
+        (no thread URL available).
+        """
+        return None
+
+    async def edit_thread_root_message(
+        self,
+        task_id: str,
+        content: str | None = None,
+        embed: Any = None,
+    ) -> None:
+        """Edit the thread-root message (e.g. "Agent working: ...").
+
+        Used to update the root message when a task completes or fails,
+        changing it from "Agent working" to a completion/failure status.
+
+        Override in platform-specific adapters.  Default is a no-op.
+        """
+
     # -------------------------------------------------------------------
     # Component access
     # -------------------------------------------------------------------

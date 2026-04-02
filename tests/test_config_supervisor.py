@@ -95,16 +95,9 @@ def test_observation_config_from_yaml():
     assert cfg.observation.stage1_keywords == ["deploy", "hotfix"]
 
 
-def test_chat_analyzer_deprecation_warning():
-    """Deprecation warning when chat_analyzer config is present."""
-    from src.config import AppConfig, ChatAnalyzerConfig
-    app = AppConfig(chat_analyzer=ChatAnalyzerConfig(enabled=True))
-    warnings = app.check_deprecations()
-    assert any("chat_analyzer" in w.lower() for w in warnings)
-
-
-def test_no_deprecation_when_analyzer_disabled():
-    from src.config import AppConfig, ChatAnalyzerConfig
-    app = AppConfig(chat_analyzer=ChatAnalyzerConfig(enabled=False))
+def test_check_deprecations_returns_empty():
+    """check_deprecations returns empty list when no deprecated config is present."""
+    from src.config import AppConfig
+    app = AppConfig()
     warnings = app.check_deprecations()
     assert len(warnings) == 0

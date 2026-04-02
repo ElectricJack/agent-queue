@@ -153,7 +153,6 @@ class TestFormatStatusSummary:
     def test_all_non_completed_statuses(self):
         counts = {
             "IN_PROGRESS": 1,
-            "VERIFYING": 1,
             "ASSIGNED": 1,
             "AWAITING_APPROVAL": 1,
             "WAITING_INPUT": 1,
@@ -163,10 +162,9 @@ class TestFormatStatusSummary:
             "READY": 1,
             "DEFINED": 1,
         }
-        result = _format_status_summary(counts, 10)
-        assert "0/10 subtasks complete" in result
+        result = _format_status_summary(counts, 9)
+        assert "0/9 subtasks complete" in result
         assert "1 in progress" in result
-        assert "1 verifying" in result
         assert "1 assigned" in result
         assert "1 awaiting approval" in result
         assert "1 waiting input" in result

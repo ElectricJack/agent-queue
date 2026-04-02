@@ -85,7 +85,7 @@ Behaviour:
    a. Call `await orch.run_one_cycle()` — executes one full orchestration tick (promotes tasks, assigns work, checks heartbeats, etc.).
    b. Attempt `await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)`. If the event fires before the timeout, the loop exits on the next iteration check. If the timeout expires (`asyncio.TimeoutError` is caught and discarded), the loop immediately executes the next cycle.
 
-The effective cycle interval is approximately 5 seconds when idle, or longer if a single `run_one_cycle()` call takes more than 5 seconds.
+The effective cycle interval is approximately 5 seconds when idle. All I/O operations within `run_one_cycle()` are async (git operations use `asyncio.create_subprocess_exec()`, database uses `aiosqlite`, LLM calls use async HTTP), so the event loop is never blocked and the Discord bot remains responsive even during long orchestrator cycles.
 
 ---
 

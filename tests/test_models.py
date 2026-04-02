@@ -9,7 +9,7 @@ class TestTaskStatus:
     def test_all_states_exist(self):
         expected = {
             "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS",
-            "WAITING_INPUT", "PAUSED", "VERIFYING",
+            "WAITING_INPUT", "PAUSED",
             "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
             "COMPLETED", "FAILED", "BLOCKED",
         }
@@ -22,7 +22,7 @@ class TestTaskEvent:
             "DEPS_MET", "ASSIGNED", "AGENT_STARTED",
             "AGENT_COMPLETED", "AGENT_FAILED", "TOKENS_EXHAUSTED",
             "AGENT_QUESTION", "HUMAN_REPLIED", "INPUT_TIMEOUT",
-            "RESUME_TIMER", "VERIFY_PASSED", "VERIFY_FAILED",
+            "RESUME_TIMER",
             "PR_CREATED", "PR_MERGED",
             "RETRY", "MAX_RETRIES",
             "MERGE_FAILED", "MERGE_SUCCEEDED",

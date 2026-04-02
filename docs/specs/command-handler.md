@@ -719,6 +719,101 @@ Returns diagnostic information about a task's most recent failure.
 
 ---
 
+### Plan Approval
+
+---
+
+#### `approve_plan`
+
+Approve a plan and create subtasks from it.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `orchestrator._create_subtasks_from_stored_plan(task)` to create subtasks from the stored plan data (previously saved as `task_context` entries by `_discover_and_store_plan`). Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
+
+**Returns on success:**
+```python
+{
+    "approved": <str: task_id>,
+    "title": <str>,
+    "subtask_count": <int>,
+    "subtasks": [{"id": <str>, "title": <str>}, ...],
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+
+---
+
+#### `reject_plan`
+
+Reject a plan and reopen the task with feedback for revision.
+
+**Parameters:**
+- `task_id` (required)
+- `feedback` (required): revision instructions for the agent.
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Appends feedback to the task description (under a `**Plan Revision Requested:**` separator). Transitions the task back to `READY` with context `"plan_rejected"`, resetting `retry_count`, `assigned_agent_id`, and `pr_url`. Stores feedback as a `plan_revision_feedback` task context entry and logs a `"plan_rejected"` event.
+
+**Returns on success:**
+```python
+{
+    "rejected": <str: task_id>,
+    "title": <str>,
+    "status": "READY",
+    "feedback_added": True,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+- Feedback is required (empty feedback).
+
+---
+
+#### `delete_plan`
+
+Delete a plan and complete the task without creating subtasks.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace. Transitions the task to `COMPLETED` with context `"plan_deleted"` and logs a `"plan_deleted"` event.
+
+**Returns on success:**
+```python
+{
+    "deleted": <str: task_id>,
+    "title": <str>,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+
+---
+
+### Plan File Cleanup Helper
+
+#### `_cleanup_plan_files_after_approval(task)`
+
+Private helper called by `approve_plan` and `delete_plan`.
+
+**Behavior:** Retrieves the workspace for the task via `db.get_workspace_for_task(task.id)`. Uses `ws.workspace_path` to locate the workspace directory.
+
+1. **Delete archived plan:** Looks up the `plan_archived_path` task context entry to find the archived file path (`.claude/plans/<task_id>-plan.md`). Removes it if it exists.
+2. **Delete original plan files:** Checks for `.claude/plan.md` and `plan.md` in the workspace root — these may still exist if archival failed or a copy was left behind.
+3. **Commit deletions:** If any files were deleted and the workspace is a valid git checkout, commits via `git.acommit_all` with a `chore: delete plan file after approval` message.
+
+All I/O errors are caught and logged as warnings — cleanup failures never propagate.
+
+---
+
 ### Agents
 
 ---
@@ -1043,6 +1138,62 @@ Per-repo errors are embedded as `{"repo_id": <str>, "error": <str>}` entries rat
 - Project not found.
 - Project has no repos and no valid workspace path.
 - Project workspace is not a git repository.
+
+---
+
+### Workspace Maintenance Commands
+
+These commands operate across all workspaces for a project and are intended for the chat agent to diagnose and fix workspace issues. All git operations use `asyncio.to_thread(subprocess.run, ...)` or `git._arun()` to avoid blocking the event loop.
+
+---
+
+#### `find_merge_conflict_workspaces`
+
+Scans all workspaces for a project to detect branches with merge conflicts against the default branch without modifying any working tree.
+
+**Parameters:**
+- `project_id` (optional): Falls back to `_active_project_id`.
+
+**Behavior:** For each workspace, fetches from origin, then iterates all remote branches. For each branch (excluding the default branch, HEAD, and `dependabot/*`), runs `git merge-base` to find the common ancestor, then `git merge-tree` to simulate a three-way merge. If the merge-tree output contains conflict markers (`+<<<<<<< `), the branch is flagged as conflicting. Also checks for active working tree conflicts via `git status --porcelain` (looking for `UU`, `AA`, `DD` status codes).
+
+All git operations are run via `asyncio.to_thread(subprocess.run, ...)` since they are one-off diagnostic commands not covered by `GitManager` methods.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "workspaces_scanned": <int>,
+    "workspaces_with_conflicts": <int>,
+    "conflicts": [
+        {
+            "workspace_id": <str>,
+            "workspace_name": <str>,
+            "workspace_path": <str>,
+            "current_branch": <str>,
+            "locked_by_task_id": <str | None>,
+            "locked_by_agent_id": <str | None>,
+            "has_working_tree_conflict": <bool>,
+            "branch_conflicts": [
+                {
+                    "branch": <str>,
+                    "task_id": <str>,
+                    "conflicting_files": [<str>, ...],
+                    "commits_behind_main": <str>,
+                },
+                ...
+            ],
+        },
+        ...
+    ],
+}
+```
+
+**Errors:**
+- `project_id` not provided and no active project set.
+- Project not found.
+- No workspaces found for the project.
+
+---
 
 ---
 
@@ -1727,16 +1878,35 @@ Pauses, resumes, or checks the status of the orchestrator loop.
 
 #### `restart_daemon`
 
-Sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager).
+Logs a restart notification to the notification channel, then sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal.
 
-**Parameters:** None.
+**Parameters:**
+- `reason` (optional, default `"No reason provided"`): Human-readable reason for the restart. Logged to the notification channel as `"🔄 **Daemon restart initiated** — {reason}"`.
 
 **Returns on success:**
 ```python
-{"status": "restarting", "message": "Daemon restart initiated"}
+{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>}
 ```
 
 **Errors:** None expected.
+
+---
+
+#### `update_and_restart`
+
+Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
+
+**Parameters:**
+- `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
+
+**Returns on success:**
+```python
+{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>}
+```
+
+**Errors:**
+- `git pull` failed (non-zero exit code).
+- `pip install` failed (non-zero exit code).
 
 ---
 
@@ -1765,7 +1935,7 @@ Reads a file from within an allowed directory. Supports offset and line limits f
 
 #### `write_file`
 
-Writes content to a file. Creates the file if it doesn't exist, overwrites if it does.
+Writes content to a file. Creates the file if it doesn't exist, overwrites if it does. Creates parent directories automatically.
 
 **Parameters:**
 - `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
@@ -1787,7 +1957,7 @@ Writes content to a file. Creates the file if it doesn't exist, overwrites if it
 
 #### `edit_file`
 
-Edits a file by replacing an exact string match. The `old_string` must appear exactly once in the file unless `replace_all` is set.
+Edits a file by replacing an exact string match. Designed for targeted, surgical edits — the `old_string` must appear exactly once in the file unless `replace_all` is set.
 
 **Parameters:**
 - `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
@@ -1812,7 +1982,7 @@ Edits a file by replacing an exact string match. The `old_string` must appear ex
 
 #### `glob_files`
 
-Finds files matching a glob pattern within a directory.
+Finds files matching a glob pattern within a directory. Uses Python's `pathlib.Path.glob()` with recursive support for `**` patterns.
 
 **Parameters:**
 - `pattern` (required): Glob pattern (e.g. `**/*.py`, `src/*.ts`).
@@ -1834,7 +2004,7 @@ Finds files matching a glob pattern within a directory.
 
 #### `grep`
 
-Searches file contents using regex patterns. Supports context lines, file type filtering, case-insensitive search, and file-paths-only mode. Uses `rg` (ripgrep) when available, falls back to `grep -rn`.
+Searches file contents using regex patterns. More powerful than `search_files` — supports context lines, file type filtering, case-insensitive search, and file-paths-only mode. Uses `rg` (ripgrep) when available, falls back to `grep -rn`.
 
 **Parameters:**
 - `pattern` (required): Regex pattern to search for.
@@ -1868,7 +2038,7 @@ Executes a shell command in a validated working directory. Intended for the chat
 - `working_dir` (required): Directory to run the command in. If not an absolute path, the handler first tries to look it up as a project ID; if that fails, it joins with `config.workspace_dir`.
 - `timeout` (optional, default `30`, max `120`): Execution timeout in seconds.
 
-**Behavior:** Validates the working directory via `_validate_path`. Runs the command in a thread using `subprocess.run`. Stdout is truncated to 4000 characters; stderr to 2000 characters.
+**Behavior:** Validates the working directory via `_validate_path`. Runs the command in a thread via `asyncio.to_thread(subprocess.run, command, shell=True, ...)` to avoid blocking the event loop. Stdout is truncated to 4000 characters; stderr to 2000 characters.
 
 **Returns on success:**
 ```python
@@ -1888,14 +2058,14 @@ Executes a shell command in a validated working directory. Intended for the chat
 
 #### `search_files`
 
-Searches for patterns in files within a validated directory. Intended for the chat agent. For more powerful search capabilities, use `grep` instead.
+Searches for patterns in files within a validated directory. Intended for the chat agent.
 
 **Parameters:**
 - `pattern` (required): Search pattern (regex for `grep` mode; glob for `find` mode).
 - `path` (required): Directory to search. If not absolute, joined with `config.workspace_dir`.
 - `mode` (optional, default `"grep"`): Either `"grep"` (recursive regex search, up to 50 matches) or `"find"` (filename glob search).
 
-**Behavior:** Validates the directory via `_validate_path`. Runs `grep -rn --include=* -m 50 <pattern> <path>` in `grep` mode, or `find <path> -name <pattern> -type f` in `find` mode. Output is truncated to 4000 characters.
+**Behavior:** Validates the directory via `_validate_path`. Runs the search command in a thread via `asyncio.to_thread(subprocess.run, ...)`. In `grep` mode: `grep -rn --include=* -m 50 <pattern> <path>`. In `find` mode: `find <path> -name <pattern> -type f`. Output is truncated to 4000 characters.
 
 **Returns on success:**
 ```python
@@ -1906,6 +2076,39 @@ Searches for patterns in files within a validated directory. Intended for the ch
 - Path is outside allowed directories.
 - Directory not found.
 - Search timed out.
+
+---
+
+#### `list_directory`
+
+Lists files and directories at a given path within a project workspace. Used by both the chat agent and the `/browse` Discord command.
+
+**Parameters:**
+- `project_id` (optional if active project is set): Project whose workspace to browse.
+- `workspace` (optional): Workspace name or ID. If omitted, the first workspace for the project is used. Looked up by name first, then by ID.
+- `path` (optional, default `""`): Relative path within the workspace to list. Empty string lists the workspace root.
+
+**Behavior:** Resolves the workspace path to an absolute path via `os.path.realpath()` to prevent CWD-relative resolution issues (e.g., if a workspace path was stored as a relative path, it could otherwise resolve relative to the bot's working directory). Joins the relative `path` with the workspace root, validates it via `_validate_path`, then lists the directory contents. Entries are sorted alphabetically and separated into directories and files (with sizes).
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "path": <str: relative path or "/">,
+    "workspace_path": <str: resolved absolute workspace root>,
+    "workspace_name": <str>,
+    "directories": [<str>, ...],
+    "files": [{"name": <str>, "size": <int>}, ...],
+}
+```
+
+**Errors:**
+- `project_id` is required (no active project set).
+- Workspace not found for project.
+- Project has no workspaces.
+- Access denied: path is outside allowed directories.
+- Directory not found.
+- Permission denied.
 
 ---
 
@@ -1981,3 +2184,33 @@ Queries the database for any tasks with status `IN_PROGRESS` for the given proje
 If no tasks are in progress, returns `None`.
 
 This method is called by the high-level git commands `checkout_branch`, `commit_changes`, and `merge_branch` after a successful git operation. The warning is included in the response dict under the `"warning"` key when present. It is never a blocking error — the git operation proceeds regardless.
+
+---
+
+## 8. Tool Navigation Commands
+
+### `browse_tools`
+
+Returns list of tool categories with name, description, and tool_count.
+No arguments required.
+
+### `load_tools`
+
+Accepts `category` (string). Returns confirmation of loaded category with
+the list of tool names added. The actual tool schema injection happens in
+the chat layer (ChatAgent), not in CommandHandler.
+
+Returns error if category is unknown, listing available categories.
+
+### `send_message`
+
+Posts a message to a Discord channel via the bot reference. Accepts
+`channel_id` and `content`. Returns error if the Discord bot is not
+available or the channel cannot be found.
+
+### Rule System Stubs (Phase 2)
+
+- `browse_rules` -- Stub, returns Phase 2 not-implemented error
+- `load_rule` -- Stub
+- `save_rule` -- Stub
+- `delete_rule` -- Stub

@@ -424,6 +424,13 @@ For root tasks, the execution rules:
 
 The full task description is appended as `## Task\n{task.description}`.
 
+### Task Context Assembly
+
+Task execution context is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
+to compose system metadata, execution rules, upstream dependency summaries, agent role
+instructions, and the task description into a single prompt string.
+
 **Step 9 — Start adapter.**
 Build `TaskContext(description=full_description, checkout_path=workspace, branch_name=...)`.
 `await adapter.start(ctx)`.
@@ -464,7 +471,6 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Transition task to `VERIFYING` (`context="agent_completed"`).
 - Call `_complete_workspace(task, agent)` (best-effort; git errors posted to thread/channel).
 - If a `pr_url` was returned:
   - Transition to `AWAITING_APPROVAL` (`context="pr_created"`, `pr_url=pr_url`).
@@ -588,6 +594,15 @@ workspace for the project.  If no workspace is available (all locked or none exi
 
 **Database updates.**  After the git operations:
 `db.update_task(task.id, branch_name=branch_name)`
+
+**Archived plan cleanup.**  Before returning, call `_cleanup_archived_plans(workspace, task.id)`.
+This removes stale archived plan files (in `.claude/plans/`) left by previous tasks that
+ran in the same workspace.  Archived plan filenames contain the originating task ID as a
+prefix, so files belonging to the *current* task (retry scenario) are preserved while all
+others are deleted.  If any files are removed and the workspace is a valid git checkout,
+the deletions are committed with `git.acommit_all`.  `OSError` during listing/removal and
+any exception during the commit are caught and logged as warnings — they never prevent the
+workspace from being returned.
 
 **Error handling.**  All git operations in `_prepare_workspace` are wrapped in a
 try/except.  If any git operation fails, a warning notification is sent but the method
@@ -734,22 +749,45 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 
 ---
 
-## 12. Plan-Generated Tasks
+## 12. Plan-Generated Tasks (Two-Step Approval Workflow)
 
-`_generate_tasks_from_plan(task, workspace) -> list[Task]`
+Plan generation follows a two-step workflow: **discover → approval → create subtasks**.
+After a task completes, the orchestrator delegates plan discovery to the Supervisor
+via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
+parse, and store plan files, then returns whether a plan was found. If found, the
+task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
+human approves the plan via the `approve_plan` command (see `command-handler.md`).
 
-Called immediately after any successful COMPLETED path in `_execute_task`.
+### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
+
+Called as part of the completion pipeline, BEFORE merge (so the workspace is still
+available). Delegates to `Supervisor.on_task_completed()` which calls the
+`process_task_completion` command in CommandHandler.
+
+If no Supervisor is set (legacy mode), falls back to `_phase_plan_generate()`.
+
+The `process_task_completion` command wraps the same logic as the former
+`_discover_and_store_plan`:
+
+### 12a-legacy. `_discover_and_store_plan(task, workspace) -> bool` (legacy fallback)
+
+Called immediately after any successful COMPLETED path in `_execute_task`.  Returns `True`
+if a plan was found, parsed, and stored for approval; `False` otherwise.
 
 **Guards:**
-- If `config.auto_task.enabled` is false: return `[]`.
-- If `task.is_plan_subtask` is true: return `[]` (prevent recursive explosion).
+- If `config.auto_task.enabled` is false: return `False`.
+- If `task.is_plan_subtask` is true: return `False` (prevent recursive explosion).
+- **Skip-if-implemented heuristic:** if `config.auto_task.skip_if_implemented` is true,
+  call `git.has_non_plan_changes(workspace, default_branch)`.  If the task already made
+  substantial code changes beyond the plan file itself, the plan was likely already
+  executed during this task — log a message and return `False`.
 
 **Plan file discovery.**
 Call `find_plan_file(workspace, config.auto_task.plan_file_patterns)`.
-If no file found, log to stdout and return `[]`.
+If no file found, log to stdout and return `False`.
 
 **Plan reading.**
-`raw = read_plan_file(plan_path)`.  On I/O error, log and return `[]`.
+`raw = read_plan_file(plan_path)`.  On I/O error, log and return `False`.
 
 **Parsing.**
 If `config.auto_task.use_llm_parser` and `_chat_provider` is set:
@@ -758,19 +796,34 @@ If `config.auto_task.use_llm_parser` and `_chat_provider` is set:
 
 Otherwise: call `parse_plan(raw, source_file, max_steps)`.
 
-If `plan.steps` is empty, log and return `[]`.
+If `plan.steps` is empty, log and return `False`.
 
 **Plan archiving.**
 Move the plan file to `.claude/plans/{task.id}-plan.md` inside the workspace.  This
 prevents the file from being re-processed if the workspace is reused.  Any `OSError` is
-silently ignored.
+silently ignored.  Store the archived path as a `plan_archived_path` task context entry.
+
+**Store plan data.**  Store the parsed plan steps, preamble/context, and configuration
+as structured `task_context` entries so the plan can be retrieved later during approval
+without re-reading the file.
+
+**Transition.**  Move the task to `AWAITING_PLAN_APPROVAL` status and emit a
+`PLAN_FOUND` event.  Notify the Discord channel with a plan summary so the user can
+review and approve/reject/delete the plan.
+
+Return `True`.
+
+### 12b. `_create_subtasks_from_stored_plan(task) -> list[Task]`
+
+Called by `CommandHandler._cmd_approve_plan` after the user approves the plan.  Retrieves
+the stored plan data from `task_context` entries and creates subtasks.
 
 **Preamble extraction.**
-Extract text from `plan.raw_content` before the first step title as `plan_context`.  Strip
-a leading `# Title` heading if present.  This context is prepended to every subtask
-description.
+Extract text from the stored plan raw content before the first step title as
+`plan_context`.  Strip a leading `# Title` heading if present.  This context is
+prepended to every subtask description.
 
-**Subtask creation loop.**  Iterate `plan.steps` with an index:
+**Subtask creation loop.**  Iterate the stored plan steps with an index:
 
 For each step:
 1. `new_id = await generate_task_id(db)`.
@@ -791,9 +844,30 @@ For each step:
 6. If `chain_dependencies` and `prev_task_id` is set: `db.add_dependency(new_id, depends_on=prev_task_id)`.
 7. Record `prev_task_id = new_id` for the next iteration.
 
-**After creation.**  Return the list of created tasks.  The caller (`_execute_task`) then
-calls `_check_defined_tasks()` immediately so that any subtask with no dependencies (or
-whose only dependency is already COMPLETED) is promoted to READY in the same cycle.
+**After creation.**  Return the list of created tasks.  The caller (`_cmd_approve_plan`)
+transitions the task to COMPLETED, then the next scheduling cycle promotes subtasks with
+no unmet dependencies to READY.
+
+### 12c. Plan File Cleanup
+
+Plan files are cleaned up at two points to prevent stale plans from being re-presented
+for approval by subsequent tasks reusing the same workspace:
+
+**Post-approval cleanup** (`CommandHandler._cleanup_plan_files_after_approval`):
+Runs after both `approve_plan` and `delete_plan` commands.
+1. Deletes the archived plan file from `.claude/plans/<task_id>-plan.md` (path retrieved
+   from the `plan_archived_path` task context entry).
+2. Deletes any original plan files (`.claude/plan.md`, `plan.md`) that may still exist
+   if archival failed.
+3. Commits the deletions to git via `git.acommit_all` so the plan file is removed from
+   the branch.
+Uses `ws.workspace_path` (not `ws.path`) from the workspace record.
+
+**Pre-task cleanup** (`Orchestrator._cleanup_archived_plans`):
+Runs during `_prepare_workspace` as defense-in-depth.  Removes archived plan files from
+`.claude/plans/` that belong to *other* tasks (identified by task ID prefix in the
+filename).  Files belonging to the current task are preserved (retry scenario).  Removals
+are committed to git.  See §10 for details.
 
 ---
 
@@ -1012,3 +1086,15 @@ The system provides two complementary mechanisms for keeping subtask chains clos
 
 Both mechanisms abort silently on conflict.  Conflicts are deferred to final merge time,
 where `sync_and_merge()` applies its rebase-before-merge fallback.
+
+---
+
+## 18. Rule Manager Initialization
+
+During `initialize()`, after hook engine setup:
+1. Create `RuleManager` with the data directory, database, and hook engine
+2. Run `reconcile()` to verify all active rules have valid hooks
+3. Run `install_defaults()` to create default global rules if not present
+
+The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
+for rule CRUD operations. See `specs/rule-system.md` for the full Rule System spec.

@@ -13,7 +13,6 @@ events, transitions, and the rules governing task lifecycle progression.
 | `IN_PROGRESS` | Agent is actively working on the task | No |
 | `WAITING_INPUT` | Agent asked a question, waiting for human reply via Discord | No |
 | `PAUSED` | Temporarily paused (rate limit or token exhaustion), has `resume_after` timestamp | No |
-| `VERIFYING` | Agent completed work, verification in progress | No |
 | `AWAITING_APPROVAL` | PR created, waiting for human approval/merge | No |
 | `COMPLETED` | Task finished successfully | Yes |
 | `FAILED` | Task execution failed (may retry) | Semi-terminal |
@@ -34,39 +33,33 @@ events, transitions, and the rules governing task lifecycle progression.
                                 │           EXEC_ERROR │                         │  │  │  │
                                 │                      ▼                         │  │  │  │
                                 │                 ┌─────────┐                    │  │  │  │
-                                │                 │ BLOCKED │◄───MAX_RETRIES─────┘  │  │  │
-                                │                 └─────────┘                       │  │  │
-                                │                                                  │  │  │
-                         RESUME_TIMER  ┌────────┐◄──TOKENS_EXHAUSTED───────────────┘  │  │
-                                ├──────┤ PAUSED │                                      │  │
-                                │      └────────┘◄──INPUT_TIMEOUT──┐                   │  │
-                                │                                   │                   │  │
-                                │      ┌────────────────┐          │                   │  │
-                                │      │ WAITING_INPUT  ├──────────┘                   │  │
-                                │      └───────┬────────┘◄──AGENT_QUESTION─────────────┘  │
-                                │              │                                          │
-                                │        HUMAN_REPLIED ──► back to IN_PROGRESS            │
-                                │                                                         │
-                           RETRY│      ┌───────────┐◄──AGENT_COMPLETED────────────────────┘
-                                ├──────┤ VERIFYING  │
-                                │      └──┬───┬─────┘
-                                │         │   │
-                                │  VERIFY_│   │PR_CREATED
-                                │  PASSED │   │
-                         ┌──────┤         ▼   ▼
-                         │      │  ┌───────────────────────┐
-                         │  ┌───┤  │ AWAITING_APPROVAL     │
-                         │  │   │  └───────┬───────────────┘
-                         │  │   │          │ PR_MERGED
-                         │  │   │          ▼
-                         │  │   │  ┌─────────────┐
-                         │  │   └─►│ COMPLETED   │
-                         │  │      └─────────────┘
-                         │  │
-                         │  ▼
-                         │  ┌────────┐
-                         └──┤ FAILED │──MAX_RETRIES──► BLOCKED
-                            └────────┘
+                                │                 │ BLOCKED │◄──MAX_RETRIES──────┘  │  │  │
+                                │                 └─────────┘◄──MERGE_FAILED─────┘  │  │  │
+                                │                                                    │  │  │
+                         RESUME_TIMER  ┌────────┐◄──TOKENS_EXHAUSTED────────────────┘  │  │
+                                ├──────┤ PAUSED │                                       │  │
+                                │      └────────┘◄──INPUT_TIMEOUT──┐                    │  │
+                                │                                   │                    │  │
+                                │      ┌────────────────┐          │                    │  │
+                                │      │ WAITING_INPUT  ├──────────┘                    │  │
+                                │      └───────┬────────┘◄──AGENT_QUESTION──────────────┘  │
+                                │              │                                           │
+                                │        HUMAN_REPLIED ──► back to IN_PROGRESS             │
+                                │                                                          │
+                           RETRY│                    PR_CREATED────────────────────────────┘
+                                │      ┌───────────────────────┐
+                                │      │   AWAITING_APPROVAL   │
+                                │      └───────┬───────────────┘
+                                │              │ PR_MERGED
+                                │              ▼
+                         ┌──────┤      ┌─────────────┐◄──AGENT_COMPLETED──────────────────┘
+                         │      └─────►│  COMPLETED  │
+                         │             └─────────────┘
+                         │
+                         ▼
+                         ┌────────┐
+                         │ FAILED │──MAX_RETRIES──► BLOCKED
+                         └────────┘
 ```
 
 ## Transition Table
@@ -78,9 +71,8 @@ events, transitions, and the rules governing task lifecycle progression.
 | DEFINED | DEPS_MET | READY | All dependency tasks are COMPLETED |
 | READY | ASSIGNED | ASSIGNED | Scheduler picks task for an idle agent |
 | ASSIGNED | AGENT_STARTED | IN_PROGRESS | Agent process has launched |
-| IN_PROGRESS | AGENT_COMPLETED | VERIFYING | Agent reports work done |
-| VERIFYING | VERIFY_PASSED | COMPLETED | Tests pass, no approval needed |
-| VERIFYING | PR_CREATED | AWAITING_APPROVAL | PR created, needs human review |
+| IN_PROGRESS | AGENT_COMPLETED | COMPLETED | Agent reports work done, no approval needed |
+| IN_PROGRESS | PR_CREATED | AWAITING_APPROVAL | PR created, needs human review |
 | AWAITING_APPROVAL | PR_MERGED | COMPLETED | PR merged, task done |
 
 ### Pause & Resume
@@ -98,7 +90,7 @@ events, transitions, and the rules governing task lifecycle progression.
 | From | Event | To | Description |
 |------|-------|----|-------------|
 | IN_PROGRESS | AGENT_FAILED | FAILED | Agent reports failure |
-| VERIFYING | VERIFY_FAILED | FAILED | Tests failed |
+| IN_PROGRESS | MERGE_FAILED | BLOCKED | Post-completion merge failed |
 | FAILED | RETRY | READY | retry_count < max_retries, try again |
 | FAILED | MAX_RETRIES | BLOCKED | No more retries, needs intervention |
 | IN_PROGRESS | MAX_RETRIES | BLOCKED | Direct shortcut (skip FAILED) |

@@ -18,9 +18,11 @@ Features (phases from the memory improvement plan):
   profile > notes > recent tasks > semantic search results.
 
 Optional dependency — when memsearch is not installed or memory is not
-configured, all operations are no-ops. All memsearch calls are wrapped in
+configured, all operations are no-ops.  All memsearch calls are wrapped in
 try/except for resilience: a memory subsystem failure never blocks task
 execution.
+
+See ``specs/memory.md`` for the full memory system specification.
 """
 
 from __future__ import annotations

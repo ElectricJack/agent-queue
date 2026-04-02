@@ -1,12 +1,25 @@
 """Reflection engine for the Supervisor's action-reflect cycle.
 
-Every action the Supervisor takes gets a verification pass. The
+Every action the Supervisor takes gets a verification pass.  The
 reflection depth varies by trigger type and configured level.
 
+The engine classifies triggers into three tiers:
+
+- **Deep** (``task.completed``, ``task.failed``, ``hook.failed``) — full
+  five-point evaluation including rule checks and memory updates.
+- **Standard** (``user.request``, ``hook.completed``) — quick success
+  check and rule scan.
+- **Light** (``passive.observation``, ``periodic.sweep``) — minimal:
+  update memory if notable, otherwise skip.
+
 Safety controls prevent runaway loops:
-- Maximum reflection depth (default 3)
-- Per-cycle token cap
-- Hourly circuit breaker
+
+- Maximum reflection depth (default 3) — caps recursive reflect calls.
+- Per-cycle token cap — limits total tokens spent in one reflect chain.
+- Hourly circuit breaker — hard cap on tokens across all reflection
+  within a rolling 1-hour window.
+
+See ``specs/supervisor.md`` for the reflection lifecycle specification.
 """
 from __future__ import annotations
 
@@ -31,9 +44,26 @@ _LIGHT_TRIGGERS = {"passive.observation", "periodic.sweep"}
 
 
 class ReflectionEngine:
-    """Manages the action-reflect cycle for the Supervisor."""
+    """Manages the action-reflect cycle for the Supervisor.
+
+    The engine is stateless between conversations — it only tracks token
+    usage for circuit-breaker purposes.  The Supervisor owns the instance
+    and calls ``should_reflect`` → ``determine_depth`` →
+    ``build_reflection_prompt`` → ``parse_verdict`` for each cycle.
+
+    Attributes:
+        _config: Reflection configuration (level, caps, circuit breaker).
+        _token_ledger: Rolling list of ``(timestamp, token_count)`` tuples
+            for circuit-breaker tracking.
+    """
 
     def __init__(self, config: ReflectionConfig):
+        """Initialise the engine with reflection configuration.
+
+        Args:
+            config: Controls reflection level (``off``, ``minimal``,
+                ``moderate``, ``full``), depth limits, and token caps.
+        """
         self._config = config
         self._token_ledger: list[tuple[float, int]] = []
 
@@ -42,6 +72,15 @@ class ReflectionEngine:
         return self._config.level
 
     def should_reflect(self, trigger: str) -> bool:
+        """Decide whether to run reflection for the given trigger.
+
+        Args:
+            trigger: Event name (e.g. ``"user.request"``, ``"task.completed"``).
+
+        Returns:
+            ``True`` if reflection should proceed.  Returns ``False`` when
+            reflection is disabled or the hourly circuit breaker is tripped.
+        """
         if self._config.level == "off":
             return False
         if self.is_circuit_breaker_tripped():
@@ -49,6 +88,16 @@ class ReflectionEngine:
         return True
 
     def determine_depth(self, trigger: str, context: dict) -> str | None:
+        """Map a trigger to a reflection depth based on configuration level.
+
+        Args:
+            trigger: Event name to classify.
+            context: Additional context (reserved for future use).
+
+        Returns:
+            One of ``"deep"``, ``"standard"``, ``"light"``, or ``None``
+            if reflection is off.
+        """
         if self._config.level == "off":
             return None
         if self._config.level == "minimal":
@@ -66,6 +115,18 @@ class ReflectionEngine:
 
     def build_reflection_prompt(self, depth: str, trigger: str,
                                  action_summary: str, action_results: list[dict]) -> str:
+        """Build the reflection prompt for the LLM.
+
+        Args:
+            depth: Reflection depth (``"deep"``, ``"standard"``, ``"light"``).
+            trigger: The event that triggered reflection.
+            action_summary: Human-readable summary of the action taken.
+            action_results: List of ``{"tool": ..., "result": ...}`` dicts
+                from the tool-use round.
+
+        Returns:
+            A Markdown-formatted prompt string for the reflection LLM call.
+        """
         if depth == "deep":
             return self._build_deep_prompt(trigger, action_summary, action_results)
         if depth == "standard":
@@ -117,19 +178,42 @@ class ReflectionEngine:
         )
 
     def can_reflect_deeper(self, current_depth: int) -> bool:
+        """Check whether another recursive reflection pass is allowed.
+
+        Args:
+            current_depth: How many reflection passes have run so far.
+
+        Returns:
+            ``True`` if *current_depth* is below ``max_depth``.
+        """
         return current_depth < self._config.max_depth
 
     def can_continue_cycle(self, tokens_used: int) -> bool:
+        """Check whether the per-cycle token cap allows more reflection.
+
+        Args:
+            tokens_used: Tokens consumed in this reflection cycle so far.
+
+        Returns:
+            ``True`` if under the cap.
+        """
         return tokens_used < self._config.per_cycle_token_cap
 
     def record_tokens(self, tokens: int) -> None:
+        """Record token usage for circuit-breaker tracking.
+
+        Args:
+            tokens: Estimated tokens consumed by a reflection call.
+        """
         self._token_ledger.append((time.time(), tokens))
 
     def hourly_tokens_used(self) -> int:
+        """Return total tokens used by reflection in the last hour."""
         cutoff = time.time() - 3600
         return sum(t for ts, t in self._token_ledger if ts > cutoff)
 
     def is_circuit_breaker_tripped(self) -> bool:
+        """Check whether hourly reflection token usage exceeds the limit."""
         return self.hourly_tokens_used() >= self._config.hourly_token_circuit_breaker
 
     @staticmethod

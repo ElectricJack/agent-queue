@@ -78,17 +78,29 @@ nav:
           - Configuration: specs/config.md
           - Main Entry Point: specs/main.md
           - Database: specs/database.md
+          - Agent Profiles: specs/agent-profiles.md
+          - LLM Logging: specs/llm-logging.md
       - Orchestration:
           - Orchestrator: specs/orchestrator.md
+          - Supervisor: specs/supervisor.md
           - Scheduler & Budget: specs/scheduler-and-budget.md
           - Plan Parser: specs/plan-parser.md
+          - Prompt Builder: specs/prompt-builder.md
+          - Reflection: specs/reflection.md
+          - Rule System: specs/rule-system.md
+          - Tiered Tools: specs/tiered-tools.md
+          - Chat Observer: specs/chat-observer.md
           - Hooks: specs/hooks.md
           - Event Bus: specs/event-bus.md
       - Interfaces:
-          - Chat Agent: specs/chat-agent.md
+          - Supervisor (Chat Agent): specs/chat-agent.md
           - Command Handler: specs/command-handler.md
+          - MCP Server: specs/mcp-server.md
           - Discord: specs/discord/discord.md
           - Chat Providers: specs/chat-providers/providers.md
+      - Guides:
+          - Setup Wizard: specs/setup-wizard.md
+          - Adapter Development: specs/adapters/development-guide.md
       - Infrastructure:
           - Adapters — Claude: specs/adapters/claude.md
           - Git Manager: specs/git/git.md
@@ -99,13 +111,27 @@ nav:
           - Config: api/config.md
           - Database: api/database.md
           - State Machine: api/state_machine.md
+          - Command Handler: api/command_handler.md
           - Main: api/main.md
+          - Chat Agent (Deprecated): api/chat_agent.md
       - Orchestration:
           - Orchestrator: api/orchestrator.md
+          - Supervisor: api/supervisor.md
           - Scheduler: api/scheduler.md
           - Event Bus: api/event_bus.md
           - Plan Parser: api/plan_parser.md
           - Hooks: api/hooks.md
+          - Reflection: api/reflection.md
+          - Schedule: api/schedule.md
+          - Rule Manager: api/rule_manager.md
+      - Prompts & Tools:
+          - Prompt Builder: api/prompt_builder.md
+          - Prompt Manager: api/prompt_manager.md
+          - Tool Registry: api/tool_registry.md
+          - Known Tools: api/known_tools.md
+      - Memory:
+          - Memory: api/memory.md
+          - Chat Observer: api/chat_observer.md
       - Adapters:
           - Base Adapter: api/adapters/base.md
           - Claude Adapter: api/adapters/claude.md
@@ -121,3 +147,12 @@ nav:
       - Tokens:
           - Budget: api/tokens/budget.md
           - Tracker: api/tokens/tracker.md
+      - Infrastructure:
+          - Health: api/health.md
+          - File Watcher: api/file_watcher.md
+          - Logging Config: api/logging_config.md
+          - LLM Logger: api/llm_logger.md
+          - Setup Wizard: api/setup_wizard.md
+      - Utilities:
+          - Agent Names: api/agent_names.md
+          - Task Names: api/task_names.md

@@ -55,9 +55,11 @@ Key configuration sections:
 
 Once the daemon is running and connected to Discord:
 
-1. **Add a project** — Tell the bot about your project in the Discord channel
-2. **Create a task** — Describe what you want done in natural language
+1. **Add a project** — Tell the bot about your project in the Discord channel, or use `/new-project` for a guided wizard
+2. **Create a task** — Describe what you want done in natural language, or use `/add-task`
 3. **Watch it work** — The bot creates a thread and streams agent progress
 4. **Review the PR** — When the task completes, review the generated pull request
+
+The bot uses a **Supervisor** — an LLM-powered conversation interface that translates your natural language into system commands. You can also use Discord slash commands (type `/` to see them) for structured operations. Both methods call the same underlying logic.
 
 For a complete reference of all available commands, see the [Discord Commands Guide](discord-commands.md).

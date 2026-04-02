@@ -248,10 +248,10 @@ class TestGenerateUniqueAgentName:
 
 
 class TestCommandHandlerIntegration:
-    """Test that command handler uses auto-generated names."""
+    """Test that agent CRUD commands are deprecated (workspace-as-agent model)."""
 
-    async def test_create_agent_without_name(self, tmp_path):
-        """Creating an agent without a name should auto-generate one."""
+    async def test_create_agent_returns_deprecation_error(self, tmp_path):
+        """create_agent should return a deprecation error."""
         from src.command_handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
@@ -267,20 +267,14 @@ class TestCommandHandlerIntegration:
             handler = CommandHandler(orchestrator, config)
             result = await handler.execute("create_agent", {})
 
-            assert "created" in result
-            assert "name" in result
-            assert len(result["name"]) > 0
-            assert len(result["created"]) > 0
-
-            # Verify the agent exists in the DB
-            agent = await orchestrator.db.get_agent(result["created"])
-            assert agent is not None
-            assert agent.name == result["name"]
+            assert "error" in result
+            assert "no longer supported" in result["error"]
+            assert "add_workspace" in result["error"]
         finally:
             await orchestrator.db.close()
 
-    async def test_create_agent_with_explicit_name(self, tmp_path):
-        """Creating an agent with a name should use that name."""
+    async def test_delete_agent_returns_deprecation_error(self, tmp_path):
+        """delete_agent should return a deprecation error."""
         from src.command_handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
@@ -294,9 +288,9 @@ class TestCommandHandlerIntegration:
 
         try:
             handler = CommandHandler(orchestrator, config)
-            result = await handler.execute("create_agent", {"name": "My Custom Agent"})
+            result = await handler.execute("delete_agent", {"agent_id": "test"})
 
-            assert result["created"] == "my-custom-agent"
-            assert result["name"] == "My Custom Agent"
+            assert "error" in result
+            assert "no longer supported" in result["error"]
         finally:
             await orchestrator.db.close()

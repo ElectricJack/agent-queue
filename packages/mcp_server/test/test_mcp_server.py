@@ -2,10 +2,14 @@
 
 Tests cover:
 - MCP protocol compliance (tool listing, resource listing, prompt listing)
+- Dynamic tool registration from _ALL_TOOL_DEFINITIONS
+- Excluded commands are not registered
 - Resource reads return correct data
-- Tool calls execute and return expected results
+- Tool calls delegate to CommandHandler.execute()
 - Error handling for missing entities
 - Serialization helpers
+- Exclusion configuration merging (defaults, config YAML, env var)
+- Drift detection — registered tools vs. tool_registry definitions
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -35,6 +39,7 @@ from src.models import (
     TaskType,
     Workspace,
 )
+from src.tool_registry import _ALL_TOOL_DEFINITIONS
 from packages.mcp_server.mcp_interfaces import (
     ResourceScheme,
     agent_to_dict,
@@ -231,6 +236,20 @@ class TestResourceSchemes:
 # MCP server integration tests (using FastMCP's call_tool / read_resource)
 # ---------------------------------------------------------------------------
 
+def _make_mock_context(db, event_bus, command_handler=None):
+    """Build a mock MCP context whose lifespan_context holds the given objects."""
+    from unittest.mock import MagicMock
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {
+        "db": db,
+        "event_bus": event_bus,
+        "orchestrator": MagicMock(),
+        "command_handler": command_handler,
+    }
+    return ctx
+
+
 @pytest.fixture
 async def mcp_server(populated_db, tmp_path, monkeypatch):
     """Create and configure a FastMCP server instance with test database."""
@@ -238,66 +257,181 @@ async def mcp_server(populated_db, tmp_path, monkeypatch):
     import packages.mcp_server.mcp_server as mcp_mod
 
     test_bus = EventBus()
-
-    # Patch the helpers that retrieve db/event_bus from MCP context
-    async def _mock_get_db():
-        return populated_db
-
-    async def _mock_get_event_bus():
-        return test_bus
-
-    monkeypatch.setattr(mcp_mod, "_get_db", _mock_get_db)
-    monkeypatch.setattr(mcp_mod, "_get_event_bus", _mock_get_event_bus)
+    ctx = _make_mock_context(populated_db, test_bus)
+    monkeypatch.setattr(mcp_mod.mcp, "get_context", lambda: ctx)
 
     yield mcp_mod.mcp
 
 
-class TestMCPToolListing:
-    """Test that the MCP server exposes the expected tools."""
+@pytest.fixture
+async def mcp_server_with_handler(populated_db, tmp_path, monkeypatch):
+    """MCP server with a mock CommandHandler for testing tool calls."""
+    from src.event_bus import EventBus
+    import packages.mcp_server.mcp_server as mcp_mod
 
-    async def test_tools_are_registered(self, mcp_server):
+    test_bus = EventBus()
+    mock_handler = AsyncMock()
+    ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+    monkeypatch.setattr(mcp_mod.mcp, "get_context", lambda: ctx)
+
+    yield mcp_mod.mcp, mock_handler
+
+
+class TestDynamicToolRegistration:
+    """Test that tools are dynamically registered from _ALL_TOOL_DEFINITIONS."""
+
+    async def test_all_non_excluded_tools_registered(self, mcp_server):
+        """Every tool in _ALL_TOOL_DEFINITIONS that isn't excluded should be registered."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
         tools = await mcp_server.list_tools()
         tool_names = {t.name for t in tools}
 
-        # Task management tools
-        assert "create_task" in tool_names
-        assert "stop_task" in tool_names
-        assert "restart_task" in tool_names
-        assert "reopen_task" in tool_names
-        assert "approve_task" in tool_names
-        assert "reject_task" in tool_names
-        assert "get_task_details" in tool_names
+        for defn in _ALL_TOOL_DEFINITIONS:
+            name = defn["name"]
+            if name in DEFAULT_EXCLUDED_COMMANDS:
+                assert name not in tool_names, f"Excluded command {name} should NOT be registered"
+            else:
+                assert name in tool_names, f"Command {name} should be registered as MCP tool"
 
-        # Project management tools
-        assert "pause_project" in tool_names
-        assert "resume_project" in tool_names
-        assert "list_projects" in tool_names
+    async def test_excluded_commands_not_registered(self, mcp_server):
+        """Commands in DEFAULT_EXCLUDED_COMMANDS should not appear as MCP tools."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
 
-        # Dependency tools
-        assert "add_dependency" in tool_names
-        assert "remove_dependency" in tool_names
-        assert "get_dependencies" in tool_names
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
 
-        # Workspace tools
-        assert "list_workspaces" in tool_names
-        assert "find_merge_conflicts" in tool_names
-
-        # Monitoring tools
-        assert "get_chain_health" in tool_names
-        assert "get_recent_events" in tool_names
-        assert "get_system_status" in tool_names
-
-        # Agent tools
-        assert "list_agents" in tool_names
-
-        # Profile tools
-        assert "list_profiles" in tool_names
-        assert "get_profile_details" in tool_names
+        for cmd in DEFAULT_EXCLUDED_COMMANDS:
+            assert cmd not in tool_names, f"Excluded command {cmd} should not be an MCP tool"
 
     async def test_tools_have_descriptions(self, mcp_server):
         tools = await mcp_server.list_tools()
         for tool in tools:
             assert tool.description, f"Tool {tool.name} has no description"
+
+    async def test_tool_schemas_match_registry(self, mcp_server):
+        """Each registered tool should use the input_schema from _ALL_TOOL_DEFINITIONS."""
+        tools = await mcp_server.list_tools()
+        tool_map = {t.name: t for t in tools}
+
+        # Build a map of first-seen definitions (duplicates are skipped by registration)
+        seen: set[str] = set()
+        first_defs: dict[str, dict] = {}
+        for defn in _ALL_TOOL_DEFINITIONS:
+            name = defn["name"]
+            if name not in seen:
+                first_defs[name] = defn
+                seen.add(name)
+
+        for name, defn in first_defs.items():
+            if name not in tool_map:
+                continue  # excluded
+            expected_schema = defn.get("input_schema", {"type": "object", "properties": {}})
+            actual_schema = tool_map[name].inputSchema
+            assert actual_schema == expected_schema, (
+                f"Schema mismatch for {name}: expected {expected_schema}, got {actual_schema}"
+            )
+
+    async def test_core_tools_present(self, mcp_server):
+        """Spot-check that key tools from the registry are registered."""
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+
+        # Task management
+        assert "create_task" in tool_names
+        assert "stop_task" in tool_names
+        assert "restart_task" in tool_names
+        assert "approve_task" in tool_names
+
+        # Project management
+        assert "pause_project" in tool_names
+        assert "resume_project" in tool_names
+        assert "list_projects" in tool_names
+
+        # Dependencies
+        assert "add_dependency" in tool_names
+        assert "remove_dependency" in tool_names
+
+        # Workspaces
+        assert "list_workspaces" in tool_names
+
+        # Agents
+        assert "list_agents" in tool_names
+
+    async def test_dangerous_commands_excluded(self, mcp_server):
+        """Dangerous commands should be excluded by default."""
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+
+        assert "shutdown" not in tool_names
+        assert "restart_daemon" not in tool_names
+        assert "update_and_restart" not in tool_names
+        assert "run_command" not in tool_names
+
+    async def test_meta_tools_excluded(self, mcp_server):
+        """LLM context management meta-tools should be excluded."""
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+
+        assert "browse_tools" not in tool_names
+        assert "load_tools" not in tool_names
+
+
+class TestMCPToolCalls:
+    """Test that tool calls delegate to CommandHandler.execute()."""
+
+    async def test_tool_delegates_to_command_handler(self, mcp_server_with_handler):
+        """Calling an MCP tool should call command_handler.execute()."""
+        server, mock_handler = mcp_server_with_handler
+        mock_handler.execute.return_value = {"success": True, "projects": []}
+
+        result = await server.call_tool("list_projects", {})
+        data = json.loads(result[0].text)
+
+        mock_handler.execute.assert_called_once_with("list_projects", {})
+        assert data["success"] is True
+
+    async def test_tool_passes_arguments(self, mcp_server_with_handler):
+        """Arguments should be forwarded to command_handler.execute()."""
+        server, mock_handler = mcp_server_with_handler
+        mock_handler.execute.return_value = {"success": True, "task": {"id": "new-task"}}
+
+        await server.call_tool("create_task", {
+            "project_id": "test-project",
+            "title": "New task",
+            "description": "Test",
+        })
+
+        mock_handler.execute.assert_called_once_with("create_task", {
+            "project_id": "test-project",
+            "title": "New task",
+            "description": "Test",
+        })
+
+    async def test_tool_returns_json(self, mcp_server_with_handler):
+        """Tool results should be JSON-serialized."""
+        server, mock_handler = mcp_server_with_handler
+        mock_handler.execute.return_value = {
+            "success": True,
+            "message": "Task paused",
+        }
+
+        result = await server.call_tool("pause_project", {"project_id": "p1"})
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert data["message"] == "Task paused"
+
+    async def test_tool_handles_error_response(self, mcp_server_with_handler):
+        """Error dicts from CommandHandler should be returned as-is."""
+        server, mock_handler = mcp_server_with_handler
+        mock_handler.execute.return_value = {"error": "Project not found: bad-id"}
+
+        result = await server.call_tool("pause_project", {"project_id": "bad-id"})
+        data = json.loads(result[0].text)
+
+        assert "error" in data
+        assert "not found" in data["error"]
 
 
 class TestMCPResourceListing:
@@ -327,200 +461,6 @@ class TestMCPPromptListing:
         assert "create_task_prompt" in prompt_names
         assert "review_task_prompt" in prompt_names
         assert "project_overview_prompt" in prompt_names
-
-
-class TestMCPToolCalls:
-    """Test actual tool execution via the MCP server."""
-
-    async def test_get_system_status(self, mcp_server):
-        result = await mcp_server.call_tool("get_system_status", {})
-        # FastMCP returns a list of content blocks
-        assert len(result) > 0
-        data = json.loads(result[0][0].text)
-        assert "projects" in data
-        assert "tasks" in data
-        assert "agents" in data
-        assert data["projects"]["total"] == 1
-        assert data["agents"]["total"] == 1
-
-    async def test_list_projects_tool(self, mcp_server):
-        result = await mcp_server.call_tool("list_projects", {})
-        data = json.loads(result[0][0].text)
-        assert len(data) == 1
-        assert data[0]["id"] == "test-project"
-
-    async def test_get_task_details(self, mcp_server):
-        result = await mcp_server.call_tool("get_task_details", {"task_id": "task-001"})
-        data = json.loads(result[0][0].text)
-        assert data["id"] == "task-001"
-        assert data["title"] == "Implement feature X"
-        assert "task-002" in data["dependencies"]
-
-    async def test_get_task_details_not_found(self, mcp_server):
-        result = await mcp_server.call_tool("get_task_details", {"task_id": "nonexistent"})
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-
-    async def test_create_task(self, mcp_server):
-        result = await mcp_server.call_tool("create_task", {
-            "project_id": "test-project",
-            "title": "New MCP task",
-            "description": "Created via MCP",
-            "priority": 200,
-            "task_type": "feature",
-        })
-        data = json.loads(result[0][0].text)
-        assert "task_id" in data
-        assert "created successfully" in data["message"]
-
-    async def test_create_task_invalid_project(self, mcp_server):
-        result = await mcp_server.call_tool("create_task", {
-            "project_id": "nonexistent",
-            "title": "Bad task",
-            "description": "Should fail",
-        })
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-
-    async def test_create_task_invalid_type(self, mcp_server):
-        result = await mcp_server.call_tool("create_task", {
-            "project_id": "test-project",
-            "title": "Bad type",
-            "description": "Should fail",
-            "task_type": "invalid_type",
-        })
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-
-    async def test_stop_task(self, mcp_server):
-        result = await mcp_server.call_tool("stop_task", {"task_id": "task-002"})
-        data = json.loads(result[0][0].text)
-        assert "stopped" in data["message"]
-
-    async def test_restart_task(self, mcp_server):
-        result = await mcp_server.call_tool("restart_task", {"task_id": "task-002"})
-        data = json.loads(result[0][0].text)
-        assert "restarted" in data["message"]
-
-    async def test_approve_task(self, mcp_server):
-        result = await mcp_server.call_tool("approve_task", {"task_id": "task-003"})
-        data = json.loads(result[0][0].text)
-        assert "approved" in data["message"]
-
-    async def test_approve_task_wrong_status(self, mcp_server):
-        result = await mcp_server.call_tool("approve_task", {"task_id": "task-001"})
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-        assert "not awaiting approval" in data["error"]
-
-    async def test_reject_task(self, mcp_server):
-        result = await mcp_server.call_tool("reject_task", {
-            "task_id": "task-003",
-            "reason": "Needs more tests",
-        })
-        data = json.loads(result[0][0].text)
-        assert "rejected" in data["message"]
-
-    async def test_reopen_task(self, mcp_server):
-        result = await mcp_server.call_tool("reopen_task", {
-            "task_id": "task-003",
-            "feedback": "Please add error handling",
-        })
-        data = json.loads(result[0][0].text)
-        assert "reopened" in data["message"]
-
-    async def test_pause_project(self, mcp_server):
-        result = await mcp_server.call_tool("pause_project", {"project_id": "test-project"})
-        data = json.loads(result[0][0].text)
-        assert "paused" in data["message"]
-
-    async def test_resume_project(self, mcp_server):
-        result = await mcp_server.call_tool("resume_project", {"project_id": "test-project"})
-        data = json.loads(result[0][0].text)
-        assert "resumed" in data["message"]
-
-    async def test_get_dependencies(self, mcp_server):
-        result = await mcp_server.call_tool("get_dependencies", {"task_id": "task-001"})
-        data = json.loads(result[0][0].text)
-        assert "task-002" in data["dependencies"]
-        assert data["all_met"] is False  # task-002 is IN_PROGRESS
-
-    async def test_add_dependency(self, mcp_server):
-        result = await mcp_server.call_tool("add_dependency", {
-            "task_id": "task-003",
-            "depends_on": "task-002",
-        })
-        data = json.loads(result[0][0].text)
-        assert "Dependency added" in data["message"]
-
-    async def test_remove_dependency(self, mcp_server):
-        result = await mcp_server.call_tool("remove_dependency", {
-            "task_id": "task-001",
-            "depends_on": "task-002",
-        })
-        data = json.loads(result[0][0].text)
-        assert "removed" in data["message"]
-
-    async def test_list_workspaces(self, mcp_server):
-        result = await mcp_server.call_tool("list_workspaces", {})
-        data = json.loads(result[0][0].text)
-        assert isinstance(data, list)
-
-    async def test_get_chain_health(self, mcp_server):
-        result = await mcp_server.call_tool("get_chain_health", {})
-        data = json.loads(result[0][0].text)
-        assert "total_tasks" in data
-        assert "in_progress" in data
-        assert data["total_tasks"] == 3
-
-    async def test_get_recent_events(self, mcp_server):
-        result = await mcp_server.call_tool("get_recent_events", {"limit": 5})
-        data = json.loads(result[0][0].text)
-        assert isinstance(data, list)
-
-    async def test_list_agents(self, mcp_server):
-        result = await mcp_server.call_tool("list_agents", {})
-        data = json.loads(result[0][0].text)
-        assert len(data) == 1
-        assert data[0]["id"] == "agent-1"
-
-    async def test_list_agents_by_state(self, mcp_server):
-        result = await mcp_server.call_tool("list_agents", {"state": "BUSY"})
-        data = json.loads(result[0][0].text)
-        assert len(data) == 1
-
-    async def test_list_agents_invalid_state(self, mcp_server):
-        result = await mcp_server.call_tool("list_agents", {"state": "INVALID"})
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-
-    async def test_list_profiles(self, mcp_server):
-        result = await mcp_server.call_tool("list_profiles", {})
-        data = json.loads(result[0][0].text)
-        assert len(data) == 1
-        assert data[0]["id"] == "reviewer"
-
-    async def test_get_profile_details(self, mcp_server):
-        result = await mcp_server.call_tool("get_profile_details", {"profile_id": "reviewer"})
-        data = json.loads(result[0][0].text)
-        assert data["id"] == "reviewer"
-        assert data["model"] == "claude-sonnet-4-20250514"
-
-    async def test_get_profile_not_found(self, mcp_server):
-        result = await mcp_server.call_tool("get_profile_details", {"profile_id": "nonexistent"})
-        data = json.loads(result[0][0].text)
-        assert "error" in data
-
-    async def test_find_merge_conflicts(self, mcp_server):
-        result = await mcp_server.call_tool("find_merge_conflicts", {})
-        data = json.loads(result[0][0].text)
-        assert "conflicts_found" in data
-
-    async def test_subscribe_events(self, mcp_server):
-        result = await mcp_server.call_tool("subscribe_events", {"event_types": "task_created,task_completed"})
-        data = json.loads(result[0][0].text)
-        assert "subscribed_to" in data
-        assert "task_created" in data["subscribed_to"]
 
 
 class TestMCPResourceReads:
@@ -599,3 +539,236 @@ class TestMCPPrompts:
         text = result.messages[0].content.text
         assert "Test Project" in text
         assert "test-project" in text
+
+
+# ---------------------------------------------------------------------------
+# register_command_tools — direct function tests
+# ---------------------------------------------------------------------------
+
+class TestRegisterCommandTools:
+    """Test the register_command_tools function directly."""
+
+    def test_custom_exclusion_set(self):
+        """Can pass a custom exclusion set."""
+        from mcp.server import FastMCP
+        from packages.mcp_server.mcp_server import register_command_tools
+
+        test_mcp = FastMCP(name="test")
+        custom_excluded = {"list_projects", "create_task", "shutdown"}
+        registered = register_command_tools(test_mcp, excluded=custom_excluded)
+
+        assert "list_projects" not in registered
+        assert "create_task" not in registered
+        assert "shutdown" not in registered
+        # Other tools should be registered
+        assert "pause_project" in registered
+        assert "list_tasks" in registered
+
+    def test_empty_exclusion_registers_all(self):
+        """Empty exclusion set registers every tool."""
+        from mcp.server import FastMCP
+        from packages.mcp_server.mcp_server import register_command_tools
+
+        test_mcp = FastMCP(name="test")
+        registered = register_command_tools(test_mcp, excluded=set())
+
+        all_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        assert set(registered) == all_names
+
+
+# ---------------------------------------------------------------------------
+# Exclusion configuration merging tests
+# ---------------------------------------------------------------------------
+
+class TestExclusionConfiguration:
+    """Test that exclusion configuration merges defaults, config YAML, and env var."""
+
+    def test_defaults_only(self):
+        """With no config and no env var, only defaults are excluded."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+        result = get_effective_exclusions(config_path=None)
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_config_yaml_merges_with_defaults(self, tmp_path):
+        """Config YAML exclusions are merged (unioned) with defaults."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "mcp_server": {
+                "excluded_commands": ["list_tasks", "create_task"],
+            }
+        }))
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "list_tasks" in result
+        assert "create_task" in result
+
+    def test_env_var_merges_with_defaults(self, monkeypatch):
+        """AGENT_QUEUE_MCP_EXCLUDED env var adds to defaults."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "list_tasks,create_task")
+        result = get_effective_exclusions(config_path=None)
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "list_tasks" in result
+        assert "create_task" in result
+
+    def test_env_var_handles_whitespace(self, monkeypatch):
+        """Env var parsing handles spaces around commas."""
+        from packages.mcp_server.mcp_server import get_effective_exclusions
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", " foo , bar , baz ")
+        result = get_effective_exclusions(config_path=None)
+        assert "foo" in result
+        assert "bar" in result
+        assert "baz" in result
+
+    def test_all_three_sources_merge(self, tmp_path, monkeypatch):
+        """Defaults + config + env var all merge together."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "mcp_server": {
+                "excluded_commands": ["from_config"],
+            }
+        }))
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "from_env")
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "from_config" in result
+        assert "from_env" in result
+
+    def test_missing_config_file_uses_defaults(self):
+        """If the config file doesn't exist, fall back to defaults only."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        result = get_effective_exclusions(config_path="/nonexistent/config.yaml")
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_config_without_mcp_section_uses_defaults(self, tmp_path):
+        """Config YAML without mcp_server section falls back to defaults."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"discord": {"token": "xxx"}}))
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_empty_env_var_no_effect(self, monkeypatch):
+        """Empty AGENT_QUEUE_MCP_EXCLUDED doesn't add empty strings."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "")
+        result = get_effective_exclusions(config_path=None)
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# Drift detection — registered MCP tools vs. _ALL_TOOL_DEFINITIONS
+# ---------------------------------------------------------------------------
+
+class TestDriftDetection:
+    """Detect drift between the tool registry and the MCP server.
+
+    These tests ensure that every tool defined in ``_ALL_TOOL_DEFINITIONS``
+    is either exposed as an MCP tool or explicitly listed in the exclusion
+    set.  If a new command is added to the registry but not accounted for
+    here, the test will fail — forcing an explicit decision about whether
+    to expose it.
+    """
+
+    async def test_no_missing_tools(self, mcp_server):
+        """Every tool in _ALL_TOOL_DEFINITIONS must be either registered or excluded."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        tools = await mcp_server.list_tools()
+        registered_names = {t.name for t in tools}
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+
+        # Every defined tool should be in one of the two sets
+        for name in all_defined_names:
+            in_registered = name in registered_names
+            in_excluded = name in DEFAULT_EXCLUDED_COMMANDS
+            assert in_registered or in_excluded, (
+                f"Tool '{name}' is in _ALL_TOOL_DEFINITIONS but neither "
+                f"registered as an MCP tool nor in DEFAULT_EXCLUDED_COMMANDS. "
+                f"Either expose it or add it to the exclusion set."
+            )
+
+    async def test_no_extra_tools(self, mcp_server):
+        """No MCP tools should exist that aren't in _ALL_TOOL_DEFINITIONS."""
+        tools = await mcp_server.list_tools()
+        registered_names = {t.name for t in tools}
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+
+        extra = registered_names - all_defined_names
+        assert not extra, (
+            f"MCP server has tools not in _ALL_TOOL_DEFINITIONS: {extra}. "
+            f"Add them to the tool registry or remove the manual registration."
+        )
+
+    async def test_registered_count_matches_expected(self, mcp_server):
+        """Registered tool count = total definitions - excluded count."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        tools = await mcp_server.list_tools()
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        # Only count exclusions that actually appear in the definitions
+        actual_excluded = DEFAULT_EXCLUDED_COMMANDS & all_defined_names
+
+        expected_count = len(all_defined_names) - len(actual_excluded)
+        assert len(tools) == expected_count, (
+            f"Expected {expected_count} tools "
+            f"({len(all_defined_names)} total - {len(actual_excluded)} excluded), "
+            f"but got {len(tools)}"
+        )
+
+    def test_excluded_commands_are_valid(self):
+        """Every command in DEFAULT_EXCLUDED_COMMANDS should exist in the registry.
+
+        If a command is removed from the registry, it should also be removed
+        from the exclusion set to keep things tidy.
+        """
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        stale = DEFAULT_EXCLUDED_COMMANDS - all_defined_names
+        # Allow exclusions for commands that may not be in _ALL_TOOL_DEFINITIONS
+        # (e.g. they might only exist in CommandHandler without a tool def).
+        # This is a soft check — warn but don't fail.
+        if stale:
+            import warnings
+            warnings.warn(
+                f"DEFAULT_EXCLUDED_COMMANDS contains names not in "
+                f"_ALL_TOOL_DEFINITIONS: {stale}. Consider cleaning up.",
+                stacklevel=1,
+            )

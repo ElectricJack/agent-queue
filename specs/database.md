@@ -53,7 +53,7 @@ Closes the connection if one is open. Safe to call even if `initialize()` was ne
 
 ## 3. Schema
 
-All 15 tables are declared in the module-level `SCHEMA` string. Foreign key relationships are declared inline with `REFERENCES`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for `enabled` (hooks), `requires_approval` and `is_plan_subtask` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
+All 18 tables are declared in the module-level `SCHEMA` string (the source code comment says "14 tables" — this is stale). Foreign key relationships are declared inline with `REFERENCES`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for `enabled` (hooks), `requires_approval` and `is_plan_subtask` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
 
 ### Table: `projects`
 
@@ -69,6 +69,9 @@ All 15 tables are declared in the module-level `SCHEMA` string. Foreign key rela
 | `workspace_path` | TEXT | nullable | **Deprecated/unused.** Legacy column kept for backward compatibility; workspace paths are now managed via the `workspaces` table. |
 | `discord_channel_id` | TEXT | nullable | Per-project Discord channel |
 | `discord_control_channel_id` | TEXT | nullable | Legacy column (superseded by `discord_channel_id`); kept for backward compatibility |
+| `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
+| `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
+| `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -107,6 +110,10 @@ No `updated_at` on projects. The `discord_control_channel_id` column exists for 
 | `pr_url` | TEXT | nullable | GitHub/GitLab PR link |
 | `plan_source` | TEXT | nullable | Path to the plan file that generated this task |
 | `is_plan_subtask` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1); flags auto-generated plan subtasks |
+| `task_type` | TEXT | nullable | Task type classification (added via migration) |
+| `profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Agent profile for execution (added via migration) |
+| `preferred_workspace_id` | TEXT | nullable REFERENCES workspaces(id) | Preferred workspace (added via migration) |
+| `attachments` | TEXT | DEFAULT '[]' | JSON-encoded list of attachment paths/URLs (added via migration) |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -169,7 +176,7 @@ No CRUD methods on `Database` for this table directly.
 | `id` | TEXT | PRIMARY KEY | UUID |
 | `name` | TEXT | NOT NULL | Display name |
 | `agent_type` | TEXT | NOT NULL | e.g. "claude", "codex" |
-| `state` | TEXT | NOT NULL DEFAULT 'IDLE' | One of: IDLE, STARTING, BUSY, PAUSED, ERROR |
+| `state` | TEXT | NOT NULL DEFAULT 'IDLE' | One of: IDLE, BUSY, PAUSED, ERROR |
 | `current_task_id` | TEXT | nullable REFERENCES tasks(id) | |
 | `checkout_path` | TEXT | nullable | Filesystem path to the agent's worktree |
 | `repo_id` | TEXT | nullable REFERENCES repos(id) | |
@@ -268,8 +275,66 @@ Hook definitions — automated responses to events or time triggers.
 | `llm_config` | TEXT | nullable | JSON: `{"provider": "anthropic", "model": "..."}` |
 | `cooldown_seconds` | INTEGER | NOT NULL DEFAULT 3600 | Minimum interval between runs |
 | `max_tokens_per_run` | INTEGER | nullable | Per-run token cap (NULL = unlimited) |
+| `last_triggered_at` | REAL | nullable | Unix timestamp of last trigger (added via migration) |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
+
+### Table: `workspaces`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID string |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Parent project |
+| `workspace_path` | TEXT | NOT NULL | Absolute filesystem path |
+| `source_type` | TEXT | NOT NULL DEFAULT 'clone' | One of: clone, link, init |
+| `name` | TEXT | NOT NULL DEFAULT '' | Human-readable workspace name |
+| `locked_by_agent_id` | TEXT | nullable | Agent currently using this workspace |
+| `locked_by_task_id` | TEXT | nullable | Task the workspace is locked for |
+| `locked_at` | REAL | nullable | Unix timestamp of lock acquisition |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+UNIQUE constraint on `(project_id, workspace_path)`. Has extensive CRUD methods: `create_workspace`, `get_workspace`, `list_workspaces`, `delete_workspace`, `acquire_workspace`, `release_workspace`, `release_workspaces_for_agent`, `release_workspaces_for_task`, `get_workspace_for_task`, `get_project_workspace_path`, `count_available_workspaces`.
+
+### Table: `agent_profiles`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID string |
+| `name` | TEXT | NOT NULL UNIQUE | Human-readable profile name |
+| `description` | TEXT | NOT NULL DEFAULT '' | Profile description |
+| `model` | TEXT | NOT NULL DEFAULT '' | LLM model identifier |
+| `permission_mode` | TEXT | NOT NULL DEFAULT '' | Permission level |
+| `allowed_tools` | TEXT | NOT NULL DEFAULT '[]' | JSON-encoded list of tool names |
+| `mcp_servers` | TEXT | NOT NULL DEFAULT '{}' | JSON-encoded server configurations |
+| `system_prompt_suffix` | TEXT | NOT NULL DEFAULT '' | Additional system prompt text |
+| `install` | TEXT | NOT NULL DEFAULT '{}' | JSON-encoded install manifest |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on insert and every update |
+
+Full CRUD: `create_profile`, `get_profile`, `list_profiles`, `update_profile`, `delete_profile`.
+
+### Table: `chat_analyzer_suggestions`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Auto-assigned |
+| `project_id` | TEXT | NOT NULL | Project scope |
+| `channel_id` | TEXT | NOT NULL | Discord channel |
+| `suggestion_type` | TEXT | NOT NULL | Type of suggestion |
+| `suggestion_text` | TEXT | NOT NULL | Suggestion content |
+| `suggestion_hash` | TEXT | NOT NULL | Deduplication hash |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' | pending, resolved, dismissed |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `resolved_at` | REAL | nullable | When resolved/dismissed |
+| `context_snapshot` | TEXT | nullable | JSON context at suggestion time |
+
+Two indexes: on `(project_id, status)` and on `suggestion_hash`. Reused by the ChatObserver system.
+
+### Table: `archived_tasks`
+
+Mirrors the `tasks` table schema plus an `archived_at` REAL column. Stores tasks that have been archived (completed/failed tasks moved out of the active tasks table).
+
+Methods: `archive_task`, `archive_completed_tasks`, `archive_old_terminal_tasks`, `list_archived_tasks`, `get_archived_task`, `restore_archived_task`, `delete_archived_task`, `count_archived_tasks`.
 
 ### Table: `hook_runs`
 
@@ -322,10 +387,12 @@ Performs a cascading delete of all data owned by the project, in this order:
 4. Deletes all `hooks` for the project.
 5. Deletes all `token_ledger` entries for the project.
 6. Deletes all `tasks` for the project.
-7. Deletes all `repos` for the project.
-8. Deletes all `events` for the project.
-9. Deletes the `projects` row itself.
-10. Commits.
+7. Deletes all `chat_analyzer_suggestions` for the project.
+8. Deletes all `workspaces` for the project.
+9. Deletes all `repos` for the project.
+10. Deletes all `events` for the project.
+11. Deletes the `projects` row itself.
+12. Commits.
 
 ### `_row_to_project(row) -> Project`
 
@@ -415,7 +482,7 @@ Atomic multi-table update (no explicit transaction — relies on SQLite's defaul
 
 1. Validates the READY → ASSIGNED transition using `is_valid_status_transition`. If invalid, logs a warning (does not abort).
 2. Updates the task: `status = ASSIGNED`, `assigned_agent_id = agent_id`, `updated_at = now`.
-3. Updates the agent: `state = STARTING`, `current_task_id = task_id`.
+3. Updates the agent: `state = BUSY`, `current_task_id = task_id`.
 4. Inserts an event row with `event_type = "task_assigned"`. The `project_id` is fetched inline via a subquery (`SELECT project_id FROM tasks WHERE id = ?`).
 5. Commits.
 
@@ -621,7 +688,67 @@ The full list of migrations applied in order:
 | `ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT` | Adds legacy control channel column |
 | `ALTER TABLE tasks ADD COLUMN plan_source TEXT` | Adds path to originating plan file |
 | `ALTER TABLE tasks ADD COLUMN is_plan_subtask INTEGER NOT NULL DEFAULT 0` | Flags auto-generated plan subtasks |
+| `ALTER TABLE tasks ADD COLUMN task_type TEXT` | Adds task type classification |
+| `ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''` | Adds project-level repo URL |
+| `ALTER TABLE projects ADD COLUMN repo_default_branch TEXT DEFAULT 'main'` | Adds project-level default branch |
+| `ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)` | Adds agent profile reference to tasks |
+| `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)` | Adds default profile to projects |
+| `ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT` | Mirrors profile_id on archived tasks |
+| `ALTER TABLE tasks ADD COLUMN preferred_workspace_id TEXT REFERENCES workspaces(id)` | Adds preferred workspace to tasks |
+| `ALTER TABLE archived_tasks ADD COLUMN preferred_workspace_id TEXT` | Mirrors preferred_workspace_id on archived tasks |
+| `ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'` | Adds attachments list to tasks |
+| `ALTER TABLE archived_tasks ADD COLUMN attachments TEXT DEFAULT '[]'` | Mirrors attachments on archived tasks |
+| `ALTER TABLE hooks ADD COLUMN last_triggered_at REAL` | Adds last trigger timestamp to hooks |
+
+**Post-migration steps:**
+- Two `CREATE INDEX IF NOT EXISTS` statements for `task_dependencies` (on `depends_on_task_id` and `task_id`).
+- `_migrate_repos_to_projects()` — copies repo URL/branch into project columns.
+- `_normalize_workspace_paths()` — resolves relative paths, removes cross-project duplicates.
+- `_drop_legacy_agent_workspaces()` — drops the legacy `agent_workspaces` table.
 
 The `SCHEMA` constant includes migrated columns for `projects` and `tasks`, so those tables have all columns from the start on fresh databases. However, the `repos` table in `SCHEMA` does **not** include `source_type` or `source_path` — those two columns are only added via the migration statements, meaning fresh databases also require the migrations to be run for `repos` to have those columns. Migrations always matter for `repos` regardless of whether the database is new or existing.
 
 There is no version table, no migration registry, and no rollback capability. Destructive schema changes (DROP COLUMN, column renames, type changes) are not handled by this mechanism.
+
+---
+
+## 15. Undocumented Methods
+
+> The following method groups exist in the implementation but are not yet fully
+> documented in this spec.
+
+### Tasks (additional)
+- `list_active_tasks()` — tasks in non-terminal status
+- `list_active_tasks_all_projects()` — cross-project active task listing
+- `count_tasks_by_status()` — aggregate task counts
+- `add_task_context()` / `get_task_contexts()` — CRUD for task_context table
+- `get_task_tree()` — hierarchical subtask tree
+- `get_parent_tasks()` — ancestor chain for a task
+
+### Dependencies (additional)
+- `get_dependency_map_for_tasks()` — batch dependency fetcher
+
+### Agents (additional)
+- `delete_agent()` — cascading delete with workspace lock release
+
+### Workspaces (11 methods)
+- `create_workspace`, `get_workspace`, `list_workspaces`, `delete_workspace`
+- `acquire_workspace`, `release_workspace`, `release_workspaces_for_agent`, `release_workspaces_for_task`
+- `get_workspace_for_task`, `get_project_workspace_path`, `count_available_workspaces`
+
+### Agent Profiles (5 methods)
+- `create_profile`, `get_profile`, `list_profiles`, `update_profile`, `delete_profile`
+
+### Archived Tasks (8 methods)
+- `archive_task`, `archive_completed_tasks`, `archive_old_terminal_tasks`
+- `list_archived_tasks`, `get_archived_task`, `restore_archived_task`
+- `delete_archived_task`, `count_archived_tasks`
+
+### Chat Analyzer Suggestions (~10 methods)
+- Suggestion CRUD, status updates, deduplication queries
+
+### Hooks (additional)
+- `list_hooks_by_id_prefix()`, `delete_hooks_by_id_prefix()`
+
+### Repos (additional)
+- `update_repo()` — update repo fields

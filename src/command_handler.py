@@ -13,6 +13,15 @@ call execute(), and format the returned dict for their respective UIs.
 The benefit is feature parity by construction.  A new command added here is
 immediately available to both Discord and the chat agent without duplicating
 any logic.
+
+Related modules:
+
+- ``src/tool_registry.py`` — JSON Schema definitions for every tool.
+  Each tool's ``name`` maps to a ``_cmd_{name}`` method here.
+- ``src/supervisor.py`` — The LLM tool-use loop that calls ``execute()``.
+- ``src/discord/commands.py`` — Discord slash commands that call ``execute()``.
+
+See ``specs/command-handler.md`` for the command reference specification.
 """
 from __future__ import annotations
 
@@ -33,8 +42,9 @@ from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    Agent, AgentProfile, AgentState, Hook, Project, ProjectStatus, RepoSourceType,
+    AgentProfile, Hook, Project, ProjectStatus, RepoSourceType,
     Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
+    WorkspaceAgent,
 )
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
@@ -49,7 +59,21 @@ async def _run_subprocess(
     cwd: str | None = None,
     timeout: float = 30,
 ) -> tuple[int, str, str]:
-    """Run a subprocess asynchronously, returning (returncode, stdout, stderr)."""
+    """Run a subprocess asynchronously.
+
+    This is a coroutine.  Kills the process if *timeout* is exceeded.
+
+    Args:
+        *args: Command and arguments (e.g. ``"git", "status"``).
+        cwd: Working directory for the subprocess.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        Tuple of ``(returncode, stdout, stderr)``.
+
+    Raises:
+        asyncio.TimeoutError: If the process exceeds *timeout*.
+    """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
@@ -71,7 +95,22 @@ async def _run_subprocess_shell(
     cwd: str | None = None,
     timeout: float = 30,
 ) -> tuple[int, str, str]:
-    """Run a shell command asynchronously."""
+    """Run a shell command asynchronously via ``/bin/sh -c``.
+
+    This is a coroutine.  Same semantics as ``_run_subprocess`` but
+    accepts a single shell command string.
+
+    Args:
+        command: Shell command string.
+        cwd: Working directory.
+        timeout: Maximum seconds to wait.
+
+    Returns:
+        Tuple of ``(returncode, stdout, stderr)``.
+
+    Raises:
+        asyncio.TimeoutError: If the process exceeds *timeout*.
+    """
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
@@ -88,6 +127,7 @@ async def _run_subprocess_shell(
 
 
 def _count_by(items, key_fn) -> dict[str, int]:
+    """Count items by a key function, returning ``{key: count}``."""
     counts: dict[str, int] = {}
     for item in items:
         k = key_fn(item)
@@ -377,7 +417,6 @@ def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
     # then queued/pending states.
     _NON_COMPLETED_LABELS: list[tuple[str, str]] = [
         ("IN_PROGRESS", "in progress"),
-        ("VERIFYING", "verifying"),
         ("ASSIGNED", "assigned"),
         ("AWAITING_APPROVAL", "awaiting approval"),
         ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),
@@ -846,6 +885,11 @@ class CommandHandler:
         # have the same thread chain context that the supervisor had when
         # creating the task.
         self._current_conversation_context: str | None = None
+        # When True, _cmd_create_task creates tasks as DEFINED instead of
+        # READY.  Set by supervisor.break_plan_into_tasks() so plan subtasks
+        # are born DEFINED, eliminating the race condition that required
+        # project-wide plan processing locks.
+        self._plan_subtask_creation_mode: bool = False
 
     @property
     def db(self):
@@ -1164,27 +1208,42 @@ class CommandHandler:
     # -----------------------------------------------------------------------
 
     async def _cmd_get_status(self, args: dict) -> dict:
+        filter_project = args.get("project_id")
         projects = await self.db.list_projects()
-        agents = await self.db.list_agents()
-        tasks = await self.db.list_tasks()
+        tasks = await self.db.list_tasks(project_id=filter_project)
 
+        # Build agent view from workspaces (scoped to project when provided)
         agent_details = []
-        for a in agents:
-            info = {
-                "id": a.id,
-                "name": a.name,
-                "state": a.state.value,
-            }
-            if a.current_task_id:
-                current_task = await self.db.get_task(a.current_task_id)
-                if current_task:
-                    info["working_on"] = {
-                        "task_id": current_task.id,
-                        "title": current_task.title,
-                        "project_id": current_task.project_id,
-                        "status": current_task.status.value,
+        target_projects = projects
+        if filter_project:
+            target_projects = [p for p in projects if p.id == filter_project]
+        for p in target_projects:
+            workspaces = await self.db.list_workspaces(project_id=p.id)
+            for ws in workspaces:
+                if ws.locked_by_task_id:
+                    state = "busy"
+                    task = await self.db.get_task(ws.locked_by_task_id)
+                    info: dict = {
+                        "workspace_id": ws.id,
+                        "name": ws.name or ws.id,
+                        "project_id": p.id,
+                        "state": state,
                     }
-            agent_details.append(info)
+                    if task:
+                        info["working_on"] = {
+                            "task_id": task.id,
+                            "title": task.title,
+                            "project_id": task.project_id,
+                            "status": task.status.value,
+                        }
+                else:
+                    info = {
+                        "workspace_id": ws.id,
+                        "name": ws.name or ws.id,
+                        "project_id": p.id,
+                        "state": "idle",
+                    }
+                agent_details.append(info)
 
         in_progress = [
             {"id": t.id, "title": t.title, "project_id": t.project_id,
@@ -1197,7 +1256,7 @@ class CommandHandler:
         ]
 
         return {
-            "projects": len(projects),
+            "projects": 1 if filter_project else len(projects),
             "agents": agent_details,
             "tasks": {
                 "total": len(tasks),
@@ -2192,18 +2251,23 @@ class CommandHandler:
                     return {"error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
+        initial_status = (
+            TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
+        )
+        auto_approve_plan = args.get("auto_approve_plan", False)
         task = Task(
             id=task_id,
             project_id=project_id,
             title=args["title"],
             description=args.get("description", args["title"]),
             priority=args.get("priority", 100),
-            status=TaskStatus.READY,
+            status=initial_status,
             requires_approval=requires_approval,
             task_type=task_type,
             profile_id=profile_id,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
+            auto_approve_plan=auto_approve_plan,
         )
         await self.db.create_task(task)
 
@@ -2233,6 +2297,8 @@ class CommandHandler:
             result["preferred_workspace_id"] = preferred_workspace_id
         if attachments:
             result["attachments"] = attachments
+        if auto_approve_plan:
+            result["auto_approve_plan"] = True
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),
@@ -2275,6 +2341,7 @@ class CommandHandler:
             "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
             "profile_id": task.profile_id,
+            "auto_approve_plan": task.auto_approve_plan,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -2518,6 +2585,8 @@ class CommandHandler:
                 if not profile:
                     return {"error": f"Profile '{pid}' not found"}
             updates["profile_id"] = pid  # None clears the profile
+        if "auto_approve_plan" in args:
+            updates["auto_approve_plan"] = bool(args["auto_approve_plan"])
 
         if updates:
             await self.db.update_task(args["task_id"], **updates)
@@ -2530,7 +2599,7 @@ class CommandHandler:
             return {
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
-                    "task_type, status, max_retries, verification_type, or profile_id."
+                    "task_type, status, max_retries, verification_type, profile_id, or auto_approve_plan."
                 )
             }
 
@@ -2648,16 +2717,17 @@ class CommandHandler:
         return {"deleted": args["task_id"], "title": task.title}
 
     # -- Archive commands -----------------------------------------------------
-    # Archive moves completed tasks out of the active view into a separate
-    # ``archived_tasks`` table.  Tasks can be listed, inspected, restored, or
-    # permanently deleted from the archive.
+    # Archive moves completed tasks out of the active view into the
+    # ``archived_tasks`` DB table and writes markdown notes to
+    # ``~/.agent-queue/archived_tasks/<project_id>/``.  Tasks can be listed,
+    # inspected, restored, or permanently deleted from the archive.
 
     async def _cmd_archive_tasks(self, args: dict) -> dict:
         """Archive completed (and optionally failed/blocked) tasks.
 
         Moves matching tasks into the ``archived_tasks`` database table and
-        writes a markdown reference note for each task into the project's
-        ``archived_tasks/`` workspace directory (when a workspace is available).
+        writes a markdown reference note for each task into
+        ``~/.agent-queue/archived_tasks/<project_id>/``.
 
         Parameters
         ----------
@@ -3158,6 +3228,22 @@ class CommandHandler:
                 len(created_info), task.id,
             )
 
+            # Defense-in-depth: draft_ctx should always have subtasks, but
+            # guard against empty list (e.g. data corruption, partial save).
+            if not created_info:
+                logger.warning(
+                    "approve_plan: draft subtasks context exists but is empty "
+                    "for task %s — refusing to approve",
+                    task.id,
+                )
+                return {
+                    "error": (
+                        "Draft subtasks context is empty — no subtasks to activate. "
+                        "Please retry or use /process-plan to manually trigger "
+                        "subtask creation."
+                    )
+                }
+
             # Handle downstream dependencies: any task that depends on the
             # parent task should also depend on the final subtask so
             # downstream work waits for the full chain to finish.
@@ -3190,37 +3276,48 @@ class CommandHandler:
             supervisor = getattr(self.orchestrator, "_supervisor", None)
 
             if supervisor and supervisor.is_ready:
-                # Hold plan-processing lock while supervisor creates subtasks
                 _lock_project = task.project_id or ""
-                self.orchestrator._plan_processing_locks.add(_lock_project)
-                try:
-                    created_info = await supervisor.break_plan_into_tasks(
-                        raw_plan=raw_plan,
-                        parent_task_id=task.id,
-                        project_id=_lock_project,
-                        workspace_id=workspace_id,
-                        chain_dependencies=config.chain_dependencies,
-                        requires_approval=(
-                            task.requires_approval if config.inherit_approval else False
-                        ),
-                        base_priority=config.base_priority,
-                    )
+                created_info = await supervisor.break_plan_into_tasks(
+                    raw_plan=raw_plan,
+                    parent_task_id=task.id,
+                    project_id=_lock_project,
+                    workspace_id=workspace_id,
+                    chain_dependencies=config.chain_dependencies,
+                    requires_approval=(
+                        task.requires_approval if config.inherit_approval else False
+                    ),
+                    base_priority=task.priority,
+                )
 
-                    if created_info and config.chain_dependencies:
-                        final_subtask_id = created_info[-1]["id"]
-                        dependents = await self.db.get_dependents(task.id)
-                        for dep_task_id in dependents:
-                            try:
-                                await self.db.add_dependency(
-                                    dep_task_id, depends_on=final_subtask_id
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "Failed to add downstream dep %s→%s: %s",
-                                    dep_task_id, final_subtask_id, e,
-                                )
-                finally:
-                    self.orchestrator._plan_processing_locks.discard(_lock_project)
+                # Treat empty result as an error — the LLM call may have
+                # failed silently (rate limit, timeout, etc.).
+                if not created_info:
+                    logger.warning(
+                        "approve_plan: supervisor returned 0 subtasks for "
+                        "task %s — refusing to approve",
+                        task.id,
+                    )
+                    return {
+                        "error": (
+                            "Supervisor failed to create subtasks from the plan. "
+                            "The plan has not been approved. Please retry or use "
+                            "/process-plan to manually trigger subtask creation."
+                        )
+                    }
+
+                if config.chain_dependencies:
+                    final_subtask_id = created_info[-1]["id"]
+                    dependents = await self.db.get_dependents(task.id)
+                    for dep_task_id in dependents:
+                        try:
+                            await self.db.add_dependency(
+                                dep_task_id, depends_on=final_subtask_id
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to add downstream dep %s→%s: %s",
+                                dep_task_id, final_subtask_id, e,
+                            )
             else:
                 logger.error(
                     "approve_plan: supervisor unavailable — cannot create "
@@ -3229,24 +3326,13 @@ class CommandHandler:
                 )
                 return {"error": "Supervisor is not available. Cannot create subtasks from plan."}
 
-        # Notify about subtasks being activated
-        if created_info:
-            task_lines = "\n".join(
-                f"  {i+1}. `{t['id']}` — {t['title']}"
-                for i, t in enumerate(created_info)
-            )
-            await self.orchestrator._notify_channel(
-                f"**Plan Approved:** {len(created_info)} subtask(s) activated from "
-                f"`{task.id}` plan:\n{task_lines}",
-                project_id=task.project_id,
-            )
-
-        # Delete the plan file from the workspace so it isn't picked up by
-        # other tasks that may later run in the same workspace/branch.
-        await self._cleanup_plan_files_after_approval(task)
+        # Note: no separate channel notification here — the PlanApprovalView
+        # already updates the original embed in-place to show approval status
+        # and subtask count, avoiding duplicate messages.
 
         # Transition to COMPLETED — this unblocks draft subtasks that
         # depend on the parent (parse-first workflow).
+        # Do this BEFORE cleanup so the response is fast and interactive.
         await self.db.transition_task(
             args["task_id"],
             TaskStatus.COMPLETED,
@@ -3262,6 +3348,21 @@ class CommandHandler:
             task_id=task.id,
             payload=f"Activated {len(created_info)} subtask(s)",
         )
+
+        # Schedule heavy cleanup work (file deletion + git commits) in the
+        # background so the approve command returns immediately and the
+        # Discord UI feels responsive.
+        async def _background_cleanup():
+            try:
+                await self._cleanup_plan_files_after_approval(task)
+            except Exception as e:
+                logger.warning(
+                    "Background plan cleanup failed for task %s: %s",
+                    task.id, e,
+                )
+
+        asyncio.create_task(_background_cleanup())
+
         return {
             "approved": args["task_id"],
             "title": task.title,
@@ -3699,57 +3800,50 @@ class CommandHandler:
 
         if supervisor and supervisor.is_ready:
             workspace_id = ws.id if ws else None
-            # Acquire plan-processing lock to prevent race with orchestrator
-            self.orchestrator._plan_processing_locks.add(project_id)
-            try:
-                created_info = await supervisor.break_plan_into_tasks(
-                    raw_plan=raw,
-                    parent_task_id=task_id,
-                    project_id=project_id,
-                    workspace_id=workspace_id,
-                    chain_dependencies=config.chain_dependencies,
-                    requires_approval=(
-                        task.requires_approval if config.inherit_approval else False
-                    ),
-                    base_priority=config.base_priority,
+            created_info = await supervisor.break_plan_into_tasks(
+                raw_plan=raw,
+                parent_task_id=task_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                chain_dependencies=config.chain_dependencies,
+                requires_approval=(
+                    task.requires_approval if config.inherit_approval else False
+                ),
+                base_priority=task.priority,
+            )
+
+            if created_info:
+                # Add a dependency from the first subtask to the parent task.
+                # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
+                # this blocks the entire chain from executing until approval.
+                first_subtask_id = created_info[0]["id"]
+                try:
+                    await self.db.add_dependency(
+                        first_subtask_id, depends_on=task_id
+                    )
+                    logger.info(
+                        "process_plan: added blocking dep %s → %s (parent)",
+                        first_subtask_id, task_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "process_plan: failed to add blocking dep %s → %s: %s",
+                        first_subtask_id, task_id, e,
+                    )
+
+                # Store draft subtask IDs so approve/delete/reject can find them
+                import json as _json
+                await self.db.add_task_context(
+                    task_id,
+                    type="plan_draft_subtasks",
+                    label="Draft Subtask IDs",
+                    content=_json.dumps(created_info),
                 )
 
-                if created_info:
-                    # Add a dependency from the first subtask to the parent task.
-                    # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
-                    # this blocks the entire chain from executing until approval.
-                    first_subtask_id = created_info[0]["id"]
-                    try:
-                        await self.db.add_dependency(
-                            first_subtask_id, depends_on=task_id
-                        )
-                        logger.info(
-                            "process_plan: added blocking dep %s → %s (parent)",
-                            first_subtask_id, task_id,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "process_plan: failed to add blocking dep %s → %s: %s",
-                            first_subtask_id, task_id, e,
-                        )
-
-                    # Store draft subtask IDs so approve/delete/reject can find them
-                    import json as _json
-                    await self.db.add_task_context(
-                        task_id,
-                        type="plan_draft_subtasks",
-                        label="Draft Subtask IDs",
-                        content=_json.dumps(created_info),
-                    )
-
-                    logger.info(
-                        "process_plan: supervisor created %d draft subtasks for %s",
-                        len(created_info), task_id,
-                    )
-            finally:
-                # Release plan-processing lock — blocking deps are now in place,
-                # so _check_defined_tasks can safely evaluate these subtasks.
-                self.orchestrator._plan_processing_locks.discard(project_id)
+                logger.info(
+                    "process_plan: supervisor created %d draft subtasks for %s",
+                    len(created_info), task_id,
+                )
 
         # Build the steps list for the approval embed from supervisor-created
         # subtasks.  If supervisor didn't create any, the embed will show the
@@ -3763,11 +3857,20 @@ class CommandHandler:
         try:
             from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
 
+            # Get thread URL for linking to the agent's full plan summary
+            thread_url = ""
+            if self.orchestrator._get_thread_url:
+                try:
+                    thread_url = await self.orchestrator._get_thread_url(task_id) or ""
+                except Exception:
+                    pass
+
             plan_view = PlanApprovalView(task_id, handler=self)
             plan_embed = format_plan_approval_embed(
                 task=task if not args.get("task_id") else await self.db.get_task(task_id),
                 raw_content=raw,
                 parsed_steps=parsed_steps,
+                thread_url=thread_url,
             )
             await self.orchestrator._notify_channel(
                 "",
@@ -3830,19 +3933,19 @@ class CommandHandler:
         result: dict | None,
         dependencies: set[str],
     ) -> str | None:
-        """Write a markdown reference note for a task to its project workspace.
+        """Write a markdown reference note for a task to the data directory.
 
-        Returns the file path if written, or ``None`` if the project has no
-        workspace or the project could not be resolved.
+        Notes are stored under ``~/.agent-queue/archived_tasks/<project_id>/``.
+        Returns the file path if written, or ``None`` if the project could not
+        be resolved.
         """
         project = await self.db.get_project(task.project_id)
         if not project:
             return None
 
-        workspace = await self.db.get_project_workspace_path(task.project_id)
-        if not workspace:
-            return None
-        archive_dir = os.path.join(workspace, "archived_tasks")
+        archive_dir = os.path.join(
+            self.config.data_dir, "archived_tasks", task.project_id
+        )
         os.makedirs(archive_dir, exist_ok=True)
 
         note = _build_archive_note(task, result, dependencies)
@@ -3975,69 +4078,72 @@ class CommandHandler:
         return info
 
     # -----------------------------------------------------------------------
-    # Agent commands -- registration and listing.
-    # Agents are the worker processes (Claude Code instances) that execute
-    # tasks.  These commands register new agents and inspect their state;
-    # the orchestrator handles actual agent lifecycle management.
+    # Agent commands -- workspace-as-agent model.
+    # Agents are derived from project workspaces: each workspace is an
+    # agent slot.  CRUD commands (create/delete/pause/resume) are deprecated
+    # and return helpful error messages pointing to workspace commands.
     # -----------------------------------------------------------------------
 
     async def _cmd_list_agents(self, args: dict) -> dict:
-        agents = await self.db.list_agents()
-        return {
-            "agents": [
-                {
-                    "id": a.id,
-                    "name": a.name,
-                    "type": a.agent_type,
-                    "state": a.state.value,
-                    "current_task": a.current_task_id,
+        """List agent slots derived from project workspaces.
+
+        Requires ``project_id`` (or active project).  Each workspace is an
+        agent slot: locked workspaces are "busy", unlocked are "idle".
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (or set an active project)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        agent_list = []
+        for ws in workspaces:
+            if ws.locked_by_task_id:
+                state = "busy"
+                task = await self.db.get_task(ws.locked_by_task_id)
+                info: dict = {
+                    "workspace_id": ws.id,
+                    "project_id": project_id,
+                    "name": ws.name or ws.id,
+                    "state": state,
+                    "current_task_id": ws.locked_by_task_id,
+                    "current_task_title": task.title if task else None,
                 }
-                for a in agents
-            ]
-        }
+            else:
+                info = {
+                    "workspace_id": ws.id,
+                    "project_id": project_id,
+                    "name": ws.name or ws.id,
+                    "state": "idle",
+                    "current_task_id": None,
+                    "current_task_title": None,
+                }
+            agent_list.append(info)
+        return {"agents": agent_list, "project_id": project_id}
 
     async def _cmd_create_agent(self, args: dict) -> dict:
-        from .agent_names import generate_unique_agent_name
+        """Deprecated — agents are now derived from workspaces.
 
-        name = args.get("name")
-        if not name:
-            name = await generate_unique_agent_name(self.db)
-
-        agent_id = name.lower().replace(" ", "-")
-
-        # Agents start directly as IDLE — workspace acquisition is dynamic
-        agent = Agent(
-            id=agent_id,
-            name=name,
-            agent_type=args.get("agent_type", "claude"),
-            state=AgentState.IDLE,
-        )
-        await self.db.create_agent(agent)
-
-        return {"created": agent_id, "name": agent.name, "state": "IDLE"}
+        Use ``add_workspace`` to add agent capacity to a project.
+        """
+        return {
+            "error": (
+                "create_agent is no longer supported. Agents are now derived "
+                "from project workspaces. Use 'add_workspace' to add agent "
+                "capacity to a project."
+            )
+        }
 
     async def _cmd_edit_agent(self, args: dict) -> dict:
-        """Edit an agent's properties (name, agent_type)."""
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-
-        updates = {}
-        if "name" in args:
-            updates["name"] = args["name"]
-        if "agent_type" in args:
-            updates["agent_type"] = args["agent_type"]
-
-        if not updates:
-            return {"error": "No fields to update. Provide name or agent_type."}
-
-        await self.db.update_agent(agent_id, **updates)
-
+        """Deprecated — agents are now derived from workspaces."""
         return {
-            "updated": agent_id,
-            "fields": list(updates.keys()),
-            "name": args.get("name", agent.name),
+            "error": (
+                "edit_agent is no longer supported. Agents are derived from "
+                "project workspaces. Use workspace management commands instead."
+            )
         }
 
     async def _cmd_add_workspace(self, args: dict) -> dict:
@@ -4330,21 +4436,21 @@ class CommandHandler:
             "conflicts": results,
         }
 
-    async def _cmd_sync_workspaces(self, args: dict) -> dict:
-        """Synchronize all project workspaces to the latest main branch.
+    async def _cmd_queue_sync_workspaces(self, args: dict) -> dict:
+        """Queue a high-priority Sync Workspaces task that orchestrates a full sync workflow.
 
-        For each workspace:
-        1. Fetch latest from origin.
-        2. If the workspace is on the default branch, hard-reset to origin.
-        3. If on a feature branch with unpushed commits, push them first.
-        4. Rebase/merge divergent branches to bring everything up to date.
+        When the orchestrator picks up this task, it will:
+        1. Pause the project (prevent new tasks from being queued).
+        2. Wait for ALL currently running tasks to complete.
+        3. Launch a Claude Code agent task to merge all feature branches
+           into the default branch across all project workspaces.
+        4. Resume the project after synchronization is complete.
 
-        Workspaces that are locked (in use by an agent) are skipped.
-        Workspaces with unresolvable merge conflicts are reported for
-        manual intervention.
-
-        Returns a per-workspace status report.
+        This is used for periodic workspace consolidation when feature branches
+        have drifted from the default branch.
         """
+        from src.task_names import generate_task_id
+
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
@@ -4358,394 +4464,97 @@ class CommandHandler:
             return {"error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
-        results: list[dict] = []
+        workspace_root = "/home/jkern/agent-queue-workspaces"
 
-        for ws in workspaces:
-            ws_result = await self._sync_single_workspace(
-                ws, default_branch, skip_locked=args.get("skip_locked", True),
-            )
-            results.append(ws_result)
+        # Build a self-contained description with all context for the sync workflow.
+        workspace_paths = "\n".join(
+            f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})"
+            for ws in workspaces
+        )
 
-        synced = sum(1 for r in results if r["status"] == "synced")
-        skipped = sum(1 for r in results if r["status"] == "skipped")
-        errors = sum(1 for r in results if r["status"] in ("error", "conflict"))
+        description = f"""## Sync Workspaces — {project_id}
+
+**Task Type:** Orchestrator-managed sync workflow (handled automatically by the orchestrator)
+
+### Workflow Steps (executed by the orchestrator, NOT the agent):
+1. **Pause Project** — Prevent new tasks from being queued for `{project_id}`
+2. **Wait for Active Tasks** — Monitor all running tasks and wait for completion
+3. **Merge Feature Branches** — Launch a Claude Code agent to merge all feature work
+4. **Cleanup & Resume** — Unlock workspaces and resume the project
+
+### Project Details:
+- **Project ID:** {project_id}
+- **Default Branch:** {default_branch}
+- **Workspace Root:** {workspace_root}
+
+### Workspaces:
+{workspace_paths}
+
+### Merge Strategy:
+- Merge and push one workspace at a time
+- Pull updates before working on subsequent workspaces
+- Preserve ALL feature work unless it's duplicated or made irrelevant by subsequent changes
+- Resolve conflicts intelligently, preferring to preserve feature functionality
+- Ensure each workspace ends up on `{default_branch}` with no remaining feature branches from agent-queue
+
+### Why This Exists:
+This synchronizes workspaces that have drifted from the default branch, consolidating
+feature work stuck on feature branches across multiple workspaces.
+"""
+
+        task_id = await generate_task_id(self.db)
+        task = Task(
+            id=task_id,
+            project_id=project_id,
+            title=f"Sync Workspaces — {project_id}",
+            description=description,
+            priority=1,  # Highest priority
+            status=TaskStatus.READY,
+            task_type=TaskType.SYNC,
+        )
+        await self.db.create_task(task)
 
         return {
+            "queued": task_id,
             "project_id": project_id,
+            "title": task.title,
+            "priority": 1,
+            "workspace_count": len(workspaces),
             "default_branch": default_branch,
-            "total_workspaces": len(workspaces),
-            "synced": synced,
-            "skipped": skipped,
-            "errors": errors,
-            "workspaces": results,
+            "message": (
+                f"Sync Workspaces task queued with highest priority (id: {task_id}). "
+                f"When it starts, it will pause the project, wait for active tasks to "
+                f"complete, merge all feature branches into '{default_branch}', then resume."
+            ),
         }
-
-    async def _sync_single_workspace(
-        self, ws, default_branch: str, *, skip_locked: bool = True,
-    ) -> dict:
-        """Sync a single workspace to the latest default branch from origin.
-
-        The goal is to get all committed work pushed to origin and then reset
-        the workspace to match origin/<default_branch>. This must NEVER
-        force-push to the default branch, as that can overwrite commits pushed
-        by other workspaces.
-
-        Steps:
-        1. Validate the workspace is a valid git repo.
-        2. Skip if locked by an agent (unless skip_locked=False).
-        3. Fetch latest from origin.
-        4. Determine current branch state.
-        5. If on default branch with local-only commits that diverge from
-           origin: rescue them onto a temporary branch and push that branch
-           (never force-push to default).
-        6. If on a feature branch: commit + push the feature branch.
-        7. Always end by resetting the workspace to origin/<default_branch>.
-        """
-        ws_path = ws.workspace_path
-        ws_info = {
-            "workspace_id": ws.id,
-            "workspace_name": ws.name,
-            "workspace_path": ws_path,
-        }
-
-        # Check workspace exists
-        if not os.path.isdir(ws_path):
-            return {**ws_info, "status": "skipped", "reason": "directory not found"}
-
-        # Check if valid git repo
-        git_dir = os.path.join(ws_path, ".git")
-        if not os.path.exists(git_dir):
-            return {**ws_info, "status": "skipped", "reason": "not a git repository"}
-
-        # Skip locked workspaces (in use by an agent)
-        if skip_locked and ws.locked_by_agent_id:
-            return {
-                **ws_info,
-                "status": "skipped",
-                "reason": f"locked by agent '{ws.locked_by_agent_id}' "
-                          f"(task: {ws.locked_by_task_id})",
-            }
-
-        git = self.orchestrator.git
-
-        try:
-            # Step 1: Fetch latest remote state
-            try:
-                await git._arun(["fetch", "origin", "--prune"], cwd=ws_path)
-            except GitError as e:
-                return {**ws_info, "status": "error", "reason": f"fetch failed: {e}"}
-
-            # Step 2: Determine current branch
-            current_branch = await git.aget_current_branch(ws_path)
-            ws_info["current_branch"] = current_branch
-
-            # Step 3: Check for uncommitted changes
-            has_uncommitted = False
-            try:
-                rc, stdout, _ = await _run_subprocess(
-                    "git", "status", "--porcelain",
-                    cwd=ws_path, timeout=10,
-                )
-                if rc == 0 and stdout.strip():
-                    has_uncommitted = True
-                    ws_info["had_uncommitted_changes"] = True
-            except (asyncio.TimeoutError, OSError):
-                pass
-
-            # Step 4: Check for active merge/rebase conflicts
-            try:
-                status_rc, status_stdout, _ = await _run_subprocess(
-                    "git", "status", "--porcelain",
-                    cwd=ws_path, timeout=10,
-                )
-                if status_rc == 0:
-                    for line in status_stdout.splitlines():
-                        if line.startswith(("UU ", "AA ", "DD ")):
-                            return {
-                                **ws_info,
-                                "status": "conflict",
-                                "reason": "active merge conflict in working tree — "
-                                          "needs manual resolution",
-                            }
-            except (asyncio.TimeoutError, OSError):
-                pass
-
-            if current_branch == default_branch:
-                # On the default branch — save any local work, then reset
-                actions: list[str] = []
-                try:
-                    # Auto-commit uncommitted changes so they aren't lost
-                    if has_uncommitted:
-                        try:
-                            committed = await git.acommit_all(
-                                ws_path,
-                                "[sync-workspaces] auto-commit uncommitted changes",
-                            )
-                            if committed:
-                                actions.append("auto_committed")
-                        except GitError:
-                            pass
-
-                    # Check how many local commits are ahead of origin
-                    rc, ahead_count, _ = await _run_subprocess(
-                        "git", "rev-list", "--count",
-                        f"origin/{default_branch}..HEAD",
-                        cwd=ws_path, timeout=10,
-                    )
-                    has_local_commits = (
-                        rc == 0 and ahead_count.strip() not in ("", "0")
-                    )
-
-                    if has_local_commits:
-                        # Check if local and origin have diverged (local is
-                        # both ahead AND behind origin). This happens when
-                        # other workspaces pushed to main while this workspace
-                        # had local-only commits.
-                        rc_behind, behind_count, _ = await _run_subprocess(
-                            "git", "rev-list", "--count",
-                            f"HEAD..origin/{default_branch}",
-                            cwd=ws_path, timeout=10,
-                        )
-                        has_diverged = (
-                            rc_behind == 0
-                            and behind_count.strip() not in ("", "0")
-                        )
-
-                        if has_diverged:
-                            # CRITICAL: Local main has diverged from origin.
-                            # We must NOT force-push to the default branch as
-                            # that would overwrite commits from other
-                            # workspaces. Instead, rescue local commits onto a
-                            # temporary branch and push that.
-                            rescue_branch = (
-                                f"sync-rescue/{ws.name or ws.id}/"
-                                f"{int(time.time())}"
-                            )
-                            try:
-                                await git._arun(
-                                    ["checkout", "-b", rescue_branch],
-                                    cwd=ws_path,
-                                )
-                                await git.apush_branch(
-                                    ws_path, rescue_branch,
-                                )
-                                actions.append(
-                                    f"rescued_{ahead_count.strip()}_commits"
-                                    f"_to_{rescue_branch}"
-                                )
-                                # Switch back to default branch for the reset
-                                await git._arun(
-                                    ["checkout", default_branch], cwd=ws_path,
-                                )
-                            except GitError as e:
-                                # If rescue fails, still try to get back to
-                                # default branch — don't lose the reset
-                                logger.warning(
-                                    "Failed to rescue diverged commits in %s: %s",
-                                    ws_path, e,
-                                )
-                                try:
-                                    await git._arun(
-                                        ["checkout", default_branch],
-                                        cwd=ws_path,
-                                    )
-                                except GitError:
-                                    pass
-                                actions.append("rescue_failed")
-                        else:
-                            # Local is strictly ahead (not diverged) — safe to
-                            # do a normal (non-force) push
-                            try:
-                                await git.apush_branch(
-                                    ws_path, default_branch,
-                                    force_with_lease=False,
-                                )
-                                actions.append(
-                                    f"pushed_{ahead_count.strip()}_commits"
-                                )
-                                # Re-fetch so origin/default reflects what
-                                # we just pushed
-                                await git._arun(
-                                    ["fetch", "origin", default_branch],
-                                    cwd=ws_path,
-                                )
-                            except GitError:
-                                # Normal push failed — this shouldn't happen
-                                # if we're strictly ahead, but rescue just
-                                # in case
-                                rescue_branch = (
-                                    f"sync-rescue/{ws.name or ws.id}/"
-                                    f"{int(time.time())}"
-                                )
-                                try:
-                                    await git._arun(
-                                        ["checkout", "-b", rescue_branch],
-                                        cwd=ws_path,
-                                    )
-                                    await git.apush_branch(
-                                        ws_path, rescue_branch,
-                                    )
-                                    actions.append(
-                                        f"push_failed_rescued_to_{rescue_branch}"
-                                    )
-                                    await git._arun(
-                                        ["checkout", default_branch],
-                                        cwd=ws_path,
-                                    )
-                                except GitError:
-                                    try:
-                                        await git._arun(
-                                            ["checkout", default_branch],
-                                            cwd=ws_path,
-                                        )
-                                    except GitError:
-                                        pass
-                                    actions.append("push_and_rescue_failed")
-
-                    await git._arun(
-                        ["reset", "--hard", f"origin/{default_branch}"],
-                        cwd=ws_path,
-                    )
-                    actions.append("reset_to_origin")
-                    return {
-                        **ws_info, "status": "synced",
-                        "action": ", ".join(actions),
-                    }
-                except GitError as e:
-                    return {**ws_info, "status": "error", "reason": f"reset failed: {e}"}
-            else:
-                # On a feature branch — save work and switch to default branch
-                actions: list[str] = []
-
-                # Auto-commit uncommitted changes if any
-                if has_uncommitted:
-                    try:
-                        committed = await git.acommit_all(
-                            ws_path, "[sync-workspaces] auto-commit uncommitted changes",
-                        )
-                        if committed:
-                            actions.append("auto_committed")
-                    except GitError:
-                        # Can't commit — might have conflict markers, skip
-                        pass
-
-                # Push the current feature branch to origin (save work)
-                try:
-                    await git.apush_branch(ws_path, current_branch, force_with_lease=True)
-                    actions.append("pushed_branch")
-                except GitError:
-                    # Push failed — might not have remote tracking, that's OK
-                    actions.append("push_skipped")
-
-                # Switch workspace back to the default branch.
-                # For worktrees, checkout may fail if another worktree has
-                # the default branch checked out — fall back to update-ref.
-                is_worktree = await git._ais_worktree(ws_path)
-                if is_worktree:
-                    # In a worktree, update the ref to point at origin/default
-                    try:
-                        await git._arun(
-                            ["checkout", default_branch], cwd=ws_path,
-                        )
-                        await git._arun(
-                            ["reset", "--hard", f"origin/{default_branch}"],
-                            cwd=ws_path,
-                        )
-                        actions.append("switched_to_default")
-                    except GitError:
-                        # Worktree checkout may fail if another worktree has
-                        # the default branch checked out; fall back to update-ref
-                        try:
-                            origin_sha = await git._arun(
-                                ["rev-parse", f"origin/{default_branch}"],
-                                cwd=ws_path,
-                            )
-                            await git._arun(
-                                ["update-ref", f"refs/heads/{default_branch}",
-                                 origin_sha],
-                                cwd=ws_path,
-                            )
-                            actions.append("updated_default_ref")
-                        except GitError:
-                            pass  # Non-critical
-                else:
-                    # Normal repo: checkout default branch and reset to origin
-                    try:
-                        await git._arun(["checkout", default_branch], cwd=ws_path)
-                        await git._arun(
-                            ["reset", "--hard", f"origin/{default_branch}"],
-                            cwd=ws_path,
-                        )
-                        actions.append("switched_to_default")
-                    except GitError as e:
-                        # Try to get back to where we were if checkout failed
-                        try:
-                            await git._arun(["checkout", current_branch], cwd=ws_path)
-                        except GitError:
-                            pass
-                        actions.append(f"switch_to_default_failed")
-
-                return {
-                    **ws_info,
-                    "status": "synced",
-                    "action": ", ".join(actions) if actions else "no_changes",
-                }
-
-        except Exception as e:
-            logger.warning(
-                "Error syncing workspace %s: %s", ws_path, e, exc_info=True,
-            )
-            return {**ws_info, "status": "error", "reason": str(e)}
 
     async def _cmd_pause_agent(self, args: dict) -> dict:
-        """Pause an agent so it stops receiving new tasks.
-
-        The agent finishes its current task (if any) but won't be assigned
-        new work until resumed.
-        """
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state == AgentState.PAUSED:
-            return {"error": f"Agent '{agent_id}' is already paused"}
-        if agent.state == AgentState.BUSY:
-            await self.db.update_agent(agent_id, state=AgentState.PAUSED)
-            return {
-                "agent_id": agent_id,
-                "state": "PAUSED",
-                "note": "Agent will finish its current task, then stay paused.",
-            }
-        await self.db.update_agent(agent_id, state=AgentState.PAUSED)
-        return {"agent_id": agent_id, "state": "PAUSED"}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "pause_agent is no longer supported. Agents are derived from "
+                "project workspaces. To pause work, pause the project instead."
+            )
+        }
 
     async def _cmd_resume_agent(self, args: dict) -> dict:
-        """Resume a paused agent so it can receive tasks again."""
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state != AgentState.PAUSED:
-            return {"error": f"Agent '{agent_id}' is {agent.state.value}, not PAUSED"}
-        await self.db.update_agent(agent_id, state=AgentState.IDLE)
-        return {"agent_id": agent_id, "state": "IDLE"}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "resume_agent is no longer supported. Agents are derived from "
+                "project workspaces. To resume work, resume the project instead."
+            )
+        }
 
     async def _cmd_delete_agent(self, args: dict) -> dict:
-        """Delete an agent and all its dependent records.
-
-        Refuses to delete an agent that is currently BUSY with a task.
-        """
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state == AgentState.BUSY:
-            return {
-                "error": f"Agent '{agent_id}' is BUSY with task "
-                f"'{agent.current_task_id}'. Stop the task first.",
-            }
-        await self.db.delete_agent(agent_id)
-        return {"deleted": agent_id, "name": agent.name}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "delete_agent is no longer supported. Agents are derived from "
+                "project workspaces. Use 'remove_workspace' to remove agent "
+                "capacity from a project."
+            )
+        }
 
     # -----------------------------------------------------------------------
     # Events and token usage -- observability into system activity and
@@ -4849,6 +4658,19 @@ class CommandHandler:
                 lock_info = ""
                 if ws.locked_by_agent_id:
                     lock_info = f" (locked by {ws.locked_by_agent_id})"
+
+                # Extra detail: ahead/behind, stash count, diff stat
+                ahead_behind = await self._git_ahead_behind(git, ws_path, branch)
+                stash_count = await self._git_stash_count(git, ws_path)
+                diff_stat = await self._git_diff_stat(git, ws_path, branch)
+
+                # Current task info
+                current_task_title = None
+                if ws.locked_by_task_id:
+                    task = await self.db.get_task(ws.locked_by_task_id)
+                    if task:
+                        current_task_title = task.title
+
                 ws_info: dict = {
                     "workspace_id": ws.id,
                     "workspace_name": ws.name or "",
@@ -4857,6 +4679,13 @@ class CommandHandler:
                     "status": status_output or "(clean)",
                     "recent_commits": recent_commits,
                     "lock": lock_info,
+                    "ahead": ahead_behind[0],
+                    "behind": ahead_behind[1],
+                    "stash_count": stash_count,
+                    "diff_stat": diff_stat,
+                    "locked_by_agent_id": ws.locked_by_agent_id,
+                    "locked_by_task_id": ws.locked_by_task_id,
+                    "current_task_title": current_task_title,
                 }
                 repo_statuses.append(ws_info)
         else:
@@ -4903,6 +4732,53 @@ class CommandHandler:
             "project_name": project.name,
             "repos": repo_statuses,
         }
+
+    # -- git-status helpers ---------------------------------------------------
+
+    @staticmethod
+    async def _git_ahead_behind(git, ws_path: str, branch: str) -> tuple[int, int]:
+        """Return (ahead, behind) counts relative to the tracking upstream."""
+        try:
+            output = await git._arun(
+                ["rev-list", "--left-right", "--count", f"{branch}...@{{u}}"],
+                cwd=ws_path,
+            )
+            parts = output.strip().split()
+            if len(parts) == 2:
+                return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return 0, 0
+
+    @staticmethod
+    async def _git_stash_count(git, ws_path: str) -> int:
+        """Return number of stash entries."""
+        try:
+            output = await git._arun(["stash", "list"], cwd=ws_path)
+            if output.strip():
+                return len(output.strip().splitlines())
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    async def _git_diff_stat(git, ws_path: str, branch: str) -> str:
+        """Return ``git diff --stat`` against the default branch merge-base."""
+        try:
+            default_branch = await git.aget_default_branch(ws_path)
+            if branch == default_branch:
+                return ""
+            merge_base = await git._arun(
+                ["merge-base", f"origin/{default_branch}", "HEAD"],
+                cwd=ws_path,
+            )
+            stat = await git._arun(
+                ["diff", "--stat", merge_base.strip()],
+                cwd=ws_path,
+            )
+            return stat.strip()
+        except Exception:
+            return ""
 
     async def _resolve_workspace(
         self, project_id: str, workspace: str | None,
@@ -5519,23 +5395,61 @@ class CommandHandler:
     # -----------------------------------------------------------------------
 
     async def _cmd_create_hook(self, args: dict) -> dict:
-        project_id = args["project_id"]
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-        hook_id = args["name"].lower().replace(" ", "-")
-        hook = Hook(
-            id=hook_id,
+        """DEPRECATED: Redirects to save_rule.  Direct hook creation is no longer
+        supported — all automation must be created through rules."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized — cannot create automation"}
+
+        project_id = args.get("project_id")
+        name = args.get("name", "Untitled Hook")
+        trigger = args.get("trigger", {})
+        prompt_template = args.get("prompt_template", "")
+        cooldown_seconds = args.get("cooldown_seconds", 3600)
+
+        # Build rule markdown from hook parameters
+        lines = [f"# {name}", ""]
+
+        # Convert trigger to natural language for ## Trigger section
+        trigger_type = trigger.get("type", "event") if isinstance(trigger, dict) else "event"
+        if trigger_type == "periodic":
+            secs = trigger.get("interval_seconds", 300) if isinstance(trigger, dict) else 300
+            if secs >= 86400 and secs % 86400 == 0:
+                interval_desc = f"every {secs // 86400} day(s)"
+            elif secs >= 3600 and secs % 3600 == 0:
+                interval_desc = f"every {secs // 3600} hour(s)"
+            elif secs >= 60 and secs % 60 == 0:
+                interval_desc = f"every {secs // 60} minute(s)"
+            else:
+                interval_desc = f"every {secs} seconds"
+            lines.append(f"## Trigger\n\nCheck {interval_desc}")
+        elif trigger_type == "event":
+            event_type = trigger.get("event_type", "unknown") if isinstance(trigger, dict) else "unknown"
+            lines.append(f"## Trigger\n\nWhen {event_type}")
+        else:
+            lines.append(f"## Trigger\n\n{trigger_type}")
+
+        if cooldown_seconds and cooldown_seconds != 3600:
+            lines.append(f"\nCooldown: {cooldown_seconds}s")
+
+        lines.append(f"\n## Logic\n\n{prompt_template}")
+        content = "\n".join(lines)
+
+        result = await rm.async_save_rule(
+            id=None,
             project_id=project_id,
-            name=args["name"],
-            trigger=json.dumps(args["trigger"]),
-            context_steps=json.dumps(args.get("context_steps", [])),
-            prompt_template=args["prompt_template"],
-            cooldown_seconds=args.get("cooldown_seconds", 3600),
-            llm_config=json.dumps(args["llm_config"]) if args.get("llm_config") else None,
+            rule_type="active",
+            content=content,
         )
-        await self.db.create_hook(hook)
-        return {"created": hook_id, "name": hook.name, "project_id": project_id}
+        if "error" in result:
+            return result
+
+        return {
+            "created": result.get("id", "unknown"),
+            "name": name,
+            "project_id": project_id,
+            "note": "Created as a rule — hooks will be generated automatically via reconciliation.",
+        }
 
     async def _cmd_list_hooks(self, args: dict) -> dict:
         project_id = args.get("project_id")
@@ -5556,10 +5470,30 @@ class CommandHandler:
         }
 
     async def _cmd_edit_hook(self, args: dict) -> dict:
+        """Edit a hook. For rule-backed hooks (id starts with 'rule-'), redirects
+        to editing the source rule instead. Legacy direct hooks can still be edited
+        but with a deprecation warning."""
         hook_id = args["hook_id"]
         hook = await self.db.get_hook(hook_id)
         if not hook:
             return {"error": f"Hook '{hook_id}' not found"}
+
+        # Rule-backed hooks should be edited via their source rule
+        if hook_id.startswith("rule-"):
+            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
+            # Rule IDs themselves start with "rule-", so strip prefix and suffix
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
+            return {
+                "error": (
+                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
+                    f"Edit the source rule instead using save_rule or /rule {rule_id}. "
+                    "Changes to rule-backed hooks are overwritten on reconciliation."
+                ),
+            }
+
+        # Legacy direct hook — allow edit but warn
         updates = {}
         if "name" in args:
             updates["name"] = args["name"]
@@ -5580,13 +5514,40 @@ class CommandHandler:
         if not updates:
             return {"error": "No fields to update"}
         await self.db.update_hook(hook_id, **updates)
-        return {"updated": hook_id, "fields": list(updates.keys())}
+        return {
+            "updated": hook_id,
+            "fields": list(updates.keys()),
+            "warning": (
+                "This is a legacy direct hook. Consider converting it to a rule "
+                "using save_rule for better management. Direct hooks may be "
+                "auto-migrated to rules in the future."
+            ),
+        }
 
     async def _cmd_delete_hook(self, args: dict) -> dict:
+        """Delete a hook. Rule-backed hooks (id starts with 'rule-') must be
+        deleted via their source rule. Only orphan/legacy hooks can be deleted
+        directly."""
         hook_id = args["hook_id"]
         hook = await self.db.get_hook(hook_id)
         if not hook:
             return {"error": f"Hook '{hook_id}' not found"}
+
+        # Rule-backed hooks must be deleted via the rule
+        if hook_id.startswith("rule-"):
+            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
+            return {
+                "error": (
+                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
+                    f"Delete the source rule instead using delete_rule. "
+                    "Rule-backed hooks are managed automatically."
+                ),
+            }
+
+        # Allow deletion of orphan/legacy/scheduled hooks
         await self.db.delete_hook(hook_id)
         return {"deleted": hook_id, "name": hook.name}
 
@@ -5982,7 +5943,7 @@ class CommandHandler:
         return await rm.async_delete_rule(rule_id)
 
     async def _cmd_browse_rules(self, args: dict) -> dict:
-        """List rules for a project (plus globals)."""
+        """List rules for a project (plus globals). Alias: list_rules."""
         rm = getattr(self.orchestrator, "rule_manager", None)
         if not rm:
             return {"error": "Rule manager not initialized"}
@@ -5990,6 +5951,10 @@ class CommandHandler:
         project_id = args.get("project_id")
         rules = rm.browse_rules(project_id)
         return {"rules": rules}
+
+    async def _cmd_list_rules(self, args: dict) -> dict:
+        """Alias for browse_rules — primary interface name."""
+        return await self._cmd_browse_rules(args)
 
     async def _cmd_load_rule(self, args: dict) -> dict:
         """Load full details of a specific rule."""
@@ -6006,6 +5971,26 @@ class CommandHandler:
             return {"error": f"Rule '{rule_id}' not found"}
 
         return loaded
+
+    async def _cmd_refresh_hooks(self, args: dict) -> dict:
+        """Reconcile hooks from current rule files.
+
+        Re-reads all rule files and regenerates hooks for active rules,
+        ensuring the hook engine matches the rules on disk.
+        """
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        stats = await rm.reconcile()
+        return {
+            "success": True,
+            "rules_scanned": stats.get("rules_scanned", 0),
+            "active_rules": stats.get("active_rules", 0),
+            "hooks_regenerated": stats.get("hooks_regenerated", 0),
+            "hooks_unchanged": stats.get("hooks_unchanged", 0),
+            "errors": stats.get("errors", 0),
+        }
 
     # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
@@ -7633,41 +7618,6 @@ class CommandHandler:
             result["ready"] = True
 
         return result
-
-    # -----------------------------------------------------------------------
-    # Chat analyzer commands (DEPRECATED — replaced by ChatObserver, Phase 5)
-    # -----------------------------------------------------------------------
-
-    async def _cmd_analyzer_status(self, args: dict) -> dict:
-        """Show chat analyzer status (deprecated)."""
-        return {
-            "enabled": False,
-            "message": "ChatAnalyzer has been replaced by the Supervisor's passive observation mode. "
-                       "Use supervisor.observation config to control chat observation.",
-            "deprecated": True,
-        }
-
-    async def _cmd_analyzer_toggle(self, args: dict) -> dict:
-        """Toggle chat analyzer (deprecated)."""
-        return {
-            "enabled": False,
-            "message": "ChatAnalyzer has been replaced by the Supervisor's passive observation mode. "
-                       "Configure supervisor.observation.enabled in config.yaml instead.",
-            "deprecated": True,
-        }
-
-    async def _cmd_analyzer_history(self, args: dict) -> dict:
-        """Show analyzer suggestion history (deprecated)."""
-        project_id = args.get("project_id")
-        limit = int(args.get("limit", 20))
-        suggestions = await self.db.get_analyzer_suggestion_history(
-            project_id=project_id, limit=limit,
-        )
-        return {
-            "suggestions": suggestions,
-            "count": len(suggestions),
-            "project_id": project_id,
-        }
 
     # -------------------------------------------------------------------
     # Tool navigation commands (Phase 3 -- tiered tool system)

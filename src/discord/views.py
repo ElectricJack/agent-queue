@@ -242,7 +242,3 @@ class SuggestionView(discord.ui.View):
                 await interaction.message.edit(view=self)
         except (discord.NotFound, discord.HTTPException):
             pass  # Message may have been deleted
-
-
-# Backward-compatible alias
-ChatAnalyzerSuggestionView = SuggestionView

@@ -2,200 +2,176 @@
 auto_tasks: true
 ---
 
-# Messaging Adapter Layer — Discord + Telegram Support
+# Refactor: Unify Rules & Hooks — Rules as First-Class, Hooks as Implementation Detail
 
-## Background & Design
+## Background & Problem Statement
 
-### Current Architecture
+The current system has **two parallel interfaces** for automation:
 
-The system currently hard-wires Discord as the sole messaging transport. The core orchestration logic (Orchestrator, CommandHandler, Supervisor) is already **well-decoupled** from Discord through callback injection:
+1. **Rules** — Markdown files with YAML frontmatter in `~/.agent-queue/memory/`. User-friendly, natural language. Active rules generate hooks via `RuleManager`.
+2. **Hooks** — SQLite DB records. Lower-level, JSON config for triggers, prompt templates, cooldowns. Directly created/edited via `create_hook`, `edit_hook`, etc.
 
-- `Orchestrator.set_notify_callback()` — transport-agnostic notification dispatch
-- `Orchestrator.set_create_thread_callback()` — transport-agnostic thread creation
-- `CommandHandler.execute()` — pure business logic, no transport coupling
-- `Supervisor` — LLM chat loop, takes message history lists, platform-agnostic
-- `EventBus` — pub/sub independent of transport
+### Current Problems
 
-However, Discord-specific types leak in several places:
-1. **`orchestrator.py`** imports `src.discord.notifications` at module level (line 86) and uses `discord.Embed`/`discord.ui.View` in `_notify_channel` calls (~40 call sites passing `embed=` and `view=` kwargs)
-2. **`main.py`** directly imports and instantiates `AgentQueueBot`, hard-codes `bot.start(config.discord.bot_token)`
-3. **`config.py`** has `DiscordConfig` as a required top-level field on `AppConfig` with validation that requires `bot_token` and `guild_id`
-4. **Notification formatting** (`src/discord/notifications.py`, `embeds.py`, `views.py`) produces Discord-native objects
+1. **Duplicate hooks** — Discord reconnects fire `on_ready` → `_reconcile_rules()`, which deletes old hooks and creates new ones. Despite guards (TOCTOU race protection, `_reconciliation_task` check), rapid reconnects or concurrent reconciliations can create orphan hooks that persist in the DB and fire alongside legitimate ones.
 
-### Design Decisions
+2. **Two command surfaces** — Users can create automation via `create_hook` (direct DB) OR `save_rule` (markdown → hooks). Direct hooks bypass rule tracking entirely, making them invisible to `browse_rules` and unmanaged by reconciliation. This causes confusion about what automations exist and where they came from.
 
-1. **One transport per deployment** — config chooses `messaging: discord` or `messaging: telegram`. No multi-transport bridging. This keeps the abstraction simple.
-2. **Abstract Messaging Port** — a new `MessagingPort` protocol/ABC defines the transport contract. Both `DiscordTransport` and `TelegramTransport` implement it.
-3. **Platform-agnostic notification layer** — replace `discord.Embed`/`discord.ui.View` kwargs with a platform-neutral `RichNotification` dataclass that each transport renders into its native format.
-4. **Factory pattern in `main.py`** — a `create_messaging_transport(config)` factory reads the config and returns the appropriate transport.
-5. **Telegram implementation** — uses `python-telegram-bot` (async, well-maintained). Telegram "topics" in a supergroup map to Discord threads. Inline keyboards map to Discord buttons/views.
+3. **Hook editing breaks rule linkage** — If a user edits a rule-generated hook directly via `edit_hook`, the next reconciliation overwrites those changes because the rule file is the source of truth. But the user has no indication this will happen.
 
-### Key Interfaces
+4. **LLM agents create hooks directly** — The tool registry exposes `create_hook`, `edit_hook`, etc. as first-class tools. LLM agents in chat/hook execution create hooks directly, bypassing rules entirely. These "orphan" hooks have no rule backing and are invisible to rule management.
 
-```python
-# src/messaging/port.py
+5. **No automatic hook regeneration on rule file changes** — If a rule markdown file is edited directly on disk (not via `save_rule` command), the hooks are not regenerated until the next manual `refresh_hooks` or Discord reconnect.
 
-@dataclass
-class RichNotification:
-    """Platform-neutral rich notification."""
-    title: str
-    description: str
-    color: str = "default"  # "success", "error", "warning", "info", "critical"
-    fields: list[tuple[str, str, bool]] = field(default_factory=list)  # (name, value, inline)
-    footer: str = ""
-    actions: list[NotificationAction] = field(default_factory=list)
+### Design Goal
 
-@dataclass
-class NotificationAction:
-    """A button/action attached to a notification."""
-    label: str
-    action_id: str  # maps to CommandHandler.execute() call
-    style: str = "primary"  # "primary", "danger", "secondary"
-    args: dict = field(default_factory=dict)
+**Rules are the ONLY way to create automation.** Hooks become a pure implementation detail — the DB-backed execution artifacts that the hook engine uses internally. Users never interact with hooks directly.
 
-class MessagingPort(ABC):
-    """Abstract messaging transport contract."""
-
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def wait_until_ready(self) -> None: ...
-
-    async def send_message(
-        self, text: str, project_id: str | None = None, *,
-        notification: RichNotification | None = None,
-    ) -> Any: ...
-
-    async def create_thread(
-        self, channel_id: str, thread_name: str,
-        initial_message: str | None = None,
-    ) -> tuple[ThreadSendCallback, ThreadSendCallback] | None: ...
-
-    def set_command_handler(self, handler: CommandHandler) -> None: ...
-    def set_supervisor(self, supervisor: Supervisor) -> None: ...
-```
-
-### Config Changes
-
-```yaml
-# New top-level field
-messaging: discord  # or "telegram"
-
-# Existing discord: section stays as-is
-discord:
-  bot_token: ${DISCORD_BOT_TOKEN}
-  guild_id: "..."
-  # ...
-
-# New telegram: section
-telegram:
-  bot_token: ${TELEGRAM_BOT_TOKEN}
-  chat_id: "..."  # supergroup ID for main channel
-  authorized_users: ["user1_id"]
-  per_project_topics: true  # use forum topics for per-project routing
-```
+This eliminates:
+- Duplicate hooks (single source of truth: rule files)
+- Orphan hooks (every hook traces back to a rule)
+- Confused state from mixed hook/rule editing
+- Need for manual `refresh_hooks`
 
 ---
 
-## Phase 1: Create the MessagingPort abstraction and RichNotification types
+## Phase 1: Add Rule File Watcher — Auto-Reconcile on Rule Changes
 
-Create the abstract messaging interface that both Discord and Telegram will implement.
-
-**Files to create:**
-- `src/messaging/__init__.py` — exports
-- `src/messaging/port.py` — `MessagingPort` ABC, `RichNotification`, `NotificationAction`, callback type aliases
-- `src/messaging/types.py` — shared type aliases (`ThreadSendCallback`, `NotifyCallback`, `CreateThreadCallback`)
+**Goal:** When any rule markdown file is created, modified, or deleted on disk, automatically trigger reconciliation for that rule. This makes direct file editing a first-class workflow and eliminates the need for `refresh_hooks`.
 
 **Files to modify:**
-- `src/orchestrator.py` — change the `NotifyCallback` and `CreateThreadCallback` type aliases to import from `src/messaging/types.py` instead of defining inline. Update `_notify_channel` signature to accept `notification: RichNotification | None` alongside the existing `embed`/`view` kwargs (backward-compatible — both work during migration).
+- `src/rule_manager.py` — Add a `FileWatcher` instance monitoring all rule directories (`~/.agent-queue/memory/*/rules/` and `~/.agent-queue/memory/global/rules/`). On file change, reconcile just the affected rule (not all rules). On file deletion, clean up associated hooks.
+- `src/hooks.py` or `src/main.py` — Wire rule file watcher startup/shutdown into the orchestrator lifecycle.
+- `src/discord/bot.py` — Remove `_reconcile_rules()` from `on_ready` (or keep it only for first-ever startup). The file watcher handles ongoing changes.
 
 **Key details:**
-- `RichNotification` must support all current notification patterns: success/error/warning embeds, fields, footers, action buttons
-- `NotificationAction` carries enough info for any transport to render a button and dispatch the callback to `CommandHandler.execute()`
-- Keep existing `embed`/`view` kwargs working during migration (deprecate later)
-- Add tests for RichNotification construction and field validation
+- Use the existing `FileWatcher` from `src/file_watcher.py` (already used for hook file/folder triggers)
+- Debounce changes (5s) to batch rapid edits
+- Per-rule reconciliation instead of full scan (parse changed file → regenerate its hooks only)
+- On startup, still do a full reconciliation pass once, then hand off to file watcher
 
 ---
 
-## Phase 2: Create a platform-neutral notification formatter
+## Phase 2: Redirect Hook Commands to Rule Commands
 
-Replace the Discord-specific `src/discord/notifications.py` format functions with platform-neutral equivalents that return `RichNotification` objects.
-
-**Files to create:**
-- `src/messaging/notifications.py` — all `format_*_embed` functions that currently return `discord.Embed` are duplicated here returning `RichNotification` instead. Plain-text `format_*` functions (no `_embed` suffix) move here unchanged.
+**Goal:** Replace all direct hook creation/editing commands with rule-based equivalents. Users always work with rules; hooks are generated automatically.
 
 **Files to modify:**
-- `src/orchestrator.py` — change imports from `src.discord.notifications` to `src.messaging.notifications`. Update all `_notify_channel()` calls to pass `notification=` instead of `embed=`/`view=`. Remove the `discord` import entirely from orchestrator.
-- Keep `src/discord/notifications.py` as a thin adapter that converts `RichNotification` → `discord.Embed` + `discord.ui.View` for the Discord transport.
 
-**Key details:**
-- The `classify_error()` function is transport-agnostic — move it to `src/messaging/notifications.py`
-- Interactive views (`TaskFailedView`, `AgentQuestionView`, etc.) stay in `src/discord/views.py` but are constructed by the Discord transport from `NotificationAction` metadata
-- This is the biggest refactor phase — ~40 call sites in orchestrator.py change from `embed=` to `notification=`
-- Add tests comparing old embed output fields with new RichNotification fields to ensure parity
+### `src/tool_registry.py`
+- **Remove** from tool registry: `create_hook`, `edit_hook`, `delete_hook` (the direct hook CRUD tools)
+- **Keep** read-only hook tools: `list_hooks` (renamed to `list_automations` or kept for debugging), `list_hook_runs`, `fire_hook`, `hook_schedules`
+- **Keep** scheduling tools: `schedule_hook` (one-shot scheduled hooks are a special case — they auto-delete and don't need rule backing)
+- **Rename/update** rule tools to be the primary automation interface: `save_rule` → `create_automation` or keep `save_rule`, `browse_rules` → `list_rules`, etc.
+
+### `src/command_handler.py`
+- **Deprecate** `_cmd_create_hook`: Make it create a rule instead (generate a rule markdown file from the hook parameters, then let reconciliation create the hook)
+- **Deprecate** `_cmd_edit_hook`: For rule-backed hooks (`hook.id` starts with `rule-`), redirect to editing the source rule. For legacy direct hooks, allow edit but warn.
+- **Remove** `_cmd_delete_hook` for rule-backed hooks (must delete via rule). Keep for orphan cleanup.
+- **Keep** `_cmd_fire_hook`, `_cmd_list_hooks`, `_cmd_list_hook_runs` as read-only/execution commands
+
+### `src/discord/commands.py`
+- **Remove or hide** the `/create-hook` and `/add-hook` slash commands
+- **Remove** the `_HookWizardStartView` and all hook creation wizard UI (lines 5004-5577)
+- **Keep** `/hooks` as a read-only view (shows generated hooks, links back to source rules)
+- **Update** `HooksListView` — remove edit buttons for rule-backed hooks, add "View Source Rule" button instead
+- **Keep** `/rules`, `/rule`, `/delete-rule`, `/refresh-hooks` as the primary management commands
+- **Add** `/create-rule` slash command with a modal for quick rule creation
 
 ---
 
-## Phase 3: Wrap Discord bot as a MessagingPort implementation
+## Phase 3: Migrate Existing Direct Hooks to Rules
 
-Wrap the existing `AgentQueueBot` in a `DiscordTransport` class that implements `MessagingPort`.
-
-**Files to create:**
-- `src/messaging/discord_transport.py` — `DiscordTransport(MessagingPort)` that wraps `AgentQueueBot`, converts `RichNotification` → `discord.Embed`/`discord.ui.View`, delegates to existing bot methods.
+**Goal:** Convert all existing hooks that were created directly (not via rules) into rule-backed hooks, so every automation has a rule file as its source of truth.
 
 **Files to modify:**
-- `src/discord/bot.py` — extract the callback-wiring logic (`set_notify_callback`, `set_create_thread_callback`, etc.) into methods that `DiscordTransport` can call. The bot itself becomes a "Discord engine" that `DiscordTransport` owns.
-- `src/main.py` — replace direct `AgentQueueBot` instantiation with a factory: `transport = create_transport(config)`. Wire `transport` to orchestrator instead of bot directly. The factory reads `config.messaging` (defaulting to `"discord"` for backward compatibility).
-- `src/config.py` — add `messaging: str = "discord"` field to `AppConfig`. Keep `DiscordConfig` validation only running when `messaging == "discord"`.
 
-**Key details:**
-- `DiscordTransport.send_message()` converts `RichNotification` → embed+view, then calls `bot._send_message()`
-- `DiscordTransport.create_thread()` delegates to `bot._create_task_thread()`
-- This phase should be **zero behavioral change** — existing Discord users see no difference
-- Add integration tests that verify DiscordTransport correctly delegates to bot methods
+### `src/rule_manager.py`
+- Add `migrate_orphan_hooks()` method:
+  1. Query all hooks from DB
+  2. For each hook where `id` does NOT start with `rule-`: it's a direct/orphan hook
+  3. Generate a rule markdown file from the hook's config:
+     - `name` → rule title (`# {name}`)
+     - `trigger` JSON → `## Trigger` section (reverse-parse periodic/event into natural language)
+     - `prompt_template` → `## Logic` section
+     - `cooldown_seconds` → mentioned in trigger section
+  4. Save the rule file, let reconciliation regenerate the hook
+  5. Delete the original direct hook
+- Add `migrate_orphan_hooks()` call to startup reconciliation (run once, idempotent)
+
+### `src/database.py`
+- No schema changes needed — hooks table stays as-is
 
 ---
 
-## Phase 4: Add TelegramConfig and TelegramTransport skeleton
+## Phase 4: Simplify Reconciliation & Eliminate Duplicates
 
-Add Telegram configuration and a skeleton transport that can connect and send plain-text messages.
-
-**Files to create:**
-- `src/messaging/telegram_transport.py` — `TelegramTransport(MessagingPort)` using `python-telegram-bot` library. Initially supports: `start()`, `stop()`, `send_message()` (plain text + RichNotification → Telegram HTML formatting), basic `on_message` routing to Supervisor.
-- `src/telegram/__init__.py` — Telegram-specific helpers
-- `src/telegram/formatting.py` — `RichNotification` → Telegram HTML message converter (Telegram supports `<b>`, `<i>`, `<code>`, `<a>` tags)
+**Goal:** Make reconciliation idempotent, safe against concurrent runs, and impossible to produce duplicates.
 
 **Files to modify:**
-- `src/config.py` — add `TelegramConfig` dataclass with `bot_token`, `chat_id`, `authorized_users`, `per_project_topics`. Add `telegram: TelegramConfig` to `AppConfig`. Validate only when `messaging == "telegram"`.
-- `src/main.py` — extend transport factory to handle `"telegram"`.
-- `pyproject.toml` / `requirements.txt` — add `python-telegram-bot[ext]` as optional dependency.
 
-**Key details:**
-- Telegram supergroups with "Topics" enabled map naturally to Discord's channel+thread model: the supergroup is the "server", topics are "channels/threads"
-- `per_project_topics: true` creates a forum topic per project (like per-project Discord channels)
-- Inline keyboards (`InlineKeyboardMarkup`) map to Discord button views
-- Start with plain text + HTML formatting; inline keyboards come in Phase 5
-- Add unit tests for Telegram formatting (RichNotification → HTML)
-- Add integration test with mocked `python-telegram-bot` for send/receive
+### `src/rule_manager.py`
+- **Add reconciliation lock** — Use `asyncio.Lock` to prevent concurrent reconciliation runs. The current `_reconciliation_task.done()` check in `bot.py` is insufficient for rapid reconnects.
+- **Content-hash based reconciliation** — Instead of always deleting and recreating hooks:
+  1. Compute a hash of the rule's trigger config + prompt content
+  2. Store this hash in the hook (add `source_hash` field or encode in hook ID)
+  3. On reconciliation, compare hashes. If unchanged, skip regeneration entirely.
+  4. This eliminates unnecessary hook churn and the associated timing/duplicate risks.
+- **Atomic hook replacement** — When regeneration IS needed:
+  1. Create new hooks first (with new IDs)
+  2. Verify creation succeeded
+  3. Only then delete old hooks
+  4. Update rule frontmatter atomically
+  This prevents the window where no hooks exist for a rule.
+
+### `src/models.py`
+- Add `source_hash: str | None = None` to Hook dataclass (or store in `llm_config` JSON to avoid schema migration)
+
+### `src/database.py`
+- Add `source_hash` column to hooks table (with migration) OR encode in existing JSON field
+
+### `src/discord/bot.py`
+- Simplify `on_ready` — reconciliation is now handled by the file watcher (Phase 1) + startup-once pass. Remove the `_reconciliation_task` pattern.
 
 ---
 
-## Phase 5: Telegram interactive features — inline keyboards, topic threading, message routing
+## Phase 5: Update Specs & Clean Up
 
-Complete the Telegram transport with full feature parity to Discord.
+**Goal:** Update all specs and documentation to reflect the unified model.
 
 **Files to modify:**
-- `src/messaging/telegram_transport.py` — add:
-  - **Inline keyboard rendering**: Convert `NotificationAction` → `InlineKeyboardButton` with callback data encoding the `action_id` + `args`. Handle `CallbackQueryHandler` to dispatch to `CommandHandler.execute()`.
-  - **Topic/thread management**: `create_thread()` creates a forum topic in the supergroup. Returns send functions scoped to that topic's `message_thread_id`.
-  - **Per-project routing**: Map project IDs to topic IDs (stored in DB, same as Discord channel IDs). Route `send_message(project_id=...)` to the correct topic.
-  - **Message handling**: Route incoming messages to Supervisor with project context injection (same pattern as Discord's `on_message`). Support authorized-user filtering.
-  - **Attachment handling**: Download photos/documents from Telegram, save to `data_dir/attachments/`.
-- `src/telegram/formatting.py` — add inline keyboard builder, topic name formatter.
-- `src/database.py` — ensure project channel ID storage generalizes: either rename `discord_channel_id` to `messaging_channel_id` or add a `telegram_topic_id` field alongside it.
 
-**Key details:**
-- Telegram callback data is limited to 64 bytes — use compact encoding (e.g., `action_id:task_id` or a lookup table)
-- Telegram rate limits: 30 messages/second to different chats, 20 messages/minute to same group. Implement a simple rate limiter.
-- Forum topics require the supergroup to have "Topics" enabled — validate this at startup
-- Message history buffering for Supervisor context works the same way as Discord's `_channel_buffers`
-- Add end-to-end tests with mocked Telegram bot: message → supervisor → tool use → response
+### `specs/hooks.md`
+- Add section: "Hook Provenance — all hooks are rule-generated"
+- Remove/deprecate sections about direct hook creation
+- Document the `source_hash` field
+- Update lifecycle to show: Rule saved → Hook generated → Hook fires → Run recorded
+
+### `specs/rule-system.md`
+- Expand to be the primary automation spec
+- Document the file watcher auto-reconciliation
+- Document the migration of orphan hooks
+- Add section on the rule → hook → execution pipeline
+
+### `src/tool_registry.py`
+- Final cleanup: remove any remaining direct hook CRUD tool stubs
+- Update tool descriptions to reference rules as the primary interface
+
+### `src/prompts/default_rules/`
+- Review and potentially add more default rules now that rules are the only interface
+- Ensure default rules cover common automation patterns
+
+---
+
+## Migration Strategy
+
+1. **Phase 1** can be deployed independently — it only adds capability (file watcher)
+2. **Phase 2** should be deployed with **Phase 3** — removing hook commands without migrating existing hooks would break automations
+3. **Phase 4** can be deployed anytime after Phase 1 — it's a pure improvement to reconciliation
+4. **Phase 5** is documentation cleanup, deploy last
+
+## Risk Mitigation
+
+- **Backward compatibility:** Phase 2 should log deprecation warnings for 1-2 releases before removing direct hook commands entirely. `_cmd_create_hook` can internally create a rule + trigger reconciliation.
+- **Data safety:** Phase 3 migration is idempotent and creates rule files before deleting hooks. If migration fails mid-way, re-running it picks up where it left off.
+- **Concurrent safety:** Phase 4's `asyncio.Lock` prevents all race conditions. Content hashing prevents unnecessary regeneration.

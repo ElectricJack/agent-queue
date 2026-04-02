@@ -26,7 +26,6 @@ Represents the current lifecycle position of a task. A task always holds exactly
 | `IN_PROGRESS` | The agent has acknowledged the task and is actively working on it. |
 | `WAITING_INPUT` | The agent has asked a question and is paused, waiting for a human to reply via Discord. |
 | `PAUSED` | Execution is suspended temporarily, most commonly due to rate-limit or token exhaustion. The task always has a `resume_after` timestamp and will be made READY again automatically when that time passes. |
-| `VERIFYING` | The agent reported completion; the system is running automated checks (tests, QA agent, or human review) to confirm the work is correct. |
 | `AWAITING_APPROVAL` | A pull request has been opened for this task. A human must review and merge (or close) the PR before the task can be marked complete. |
 | `COMPLETED` | The task is done and all verification or approval requirements are satisfied. Downstream dependents may now be promoted. |
 | `FAILED` | The agent run ended with an error. The task may be retried (up to `max_retries`) by transitioning back to READY. |
@@ -50,8 +49,6 @@ Events are the inputs to the state machine. Each event, combined with the curren
 | `HUMAN_REPLIED` | A human responded to the agent's question via Discord. |
 | `INPUT_TIMEOUT` | The human did not reply within the allowed window; execution is suspended as if paused. |
 | `RESUME_TIMER` | The PAUSED task's `resume_after` timestamp has passed; it is eligible to run again. |
-| `VERIFY_PASSED` | Automated or human verification confirmed the work is correct. |
-| `VERIFY_FAILED` | Verification determined the work is incorrect; the task should be retried or blocked. |
 | `PR_CREATED` | A pull request was opened for this task's branch. Human approval is now required. |
 | `PR_MERGED` | The pull request was merged by a human. The task may now be marked complete. |
 | `RETRY` | The task failed but is under its retry limit and is being re-queued. |
@@ -316,17 +313,14 @@ stateDiagram-v2
     ASSIGNED --> READY : EXECUTION_ERROR / RECOVERY
     ASSIGNED --> BLOCKED : TIMEOUT
 
-    IN_PROGRESS --> VERIFYING : AGENT_COMPLETED
+    IN_PROGRESS --> COMPLETED : AGENT_COMPLETED
+    IN_PROGRESS --> AWAITING_APPROVAL : PR_CREATED
+    IN_PROGRESS --> AWAITING_PLAN_APPROVAL : PLAN_FOUND
+    IN_PROGRESS --> BLOCKED : MERGE_FAILED / TIMEOUT / ADMIN_STOP / MAX_RETRIES
     IN_PROGRESS --> FAILED : AGENT_FAILED
     IN_PROGRESS --> PAUSED : TOKENS_EXHAUSTED
     IN_PROGRESS --> WAITING_INPUT : AGENT_QUESTION
-    IN_PROGRESS --> BLOCKED : TIMEOUT / ADMIN_STOP / MAX_RETRIES
     IN_PROGRESS --> READY : RETRY / RECOVERY
-
-    VERIFYING --> COMPLETED : VERIFY_PASSED
-    VERIFYING --> AWAITING_APPROVAL : PR_CREATED
-    VERIFYING --> FAILED : VERIFY_FAILED
-    VERIFYING --> READY : ADMIN_RESTART
 
     AWAITING_APPROVAL --> COMPLETED : PR_MERGED
     AWAITING_APPROVAL --> BLOCKED : PR_CLOSED
@@ -359,9 +353,8 @@ These transitions represent the normal, happy-path progression of a task.
 | DEFINED | DEPS_MET | READY | All upstream dependencies completed. |
 | READY | ASSIGNED | ASSIGNED | Scheduler selected an agent. |
 | ASSIGNED | AGENT_STARTED | IN_PROGRESS | Agent process confirmed it started. |
-| IN_PROGRESS | AGENT_COMPLETED | VERIFYING | Agent finished work; verification begins. |
-| VERIFYING | VERIFY_PASSED | COMPLETED | Automated tests or QA confirmed success. |
-| VERIFYING | PR_CREATED | AWAITING_APPROVAL | A PR was opened; human review required. |
+| IN_PROGRESS | AGENT_COMPLETED | COMPLETED | Agent finished work successfully. |
+| IN_PROGRESS | PR_CREATED | AWAITING_APPROVAL | A PR was opened; human review required. |
 | AWAITING_APPROVAL | PR_MERGED | COMPLETED | Human merged the PR. |
 
 ---
@@ -371,7 +364,7 @@ These transitions represent the normal, happy-path progression of a task.
 | From | Event | To | Notes |
 |---|---|---|---|
 | IN_PROGRESS | AGENT_FAILED | FAILED | Agent reported an error. |
-| VERIFYING | VERIFY_FAILED | FAILED | Verification determined work is incorrect. |
+| IN_PROGRESS | MERGE_FAILED | BLOCKED | Post-completion merge/rebase failed; task is blocked pending manual intervention. |
 | FAILED | RETRY | READY | Under retry limit; re-queued for another attempt. |
 | FAILED | MAX_RETRIES | BLOCKED | Retry limit exhausted; task is permanently stuck until admin action. |
 
@@ -416,7 +409,6 @@ Administrative events allow a human operator to override the normal lifecycle.
 | DEFINED | ADMIN_RESTART | READY | Admin bypasses the dependency check. |
 | ASSIGNED | ADMIN_RESTART | READY | Admin unassigns and re-queues the task. |
 | AWAITING_APPROVAL | ADMIN_RESTART | READY | Admin abandons the PR flow and restarts. |
-| VERIFYING | ADMIN_RESTART | READY | Admin abandons verification and restarts. |
 | WAITING_INPUT | ADMIN_RESTART | READY | Admin cancels the pending question and restarts. |
 
 Note: `IN_PROGRESS` is the only status from which `ADMIN_RESTART` is not a defined transition. An admin must use `ADMIN_STOP` first to move the task to BLOCKED, then `ADMIN_RESTART` to re-queue it.

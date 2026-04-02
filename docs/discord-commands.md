@@ -7,7 +7,7 @@ Agent Queue gives you two ways to interact through Discord:
 | **Slash commands** | Type `/` and pick from the autocomplete menu | Structured operations with clear parameters |
 | **Natural language chat** | Just type a message in the bot's channel | Quick requests, complex descriptions, multi-step workflows |
 
-Both methods call the same underlying logic — slash commands are just a structured shortcut for what you can always ask the chat agent to do in plain English.
+Both methods call the same underlying logic — slash commands are just a structured shortcut for what you can always ask the Supervisor to do in plain English.
 
 **Example — creating a task both ways:**
 
@@ -106,7 +106,7 @@ Both commands auto-detect the project from the channel you're in.
 
 | Command | Description |
 |---------|-------------|
-| `/set-project` | Set or clear the active project for the chat agent |
+| `/set-project` | Set or clear the active project for the Supervisor |
 
 When an active project is set, commands that need a project will default to it. Leave `project_id` empty to clear.
 
@@ -233,7 +233,7 @@ Auto-detects the project from the channel if no task is specified. Use this when
 | `/stop-task` | Cancel an in-progress task (marks it BLOCKED) |
 | `/restart-task` | Reset a completed/failed/blocked task back to READY |
 | `/reopen-with-feedback` | Reopen a completed/failed task with feedback for rework |
-| `/delete-task` | Delete a task (can't delete in-progress tasks) |
+| `/delete-task` | Delete a task (cannot delete in-progress tasks) |
 | `/approve-task` | Approve a task that's AWAITING_APPROVAL |
 | `/skip-task` | Skip a blocked/failed task to unblock its dependents |
 
@@ -274,6 +274,14 @@ Resets the task to READY so it gets picked up by an agent again. Works on comple
 | `feedback` | Yes | QA feedback explaining what went wrong or needs fixing |
 
 Reopens a completed or failed task and attaches feedback so the agent knows what to fix on the next attempt.
+
+#### `/delete-task`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `task_id` | Yes | Task ID to delete |
+
+Permanently deletes a task. Cannot delete tasks that are currently in progress.
 
 #### `/approve-task`
 
@@ -375,7 +383,6 @@ Example workflow:
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `name` | No | Agent display name (leave empty for auto-generated creative name) |
-| `agent_type` | No | Agent type: `claude`, `codex`, `cursor`, or `aider` (default: `claude`) |
 
 #### `/edit-agent`
 
@@ -758,7 +765,7 @@ What's the token breakdown for task bold-falcon?
 
 **Dependency chains.** When an agent produces a plan file, the orchestrator automatically creates chained subtasks with dependencies. Use `/chain-health` to diagnose stuck chains and `/skip-task` to unblock them.
 
-**Just ask.** If you're not sure which command to use, just describe what you want in plain English. The chat agent has access to all the same operations as slash commands, plus file reading, shell commands, and more.
+**Just ask.** If you're not sure which command to use, just describe what you want in plain English. The Supervisor has access to all the same operations as slash commands, plus file reading, shell commands, and more.
 
 **Git command aliases.** Many git commands have multiple names: `/commit` and `/project-commit` and `/git-commit` all do the same thing. Use whichever feels natural.
 

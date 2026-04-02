@@ -654,13 +654,6 @@ class TelegramBot:
                     self._task_topics[topic_id] = task_id
                     self._task_topic_ids[task_id] = topic_id
 
-                # Send initial message into the topic
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=initial_message,
-                    message_thread_id=topic_id,
-                )
-
                 return self._make_topic_callbacks(chat_id, topic_id)
             except Exception as e:
                 logger.warning(

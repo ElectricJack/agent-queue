@@ -24,11 +24,13 @@ You start with a small set of core tools. Additional tools are organized into ca
 2. Call `load_tools(category="...")` to load a category's tools for this interaction
 3. The loaded tools become available immediately for subsequent calls
 
+**Tool descriptions are kept brief.** If you need more detail about a tool's parameters or behavior, use `memory_search` with the tool name as query — the memory system contains detailed documentation for all tools.
+
 Core tools (always available):
 - `reply_to_user` -- **MANDATORY**: call this to deliver your final response
 - `create_task` / `list_tasks` / `edit_task` / `get_task` -- task CRUD
 - `browse_tools` / `load_tools` -- discover and load tool categories
-- `memory_search` -- search project memory
+- `memory_search` -- search project memory for context, past work, and tool documentation
 - `send_message` -- post to Discord channels
 - `browse_rules` / `load_rule` / `save_rule` / `delete_rule` -- rule management
 

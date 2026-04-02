@@ -43,6 +43,8 @@ Integration:
     watches on each ``tick()`` call.  It holds a reference to the EventBus
     for emitting change events.  The orchestrator's existing tick loop
     drives the polling cycle.
+
+See ``specs/hooks.md`` for the file/folder watch trigger specification.
 """
 from __future__ import annotations
 

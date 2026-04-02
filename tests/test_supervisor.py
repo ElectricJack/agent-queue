@@ -19,6 +19,7 @@ def _make_supervisor():
     config.supervisor.reflection.per_cycle_token_cap = 10000
     config.supervisor.reflection.hourly_token_circuit_breaker = 100000
     config.supervisor.reflection.periodic_interval = 900
+    # No step limit — agents run until they finish
     return Supervisor(orch, config)
 
 
@@ -521,18 +522,5 @@ def test_system_prompt_mentions_reply_to_user():
     assert "reply_to_user" in prompt
 
 
-def test_chat_max_rounds_returns_fallback():
-    """When max rounds exhausted, returns a helpful fallback."""
-    sup = _make_supervisor()
-    sup._provider = MagicMock()
-    sup._max_tool_rounds = 2
 
-    # Both rounds return tool calls (never reply_to_user)
-    resp_tool = _make_resp(tool_uses=[
-        _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
-    ])
-    sup._provider.create_message = AsyncMock(return_value=resp_tool)
-    sup.handler.execute = AsyncMock(return_value={"results": []})
-
-    result = asyncio.run(sup.chat("Search for test", "testuser"))
-    assert "unable to complete" in result.lower()
+# test_chat_max_rounds_returns_fallback removed — agents now run without step limits

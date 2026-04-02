@@ -18,10 +18,13 @@ All writes are synchronous (single ``json.dumps`` + file append) which is
 fast enough for the expected call volume and avoids async complexity.
 
 Prompt optimization features:
+
 - Token efficiency tracking (output tokens / input tokens ratio)
 - Per-caller and per-model latency percentiles
 - Error rate tracking by provider
 - Prompt template fingerprinting for A/B comparison
+
+See ``specs/llm-logger.md`` for the logging specification.
 """
 from __future__ import annotations
 
@@ -221,7 +224,20 @@ class LLMLogger:
         output: Any = None,
         duration_ms: int = 0,
     ) -> None:
-        """Log a Claude Code agent task session."""
+        """Log a Claude Code agent task session.
+
+        Captures the full agent execution lifecycle for a single task:
+        session ID, prompt summary, output summary, and timing.
+
+        Args:
+            task_id: The task this session belongs to.
+            session_id: Optional unique session identifier.
+            model: Model name used for the agent run.
+            prompt: System prompt sent to the agent.
+            config_summary: Optional dict of agent config parameters.
+            output: Agent output object (``AgentOutput``).
+            duration_ms: Wall-clock duration of the session.
+        """
         if not self._enabled:
             return
 

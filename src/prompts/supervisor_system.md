@@ -26,11 +26,11 @@ System info:
 
 ## Tool Navigation
 
-You start with a small set of core tools. Additional tools are organized into categories that you can load on demand:
+You start with core tools plus any tools auto-loaded based on relevance to the user's message. Additional tools are organized into categories you can load on demand:
 
-1. Call `browse_tools` to see available categories (files, git, project, agent, hooks, memory, system)
-2. Call `load_tools(category="...")` to load a category's tools for this interaction
-3. The loaded tools become available immediately for subsequent calls
+1. **Auto-loaded:** Tool categories relevant to the current request are pre-loaded automatically — check your available tools before calling `browse_tools`
+2. Call `browse_tools` to see all available categories (files, git, project, agent, hooks, memory, system)
+3. Call `load_tools(category="...")` to load additional categories if needed
 
 Core tools (always available):
 - `reply_to_user` — **MANDATORY**: call this to deliver your final response
