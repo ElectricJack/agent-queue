@@ -1130,7 +1130,7 @@ class TestPyprojectLoader:
             email-reviewer = "email_reviewer:Plugin"
         """))
         meta = parse_pyproject_metadata(str(tmp_path))
-        assert meta["name"] == "aq-email-reviewer"
+        assert meta["name"] == "email-reviewer"
         assert meta["version"] == "2.1.0"
         assert meta["description"] == "Email review plugin"
         assert meta["author"] == "David"
@@ -1168,7 +1168,7 @@ class TestPyprojectLoader:
                 pass
 
         info = parse_plugin_metadata(str(tmp_path), TestPlugin)
-        assert info.name == "aq-test-plugin"
+        assert info.name == "test"
         assert info.version == "3.0.0"
         assert info.description == "From pyproject"
         assert PluginPermission.NETWORK in info.permissions

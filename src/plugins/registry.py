@@ -41,6 +41,7 @@ from src.plugins.loader import (
     get_current_rev,
     has_pyproject,
     import_plugin_module,
+    install_plugin_from_url,
     install_plugin_package,
     load_plugin_via_entry_point,
     parse_plugin_metadata,
@@ -150,9 +151,13 @@ class PluginRegistry:
         self._cron_jobs: list[_CronJob] = []
         self._cron_tasks: dict[str, asyncio.Task] = {}
 
-        # Plugins base directory
+        # Plugins base directory (git clones)
         self._plugins_dir = Path(config.data_dir) / "plugins"
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
+
+        # Plugin data directory (config, data, prompts, logs — survives reinstalls)
+        self._plugin_data_dir = Path(config.data_dir) / "plugin-data"
+        self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def plugins_dir(self) -> Path:
@@ -282,7 +287,37 @@ class PluginRegistry:
             install_path = str(self._plugins_dir / name)
 
         if not Path(install_path).exists():
-            raise FileNotFoundError(f"Plugin '{name}' not found at {install_path}")
+            # Auto-recover: re-clone if we have the source URL in the DB
+            source_url = plugin_row.get("source_url") if plugin_row else None
+            if source_url:
+                logger.info(
+                    "Plugin '%s' missing at %s — re-cloning from %s",
+                    name, install_path, source_url,
+                )
+                Path(install_path).mkdir(parents=True, exist_ok=True)
+                branch = plugin_row.get("source_branch") or None
+                rev = plugin_row.get("source_rev") or None
+                try:
+                    new_rev = await clone_plugin_repo(
+                        source_url, install_path, branch=branch, rev=rev,
+                    )
+                    if not install_plugin_package(install_path):
+                        raise RuntimeError(
+                            f"Failed to install plugin at '{install_path}'"
+                        )
+                    await self._db.update_plugin(
+                        name, source_rev=new_rev, status=PluginStatus.INSTALLED.value,
+                        error_message=None,
+                    )
+                except Exception as e:
+                    raise FileNotFoundError(
+                        f"Plugin '{name}' missing at {install_path} and "
+                        f"re-clone failed: {e}"
+                    ) from e
+            else:
+                raise FileNotFoundError(
+                    f"Plugin '{name}' not found at {install_path}"
+                )
 
         # Load plugin class: try entry point first, fall back to plugin.py import
         use_pyproject = has_pyproject(install_path)
@@ -316,9 +351,11 @@ class PluginRegistry:
         instance = plugin_class()
 
         # Create context
+        data_path = str(self._plugin_data_dir / name)
         ctx = PluginContext(
             plugin_name=name,
             install_path=install_path,
+            data_path=data_path,
             db=self._db,
             bus=self._bus,
             command_registry=self._commands,
@@ -475,79 +512,56 @@ class PluginRegistry:
             RuntimeError: If cloning or installation fails.
             ValueError: If the plugin is invalid.
         """
-        # Derive name from URL if not provided
-        if not name:
-            name = url.rstrip("/").rsplit("/", 1)[-1]
-            if name.endswith(".git"):
-                name = name[:-4]
-
-        if name.lower() in RESERVED_PLUGIN_NAMES:
+        # Validate reserved names before attempting install
+        if name and name.lower() in RESERVED_PLUGIN_NAMES:
             raise ValueError(
                 f"Plugin name '{name}' is reserved (conflicts with built-in "
                 f"CLI/Discord commands). Choose a different name."
             )
 
-        install_path = str(self._plugins_dir / name)
+        result = await install_plugin_from_url(
+            url,
+            self._plugins_dir,
+            self._plugin_data_dir,
+            branch=branch,
+            name=name,
+        )
 
-        # Create instance directory
-        Path(install_path).mkdir(parents=True, exist_ok=True)
-
-        # Clone
-        rev = await clone_plugin_repo(url, install_path, branch=branch)
-
-        # Install: prefer pip install -e (pyproject.toml), fall back to requirements.txt
-        if not install_plugin_package(install_path):
-            raise RuntimeError(
-                f"Failed to install plugin at '{install_path}'"
+        plugin_name = result["name"]
+        if plugin_name.lower() in RESERVED_PLUGIN_NAMES:
+            raise ValueError(
+                f"Plugin name '{plugin_name}' is reserved (conflicts with "
+                f"built-in CLI/Discord commands). Choose a different name."
             )
-
-        # Parse metadata (try pyproject.toml first, fall back to plugin.yaml)
-        if has_pyproject(install_path):
-            plugin_class = load_plugin_via_entry_point(name)
-            if plugin_class:
-                info = parse_plugin_metadata(install_path, plugin_class)
-            else:
-                info = parse_plugin_yaml(install_path)
-        else:
-            info = parse_plugin_yaml(install_path)
-
-        # Setup default config
-        config_path = Path(install_path) / "config.yaml"
-        if not config_path.exists() and info.default_config:
-            import yaml
-            with open(config_path, "w") as f:
-                yaml.safe_dump(info.default_config, f, default_flow_style=False)
 
         # Record in DB
         await self._db.create_plugin(
-            plugin_id=info.name,
-            version=info.version,
+            plugin_id=plugin_name,
+            version=result["version"],
             source_url=url,
-            source_rev=rev,
+            source_rev=result["source_rev"],
             source_branch=branch or "",
-            install_path=install_path,
+            install_path=result["install_path"],
             status=PluginStatus.INSTALLED.value,
-            config=json.dumps(info.default_config),
-            permissions=json.dumps([p.value for p in info.permissions]),
+            config=json.dumps(result["default_config"]),
+            permissions=json.dumps(result["permissions"]),
         )
 
-        # Setup prompts
-        setup_prompts(install_path)
-
         # Load the plugin
-        await self.load_plugin(info.name)
+        await self.load_plugin(plugin_name)
 
         logger.info(
-            "Installed plugin '%s' v%s from %s", info.name, info.version, url,
+            "Installed plugin '%s' v%s from %s",
+            plugin_name, result["version"], url,
         )
 
         await self._bus.emit("plugin.installed", {
-            "plugin": info.name,
-            "version": info.version,
+            "plugin": plugin_name,
+            "version": result["version"],
             "source": url,
         })
 
-        return info.name
+        return plugin_name
 
     async def install_from_path(self, source_path: str, name: str | None = None) -> str:
         """Install a plugin from a local directory (development mode).
@@ -570,7 +584,13 @@ class PluginRegistry:
             import tomllib
             with open(pyproject_path, "rb") as f:
                 data = tomllib.load(f)
-            plugin_name = name or data.get("project", {}).get("name")
+            # Prefer entry-point name over project.name (dist name)
+            ep_names = list(
+                data.get("project", {})
+                .get("entry-points", {})
+                .get("aq.plugins", {})
+            )
+            plugin_name = name or (ep_names[0] if ep_names else None) or data.get("project", {}).get("name")
         else:
             temp_info_path = source / "plugin.yaml"
             if not temp_info_path.exists():
@@ -733,11 +753,23 @@ class PluginRegistry:
         await self._db.delete_plugin_data_all(name)
         await self._db.delete_plugin(name)
 
-        # Delete from disk
+        # Delete from disk — but only if no other plugin record shares
+        # the same install path (prevents accidental deletion when duplicate
+        # records exist under different names).
         if install_path and Path(install_path).exists():
-            import shutil
-            shutil.rmtree(install_path)
-            logger.info("Removed plugin directory: %s", install_path)
+            other_plugins = await self._db.list_plugins()
+            shared = any(
+                p.get("install_path") == install_path for p in other_plugins
+            )
+            if shared:
+                logger.warning(
+                    "Not deleting %s — another plugin record shares this path",
+                    install_path,
+                )
+            else:
+                import shutil
+                shutil.rmtree(install_path)
+                logger.info("Removed plugin directory: %s", install_path)
 
         logger.info("Removed plugin: %s", name)
 

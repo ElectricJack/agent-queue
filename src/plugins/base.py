@@ -166,6 +166,7 @@ class PluginContext:
         *,
         plugin_name: str,
         install_path: str,
+        data_path: str | None = None,
         db: Database,
         bus: EventBus,
         command_registry: dict[str, Callable],
@@ -177,6 +178,8 @@ class PluginContext:
     ):
         self._plugin_name = plugin_name
         self._install_path = Path(install_path)
+        # Plugin data lives outside the install dir so reinstalls don't nuke config
+        self._data_path = Path(data_path) if data_path else self._install_path
         self._db = db
         self._bus = bus
         self._command_registry = command_registry
@@ -187,9 +190,9 @@ class PluginContext:
         self._invoke_llm_callback = invoke_llm_callback
 
         # Ensure instance directories exist
-        self._data_dir = self._install_path / "data"
-        self._prompts_dir = self._install_path / "prompts"
-        self._logs_dir = self._install_path / "logs"
+        self._data_dir = self._data_path / "data"
+        self._prompts_dir = self._data_path / "prompts"
+        self._logs_dir = self._data_path / "logs"
         for d in (self._data_dir, self._prompts_dir, self._logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -359,13 +362,18 @@ class PluginContext:
         """Load the plugin's instance configuration.
 
         Returns:
-            Config dict from ``config.yaml`` in the install directory.
+            Config dict from ``config.yaml`` in the plugin data directory.
         """
         import yaml
 
-        config_path = self._install_path / "config.yaml"
+        config_path = self._data_path / "config.yaml"
         if config_path.exists():
             with open(config_path) as f:
+                return yaml.safe_load(f) or {}
+        # Fall back to install dir for backwards compatibility
+        legacy_path = self._install_path / "config.yaml"
+        if legacy_path.exists():
+            with open(legacy_path) as f:
                 return yaml.safe_load(f) or {}
         return {}
 
@@ -389,7 +397,8 @@ class PluginContext:
         """
         import yaml
 
-        config_path = self._install_path / "config.yaml"
+        self._data_path.mkdir(parents=True, exist_ok=True)
+        config_path = self._data_path / "config.yaml"
         with open(config_path, "w") as f:
             yaml.safe_dump(config, f, default_flow_style=False)
 

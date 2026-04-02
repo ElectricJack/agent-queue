@@ -205,7 +205,7 @@ def install_requirements(install_path: str | Path) -> bool:
     logger.info("Installing requirements for plugin at %s", install_path)
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            [_find_python(), "-m", "pip", "install", "-r", str(req_file), "-q"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -251,6 +251,18 @@ def has_pyproject(install_path: str | Path) -> bool:
         return False
 
 
+def _find_python() -> str:
+    """Find the best Python executable, preferring the project venv."""
+    # Check for project venv first
+    for candidate in [
+        Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python3",
+        Path(sys.prefix) / "bin" / "python3",
+    ]:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
 def install_plugin_package(install_path: str | Path) -> bool:
     """Install a plugin as an editable Python package via ``pip install -e``.
 
@@ -269,10 +281,11 @@ def install_plugin_package(install_path: str | Path) -> bool:
     if not pyproject.exists():
         return install_requirements(install_path)
 
-    logger.info("Installing plugin package from %s", src_dir)
+    python = _find_python()
+    logger.info("Installing plugin package from %s (python=%s)", src_dir, python)
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", str(src_dir), "-q"],
+            [python, "-m", "pip", "install", "-e", str(src_dir), "-q"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -353,15 +366,29 @@ def parse_pyproject_metadata(install_path: str | Path) -> dict:
         data = tomllib.load(f)
 
     project = data.get("project", {})
-    name = project.get("name")
-    if not name:
+    dist_name = project.get("name")
+    if not dist_name:
         raise ValueError(f"pyproject.toml missing 'project.name' in {pyproject_path}")
+
+    # Prefer the entry-point name as the canonical plugin name — this is
+    # what install_from_git uses via importlib.metadata, so discovery must
+    # agree to avoid creating duplicate DB records under different names.
+    name = dist_name
+    entry_points = (
+        data.get("project", {})
+        .get("entry-points", {})
+        .get("aq.plugins", {})
+    )
+    if entry_points:
+        # Take the first (and typically only) entry point name
+        name = next(iter(entry_points))
 
     authors = project.get("authors", [])
     author = authors[0].get("name", "") if authors else ""
 
     return {
         "name": name,
+        "dist_name": dist_name,
         "version": project.get("version", "0.0.0"),
         "description": project.get("summary", project.get("description", "")),
         "author": author,
@@ -394,11 +421,11 @@ def parse_plugin_metadata(
     # First try: read from installed package metadata
     try:
         pyproject_meta = parse_pyproject_metadata(install_path)
-        dist_name = pyproject_meta["name"]
+        dist_name = pyproject_meta.get("dist_name") or pyproject_meta["name"]
         try:
             dist = importlib.metadata.metadata(dist_name)
             meta_dict = {
-                "name": dist.get("Name", dist_name),
+                "name": pyproject_meta["name"],  # entry-point name, not dist name
                 "version": dist.get("Version", "0.0.0"),
                 "description": dist.get("Summary", ""),
                 "author": dist.get("Author", ""),
@@ -596,3 +623,103 @@ def reset_prompts(install_path: str | Path) -> int:
             count += 1
 
     return count
+
+
+# ---------------------------------------------------------------------------
+# High-level install/update operations
+# ---------------------------------------------------------------------------
+
+
+async def install_plugin_from_url(
+    url: str,
+    plugins_dir: str | Path,
+    plugin_data_dir: str | Path,
+    *,
+    branch: str | None = None,
+    name: str | None = None,
+) -> dict:
+    """Clone, install, parse, and rename a plugin from a git URL.
+
+    Shared implementation used by both the PluginRegistry and the CLI.
+    Does NOT write to the database — the caller is responsible for that.
+
+    Args:
+        url: Git repository URL.
+        plugins_dir: Base directory for plugin installs (e.g. ~/.agent-queue/plugins).
+        plugin_data_dir: Base directory for plugin data (e.g. ~/.agent-queue/plugin-data).
+        branch: Optional branch to clone.
+        name: Optional name override (defaults to repo name, then entry-point name).
+
+    Returns:
+        Dict with keys: name, version, source_rev, install_path, default_config,
+        permissions, description, author.
+    """
+    plugins_dir = Path(plugins_dir)
+    plugin_data_dir = Path(plugin_data_dir)
+
+    # Derive initial name from URL
+    dir_name = name
+    if not dir_name:
+        dir_name = url.rstrip("/").rsplit("/", 1)[-1]
+        if dir_name.endswith(".git"):
+            dir_name = dir_name[:-4]
+
+    install_path = str(plugins_dir / dir_name)
+    Path(install_path).mkdir(parents=True, exist_ok=True)
+
+    # Clone
+    rev = await clone_plugin_repo(url, install_path, branch=branch)
+
+    # Install package
+    if not install_plugin_package(install_path):
+        raise RuntimeError(f"Failed to install plugin at '{install_path}'")
+
+    # Parse metadata
+    if has_pyproject(install_path):
+        plugin_class = load_plugin_via_entry_point(dir_name)
+        if plugin_class:
+            info = parse_plugin_metadata(install_path, plugin_class)
+        else:
+            # Try entry-point name from pyproject.toml
+            try:
+                meta = parse_pyproject_metadata(install_path)
+                plugin_class = load_plugin_via_entry_point(meta["name"])
+                if plugin_class:
+                    info = parse_plugin_metadata(install_path, plugin_class)
+                else:
+                    info = parse_plugin_yaml(install_path)
+            except (FileNotFoundError, ValueError):
+                info = parse_plugin_yaml(install_path)
+    else:
+        info = parse_plugin_yaml(install_path)
+
+    # Rename install dir to match the canonical plugin name
+    canonical_path = str(plugins_dir / info.name)
+    if install_path != canonical_path:
+        if Path(canonical_path).exists():
+            shutil.rmtree(canonical_path)
+        Path(install_path).rename(canonical_path)
+        install_path = canonical_path
+        install_plugin_package(install_path)
+
+    # Write default config to the data dir (survives reinstalls)
+    data_dir = plugin_data_dir / info.name
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path = data_dir / "config.yaml"
+    if not config_path.exists() and info.default_config:
+        import yaml as _yaml
+        with open(config_path, "w") as f:
+            _yaml.safe_dump(info.default_config, f, default_flow_style=False)
+
+    setup_prompts(install_path)
+
+    return {
+        "name": info.name,
+        "version": info.version,
+        "description": info.description,
+        "author": info.author,
+        "source_rev": rev,
+        "install_path": install_path,
+        "default_config": info.default_config,
+        "permissions": [p.value for p in info.permissions],
+    }
