@@ -50,7 +50,7 @@ def test_registry_has_core_tools(registry):
 def test_registry_has_categories(registry):
     categories = registry.get_categories()
     cat_names = {c["name"] for c in categories}
-    assert cat_names == {"files", "git", "project", "agent", "hooks", "memory", "system"}
+    assert cat_names == {"files", "git", "project", "agent", "hooks", "memory", "system", "task", "plugin"}
 
     for cat in categories:
         assert "name" in cat

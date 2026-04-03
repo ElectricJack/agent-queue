@@ -13,8 +13,8 @@ Command modules are loaded from sibling files:
 - projects.py — aq project {list,details,set}
 - plugins.py  — aq plugin {list,info,install,remove,enable,disable,update,...}
 
-Auto-generated commands are registered under ``aq cmd <command-name>``
-for any CommandHandler command without a hand-crafted CLI equivalent.
+Auto-generated commands are organized by tool_registry category and merged
+into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 """
 
 from __future__ import annotations

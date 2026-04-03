@@ -83,11 +83,22 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "matching, grep/ripgrep-style content search"
         ),
     ),
+    "task": CategoryMeta(
+        name="task",
+        description=(
+            "Task lifecycle, approval, dependencies, archives, and results"
+        ),
+    ),
+    "plugin": CategoryMeta(
+        name="plugin",
+        description=(
+            "Plugin installation, configuration, and lifecycle management"
+        ),
+    ),
     "system": CategoryMeta(
         name="system",
         description=(
-            "Token usage, config, diagnostics, advanced task operations "
-            "(archive, approve, dependencies), prompt management, "
+            "Token usage, config reload, diagnostics, prompt management, "
             "daemon control"
         ),
     ),
@@ -195,69 +206,77 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "grep": "files",
     "search_files": "files",
     "list_directory": "files",
-    # system
-    "get_token_usage": "system",
-    "run_command": "system",
+    # task — lifecycle, approval, dependencies, archives, results
+    "stop_task": "task",
+    "restart_task": "task",
+    "reopen_with_feedback": "task",
+    "delete_task": "task",
+    "skip_task": "task",
+    "set_task_status": "task",
+    "restore_task": "task",
+    "approve_task": "task",
+    "process_task_completion": "task",
+    "approve_plan": "task",
+    "reject_plan": "task",
+    "delete_plan": "task",
+    "process_plan": "task",
+    "archive_task": "task",
+    "archive_tasks": "task",
+    "archive_settings": "task",
+    "list_archived": "task",
+    "get_task_result": "task",
+    "get_task_diff": "task",
+    "get_task_tree": "task",
+    "get_task_dependencies": "task",
+    "task_deps": "task",
+    "add_dependency": "task",
+    "remove_dependency": "task",
+    "get_chain_health": "task",
+    "list_active_tasks_all_projects": "task",
+    # plugin — installation, configuration, lifecycle
+    "plugin_list": "plugin",
+    "plugin_info": "plugin",
+    "plugin_install": "plugin",
+    "plugin_update": "plugin",
+    "plugin_remove": "plugin",
+    "plugin_enable": "plugin",
+    "plugin_disable": "plugin",
+    "plugin_reload": "plugin",
+    "plugin_config": "plugin",
+    "plugin_prompts": "plugin",
+    "plugin_reset_prompts": "plugin",
+    # system — diagnostics, config, prompts, daemon control
     "get_status": "system",
     "get_recent_events": "system",
-    "get_task_result": "system",
-    "get_task_diff": "system",
-    "list_active_tasks_all_projects": "system",
-    "get_task_tree": "system",
-    "stop_task": "system",
-    "restart_task": "system",
-    "reopen_with_feedback": "system",
-    "delete_task": "system",
-    "archive_tasks": "system",
-    "archive_task": "system",
-    "list_archived": "system",
-    "restore_task": "system",
-    "approve_task": "system",
-    "process_task_completion": "system",
-    "approve_plan": "system",
-    "reject_plan": "system",
-    "delete_plan": "system",
-    "process_plan": "system",
-    "skip_task": "system",
-    "get_task_dependencies": "system",
-    "add_dependency": "system",
-    "remove_dependency": "system",
-    "get_chain_health": "system",
-    "restart_daemon": "system",
+    "get_token_usage": "system",
+    "claude_usage": "system",
+    "reload_config": "system",
     "orchestrator_control": "system",
+    "provide_input": "system",
     "list_prompts": "system",
     "read_prompt": "system",
     "render_prompt": "system",
-    "reload_config": "system",
-    "claude_usage": "system",
-    "archive_settings": "system",
-    "provide_input": "system",
-    "set_task_status": "system",
-    "task_deps": "system",
-    # NOTE: send_message is intentionally NOT categorized — it is a "core"
-    # tool that must always be available to the supervisor LLM.
     "shutdown": "system",
+    "restart_daemon": "system",
     "update_and_restart": "system",
+    "run_command": "system",
+    # NOTE: send_message, reply_to_user are intentionally NOT categorized —
+    # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
-    # they are "core" meta-tools that must always be loaded in the supervisor
-    # LLM's context.  They are in _ALL_TOOL_DEFINITIONS for MCP completeness
-    # but excluded from MCP by default (DEFAULT_EXCLUDED_COMMANDS).
+    # they are "core" meta-tools always loaded in the supervisor LLM's context.
     # NOTE: create_task, list_tasks, get_task, edit_task are intentionally
     # NOT categorized — they are core task operations always available to the
-    # supervisor LLM.
-    # analyzer_status, analyzer_toggle, analyzer_history: deprecated (Phase 6)
-    # plugins
-    "plugin_list": "system",
-    "plugin_info": "system",
-    "plugin_install": "system",
-    "plugin_update": "system",
-    "plugin_remove": "system",
-    "plugin_enable": "system",
-    "plugin_disable": "system",
-    "plugin_reload": "system",
-    "plugin_config": "system",
-    "plugin_prompts": "system",
-    "plugin_reset_prompts": "system",
+    # supervisor LLM.  The CLI places them in the "task" group via
+    # _CLI_CATEGORY_OVERRIDES.
+}
+
+# Commands that are intentionally uncategorized for the LLM (core tools)
+# but should appear in a specific CLI group.
+_CLI_CATEGORY_OVERRIDES: dict[str, str] = {
+    "create_task": "task",
+    "list_tasks": "task",
+    "get_task": "task",
+    "edit_task": "task",
 }
 
 

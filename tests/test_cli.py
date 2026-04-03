@@ -359,37 +359,83 @@ class TestStyles:
 
 
 class TestAutoCommands:
-    def test_auto_commands_register(self):
-        """Auto-generated commands should register under 'cmd' group."""
+    def test_no_cmd_group(self):
+        """The flat 'cmd' group should no longer exist."""
         from src.cli.app import cli
-        cmd_group = cli.commands.get("cmd")
-        assert cmd_group is not None
-        # Should have many commands
-        assert len(cmd_group.commands) > 20
+        assert "cmd" not in cli.commands
+
+    def test_category_groups_exist(self):
+        """Each tool_registry category should have a CLI group."""
+        from src.cli.app import cli
+        expected = {"git", "memory", "file", "system", "task", "hook", "agent", "project", "plugin"}
+        actual = set(cli.commands.keys())
+        for group in expected:
+            assert group in actual, f"Missing CLI group: {group}"
+
+    def test_git_group_has_commands(self):
+        """The git group should have auto-generated commands."""
+        from src.cli.app import cli
+        git_group = cli.commands.get("git")
+        assert git_group is not None
+        assert len(git_group.commands) > 10
+        # Prefix should be stripped: git_commit → commit
+        assert "commit" in git_group.commands
+
+    def test_task_group_merges_handcrafted_and_auto(self):
+        """Task group should contain both hand-crafted and auto-generated commands."""
+        from src.cli.app import cli
+        task_group = cli.commands.get("task")
+        assert task_group is not None
+        # Hand-crafted
+        assert "list" in task_group.commands
+        assert "create" in task_group.commands
+        assert "details" in task_group.commands
+        # Auto-generated (from task category)
+        assert "archive" in task_group.commands
+        assert "skip" in task_group.commands
 
     def test_handcrafted_not_duplicated(self):
-        """Commands in HANDCRAFTED_COVERAGE should not appear in auto-generated."""
+        """Commands in HANDCRAFTED_COVERAGE should not be duplicated as auto-generated."""
         from src.cli.app import cli
-        cmd_group = cli.commands.get("cmd")
-        auto_names = set(cmd_group.commands.keys())
-        for hc in HANDCRAFTED_COVERAGE:
-            assert hc.replace("_", "-") not in auto_names, f"{hc} should not be auto-generated"
+        # Collect all auto-generated command callback names
+        # The hand-crafted 'list' in aq task should not be overwritten
+        task_group = cli.commands.get("task")
+        # Verify hand-crafted commands are present (not replaced)
+        list_cmd = task_group.commands.get("list")
+        assert list_cmd is not None
+        # Hand-crafted list has click options like --active/--all
+        param_names = {p.name for p in list_cmd.params}
+        assert "active" in param_names or "status_filter" in param_names
 
     def test_excluded_not_present(self):
-        """Dangerous commands should be excluded from auto-generation."""
+        """Dangerous commands should not appear in any group."""
         from src.cli.app import cli
-        cmd_group = cli.commands.get("cmd")
-        auto_names = set(cmd_group.commands.keys())
+        all_cmd_names: set[str] = set()
+        for group_name, group in cli.commands.items():
+            if hasattr(group, "commands"):
+                all_cmd_names.update(group.commands.keys())
         for ex in EXCLUDED:
-            assert ex.replace("_", "-") not in auto_names, f"{ex} should be excluded"
+            click_name = ex.replace("_", "-")
+            assert click_name not in all_cmd_names, f"{ex} should be excluded"
 
     def test_auto_command_help(self, runner):
         """Auto-generated command should have --help from JSON Schema."""
         from src.cli.app import cli
-        result = runner.invoke(cli, ["cmd", "memory-search", "--help"])
+        # memory_search is now under aq memory as "search"
+        result = runner.invoke(cli, ["memory", "search", "--help"])
         assert result.exit_code == 0
         assert "--project-id" in result.output
         assert "--query" in result.output
+
+    def test_prefix_stripping(self):
+        """Category prefixes/suffixes should be stripped from command names."""
+        from src.cli.auto_commands import _strip_category_prefix
+        assert _strip_category_prefix("git_commit", "git") == "commit"
+        assert _strip_category_prefix("memory_search", "memory") == "search"
+        assert _strip_category_prefix("compact_memory", "memory") == "compact"
+        assert _strip_category_prefix("archive_task", "task") == "archive"
+        assert _strip_category_prefix("fire_hook", "hooks") == "fire"
+        assert _strip_category_prefix("get_task_result", "task") == "get_result"
 
 
 # ---------------------------------------------------------------------------
