@@ -351,51 +351,82 @@ class TestFormatterRegistry:
 
 
 class TestCLIClient:
-    @pytest.mark.asyncio
-    async def test_execute_success(self):
+    """Tests for CLIClient routing through typed API endpoints."""
+
+    @staticmethod
+    def _mock_httpx_for_typed(status_code: int, json_body: dict):
+        """Create a mock httpx.AsyncClient that returns a typed response.
+
+        The mock handles both the health check GET and the typed POST endpoint.
+        """
         import httpx
 
         mock_http = AsyncMock(spec=httpx.AsyncClient)
-        # Use non-async returns for .json() since httpx Response.json() is sync
-        health_resp = AsyncMock()
+
+        health_resp = MagicMock(spec=httpx.Response)
         health_resp.json = lambda: {"status": "ok"}
         health_resp.raise_for_status = lambda: None
 
-        exec_resp = AsyncMock()
-        exec_resp.json = lambda: _ok({"tasks": [], "total": 0})
+        typed_resp = MagicMock(spec=httpx.Response)
+        typed_resp.status_code = status_code
+        typed_resp.json = lambda: json_body
+        typed_resp.content = b""
+        typed_resp.headers = {}
 
         mock_http.get.return_value = health_resp
-        mock_http.post.return_value = exec_resp
+        mock_http.request.return_value = typed_resp
+        # Also mock .post for fallback path
+        fallback_resp = MagicMock(spec=httpx.Response)
+        fallback_resp.json = lambda: _ok(json_body)
+        mock_http.post.return_value = fallback_resp
         mock_http.aclose = AsyncMock()
+
+        return mock_http
+
+    @pytest.mark.asyncio
+    async def test_execute_typed_success(self):
+        """Typed dispatch routes through /api/task/list and parses the response."""
+        mock_http = self._mock_httpx_for_typed(200, {"tasks": [], "total": 0})
 
         with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
             client = CLIClient(base_url="http://localhost:8081")
             await client.connect()
             result = await client.execute("list_tasks", {"project_id": "test"})
             assert result["tasks"] == []
+            assert result["total"] == 0
+            # Verify the typed path was used (httpx .request() not .post())
+            mock_http.request.assert_called_once()
             await client.close()
 
     @pytest.mark.asyncio
-    async def test_execute_command_error(self):
-        import httpx
-
-        mock_http = AsyncMock(spec=httpx.AsyncClient)
-        health_resp = AsyncMock()
-        health_resp.json = lambda: {"status": "ok"}
-        health_resp.raise_for_status = lambda: None
-
-        error_resp = AsyncMock()
-        error_resp.json = lambda: _err("Task not found")
-
-        mock_http.get.return_value = health_resp
-        mock_http.post.return_value = error_resp
-        mock_http.aclose = AsyncMock()
+    async def test_execute_typed_error(self):
+        """Typed dispatch raises CommandError on 422 error responses."""
+        mock_http = self._mock_httpx_for_typed(422, {"error": "Task not found"})
 
         with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
             client = CLIClient(base_url="http://localhost:8081")
             await client.connect()
             with pytest.raises(CommandError, match="Task not found"):
                 await client.execute("get_task", {"task_id": "nope"})
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_fallback_for_unknown_command(self):
+        """Unknown commands fall back to /api/execute."""
+        mock_http = self._mock_httpx_for_typed(200, {"custom": "result"})
+        # Override .post for the fallback path
+        import httpx
+        fallback_resp = MagicMock(spec=httpx.Response)
+        fallback_resp.json = lambda: _ok({"custom": "result"})
+        mock_http.post.return_value = fallback_resp
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            result = await client.execute("some_unknown_command", {"x": 1})
+            assert result["custom"] == "result"
+            # Verify the fallback path was used (.post to /api/execute)
+            mock_http.post.assert_called_once()
             await client.close()
 
 
