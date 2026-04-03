@@ -548,6 +548,11 @@ class Plugin(abc.ABC):
     default_config: dict = {}
     """Default configuration values."""
 
+    def __init__(self) -> None:
+        # Seed self.config so CLI commands work even before initialize() runs.
+        # initialize() should overwrite this with ctx.get_config().
+        self.config: dict = dict(self.default_config)
+
     @abc.abstractmethod
     async def initialize(self, ctx: PluginContext) -> None:
         """Called when the plugin is loaded.

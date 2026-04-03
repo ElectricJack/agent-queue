@@ -96,6 +96,42 @@ def _handle_errors(func):
 
 
 # ---------------------------------------------------------------------------
+# Full help dump for LLM ingestion
+# ---------------------------------------------------------------------------
+
+
+def _print_full_help(ctx: click.Context) -> None:
+    """Print complete help for every command, recursively.
+
+    Output is plain text, structured for easy LLM consumption.
+    """
+    group = ctx.command
+    assert isinstance(group, click.Group)
+
+    # Top-level help
+    click.echo(group.get_help(ctx))
+    click.echo()
+
+    def _walk(grp: click.Group, prefix: str) -> None:
+        for name in sorted(grp.list_commands(ctx)):
+            cmd = grp.get_command(ctx, name)
+            if cmd is None:
+                continue
+            full_name = f"{prefix} {name}"
+            click.echo("=" * 72)
+            click.echo(f"  {full_name}")
+            click.echo("=" * 72)
+            # Build a sub-context with just the leaf name so Usage shows correctly
+            sub_ctx = click.Context(cmd, info_name=full_name)
+            click.echo(cmd.get_help(sub_ctx))
+            click.echo()
+            if isinstance(cmd, click.Group):
+                _walk(cmd, full_name)
+
+    _walk(group, "aq")
+
+
+# ---------------------------------------------------------------------------
 # Main CLI group
 # ---------------------------------------------------------------------------
 
@@ -105,15 +141,24 @@ def _handle_errors(func):
     "--api-url", envvar="AGENT_QUEUE_API_URL", default=None,
     help="Daemon API URL (default: from config or http://127.0.0.1:8081)",
 )
+@click.option(
+    "--help-all", is_flag=True, default=False,
+    help="Print complete help for all commands (for LLM ingestion).",
+)
 @click.version_option(version="0.1.0", prog_name="aq")
 @click.pass_context
-def cli(ctx: click.Context, api_url: str | None) -> None:
+def cli(ctx: click.Context, api_url: str | None, help_all: bool) -> None:
     """AgentQueue CLI — Modern terminal interface for task management.
 
     Connects to the agent-queue daemon via its REST API.
     """
     ctx.ensure_object(dict)
     ctx.obj["api_url"] = api_url
+
+    if help_all:
+        _print_full_help(ctx)
+        ctx.exit(0)
+        return
 
     if ctx.invoked_subcommand is None:
         ctx.invoke(status)
@@ -184,6 +229,28 @@ register_auto_commands(cli, console)
 # ---------------------------------------------------------------------------
 
 
+def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
+    """Try to load a plugin's config from the database (best-effort)."""
+    import json
+    try:
+        from .client import PluginClient
+        client = PluginClient()
+
+        async def _fetch():
+            await client.connect()
+            try:
+                p = await client.get_plugin(plugin_id)
+                if p:
+                    return json.loads(p.get("config", "{}") or "{}")
+            finally:
+                await client.close()
+            return None
+
+        return _run(_fetch())
+    except Exception:
+        return None
+
+
 def _load_plugin_cli_groups() -> None:
     """Dynamically register CLI groups from installed aq.plugins entry points."""
     try:
@@ -192,6 +259,10 @@ def _load_plugin_cli_groups() -> None:
             try:
                 cls = ep.load()
                 instance = cls()
+                # Load saved config from DB so CLI commands use the right defaults
+                db_config = _load_plugin_config_from_db(ep.name)
+                if db_config:
+                    instance.config = {**instance.config, **db_config}
                 group = instance.cli_group()
                 if group is not None:
                     cli.add_command(group, ep.name)
