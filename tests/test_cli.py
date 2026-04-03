@@ -441,25 +441,28 @@ class TestCLIClient:
         return mock_http
 
     @pytest.mark.asyncio
-    async def test_execute_typed_success(self):
-        """Typed dispatch routes through /api/task/list and parses the response."""
+    async def test_execute_success(self):
+        """Execute routes through /api/execute and returns parsed result."""
         mock_http = self._mock_httpx_for_typed(200, {"tasks": [], "total": 0})
 
         with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
             client = CLIClient(base_url="http://localhost:8081")
             await client.connect()
             result = await client.execute("list_tasks", {"project_id": "test"})
-            # Result is a typed response object, not a dict
-            assert result.tasks == []
-            assert result.total == 0
-            # Verify the typed path was used (httpx .request() not .post())
-            mock_http.request.assert_called_once()
+            assert result["tasks"] == []
+            assert result["total"] == 0
+            mock_http.post.assert_called_once()
             await client.close()
 
     @pytest.mark.asyncio
-    async def test_execute_typed_error(self):
-        """Typed dispatch raises CommandError on 422 error responses."""
-        mock_http = self._mock_httpx_for_typed(422, {"error": "Task not found"})
+    async def test_execute_error(self):
+        """Execute raises CommandError when server returns error."""
+        import httpx
+
+        mock_http = self._mock_httpx_for_typed(200, {})
+        error_resp = MagicMock(spec=httpx.Response)
+        error_resp.json = lambda: {"ok": False, "error": "Task not found"}
+        mock_http.post.return_value = error_resp
 
         with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
             client = CLIClient(base_url="http://localhost:8081")
@@ -469,10 +472,9 @@ class TestCLIClient:
             await client.close()
 
     @pytest.mark.asyncio
-    async def test_execute_fallback_for_unknown_command(self):
-        """Unknown commands fall back to /api/execute."""
+    async def test_execute_uses_generic_endpoint(self):
+        """All commands route through /api/execute."""
         mock_http = self._mock_httpx_for_typed(200, {"custom": "result"})
-        # Override .post for the fallback path
         import httpx
 
         fallback_resp = MagicMock(spec=httpx.Response)
@@ -482,9 +484,8 @@ class TestCLIClient:
         with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
             client = CLIClient(base_url="http://localhost:8081")
             await client.connect()
-            result = await client.execute("some_unknown_command", {"x": 1})
+            result = await client.execute("some_command", {"x": 1})
             assert result["custom"] == "result"
-            # Verify the fallback path was used (.post to /api/execute)
             mock_http.post.assert_called_once()
             await client.close()
 
@@ -538,7 +539,7 @@ class TestAutoCommands:
         """Each tool_registry category should have a CLI group."""
         from src.cli.app import cli
 
-        expected = {"git", "memory", "file", "system", "task", "hook", "agent", "project", "plugin"}
+        expected = {"git", "memory", "note", "file", "system", "task", "hook", "agent", "project", "plugin"}
         actual = set(cli.commands.keys())
         for group in expected:
             assert group in actual, f"Missing CLI group: {group}"

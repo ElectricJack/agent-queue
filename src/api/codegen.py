@@ -151,12 +151,31 @@ def build_category_routers() -> list[APIRouter]:
     except Exception:
         pass
 
+    # Collect internal plugin tool definitions
+    plugin_categories: dict[str, str] = {}
+    try:
+        from src.plugins.internal import collect_internal_tool_definitions
+
+        for category, tool_defs in collect_internal_tool_definitions():
+            for defn in tool_defs:
+                name = defn["name"]
+                if name not in tool_map:
+                    tool_map[name] = defn
+                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
+                    plugin_categories[name] = category
+    except Exception:
+        pass
+
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
     for cmd_name, defn in tool_map.items():
         if cmd_name in API_EXCLUDED:
             continue
-        cat = _TOOL_CATEGORIES.get(cmd_name) or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+        cat = (
+            _TOOL_CATEGORIES.get(cmd_name)
+            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or plugin_categories.get(cmd_name)
+        )
         if cat:
             category_tools[cat].append((cmd_name, defn))
 
