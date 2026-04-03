@@ -1,25 +1,23 @@
 import asyncio
 import os
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import text
 from src.orchestrator import Orchestrator
-from src.database import Database
 from src.models import (
     Project,
     Task,
     Agent,
     TaskStatus,
-    AgentState,
     AgentResult,
-    TaskContext,
     AgentOutput,
     RepoConfig,
     RepoSourceType,
     Workspace,
 )
-from src.adapters.base import AgentAdapter, MessageCallback
+from src.adapters.base import AgentAdapter
 from src.config import AppConfig, AutoTaskConfig
 
 
@@ -288,11 +286,11 @@ class TestAwaitingApprovalNopr:
         )
 
         # Backdate updated_at so the grace period has elapsed
-        await orch.db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (time.time() - 300, "t-1"),
-        )
-        await orch.db._db.commit()
+        async with orch.db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": time.time() - 300, "id": "t-1"},
+            )
 
         # Reset throttle so _check_awaiting_approval actually runs
         orch._last_approval_check = 0.0
@@ -409,11 +407,11 @@ class TestAwaitingApprovalNopr:
         )
 
         # Backdate so the task looks like it's been stuck for 25 hours
-        await orch.db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (time.time() - 25 * 3600, "t-1"),
-        )
-        await orch.db._db.commit()
+        async with orch.db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": time.time() - 25 * 3600, "id": "t-1"},
+            )
 
         orch._last_approval_check = 0.0
         await orch._check_awaiting_approval()
@@ -1379,7 +1377,6 @@ class TestCompletionPipelineVerify:
     async def test_pipeline_runs_plan_discover_then_verify(self, pipeline_orch):
         """Pipeline runs plan_discover then verify in order, both succeed."""
         orch = pipeline_orch
-        from src.models import PhaseResult
 
         task = Task(
             id="t-1",
@@ -1464,7 +1461,6 @@ class TestCompletionPipelineVerify:
     async def test_pipeline_error_handling(self, pipeline_orch):
         """Phase that raises should not crash pipeline, returns ok=False."""
         orch = pipeline_orch
-        from src.models import PhaseResult
 
         # Make verify phase raise an exception
         orch._phase_verify = AsyncMock(side_effect=RuntimeError("verify exploded"))

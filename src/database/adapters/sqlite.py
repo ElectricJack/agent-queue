@@ -1,11 +1,8 @@
-"""SQLite database adapter.
+"""SQLite database adapter using SQLAlchemy Core.
 
 Composes all domain query mixins into a single class that implements the
-:class:`~src.database.base.DatabaseBackend` protocol using aiosqlite.
-
-This is the primary (and currently only production) adapter.  It preserves
-100 % behavioral compatibility with the original monolithic ``Database``
-class while benefiting from the modular query organization.
+:class:`~src.database.base.DatabaseBackend` protocol using SQLAlchemy's
+async engine with the aiosqlite driver.
 
 Usage::
 
@@ -20,9 +17,13 @@ from __future__ import annotations
 import logging
 import time
 
-import aiosqlite
+from sqlalchemy import select, update, insert
 
-from src.database.connection import create_sqlite_connection, run_startup_migrations
+from src.database.engine import (
+    create_sqlite_engine,
+    run_schema_setup,
+    run_startup_data_migrations,
+)
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.chat_queries import ChatQueryMixin
@@ -37,6 +38,7 @@ from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
+from src.database.tables import agents as agents_t, events as events_t, tasks as tasks_t
 from src.models import AgentState, TaskStatus
 from src.state_machine import is_valid_status_transition
 
@@ -59,35 +61,31 @@ class SQLiteDatabaseAdapter(
     ChatQueryMixin,
     PluginQueryMixin,
 ):
-    """Async SQLite persistence layer implementing the repository pattern.
+    """Async SQLite persistence layer using SQLAlchemy Core.
 
     All database access in the system goes through this class.  It owns the
-    connection lifecycle, schema creation, migrations, and provides typed
+    engine lifecycle, schema creation, migrations, and provides typed
     CRUD methods that accept and return domain dataclasses from
     :mod:`src.models`.
 
     The connection uses WAL journal mode and has foreign keys enabled, so
-    referential integrity is enforced at the database level.  Row factory is
-    set to ``aiosqlite.Row`` for dict-like column access.
-
-    State transitions go through :meth:`transition_task`, which validates
-    against the state machine but always applies the update (logging-only
-    enforcement) to avoid blocking production on unexpected edge cases.
+    referential integrity is enforced at the database level.
     """
 
     def __init__(self, path: str):
         self._path = path
-        self._db: aiosqlite.Connection | None = None
+        self._engine = None
 
     async def initialize(self) -> None:
-        """Create tables, run migrations, and prepare the connection."""
-        self._db = await create_sqlite_connection(self._path)
-        await run_startup_migrations(self._db)
+        """Create tables, run migrations, and prepare the engine."""
+        self._engine = create_sqlite_engine(self._path)
+        await run_schema_setup(self._engine)
+        await run_startup_data_migrations(self._engine)
 
     async def close(self) -> None:
-        """Gracefully shut down the database connection."""
-        if self._db:
-            await self._db.close()
+        """Gracefully shut down the database engine."""
+        if self._engine:
+            await self._engine.dispose()
 
     # --- Atomic Operations ---
     # Multi-table writes that must succeed or fail together.
@@ -95,7 +93,7 @@ class SQLiteDatabaseAdapter(
     async def assign_task_to_agent(self, task_id: str, agent_id: str) -> None:
         """Atomically bind a task to an agent, updating both sides.
 
-        In a single commit:
+        In a single transaction:
         1. Transitions the task from READY to ASSIGNED
         2. Transitions the agent from IDLE to BUSY
         3. Logs a ``task_assigned`` event
@@ -110,18 +108,29 @@ class SQLiteDatabaseAdapter(
             )
 
         now = time.time()
-        await self._db.execute(
-            "UPDATE tasks SET status = ?, assigned_agent_id = ?, updated_at = ? WHERE id = ?",
-            (TaskStatus.ASSIGNED.value, agent_id, now, task_id),
-        )
-        await self._db.execute(
-            "UPDATE agents SET state = ?, current_task_id = ? WHERE id = ?",
-            (AgentState.BUSY.value, task_id, agent_id),
-        )
-        await self._db.execute(
-            "INSERT INTO events (event_type, project_id, task_id, agent_id, "
-            "timestamp) VALUES (?, (SELECT project_id FROM tasks WHERE id = ?), "
-            "?, ?, ?)",
-            ("task_assigned", task_id, task_id, agent_id, now),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(tasks_t)
+                .where(tasks_t.c.id == task_id)
+                .values(
+                    status=TaskStatus.ASSIGNED.value,
+                    assigned_agent_id=agent_id,
+                    updated_at=now,
+                )
+            )
+            await conn.execute(
+                update(agents_t)
+                .where(agents_t.c.id == agent_id)
+                .values(state=AgentState.BUSY.value, current_task_id=task_id)
+            )
+            await conn.execute(
+                insert(events_t).values(
+                    event_type="task_assigned",
+                    project_id=select(tasks_t.c.project_id)
+                    .where(tasks_t.c.id == task_id)
+                    .scalar_subquery(),
+                    task_id=task_id,
+                    agent_id=agent_id,
+                    timestamp=now,
+                )
+            )

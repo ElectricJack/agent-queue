@@ -1,0 +1,178 @@
+"""Async engine creation and schema lifecycle management.
+
+Provides factory functions for creating SQLAlchemy async engines with
+appropriate configuration (WAL mode, FK enforcement for SQLite) and
+running schema DDL + idempotent migrations on startup.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from src.database.schema import MIGRATIONS
+from src.database.tables import metadata
+
+logger = logging.getLogger(__name__)
+
+
+def create_sqlite_engine(path: str) -> AsyncEngine:
+    """Create an async SQLite engine with WAL mode and FK enforcement.
+
+    Uses ``StaticPool`` to keep a single connection open, matching the
+    previous aiosqlite single-connection behavior.
+    """
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(
+        url,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
+
+
+async def run_schema_setup(engine: AsyncEngine) -> None:
+    """Create all tables and run idempotent column migrations.
+
+    Uses ``metadata.create_all()`` for DDL (replaces the raw SCHEMA
+    constant) and then applies each ALTER TABLE migration, silently
+    ignoring columns that already exist.
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+
+        for migration in MIGRATIONS:
+            try:
+                await conn.execute(text(migration))
+            except Exception:
+                pass  # Column already exists
+
+
+async def run_startup_data_migrations(engine: AsyncEngine) -> None:
+    """Run data migrations that normalize existing rows on startup.
+
+    These are idempotent and safe to run on every startup.
+    """
+    async with engine.begin() as conn:
+        await _migrate_repos_to_projects(conn)
+        await _normalize_workspace_paths(conn)
+        await _drop_legacy_agent_workspaces(conn)
+
+
+async def _migrate_repos_to_projects(conn) -> None:
+    """Copy first repo's url/default_branch into project columns (idempotent)."""
+    try:
+        result = await conn.execute(
+            text(
+                "SELECT p.id, r.url, r.default_branch "
+                "FROM projects p "
+                "JOIN repos r ON r.project_id = p.id "
+                "WHERE (p.repo_url IS NULL OR p.repo_url = '') "
+                "GROUP BY p.id"
+            )
+        )
+        rows = result.mappings().fetchall()
+        for row in rows:
+            await conn.execute(
+                text(
+                    "UPDATE projects SET repo_url = :url, repo_default_branch = :branch "
+                    "WHERE id = :id AND (repo_url IS NULL OR repo_url = '')"
+                ),
+                {"url": row["url"], "branch": row["default_branch"], "id": row["id"]},
+            )
+            logger.info(
+                "Migration: project '%s' repo_url='%s', default_branch='%s'",
+                row["id"],
+                row["url"],
+                row["default_branch"],
+            )
+    except Exception as e:
+        logger.debug("Repos-to-projects migration (benign): %s", e)
+
+
+async def _drop_legacy_agent_workspaces(conn) -> None:
+    """Drop the legacy agent_workspaces table if it still exists."""
+    try:
+        await conn.execute(text("DROP TABLE IF EXISTS agent_workspaces"))
+    except Exception as e:
+        logger.debug("Drop agent_workspaces (benign): %s", e)
+
+
+async def _normalize_workspace_paths(conn) -> None:
+    """Normalize workspace paths and remove cross-project duplicates.
+
+    1. Resolve any relative workspace_path entries to absolute paths.
+    2. Remove link workspaces whose path duplicates a workspace belonging
+       to a different project.
+
+    Idempotent — safe to run on every startup.
+    """
+    try:
+        result = await conn.execute(
+            text("SELECT id, project_id, workspace_path, source_type FROM workspaces")
+        )
+        rows = result.mappings().fetchall()
+
+        # Phase 1: normalize relative paths to absolute
+        updated = 0
+        for row in rows:
+            raw = row["workspace_path"]
+            resolved = os.path.realpath(raw)
+            if resolved != raw:
+                await conn.execute(
+                    text("UPDATE workspaces SET workspace_path = :path WHERE id = :id"),
+                    {"path": resolved, "id": row["id"]},
+                )
+                logger.info(
+                    "Normalized workspace %s path: %r -> %r",
+                    row["id"],
+                    raw,
+                    resolved,
+                )
+                updated += 1
+        if updated:
+            logger.info("Normalized %d workspace paths to absolute", updated)
+
+        # Phase 2: remove link workspaces that duplicate another project's path.
+        path_owners: dict[str, str] = {}
+        for row in rows:
+            ws_path = os.path.realpath(row["workspace_path"])
+            if row["source_type"] == "clone" and ws_path not in path_owners:
+                path_owners[ws_path] = row["project_id"]
+
+        removed = 0
+        for row in rows:
+            if row["source_type"] != "link":
+                continue
+            ws_path = os.path.realpath(row["workspace_path"])
+            owner = path_owners.get(ws_path)
+            if owner and owner != row["project_id"]:
+                await conn.execute(
+                    text("DELETE FROM workspaces WHERE id = :id"),
+                    {"id": row["id"]},
+                )
+                logger.warning(
+                    "Removed bogus workspace %s: path %s belongs to project "
+                    "'%s' but was linked to project '%s'",
+                    row["id"],
+                    ws_path,
+                    owner,
+                    row["project_id"],
+                )
+                removed += 1
+        if removed:
+            logger.info("Removed %d cross-project duplicate workspaces", removed)
+    except Exception as e:
+        logger.debug("Workspace path normalization (benign): %s", e)

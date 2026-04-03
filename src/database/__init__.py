@@ -6,9 +6,10 @@ organized around domain-specific query modules and adapter classes.
 Architecture
 ------------
 - **base.py** — ``DatabaseBackend`` protocol (trait) defining the full API
-- **schema.py** — DDL, migrations, and index definitions
-- **connection.py** — Connection lifecycle and startup migration logic
-- **queries/** — Domain-specific query mixins (projects, tasks, agents, …)
+- **tables.py** — SQLAlchemy Core table definitions (MetaData + Table objects)
+- **engine.py** — Async engine factory, PRAGMA setup, schema lifecycle
+- **schema.py** — Legacy DDL constants and ALTER TABLE migrations
+- **queries/** — Domain-specific query mixins (projects, tasks, agents, ...)
 - **adapters/** — Backend implementations (SQLite, PostgreSQL placeholder)
 
 Backward Compatibility
@@ -47,10 +48,9 @@ Database = SQLiteDatabaseAdapter
 def create_database(config: AppConfig) -> DatabaseBackend:
     """Create the appropriate database backend from application config.
 
-    Returns a :class:`SQLiteDatabaseAdapter` (default) or
-    :class:`PostgreSQLDatabaseAdapter` based on the ``database.backend``
-    config setting.  The returned object is not yet initialized — callers
-    must ``await db.initialize()`` before use.
+    Returns a :class:`SQLiteDatabaseAdapter` (default) or raises for
+    unsupported backends.  The returned object is not yet initialized —
+    callers must ``await db.initialize()`` before use.
     """
     db_url = config.database.url or config.database_path
     if config.database.backend == "postgresql":

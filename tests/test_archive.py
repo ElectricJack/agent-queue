@@ -10,6 +10,7 @@ import os
 import time
 
 import pytest
+from sqlalchemy import text
 from unittest.mock import MagicMock
 
 from src.command_handler import CommandHandler
@@ -656,11 +657,11 @@ class TestArchiveOldTerminalTasks:
 
         # Manually backdate updated_at to simulate an old task
         old_time = time.time() - 86400 * 2  # 2 days ago
-        await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (old_time, "t-1"),
-        )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old_time, "id": "t-1"},
+            )
 
         archived_ids = await db.archive_old_terminal_tasks(
             statuses=["COMPLETED"],
@@ -690,12 +691,12 @@ class TestArchiveOldTerminalTasks:
 
         # Backdate all tasks
         old_time = time.time() - 86400
-        for tid in ("t-1", "t-2", "t-3"):
-            await db._db.execute(
-                "UPDATE tasks SET updated_at = ? WHERE id = ?",
-                (old_time, tid),
-            )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            for tid in ("t-1", "t-2", "t-3"):
+                await conn.execute(
+                    text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                    {"t": old_time, "id": tid},
+                )
 
         # Only archive COMPLETED (not FAILED or READY)
         archived_ids = await db.archive_old_terminal_tasks(
@@ -713,12 +714,12 @@ class TestArchiveOldTerminalTasks:
         await _seed_task(db, "t-3", status=TaskStatus.BLOCKED, title="Blocked")
 
         old_time = time.time() - 86400
-        for tid in ("t-1", "t-2", "t-3"):
-            await db._db.execute(
-                "UPDATE tasks SET updated_at = ? WHERE id = ?",
-                (old_time, tid),
-            )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            for tid in ("t-1", "t-2", "t-3"):
+                await conn.execute(
+                    text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                    {"t": old_time, "id": tid},
+                )
 
         archived_ids = await db.archive_old_terminal_tasks(
             statuses=["COMPLETED", "FAILED", "BLOCKED"],
@@ -766,11 +767,11 @@ class TestAutoArchive:
 
         # Backdate task to 2 hours ago
         old_time = time.time() - 7200
-        await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (old_time, "t-1"),
-        )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old_time, "id": "t-1"},
+            )
 
         # Force _last_auto_archive to 0 so it runs immediately
         orchestrator._last_auto_archive = 0.0
@@ -794,11 +795,11 @@ class TestAutoArchive:
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
 
         old_time = time.time() - 7200
-        await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (old_time, "t-1"),
-        )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old_time, "id": "t-1"},
+            )
 
         # Set _last_auto_archive to now — should skip
         orchestrator._last_auto_archive = time.time()
@@ -812,11 +813,11 @@ class TestAutoArchive:
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
 
         old_time = time.time() - 86400
-        await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?",
-            (old_time, "t-1"),
-        )
-        await db._db.commit()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old_time, "id": "t-1"},
+            )
 
         orchestrator.config.archive.enabled = False
         orchestrator._last_auto_archive = 0.0

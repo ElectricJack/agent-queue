@@ -7,6 +7,17 @@ import logging
 import time
 import uuid
 
+from sqlalchemy import delete, insert, select, update, func, and_
+
+from src.database.tables import (
+    task_context,
+    task_criteria,
+    task_dependencies,
+    task_results,
+    task_tools,
+    tasks,
+    token_ledger,
+)
 from src.models import Task, TaskStatus, TaskType, VerificationType
 from src.state_machine import is_valid_status_transition
 
@@ -14,56 +25,50 @@ logger = logging.getLogger(__name__)
 
 
 class TaskQueryMixin:
-    """Query mixin for task operations.  Expects ``self._db``."""
+    """Query mixin for task operations.  Expects ``self._engine``."""
 
     async def create_task(self, task: Task) -> None:
         """Insert a new task row."""
         now = time.time()
-        await self._db.execute(
-            "INSERT INTO tasks (id, project_id, parent_task_id, repo_id, title, "
-            "description, priority, status, verification_type, retry_count, "
-            "max_retries, assigned_agent_id, branch_name, resume_after, "
-            "requires_approval, pr_url, plan_source, is_plan_subtask, "
-            "task_type, profile_id, preferred_workspace_id, attachments, "
-            "auto_approve_plan, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                task.id,
-                task.project_id,
-                task.parent_task_id,
-                task.repo_id,
-                task.title,
-                task.description,
-                task.priority,
-                task.status.value,
-                task.verification_type.value,
-                task.retry_count,
-                task.max_retries,
-                task.assigned_agent_id,
-                task.branch_name,
-                task.resume_after,
-                int(task.requires_approval),
-                task.pr_url,
-                task.plan_source,
-                int(task.is_plan_subtask),
-                task.task_type.value if task.task_type else None,
-                task.profile_id,
-                task.preferred_workspace_id,
-                json.dumps(task.attachments) if task.attachments else "[]",
-                int(task.auto_approve_plan),
-                now,
-                now,
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(tasks).values(
+                    id=task.id,
+                    project_id=task.project_id,
+                    parent_task_id=task.parent_task_id,
+                    repo_id=task.repo_id,
+                    title=task.title,
+                    description=task.description,
+                    priority=task.priority,
+                    status=task.status.value,
+                    verification_type=task.verification_type.value,
+                    retry_count=task.retry_count,
+                    max_retries=task.max_retries,
+                    assigned_agent_id=task.assigned_agent_id,
+                    branch_name=task.branch_name,
+                    resume_after=task.resume_after,
+                    requires_approval=int(task.requires_approval),
+                    pr_url=task.pr_url,
+                    plan_source=task.plan_source,
+                    is_plan_subtask=int(task.is_plan_subtask),
+                    task_type=task.task_type.value if task.task_type else None,
+                    profile_id=task.profile_id,
+                    preferred_workspace_id=task.preferred_workspace_id,
+                    attachments=json.dumps(task.attachments) if task.attachments else "[]",
+                    auto_approve_plan=int(task.auto_approve_plan),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
 
     async def get_task(self, task_id: str) -> Task | None:
         """Fetch a single task by ID."""
-        cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_task(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(tasks).where(tasks.c.id == task_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_task(row)
 
     async def list_tasks(
         self,
@@ -71,107 +76,79 @@ class TaskQueryMixin:
         status: TaskStatus | None = None,
     ) -> list[Task]:
         """List tasks with optional project/status filters."""
+        stmt = select(tasks)
         conditions = []
-        vals = []
         if project_id:
-            conditions.append("project_id = ?")
-            vals.append(project_id)
+            conditions.append(tasks.c.project_id == project_id)
         if status:
-            conditions.append("status = ?")
-            vals.append(status.value)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(
-            f"SELECT * FROM tasks {where} ORDER BY priority ASC, created_at ASC",
-            vals,
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_task(r) for r in rows]
+            conditions.append(tasks.c.status == status.value)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def list_active_tasks(
         self,
         project_id: str | None = None,
         exclude_statuses: set[TaskStatus] | None = None,
     ) -> list[Task]:
-        """List non-terminal tasks, optionally filtered by project.
-
-        Unlike :meth:`list_tasks`, this method performs status filtering at the
-        SQL level so the database only returns actionable rows.
-
-        Parameters
-        ----------
-        project_id:
-            Optional project filter.
-        exclude_statuses:
-            Set of :class:`TaskStatus` values to exclude.  Defaults to
-            COMPLETED only.
-        """
+        """List non-terminal tasks, optionally filtered by project."""
         if exclude_statuses is None:
             exclude_statuses = {TaskStatus.COMPLETED}
 
-        conditions: list[str] = []
-        vals: list = []
-
+        conditions = []
         if exclude_statuses:
-            placeholders = ", ".join("?" for _ in exclude_statuses)
-            conditions.append(f"status NOT IN ({placeholders})")
-            vals.extend(s.value for s in exclude_statuses)
-
+            conditions.append(tasks.c.status.notin_([s.value for s in exclude_statuses]))
         if project_id:
-            conditions.append("project_id = ?")
-            vals.append(project_id)
+            conditions.append(tasks.c.project_id == project_id)
 
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(
-            f"SELECT * FROM tasks {where} ORDER BY priority ASC, created_at ASC",
-            vals,
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_task(r) for r in rows]
+        stmt = select(tasks)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def list_active_tasks_all_projects(self) -> list[Task]:
         """Return all non-completed tasks across every project."""
-        terminal = (TaskStatus.COMPLETED.value,)
-        placeholders = ", ".join("?" for _ in terminal)
-        cursor = await self._db.execute(
-            f"SELECT * FROM tasks WHERE status NOT IN ({placeholders}) "
-            "ORDER BY project_id ASC, priority ASC, created_at ASC",
-            list(terminal),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_task(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(tasks)
+                .where(tasks.c.status != TaskStatus.COMPLETED.value)
+                .order_by(
+                    tasks.c.project_id.asc(),
+                    tasks.c.priority.asc(),
+                    tasks.c.created_at.asc(),
+                )
+            )
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def count_tasks_by_status(
         self,
         project_id: str | None = None,
     ) -> dict[str, int]:
         """Return a {status_value: count} mapping for quick summary stats."""
-        conditions: list[str] = []
-        vals: list = []
+        stmt = select(tasks.c.status, func.count().label("cnt"))
         if project_id:
-            conditions.append("project_id = ?")
-            vals.append(project_id)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(
-            f"SELECT status, COUNT(*) as cnt FROM tasks {where} GROUP BY status",
-            vals,
-        )
-        rows = await cursor.fetchall()
-        return {r["status"]: r["cnt"] for r in rows}
+            stmt = stmt.where(tasks.c.project_id == project_id)
+        stmt = stmt.group_by(tasks.c.status)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return {r["status"]: r["cnt"] for r in result.mappings().fetchall()}
 
     async def update_task(self, task_id: str, **kwargs) -> None:
         """Update arbitrary task fields."""
-        sets = []
-        vals = []
+        values = {}
         for key, value in kwargs.items():
             if isinstance(value, (TaskStatus, VerificationType, TaskType)):
                 value = value.value
-            sets.append(f"{key} = ?")
-            vals.append(value)
-        sets.append("updated_at = ?")
-        vals.append(time.time())
-        vals.append(task_id)
-        await self._db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
-        await self._db.commit()
+            values[key] = value
+        values["updated_at"] = time.time()
+        async with self._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
 
     async def transition_task(
         self,
@@ -215,29 +192,33 @@ class TaskQueryMixin:
 
     async def delete_task(self, task_id: str) -> None:
         """Delete a task and all related child rows."""
-        await self._db.execute("DELETE FROM task_results WHERE task_id = ?", [task_id])
-        await self._db.execute("DELETE FROM token_ledger WHERE task_id = ?", [task_id])
-        await self._db.execute(
-            "DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
-            [task_id, task_id],
-        )
-        await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", [task_id])
-        await self._db.execute("DELETE FROM task_context WHERE task_id = ?", [task_id])
-        await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", [task_id])
-        await self._db.execute("DELETE FROM tasks WHERE id = ?", [task_id])
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
+            await conn.execute(delete(token_ledger).where(token_ledger.c.task_id == task_id))
+            await conn.execute(
+                delete(task_dependencies).where(
+                    (task_dependencies.c.task_id == task_id)
+                    | (task_dependencies.c.depends_on_task_id == task_id)
+                )
+            )
+            await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
+            await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+            await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+            await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""
-        cursor = await self._db.execute("SELECT updated_at FROM tasks WHERE id = ?", (task_id,))
-        row = await cursor.fetchone()
-        return row["updated_at"] if row else None
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(tasks.c.updated_at).where(tasks.c.id == task_id))
+            row = result.fetchone()
+            return row[0] if row else None
 
     async def get_task_created_at(self, task_id: str) -> float | None:
         """Return the ``created_at`` timestamp for a task, or *None*."""
-        cursor = await self._db.execute("SELECT created_at FROM tasks WHERE id = ?", (task_id,))
-        row = await cursor.fetchone()
-        return row["created_at"] if row else None
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(tasks.c.created_at).where(tasks.c.id == task_id))
+            row = result.fetchone()
+            return row[0] if row else None
 
     async def add_task_context(
         self,
@@ -249,29 +230,39 @@ class TaskQueryMixin:
     ) -> str:
         """Insert a task_context row and return its generated ID."""
         ctx_id = str(uuid.uuid4())[:12]
-        await self._db.execute(
-            "INSERT INTO task_context (id, task_id, type, label, content) VALUES (?, ?, ?, ?, ?)",
-            (ctx_id, task_id, type, label, content),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(task_context).values(
+                    id=ctx_id,
+                    task_id=task_id,
+                    type=type,
+                    label=label,
+                    content=content,
+                )
+            )
         return ctx_id
 
     async def get_task_contexts(self, task_id: str) -> list[dict]:
         """Return all task_context rows for *task_id* as dicts."""
-        cursor = await self._db.execute(
-            "SELECT id, task_id, type, label, content FROM task_context WHERE task_id = ?",
-            (task_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(
+                    task_context.c.id,
+                    task_context.c.task_id,
+                    task_context.c.type,
+                    task_context.c.label,
+                    task_context.c.content,
+                ).where(task_context.c.task_id == task_id)
+            )
+            return [dict(r) for r in result.mappings().fetchall()]
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         """Return all direct children of a task."""
-        cursor = await self._db.execute(
-            "SELECT * FROM tasks WHERE parent_task_id = ?", (parent_task_id,)
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_task(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(tasks).where(tasks.c.parent_task_id == parent_task_id)
+            )
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def get_task_tree(self, root_task_id: str) -> dict | None:
         """Return a nested dict representing the full task hierarchy."""
@@ -290,18 +281,17 @@ class TaskQueryMixin:
 
     async def get_parent_tasks(self, project_id: str) -> list[Task]:
         """Return top-level tasks for a project (those with no parent)."""
-        cursor = await self._db.execute(
-            "SELECT * FROM tasks WHERE project_id = ? AND parent_task_id IS NULL "
-            "ORDER BY priority ASC, created_at ASC",
-            (project_id,),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_task(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(tasks)
+                .where((tasks.c.project_id == project_id) & (tasks.c.parent_task_id.is_(None)))
+                .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+            )
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     @staticmethod
     def _row_to_task(row) -> Task:
         """Convert a database row to a Task model."""
-        keys = row.keys()
         return Task(
             id=row["id"],
             project_id=row["project_id"],
@@ -317,23 +307,13 @@ class TaskQueryMixin:
             assigned_agent_id=row["assigned_agent_id"],
             branch_name=row["branch_name"],
             resume_after=row["resume_after"],
-            requires_approval=bool(row["requires_approval"])
-            if "requires_approval" in keys
-            else False,
-            pr_url=row["pr_url"] if "pr_url" in keys else None,
-            plan_source=row["plan_source"] if "plan_source" in keys else None,
-            is_plan_subtask=bool(row["is_plan_subtask"]) if "is_plan_subtask" in keys else False,
-            task_type=TaskType(row["task_type"])
-            if "task_type" in keys and row["task_type"]
-            else None,
-            profile_id=row["profile_id"] if "profile_id" in keys else None,
-            preferred_workspace_id=row["preferred_workspace_id"]
-            if "preferred_workspace_id" in keys
-            else None,
-            attachments=json.loads(row["attachments"])
-            if "attachments" in keys and row["attachments"]
-            else [],
-            auto_approve_plan=bool(row["auto_approve_plan"])
-            if "auto_approve_plan" in keys
-            else False,
+            requires_approval=bool(row["requires_approval"]),
+            pr_url=row["pr_url"],
+            plan_source=row["plan_source"],
+            is_plan_subtask=bool(row["is_plan_subtask"]),
+            task_type=TaskType(row["task_type"]) if row["task_type"] else None,
+            profile_id=row["profile_id"],
+            preferred_workspace_id=row["preferred_workspace_id"],
+            attachments=json.loads(row["attachments"]) if row["attachments"] else [],
+            auto_approve_plan=bool(row["auto_approve_plan"]),
         )

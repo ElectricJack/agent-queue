@@ -5,9 +5,13 @@ from __future__ import annotations
 import time
 import uuid
 
+from sqlalchemy import func, insert, select
+
+from src.database.tables import token_ledger
+
 
 class TokenQueryMixin:
-    """Query mixin for token ledger operations.  Expects ``self._db``."""
+    """Query mixin for token ledger operations.  Expects ``self._engine``."""
 
     async def record_token_usage(
         self,
@@ -17,12 +21,17 @@ class TokenQueryMixin:
         tokens: int,
     ) -> None:
         """Append a token usage record."""
-        await self._db.execute(
-            "INSERT INTO token_ledger (id, project_id, agent_id, task_id, "
-            "tokens_used, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), project_id, agent_id, task_id, tokens, time.time()),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(token_ledger).values(
+                    id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    tokens_used=tokens,
+                    timestamp=time.time(),
+                )
+            )
 
     async def get_project_token_usage(
         self,
@@ -30,17 +39,12 @@ class TokenQueryMixin:
         since: float | None = None,
     ) -> int:
         """Return total tokens consumed by a project, optionally since a timestamp."""
+        stmt = select(func.coalesce(func.sum(token_ledger.c.tokens_used), 0).label("total")).where(
+            token_ledger.c.project_id == project_id
+        )
         if since:
-            cursor = await self._db.execute(
-                "SELECT COALESCE(SUM(tokens_used), 0) as total "
-                "FROM token_ledger WHERE project_id = ? AND timestamp >= ?",
-                (project_id, since),
-            )
-        else:
-            cursor = await self._db.execute(
-                "SELECT COALESCE(SUM(tokens_used), 0) as total "
-                "FROM token_ledger WHERE project_id = ?",
-                (project_id,),
-            )
-        row = await cursor.fetchone()
-        return row["total"]
+            stmt = stmt.where(token_ledger.c.timestamp >= since)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            row = result.fetchone()
+            return row[0]

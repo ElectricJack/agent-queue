@@ -19,7 +19,7 @@ from src.chat_providers import create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.orchestrator import Orchestrator
 
-from tests.chat_eval.metrics import evaluate_turn, TestCaseResult
+from tests.chat_eval.metrics import evaluate_turn
 from tests.chat_eval.providers import RecordingProvider
 from tests.chat_eval.recording_handler import RecordingCommandHandler
 from tests.chat_eval.test_cases._loader import load_all_cases, case_ids
@@ -30,10 +30,15 @@ def _has_eval_credentials() -> bool:
     """Check if any valid credentials are available for eval tests.
 
     Checks (in priority order):
+    0. anthropic SDK must be installed
     1. ANTHROPIC_API_KEY env var
     2. EVAL_PROVIDER env var (indicates a provider is explicitly configured)
     3. Claude Code OAuth credentials (~/.claude/.credentials.json)
     """
+    try:
+        import anthropic  # noqa: F401
+    except ModuleNotFoundError:
+        return False
     if os.environ.get("ANTHROPIC_API_KEY"):
         return True
     if os.environ.get("EVAL_PROVIDER"):
