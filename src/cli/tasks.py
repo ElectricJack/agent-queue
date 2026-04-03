@@ -1,4 +1,9 @@
-"""Task management CLI commands (aq task ...)."""
+"""Hand-crafted task CLI commands that require interactive features.
+
+Simple list/detail commands are auto-generated with Rich formatters via
+the formatter registry.  This file only contains commands that need
+interactive prompts (wizard, confirmation dialogs, fuzzy search).
+"""
 
 from __future__ import annotations
 
@@ -11,123 +16,6 @@ from .app import cli, console, _run, _get_client, _handle_errors
 def task() -> None:
     """Task management commands."""
     pass
-
-
-@task.command("list")
-@click.option("-p", "--project", default=None, help="Filter by project ID")
-@click.option(
-    "-s", "--status", "status_filter",
-    default=None,
-    type=click.Choice([
-        "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT",
-        "PAUSED", "VERIFYING", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
-        "COMPLETED", "FAILED", "BLOCKED",
-    ], case_sensitive=False),
-    help="Filter by status",
-)
-@click.option("--active/--all", default=True, help="Show only active tasks (default) or all")
-@click.option("--limit", default=50, help="Maximum number of tasks to display")
-@click.pass_context
-@_handle_errors
-def task_list(
-    ctx: click.Context,
-    project: str | None,
-    status_filter: str | None,
-    active: bool,
-    limit: int,
-) -> None:
-    """List tasks with filtering by project, status, and activity."""
-    from .adapters import task_proxy
-    from .formatters import format_task_table
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _run_list():
-        async with _get_client(api_url) as client:
-            args = {}
-            if project:
-                args["project_id"] = project
-            if status_filter:
-                args["status"] = status_filter
-            elif active:
-                # Default: hide completed/failed tasks
-                args["include_completed"] = False
-            else:
-                args["include_completed"] = True
-            return await client.execute("list_tasks", args)
-
-    result = _run(_run_list())
-    raw_tasks = result.get("tasks", [])
-    tasks = [task_proxy(t) for t in raw_tasks]
-
-    # Sort by priority (highest first), then by status
-    status_order = {
-        "IN_PROGRESS": 0, "WAITING_INPUT": 1, "ASSIGNED": 2, "READY": 3,
-        "AWAITING_APPROVAL": 4, "AWAITING_PLAN_APPROVAL": 5, "VERIFYING": 6,
-        "DEFINED": 7, "BLOCKED": 8, "PAUSED": 9, "FAILED": 10, "COMPLETED": 11,
-    }
-    tasks.sort(
-        key=lambda t: (
-            status_order.get(t.status.value if t.status else "", 99),
-            -(t.priority or 0),
-        )
-    )
-
-    displayed = tasks[:limit]
-
-    title_parts = ["Tasks"]
-    if project:
-        title_parts.append(f"project={project}")
-    if status_filter:
-        title_parts.append(f"status={status_filter}")
-    elif active:
-        title_parts.append("active only")
-    title = " — ".join(title_parts)
-
-    table = format_task_table(displayed, title=title)
-    console.print(table)
-
-    if len(tasks) > limit:
-        console.print(
-            f"\n[dim]Showing {limit} of {len(tasks)} tasks. "
-            f"Use --limit to see more.[/]"
-        )
-    elif not tasks:
-        console.print("[dim]No tasks found matching filters.[/]")
-
-
-@task.command("details")
-@click.argument("task_id")
-@click.pass_context
-@_handle_errors
-def task_details(ctx: click.Context, task_id: str) -> None:
-    """Show complete details for a task."""
-    from .adapters import task_proxy
-    from .formatters import format_task_detail
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _run_details():
-        async with _get_client(api_url) as client:
-            return await client.execute("get_task", {"task_id": task_id})
-
-    result = _run(_run_details())
-    t = task_proxy(result)
-
-    # Extract dependency info from the get_task response
-    deps_on = [d["id"] for d in result.get("depends_on", [])]
-    dependents = [d["id"] for d in result.get("blocks", [])]
-
-    # Subtask stats
-    subtask_stats = None
-    subtasks = result.get("subtasks", [])
-    if subtasks:
-        total = len(subtasks)
-        completed = sum(1 for s in subtasks if s.get("status") in ("COMPLETED", "completed"))
-        subtask_stats = (completed, total)
-
-    panel = format_task_detail(t, deps_on=deps_on, dependents=dependents, subtask_stats=subtask_stats)
-    console.print(panel)
 
 
 @task.command("create")
@@ -151,7 +39,6 @@ def task_create(
     """Create a new task (interactive wizard or via flags)."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    # If all required fields provided, skip wizard
     if project and title and description:
         params = {
             "project_id": project,
@@ -162,7 +49,6 @@ def task_create(
             "requires_approval": approval,
         }
     else:
-        # Interactive wizard — need project list
         from .menus import task_creation_wizard
 
         async def _get_projects():
@@ -226,11 +112,11 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
             console.print("[dim]Cancelled.[/]")
             return
 
-    async def _approve():
+    async def _stop():
         async with _get_client(api_url) as client:
             return await client.execute("stop_task", {"task_id": task_id})
 
-    result = _run(_approve())
+    result = _run(_stop())
     console.print(f"[bold yellow]Task stopped:[/] {result.get('stopped', task_id)}")
 
 
@@ -278,7 +164,6 @@ def task_search(ctx: click.Context, query: str, project: str | None) -> None:
 
     result = _run(_search())
 
-    # Client-side filter on title/description
     q = query.lower()
     raw_tasks = result.get("tasks", [])
     matched = [
@@ -328,7 +213,6 @@ def task_select(ctx: click.Context, project: str | None) -> None:
                 console.print("[dim]No task selected.[/]")
                 return
 
-            # Fetch full details for the selected task
             detail = await client.execute("get_task", {"task_id": selected.id})
             t = task_proxy(detail)
             deps_on = [d["id"] for d in detail.get("depends_on", [])]

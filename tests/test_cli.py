@@ -276,6 +276,76 @@ class TestFormatterCompatibility:
 
 
 # ---------------------------------------------------------------------------
+# Formatter registry tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatterRegistry:
+    def test_formatters_registered(self):
+        from src.cli.formatter_registry import FORMATTERS
+        expected = {"list_tasks", "get_task", "list_agents", "list_hooks",
+                    "list_hook_runs", "list_projects"}
+        assert expected.issubset(set(FORMATTERS.keys()))
+
+    def test_apply_formatter_list(self):
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+        result = {
+            "tasks": [
+                {"id": "t-1", "project_id": "p", "title": "Test",
+                 "status": "READY", "priority": 100, "assigned_agent": None,
+                 "task_type": None},
+            ],
+            "total": 1,
+        }
+        assert apply_formatter("list_tasks", result, console) is True
+        output = buf.getvalue()
+        assert "Test" in output
+
+    def test_apply_formatter_detail(self):
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+        result = {
+            "id": "t-1", "project_id": "p", "title": "Detail Test",
+            "status": "IN_PROGRESS", "priority": 100,
+            "description": "A task", "assigned_agent": None,
+            "depends_on": [], "blocks": [],
+        }
+        assert apply_formatter("get_task", result, console) is True
+        output = buf.getvalue()
+        assert "Detail Test" in output
+
+    def test_apply_formatter_unknown(self):
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf)
+        assert apply_formatter("unknown_command", {}, console) is False
+
+    def test_apply_formatter_empty_list(self):
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+        result = {"tasks": [], "total": 0}
+        assert apply_formatter("list_tasks", result, console) is True
+        output = buf.getvalue()
+        assert "No tasks" in output
+
+
+# ---------------------------------------------------------------------------
 # CLIClient tests
 # ---------------------------------------------------------------------------
 
@@ -386,26 +456,25 @@ class TestAutoCommands:
         from src.cli.app import cli
         task_group = cli.commands.get("task")
         assert task_group is not None
-        # Hand-crafted
-        assert "list" in task_group.commands
+        # Hand-crafted (interactive commands)
         assert "create" in task_group.commands
-        assert "details" in task_group.commands
-        # Auto-generated (from task category)
+        assert "approve" in task_group.commands
+        assert "search" in task_group.commands
+        # Auto-generated (from task category + formatter registry)
+        assert "list" in task_group.commands
+        assert "get" in task_group.commands
         assert "archive" in task_group.commands
         assert "skip" in task_group.commands
 
-    def test_handcrafted_not_duplicated(self):
-        """Commands in HANDCRAFTED_COVERAGE should not be duplicated as auto-generated."""
+    def test_handcrafted_create_has_wizard_options(self):
+        """Hand-crafted create should have interactive wizard options."""
         from src.cli.app import cli
-        # Collect all auto-generated command callback names
-        # The hand-crafted 'list' in aq task should not be overwritten
         task_group = cli.commands.get("task")
-        # Verify hand-crafted commands are present (not replaced)
-        list_cmd = task_group.commands.get("list")
-        assert list_cmd is not None
-        # Hand-crafted list has click options like --active/--all
-        param_names = {p.name for p in list_cmd.params}
-        assert "active" in param_names or "status_filter" in param_names
+        create_cmd = task_group.commands.get("create")
+        assert create_cmd is not None
+        param_names = {p.name for p in create_cmd.params}
+        assert "title" in param_names
+        assert "project" in param_names
 
     def test_excluded_not_present(self):
         """Dangerous commands should not appear in any group."""
@@ -465,12 +534,12 @@ class TestCLICommands:
         mock_client.execute = AsyncMock(side_effect=mock_execute)
         return mock_client
 
-    def test_task_list(self, runner):
+    def test_task_list_with_formatter(self, runner):
+        """Auto-generated list_tasks should use Rich formatter, not raw JSON."""
         from src.cli.app import cli
 
         mock = self._mock_client({
             "list_tasks": {
-                "display_mode": "flat",
                 "tasks": [
                     {
                         "id": "task-1", "project_id": "proj",
@@ -480,17 +549,18 @@ class TestCLICommands:
                     },
                 ],
                 "total": 1,
-                "hidden_completed": 0,
-                "filtered": True,
             },
         })
 
-        with patch("src.cli.tasks._get_client", return_value=mock):
+        with patch("src.cli.app._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "list"])
             assert result.exit_code == 0
             assert "Test task" in result.output
+            # Should NOT be raw JSON (formatter should render a table)
+            assert '"task-1"' not in result.output
 
-    def test_task_details(self, runner):
+    def test_task_get_with_formatter(self, runner):
+        """Auto-generated get_task should use Rich detail formatter."""
         from src.cli.app import cli
 
         mock = self._mock_client({
@@ -500,17 +570,18 @@ class TestCLICommands:
                 "priority": 100, "description": "A test task",
                 "assigned_agent": None, "task_type": "feature",
                 "requires_approval": False,
-                "depends_on": [{"id": "dep-1", "title": "Dep", "status": "COMPLETED"}],
+                "depends_on": [],
                 "blocks": [],
             },
         })
 
-        with patch("src.cli.tasks._get_client", return_value=mock):
-            result = runner.invoke(cli, ["task", "details", "task-1"])
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "get", "--task-id", "task-1"])
             assert result.exit_code == 0
             assert "Test task" in result.output
 
-    def test_project_list(self, runner):
+    def test_project_list_with_formatter(self, runner):
+        """Auto-generated list_projects should use Rich formatter."""
         from src.cli.app import cli
 
         mock = self._mock_client({
@@ -522,7 +593,7 @@ class TestCLICommands:
             },
         })
 
-        with patch("src.cli.projects._get_client", return_value=mock):
+        with patch("src.cli.app._get_client", return_value=mock):
             result = runner.invoke(cli, ["project", "list"])
             assert result.exit_code == 0
             assert "Test" in result.output
@@ -609,7 +680,7 @@ class TestDaemonNotRunningPrompt:
         )
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.cli.tasks._get_client", return_value=mock_client):
+        with patch("src.cli.app._get_client", return_value=mock_client):
             result = runner.invoke(cli, ["task", "list"], input="n\n")
             assert result.exit_code == 1
             assert "not running" in result.output.lower()
@@ -642,7 +713,7 @@ class TestDaemonNotRunningPrompt:
         })
 
         with (
-            patch("src.cli.tasks._get_client", return_value=mock_client),
+            patch("src.cli.app._get_client", return_value=mock_client),
             patch("src.cli.daemon.start_daemon", return_value=True),
         ):
             result = runner.invoke(cli, ["task", "list"], input="y\n")

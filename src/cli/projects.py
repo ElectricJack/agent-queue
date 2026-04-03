@@ -1,4 +1,9 @@
-"""Project management CLI commands (aq project ...)."""
+"""Hand-crafted project CLI commands that need composite logic or UX sugar.
+
+Simple list commands are auto-generated with Rich formatters via the
+formatter registry.  This file only contains commands that compose
+multiple API calls or provide friendly key aliasing.
+"""
 
 from __future__ import annotations
 
@@ -13,47 +18,12 @@ def project() -> None:
     pass
 
 
-@project.command("list")
-@click.option(
-    "-s", "--status", "status_filter",
-    default=None,
-    type=click.Choice(["ACTIVE", "PAUSED", "ARCHIVED"], case_sensitive=False),
-    help="Filter by status",
-)
-@click.pass_context
-@_handle_errors
-def project_list(ctx: click.Context, status_filter: str | None) -> None:
-    """List all projects."""
-    from .adapters import project_proxy
-    from .formatters import format_project_table
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _list():
-        async with _get_client(api_url) as client:
-            return await client.execute("list_projects")
-
-    result = _run(_list())
-    projects = [project_proxy(p) for p in result.get("projects", [])]
-
-    if status_filter:
-        status_filter_upper = status_filter.upper()
-        projects = [p for p in projects if p.status and p.status.value == status_filter_upper]
-
-    if not projects:
-        console.print("[dim]No projects found.[/]")
-        return
-
-    table = format_project_table(projects)
-    console.print(table)
-
-
 @project.command("details")
 @click.argument("project_id")
 @click.pass_context
 @_handle_errors
 def project_details(ctx: click.Context, project_id: str) -> None:
-    """Show detailed information about a project."""
+    """Show detailed information about a project with task breakdown."""
     from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
@@ -73,7 +43,6 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 
     proj_result, task_result = _run(_details())
 
-    # Find our project
     p = None
     for proj in proj_result.get("projects", []):
         if proj.get("id") == project_id:
@@ -105,7 +74,6 @@ def project_details(ctx: click.Context, project_id: str) -> None:
         line.append(value, style="white")
         lines.append(line)
 
-    # Task breakdown from list_tasks result
     tasks = task_result.get("tasks", [])
     if tasks:
         counts: dict[str, int] = {}
@@ -144,7 +112,6 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
     """Set a project property. e.g. aq project set myproj channel 123456"""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    # Map friendly key names to edit_project field names
     KEY_MAP = {
         "channel": "discord_channel_id",
         "name": "name",
@@ -162,7 +129,6 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         )
         raise SystemExit(1)
 
-    # Type coercion
     coerced: str | int | float | None = value
     if field == "max_concurrent_agents":
         coerced = int(value)
@@ -171,7 +137,6 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
     elif field == "budget_limit":
         coerced = None if value.lower() in ("none", "null", "unlimited") else int(value)
 
-    # Use the appropriate command for the field
     if field == "default_branch":
         cmd = "set_default_branch"
         args = {"project_id": project_id, "branch": value}

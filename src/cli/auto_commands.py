@@ -33,15 +33,10 @@ from src.tool_registry import (
 HANDCRAFTED_COVERAGE = {
     # app.py
     "get_status",
-    # tasks.py
-    "list_tasks", "get_task", "create_task", "approve_task",
-    "stop_task", "restart_task",
-    # agents.py
-    "list_agents",
-    # hooks.py
-    "list_hooks", "list_hook_runs",
-    # projects.py
-    "list_projects", "edit_project", "set_default_branch", "set_project_channel",
+    # tasks.py — interactive commands only (wizard, search, select, confirmations)
+    "create_task", "approve_task", "stop_task", "restart_task",
+    # projects.py — composite/UX-heavy commands only
+    "edit_project", "set_default_branch", "set_project_channel",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list", "plugin_info", "plugin_install", "plugin_update",
     "plugin_remove", "plugin_enable", "plugin_disable", "plugin_reload",
@@ -112,19 +107,26 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
     Falls back to the full name if stripping would leave nothing useful.
     """
     singular = category.rstrip("s")
+    plural = singular + "s"
+
+    # All forms to try: category as-is, singular, and plural
+    forms = list(dict.fromkeys([category, singular, plural]))
 
     # Try prefix: git_commit → commit, plugin_list → list
-    for pfx in (f"{category}_", f"{singular}_"):
+    for form in forms:
+        pfx = f"{form}_"
         if cmd_name.startswith(pfx) and len(cmd_name) > len(pfx):
             return cmd_name[len(pfx):]
 
-    # Try suffix: compact_memory → compact, archive_task → archive
-    for sfx in (f"_{category}", f"_{singular}"):
+    # Try suffix: compact_memory → compact, archive_task → archive, list_tasks → list
+    for form in forms:
+        sfx = f"_{form}"
         if cmd_name.endswith(sfx) and len(cmd_name) > len(sfx):
             return cmd_name[: -len(sfx)]
 
     # Try infix: get_task_result → get_result, list_hook_runs → list_runs
-    for infix in (f"_{category}_", f"_{singular}_"):
+    for form in forms:
+        infix = f"_{form}_"
         if infix in cmd_name:
             return cmd_name.replace(infix, "_", 1)
 
@@ -164,11 +166,12 @@ def _make_auto_command(
             ))
 
     def _make_callback(name: str):
-        from .app import _get_client, _handle_errors, _run
+        from .formatter_registry import apply_formatter
 
-        @_handle_errors
         @click.pass_context
         def callback(ctx, **kwargs):
+            # Late-bind imports so mock patches take effect in tests
+            from . import app as _app
             api_url = ctx.obj.get("api_url") if ctx.obj else None
             args = {
                 k.replace("-", "_"): v
@@ -177,11 +180,34 @@ def _make_auto_command(
             }
 
             async def _exec():
-                async with _get_client(api_url) as client:
+                async with _app._get_client(api_url) as client:
                     return await client.execute(name, args)
 
-            result = _run(_exec())
-            console.print_json(data=result)
+            try:
+                result = _app._run(_exec())
+            except Exception as exc:
+                from .exceptions import CommandError, DaemonNotRunningError
+                if isinstance(exc, DaemonNotRunningError):
+                    console.print("[bold red]Daemon is not running.[/]")
+                    if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in ("", "y", "yes"):
+                        from .daemon import start_daemon
+                        if start_daemon():
+                            console.print()
+                            result = _app._run(_exec())
+                        else:
+                            raise SystemExit(1)
+                    else:
+                        console.print("[dim]Run 'aq start' to start the daemon.[/]")
+                        raise SystemExit(1)
+                elif isinstance(exc, CommandError):
+                    console.print(f"[bold red]Error:[/] {exc}")
+                    raise SystemExit(1)
+                else:
+                    raise
+
+            # Use Rich formatter if registered, otherwise fall back to JSON
+            if not apply_formatter(name, result, console):
+                console.print_json(data=result)
 
         return callback
 

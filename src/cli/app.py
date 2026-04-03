@@ -167,8 +167,6 @@ def status(ctx: click.Context) -> None:
 
 from . import daemon   # noqa: E402, F401
 from . import tasks    # noqa: E402, F401
-from . import agents   # noqa: E402, F401
-from . import hooks    # noqa: E402, F401
 from . import projects # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 
