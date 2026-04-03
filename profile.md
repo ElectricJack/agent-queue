@@ -8,7 +8,7 @@ Agent Queue is a task queue and orchestrator for AI coding agents (primarily Cla
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLite (WAL mode) for persistence. Discord bot for the control plane. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL planned). Discord bot for the control plane. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
@@ -54,7 +54,7 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/command_handler.py` | **Unified command execution** — 50+ commands, single entry point |
 | `src/supervisor.py` | **Supervisor** — multi-turn LLM conversation loop, tool dispatch, streaming |
 | `src/chat_agent.py` | Backward-compat shim — re-exports `Supervisor` as `ChatAgent` (deprecated) |
-| `src/database.py` | SQLite persistence — 19 tables, CRUD, migrations |
+| `src/database/` | SQLAlchemy Core persistence — tables.py (schema), queries/ (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Hook, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
 | `src/scheduler.py` | Proportional credit-weight scheduling |
@@ -98,8 +98,8 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 
 ## Design Decisions
 
-### Why SQLite, not Redis/Postgres?
-Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi.
+### Why SQLite (with PostgreSQL planned)?
+Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability for future PostgreSQL support.
 
 ### Why zero LLM for orchestration?
 On throttled plans, every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution, (2) Supervisor chat, (3) hooks, (4) memory revision, (5) reflection.
@@ -121,7 +121,7 @@ Per-project `profile.md` (stored in `~/.agent-queue/memory/{project_id}/`) captu
 
 ## Database Schema
 
-19 tables. Core: `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`. Supporting: `task_criteria`, `task_context`, `task_tools`, `task_results`, `hooks`, `hook_runs`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`.
+21 tables defined as SQLAlchemy Core `Table` objects in `src/database/tables.py`. Migrations managed by Alembic (`migrations/`). Core: `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`. Supporting: `task_criteria`, `task_context`, `task_tools`, `task_results`, `hooks`, `hook_runs`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`.
 
 ## Configuration
 
@@ -139,7 +139,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** aiosqlite, discord.py, claude-agent-sdk, pyyaml
+- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml
 
 ## Infrastructure
 

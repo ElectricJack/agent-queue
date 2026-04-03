@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.20.0",
     "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
     "discord.py>=2.6.0",
     "claude-agent-sdk>=0.1.55",
     "pyyaml>=6.0",

@@ -2,22 +2,24 @@
 
 Provides factory functions for creating SQLAlchemy async engines with
 appropriate configuration (WAL mode, FK enforcement for SQLite) and
-running schema DDL + idempotent migrations on startup.
+running Alembic migrations on startup.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from src.database.schema import MIGRATIONS
-from src.database.tables import metadata
-
 logger = logging.getLogger(__name__)
+
+# Resolve alembic.ini relative to the project root (two levels up from this file)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
 
 
 def create_sqlite_engine(path: str) -> AsyncEngine:
@@ -43,21 +45,57 @@ def create_sqlite_engine(path: str) -> AsyncEngine:
     return engine
 
 
-async def run_schema_setup(engine: AsyncEngine) -> None:
-    """Create all tables and run idempotent column migrations.
+def _run_alembic_upgrade(sync_connection) -> None:
+    """Run Alembic migrations up to head using a sync connection.
 
-    Uses ``metadata.create_all()`` for DDL (replaces the raw SCHEMA
-    constant) and then applies each ALTER TABLE migration, silently
-    ignoring columns that already exist.
+    Called via ``conn.run_sync()`` from an async context.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config(str(_ALEMBIC_INI))
+    alembic_cfg.attributes["connection"] = sync_connection
+    command.upgrade(alembic_cfg, "head")
+
+
+def _stamp_alembic_head(sync_connection) -> None:
+    """Stamp an existing database as being at the latest migration.
+
+    Used for pre-Alembic databases that already have the full schema
+    but no ``alembic_version`` table.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config(str(_ALEMBIC_INI))
+    alembic_cfg.attributes["connection"] = sync_connection
+    command.stamp(alembic_cfg, "head")
+
+
+async def run_schema_setup(engine: AsyncEngine) -> None:
+    """Create/migrate the database schema using Alembic.
+
+    For new databases, this runs all migrations from scratch.
+    For existing pre-Alembic databases (have tables but no
+    ``alembic_version``), it stamps them at head first.
     """
     async with engine.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+        # Check if this is a pre-Alembic database (has tables but no alembic_version)
+        def _check_and_migrate(sync_conn):
+            insp = inspect(sync_conn)
+            existing_tables = set(insp.get_table_names())
+            has_alembic = "alembic_version" in existing_tables
+            has_data_tables = bool(existing_tables - {"alembic_version"})
 
-        for migration in MIGRATIONS:
-            try:
-                await conn.execute(text(migration))
-            except Exception:
-                pass  # Column already exists
+            if has_data_tables and not has_alembic:
+                # Existing DB from before Alembic — stamp as current
+                logger.info("Pre-Alembic database detected, stamping at head")
+                _stamp_alembic_head(sync_conn)
+            else:
+                # New DB or already-Alembic DB — run migrations normally
+                _run_alembic_upgrade(sync_conn)
+
+        await conn.run_sync(_check_and_migrate)
 
 
 async def run_startup_data_migrations(engine: AsyncEngine) -> None:
