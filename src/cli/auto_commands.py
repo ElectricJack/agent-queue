@@ -79,6 +79,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "plugin": "plugin",
     "git": "git",
     "memory": "memory",
+    "notes": "note",
     "files": "file",
     "system": "system",
 }
@@ -86,7 +87,8 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
 # Human-readable group descriptions for newly created groups.
 CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "git": "Git operations — branch, commit, push, PR, merge.",
-    "memory": "Memory, notes, and project profiles.",
+    "memory": "Semantic memory — search, project profiles, compaction.",
+    "note": "Project notes — list, read, write, append, delete.",
     "file": "File operations — read, write, edit, glob, grep.",
     "system": "System diagnostics, config, and prompt management.",
 }
@@ -264,6 +266,21 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     except Exception:
         pass
 
+    # Collect internal plugin tool definitions (no daemon needed)
+    plugin_categories: dict[str, str] = {}
+    try:
+        from src.plugins.internal import collect_internal_tool_definitions
+
+        for category, tool_defs in collect_internal_tool_definitions():
+            for defn in tool_defs:
+                name = defn["name"]
+                if name not in tool_map:
+                    tool_map[name] = defn
+                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
+                    plugin_categories[name] = category
+    except Exception:
+        pass
+
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
     categorized_names: set[str] = set()
@@ -271,8 +288,12 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     for cmd_name, defn in tool_map.items():
         if cmd_name in HANDCRAFTED_COVERAGE or cmd_name in EXCLUDED:
             continue
-        # Determine category: check _TOOL_CATEGORIES, then _CLI_CATEGORY_OVERRIDES
-        cat = _TOOL_CATEGORIES.get(cmd_name) or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+        # Determine category: check _TOOL_CATEGORIES, then overrides, then plugins
+        cat = (
+            _TOOL_CATEGORIES.get(cmd_name)
+            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or plugin_categories.get(cmd_name)
+        )
         if cat:
             category_tools[cat].append((cmd_name, defn))
             categorized_names.add(cmd_name)

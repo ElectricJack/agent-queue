@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # Tool definitions (moved from tool_registry._ALL_TOOL_DEFINITIONS)
 # ---------------------------------------------------------------------------
 
+TOOL_CATEGORY = "notes"
+
 TOOL_DEFINITIONS = [
     {
         "name": "list_notes",
@@ -152,6 +154,101 @@ TOOL_DEFINITIONS = [
 
 
 # ---------------------------------------------------------------------------
+# CLI formatters — registered automatically by the formatter registry
+# ---------------------------------------------------------------------------
+
+
+def _relative_time(ts):
+    """Format a Unix timestamp as relative time."""
+    import time as _time
+    if not ts:
+        return "—"
+    delta = _time.time() - ts
+    if delta < 0:
+        return "in the future"
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    return f"{int(delta / 86400)}d ago"
+
+
+def _fmt_note_list(data: dict):
+    from rich.table import Table
+    notes = data.get("notes", [])
+    table = Table(
+        title=f"Notes — {data.get('project_id', '')}",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Name", style="bold bright_cyan")
+    table.add_column("Title", style="white", ratio=1)
+    table.add_column("Size", justify="right", style="dim")
+    table.add_column("Modified", style="dim")
+    for note in notes:
+        size = note.get("size_bytes", 0)
+        size_str = f"{size:,}" if size < 10000 else f"{size / 1024:.1f}K"
+        modified = note.get("modified")
+        mod_str = _relative_time(modified) if isinstance(modified, (int, float)) else str(modified or "—")
+        table.add_row(note.get("name", ""), note.get("title", ""), size_str, mod_str)
+    return table
+
+
+def _fmt_note_content(data: dict):
+    from rich.console import Group
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.text import Text
+    content = data.get("content", "")
+    title = data.get("title", "")
+    path = data.get("path", "")
+    size = data.get("size_bytes", 0)
+    footer = Text()
+    footer.append(f"\n{path}", style="dim")
+    footer.append(f"  ({size:,} bytes)", style="dim")
+    return Panel(
+        Group(Markdown(content), footer),
+        title=f"[bold bright_white]{title}[/]",
+        border_style="bright_cyan",
+        padding=(1, 2),
+    )
+
+
+def _fmt_note_status(data: dict):
+    from rich.text import Text
+    status = data.get("status", "ok")
+    title = data.get("title", "")
+    icon = "✅" if status in ("created", "written", "appended", "deleted", "ok") else "📝"
+    text = Text()
+    text.append(f"{icon} ", style="bold")
+    text.append(f"{status.capitalize()}", style="bold green")
+    if title:
+        text.append(f" — {title}", style="white")
+    path = data.get("path", "")
+    if path:
+        text.append(f"\n  {path}", style="dim")
+    return text
+
+
+def _build_cli_formatters():
+    """Return CLI formatter specs for notes commands."""
+    from src.cli.formatter_registry import FormatterSpec
+    formatters = {
+        "list_notes": FormatterSpec(render=_fmt_note_list, extract=None, many=False),
+        "read_note": FormatterSpec(render=_fmt_note_content, extract=None, many=False),
+    }
+    for cmd in ("write_note", "append_note", "delete_note"):
+        formatters[cmd] = FormatterSpec(render=_fmt_note_status, extract=None, many=False)
+    return formatters
+
+
+CLI_FORMATTERS = _build_cli_formatters
+
+
+# ---------------------------------------------------------------------------
 # Plugin
 # ---------------------------------------------------------------------------
 
@@ -176,7 +273,7 @@ class NotesPlugin(InternalPlugin):
         ctx.register_command("compare_specs_notes", self.cmd_compare_specs_notes)
 
         for tool_def in TOOL_DEFINITIONS:
-            ctx.register_tool(dict(tool_def), category="memory")
+            ctx.register_tool(dict(tool_def), category="notes")
 
     async def shutdown(self, ctx: PluginContext) -> None:
         pass

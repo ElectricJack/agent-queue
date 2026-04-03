@@ -19,7 +19,7 @@ class NoteSummary(BaseModel):
     name: str = ""
     title: str = ""
     size_bytes: int = 0
-    modified: str | None = None
+    modified: float | str | None = None
     path: str | None = None
 
 

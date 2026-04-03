@@ -255,5 +255,14 @@ def _register_all():
         empty_message="No projects found.",
     )
 
+    # -- Internal plugin formatters (auto-discovered) -------------------------
+
+    try:
+        from src.plugins.internal import collect_internal_formatters
+
+        FORMATTERS.update(collect_internal_formatters())
+    except Exception:
+        pass
+
 
 _register_all()

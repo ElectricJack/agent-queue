@@ -72,8 +72,15 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "memory": CategoryMeta(
         name="memory",
         description=(
-            "Memory operations beyond search -- notes, project profiles, "
+            "Semantic memory — search, project profiles, "
             "compaction, reindexing"
+        ),
+    ),
+    "notes": CategoryMeta(
+        name="notes",
+        description=(
+            "Project notes — list, read, write, append, delete, "
+            "promote notes to specs"
         ),
     ),
     "files": CategoryMeta(

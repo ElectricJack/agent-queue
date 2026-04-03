@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 # The actual definitions are in _build_tool_definitions() below.
 # ---------------------------------------------------------------------------
 
+TOOL_CATEGORY = "git"
+
 def _build_tool_definitions() -> list[dict]:
     """Return git tool definitions (JSON Schema format)."""
     return [
@@ -270,6 +272,114 @@ def _build_tool_definitions() -> list[dict]:
             },
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# CLI formatters
+# ---------------------------------------------------------------------------
+
+
+def _fmt_git_status(data: dict):
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.text import Text
+    repos = data.get("repos", [])
+    project = data.get("project_name", data.get("project_id", ""))
+    panels = []
+    for repo in repos:
+        workspace = repo.get("workspace_name") or repo.get("workspace_id", "")
+        branch = repo.get("branch", "—")
+        ahead, behind = repo.get("ahead", 0), repo.get("behind", 0)
+        stash = repo.get("stash_count", 0)
+        lines = []
+        bt = Text()
+        bt.append("Branch: ", style="dim")
+        bt.append(branch, style="bold bright_cyan")
+        if ahead or behind:
+            bt.append(f"  ↑{ahead} ↓{behind}", style="yellow")
+        if stash:
+            bt.append(f"  📦 {stash} stash(es)", style="dim")
+        lines.append(bt)
+        diff_stat = repo.get("diff_stat", "")
+        if diff_stat:
+            stat_lines = diff_stat.strip().split("\n")
+            show = stat_lines[:6] if len(stat_lines) > 8 else stat_lines
+            for sl in show:
+                lines.append(Text(f"  {sl.strip()}", style="dim"))
+            if len(stat_lines) > 8:
+                lines.append(Text(f"  ... and {len(stat_lines) - 6} more files", style="dim"))
+        lock = repo.get("locked_by_task_id")
+        if lock:
+            lines.append(Text(f"🔒 Locked by task: {lock}", style="yellow"))
+        title = workspace if workspace else repo.get("path", "")
+        panels.append(Panel(Group(*lines), title=f"[bold]{title}[/]", border_style="bright_black", padding=(0, 1)))
+    header = Text(f"  {project} — {len(repos)} workspace(s)", style="bold bright_white")
+    return Group(header, *panels)
+
+
+def _fmt_git_log(data: dict):
+    from rich.text import Text
+    log = data.get("log", "")
+    branch = data.get("branch", "")
+    text = Text()
+    if branch:
+        text.append(f"  {branch}\n", style="bold bright_cyan")
+    for line in log.strip().split("\n"):
+        if " " in line:
+            sha, msg = line.split(" ", 1)
+            text.append(f"  {sha} ", style="yellow")
+            text.append(f"{msg}\n", style="white")
+        else:
+            text.append(f"  {line}\n", style="white")
+    return text
+
+
+def _fmt_git_diff(data: dict):
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich.text import Text
+    diff = data.get("diff", "")
+    base = data.get("base_branch", "")
+    if not diff.strip():
+        return Panel(Text("No changes.", style="dim"), title="diff", border_style="bright_black")
+    body = Syntax(diff, "diff", theme="monokai")
+    title = f"diff ({base})" if base else "diff"
+    return Panel(body, title=f"[bold]{title}[/]", border_style="bright_black", padding=(0, 1))
+
+
+def _fmt_git_action(data: dict):
+    from rich.text import Text
+    status = data.get("status", "")
+    text = Text()
+    text.append("✅ ", style="bold")
+    text.append(f"{status}", style="bold green")
+    for key in ("branch", "message", "pr_url", "output", "pull_output"):
+        val = data.get(key)
+        if val:
+            text.append(f"\n  {key}: ", style="dim")
+            text.append(str(val)[:200], style="white")
+    return text
+
+
+def _build_cli_formatters():
+    """Return CLI formatter specs for git commands."""
+    from src.cli.formatter_registry import FormatterSpec
+    formatters = {
+        "get_git_status": FormatterSpec(render=_fmt_git_status, extract=None, many=False),
+        "git_log": FormatterSpec(render=_fmt_git_log, extract=None, many=False),
+        "git_diff": FormatterSpec(render=_fmt_git_diff, extract=None, many=False),
+    }
+    for cmd in (
+        "git_commit", "git_pull", "git_push", "git_create_branch",
+        "git_merge", "git_create_pr", "create_branch", "checkout_branch",
+        "commit_changes", "push_branch", "merge_branch", "git_checkout",
+        "create_github_repo", "generate_readme",
+    ):
+        formatters[cmd] = FormatterSpec(render=_fmt_git_action, extract=None, many=False)
+    return formatters
+
+
+CLI_FORMATTERS = _build_cli_formatters
 
 
 # ---------------------------------------------------------------------------

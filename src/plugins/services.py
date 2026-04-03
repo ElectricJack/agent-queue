@@ -384,19 +384,49 @@ class WorkspaceServiceImpl:
         return os.path.join(self._config.data_dir, "notes", project_id)
 
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None:
-        """Resolve a note file path from a title, filename, or slug."""
+        """Resolve a note file path from a title, filename, or slug.
+
+        Tries, in order:
+        1. Exact filename (if ends with .md)
+        2. Title + .md
+        3. Slugified title + .md
+        4. Case-insensitive scan of the notes directory
+        """
+        # 1. Exact filename
         if title.endswith(".md"):
             fpath = os.path.join(notes_dir, title)
             if os.path.isfile(fpath):
                 return fpath
+        # 2. Title as-is + .md
         fpath = os.path.join(notes_dir, f"{title}.md")
         if os.path.isfile(fpath):
             return fpath
+        # 3. Slugified title
         slug = self._git.slugify(title)
         if slug:
             fpath = os.path.join(notes_dir, f"{slug}.md")
             if os.path.isfile(fpath):
                 return fpath
+        # 4. Case-insensitive scan — match against filename stem or H1 title
+        if os.path.isdir(notes_dir):
+            title_lower = title.lower().removesuffix(".md")
+            for fname in os.listdir(notes_dir):
+                if not fname.endswith(".md"):
+                    continue
+                fpath = os.path.join(notes_dir, fname)
+                stem = fname[:-3].lower()
+                if stem == title_lower or stem.replace("-", " ") == title_lower:
+                    return fpath
+                # Check H1 title inside the file
+                try:
+                    with open(fpath, "r") as f:
+                        first_line = f.readline().strip()
+                    if first_line.startswith("# "):
+                        h1 = first_line[2:].strip()
+                        if h1.lower() == title_lower:
+                            return fpath
+                except OSError:
+                    continue
         return None
 
 

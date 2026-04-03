@@ -43,6 +43,8 @@ async def _run_subprocess(
 # Tool definitions (moved from tool_registry._ALL_TOOL_DEFINITIONS)
 # ---------------------------------------------------------------------------
 
+TOOL_CATEGORY = "files"
+
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
@@ -190,6 +192,109 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# CLI formatters
+# ---------------------------------------------------------------------------
+
+
+def _fmt_file_content(data: dict):
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    from rich.text import Text
+    content = data.get("content", "")
+    path = data.get("path", data.get("file_path", ""))
+    ext = path.rsplit(".", 1)[-1] if "." in path else ""
+    lang_map = {
+        "py": "python", "js": "javascript", "ts": "typescript",
+        "rs": "rust", "go": "go", "rb": "ruby", "sh": "bash",
+        "yaml": "yaml", "yml": "yaml", "json": "json", "toml": "toml",
+        "md": "markdown", "html": "html", "css": "css", "sql": "sql",
+    }
+    lang = lang_map.get(ext, "")
+    body = Syntax(content, lang, theme="monokai", line_numbers=True) if lang else Text(content)
+    return Panel(body, title=f"[bold bright_white]{path}[/]", border_style="bright_cyan", padding=(0, 1))
+
+
+def _fmt_directory_listing(data: dict):
+    from rich.table import Table
+    path = data.get("path", "")
+    dirs = data.get("directories", [])
+    files = data.get("files", [])
+    table = Table(
+        title=f"{path}/", title_style="bold bright_white",
+        border_style="bright_black", expand=True,
+    )
+    table.add_column("Name", style="white", ratio=1)
+    table.add_column("Size", justify="right", style="dim")
+    table.add_column("Type", style="dim")
+    for d in sorted(dirs):
+        table.add_row(f"📁 {d}", "—", "dir")
+    for f in sorted(files, key=lambda x: x.get("name", "")):
+        name = f.get("name", "")
+        size = f.get("size", 0)
+        size_str = f"{size:,}" if size < 10000 else f"{size / 1024:.1f}K"
+        table.add_row(f"  {name}", size_str, "file")
+    return table
+
+
+def _fmt_glob_results(data: dict):
+    from rich.console import Group
+    from rich.text import Text
+    matches = data.get("matches", [])
+    path_text = Text()
+    for m in matches:
+        path_text.append(f"  {m}\n", style="bright_cyan")
+    header = Text(f"  {len(matches)} match(es)", style="bold")
+    return Group(header, path_text)
+
+
+def _fmt_grep_results(data: dict):
+    from rich.console import Group
+    from rich.text import Text
+    matches = data.get("matches", [])
+    if not matches:
+        return Group(Text("  No matches found.", style="dim"))
+    parts = []
+    for m in matches:
+        line = Text()
+        line.append(f"  {m.get('file', '')}", style="bright_cyan")
+        line.append(f":{m.get('line_number', '')}", style="dim")
+        line.append(f"  {m.get('text', '')}", style="white")
+        parts.append(line)
+    header = Text(f"  {len(matches)} match(es)", style="bold")
+    return Group(header, *parts)
+
+
+def _fmt_file_status(data: dict):
+    from rich.text import Text
+    status = data.get("status", "ok")
+    path = data.get("path", data.get("file_path", ""))
+    icon = "✅" if status in ("written", "created", "edited", "ok") else "📝"
+    text = Text()
+    text.append(f"{icon} ", style="bold")
+    text.append(f"{status.capitalize()}", style="bold green")
+    if path:
+        text.append(f" — {path}", style="dim")
+    return text
+
+
+def _build_cli_formatters():
+    """Return CLI formatter specs for file commands."""
+    from src.cli.formatter_registry import FormatterSpec
+    formatters = {
+        "read_file": FormatterSpec(render=_fmt_file_content, extract=None, many=False),
+        "list_directory": FormatterSpec(render=_fmt_directory_listing, extract=None, many=False),
+        "glob_files": FormatterSpec(render=_fmt_glob_results, extract=None, many=False),
+        "grep": FormatterSpec(render=_fmt_grep_results, extract=None, many=False),
+    }
+    for cmd in ("write_file", "edit_file"):
+        formatters[cmd] = FormatterSpec(render=_fmt_file_status, extract=None, many=False)
+    return formatters
+
+
+CLI_FORMATTERS = _build_cli_formatters
 
 
 # ---------------------------------------------------------------------------

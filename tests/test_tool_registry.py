@@ -115,6 +115,7 @@ def test_registry_has_categories(registry):
         "agent",
         "hooks",
         "memory",
+        "notes",
         "system",
         "task",
         "plugin",

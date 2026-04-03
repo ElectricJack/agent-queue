@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # Tool definitions
 # ---------------------------------------------------------------------------
 
+TOOL_CATEGORY = "memory"
+
 TOOL_DEFINITIONS = [
     {
         "name": "memory_search",
@@ -160,6 +162,71 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# CLI formatters
+# ---------------------------------------------------------------------------
+
+
+def _fmt_memory_search(data: dict):
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.text import Text
+    results = data.get("results", [])
+    query = data.get("query", "")
+    count = data.get("count", len(results))
+    header = Text()
+    header.append("  Memory search: ", style="dim")
+    header.append(f'"{query}"', style="bold")
+    header.append(f"  ({count} result(s))", style="dim")
+    if not results:
+        return Group(header, Text("  No results found.", style="dim"))
+    panels = []
+    for r in results:
+        score = r.get("score", 0)
+        content = r.get("content", r.get("text", ""))
+        source = r.get("source", r.get("type", ""))
+        snippet = content[:300] + ("..." if len(content) > 300 else "")
+        meta = Text()
+        meta.append(f"Score: {score:.2f}", style="dim")
+        if source:
+            meta.append(f"  Source: {source}", style="cyan")
+        panels.append(Panel(Group(Text(snippet, style="white"), meta), border_style="bright_black", padding=(0, 1)))
+    return Group(header, *panels)
+
+
+def _fmt_memory_stats(data: dict):
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.text import Text
+    lines = []
+    for key in ("enabled", "provider", "collection", "document_count",
+                "embedding_model", "chunk_size", "notes_inform_profile"):
+        val = data.get(key)
+        if val is not None:
+            line = Text()
+            line.append(f"  {key}: ", style="dim")
+            line.append(str(val), style="white")
+            lines.append(line)
+    return Panel(
+        Group(*lines) if lines else Text("  No stats available.", style="dim"),
+        title="[bold bright_white]Memory Stats[/]",
+        border_style="bright_cyan",
+        padding=(0, 1),
+    )
+
+
+def _build_cli_formatters():
+    """Return CLI formatter specs for memory commands."""
+    from src.cli.formatter_registry import FormatterSpec
+    return {
+        "memory_search": FormatterSpec(render=_fmt_memory_search, extract=None, many=False),
+        "memory_stats": FormatterSpec(render=_fmt_memory_stats, extract=None, many=False),
+    }
+
+
+CLI_FORMATTERS = _build_cli_formatters
 
 
 # ---------------------------------------------------------------------------
