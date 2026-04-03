@@ -35,10 +35,13 @@ def project_details(ctx: click.Context, project_id: str) -> None:
     async def _details():
         async with _get_client(api_url) as client:
             proj_result = await client.execute("list_projects")
-            task_result = await client.execute("list_tasks", {
-                "project_id": project_id,
-                "include_completed": True,
-            })
+            task_result = await client.execute(
+                "list_tasks",
+                {
+                    "project_id": project_id,
+                    "include_completed": True,
+                },
+            )
             return proj_result, task_result
 
     proj_result, task_result = _run(_details())
@@ -124,8 +127,7 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
     field = KEY_MAP.get(key)
     if not field:
         console.print(
-            f"[bold red]Unknown key:[/] {key}\n"
-            f"[dim]Allowed: {', '.join(sorted(KEY_MAP))}[/]"
+            f"[bold red]Unknown key:[/] {key}\n[dim]Allowed: {', '.join(sorted(KEY_MAP))}[/]"
         )
         raise SystemExit(1)
 

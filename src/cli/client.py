@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # URL resolution
 # ---------------------------------------------------------------------------
 
+
 def _resolve_api_url() -> str:
     """Resolve the daemon API base URL.
 
@@ -45,6 +46,7 @@ def _resolve_api_url() -> str:
     if os.path.exists(config_file):
         try:
             import yaml
+
             with open(config_file) as f:
                 cfg = yaml.safe_load(f) or {}
             mcp = cfg.get("mcp_server", {})
@@ -74,6 +76,7 @@ def _build_typed_dispatch() -> dict[str, tuple[Any, type]]:
     dispatch: dict[str, tuple[Any, type]] = {}
     try:
         import agent_queue_api_client.api as api_pkg
+
         for _, cat_name, ispkg in pkgutil.iter_modules(api_pkg.__path__):
             if not ispkg:
                 continue
@@ -118,6 +121,7 @@ def _get_typed_dispatch() -> dict[str, tuple[Any, type]]:
 # REST CLI client
 # ---------------------------------------------------------------------------
 
+
 class CLIClient:
     """Async HTTP client that delegates commands to the daemon.
 
@@ -148,6 +152,7 @@ class CLIClient:
         # Set up the generated client, sharing the same httpx.AsyncClient
         try:
             from agent_queue_api_client.client import Client
+
             self._generated_client = Client(base_url=self._base_url, timeout=30.0)
             self._generated_client.set_async_httpx_client(self._http)
         except ImportError:
@@ -248,6 +253,7 @@ class CLIClient:
 # Plugin client — direct DB access for plugin management operations
 # ---------------------------------------------------------------------------
 
+
 class PluginClient:
     """Direct database client for plugin management operations.
 
@@ -262,6 +268,7 @@ class PluginClient:
 
     async def connect(self) -> None:
         from src.database import Database
+
         if not os.path.exists(self._db_path):
             raise FileNotFoundError(
                 f"Database not found at {self._db_path}. "
@@ -323,6 +330,7 @@ def _default_plugin_db_path() -> str:
     if os.path.exists(config_file):
         try:
             import yaml
+
             with open(config_file) as f:
                 cfg = yaml.safe_load(f) or {}
             db_path = cfg.get("database", {}).get("path")

@@ -1,4 +1,5 @@
 """Tests for the LLM interaction logger."""
+
 import json
 import os
 import shutil
@@ -86,7 +87,10 @@ class TestLLMLoggerChatProvider:
 
     def test_logs_tool_names_only(self, logger, log_dir):
         tools = [
-            {"name": "create_task", "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}}},
+            {
+                "name": "create_task",
+                "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
+            },
             {"name": "list_tasks", "input_schema": {"type": "object"}},
         ]
         logger.log_chat_provider_call(

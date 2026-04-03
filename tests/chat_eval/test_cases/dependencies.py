@@ -102,7 +102,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # add_dependency — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -138,7 +137,10 @@ CASES: list[TestCase] = [
         setup_commands=[
             ("create_project", {"name": "BeforeProj"}),
             ("create_task", {"project_id": "p-1", "title": "Setup", "description": "Setup first"}),
-            ("create_task", {"project_id": "p-1", "title": "Deploy", "description": "Deploy after"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Deploy", "description": "Deploy after"},
+            ),
         ],
         turns=[
             Turn(
@@ -161,7 +163,10 @@ CASES: list[TestCase] = [
         setup_commands=[
             ("create_project", {"name": "CantStartProj"}),
             ("create_task", {"project_id": "p-1", "title": "Build", "description": "Build first"}),
-            ("create_task", {"project_id": "p-1", "title": "Test", "description": "Test after build"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Test", "description": "Test after build"},
+            ),
         ],
         turns=[
             Turn(
@@ -175,7 +180,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # remove_dependency — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -227,7 +231,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_chain_health — TRIVIAL / EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -273,7 +276,10 @@ CASES: list[TestCase] = [
         tags=["get_chain_health", "read"],
         setup_commands=[
             ("create_project", {"name": "TaskHealth"}),
-            ("create_task", {"project_id": "p-1", "title": "Blocked", "description": "Blocked task"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Blocked", "description": "Blocked task"},
+            ),
         ],
         turns=[
             Turn(

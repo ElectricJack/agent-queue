@@ -112,13 +112,15 @@ def format_task_table(
         row = [task.id]
         if show_project:
             row.append(task.project_id)
-        row.extend([
-            _status_text(task.status.value),
-            pri_text,
-            type_icon,
-            _truncate(task.title, 50),
-            task.assigned_agent_id or "—",
-        ])
+        row.extend(
+            [
+                _status_text(task.status.value),
+                pri_text,
+                type_icon,
+                _truncate(task.title, 50),
+                task.assigned_agent_id or "—",
+            ]
+        )
         table.add_row(*row)
 
     if not tasks:
@@ -280,7 +282,9 @@ def format_hook_table(hooks: list[Hook]) -> Table:
         # Parse trigger for display
         try:
             trigger = json.loads(hook.trigger) if isinstance(hook.trigger, str) else hook.trigger
-            trigger_type = trigger.get("type", "unknown") if isinstance(trigger, dict) else str(trigger)
+            trigger_type = (
+                trigger.get("type", "unknown") if isinstance(trigger, dict) else str(trigger)
+            )
         except (json.JSONDecodeError, TypeError):
             trigger_type = str(hook.trigger)[:20]
 
@@ -394,7 +398,9 @@ def format_status_overview(
     failed = task_counts.get("FAILED", 0)
 
     lines.append(Text("📊 Task Summary", style="bold bright_white"))
-    lines.append(Text(f"  Total: {total}  Active: {active}  Completed: {completed}  Failed: {failed}"))
+    lines.append(
+        Text(f"  Total: {total}  Active: {active}  Completed: {completed}  Failed: {failed}")
+    )
     lines.append("")
 
     # Status breakdown

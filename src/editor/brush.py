@@ -169,16 +169,10 @@ def apply_brush(
     """
     result = BrushResult()
 
-    footprint = get_brush_footprint(
-        center_x, center_y, config.brush_type, config.size
-    )
+    footprint = get_brush_footprint(center_x, center_y, config.brush_type, config.size)
 
     # Filter to positions within grid bounds (x, y only)
-    valid_positions = [
-        (x, y)
-        for x, y in footprint
-        if 0 <= x < grid.width and 0 <= y < grid.height
-    ]
+    valid_positions = [(x, y) for x, y in footprint if 0 <= x < grid.width and 0 <= y < grid.height]
 
     if config.operation == BrushOperation.ADD:
         _apply_add(grid, valid_positions, config, result)

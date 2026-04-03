@@ -65,7 +65,8 @@ class DependencyQueryMixin:
         return [self._row_to_task(r) for r in rows]
 
     async def get_blocking_dependencies(
-        self, task_id: str,
+        self,
+        task_id: str,
     ) -> list[tuple[str, str, str]]:
         """Return (dep_task_id, dep_title, dep_status) for unmet dependencies."""
         cursor = await self._db.execute(
@@ -88,7 +89,8 @@ class DependencyQueryMixin:
         return {r["task_id"] for r in rows}
 
     async def get_dependency_map_for_tasks(
-        self, task_ids: list[str],
+        self,
+        task_ids: list[str],
     ) -> dict[str, dict]:
         """Batch-fetch dependency data for multiple tasks in two queries.
 
@@ -97,9 +99,7 @@ class DependencyQueryMixin:
         if not task_ids:
             return {}
 
-        result: dict[str, dict] = {
-            tid: {"depends_on": [], "blocks": []} for tid in task_ids
-        }
+        result: dict[str, dict] = {tid: {"depends_on": [], "blocks": []} for tid in task_ids}
 
         placeholders = ",".join("?" for _ in task_ids)
         cursor = await self._db.execute(
@@ -112,10 +112,12 @@ class DependencyQueryMixin:
         for row in await cursor.fetchall():
             tid = row["task_id"]
             if tid in result:
-                result[tid]["depends_on"].append({
-                    "id": row["depends_on_task_id"],
-                    "status": row["status"],
-                })
+                result[tid]["depends_on"].append(
+                    {
+                        "id": row["depends_on_task_id"],
+                        "status": row["status"],
+                    }
+                )
 
         cursor = await self._db.execute(
             "SELECT d.depends_on_task_id, d.task_id "
@@ -136,8 +138,7 @@ class DependencyQueryMixin:
     async def remove_dependency(self, task_id: str, depends_on: str) -> None:
         """Remove a single dependency edge."""
         await self._db.execute(
-            "DELETE FROM task_dependencies "
-            "WHERE task_id = ? AND depends_on_task_id = ?",
+            "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
             (task_id, depends_on),
         )
         await self._db.commit()

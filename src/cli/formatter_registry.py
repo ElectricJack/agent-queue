@@ -45,6 +45,7 @@ class FormatterSpec:
         sort_key: Optional sort function applied to the list (many=True only).
         empty_message: Message to print when the list is empty.
     """
+
     render: Callable[..., Any]
     extract: str | None = None
     proxy: Callable[[dict], Any] | None = None
@@ -67,6 +68,7 @@ def formatter_for(
     empty_message: str | None = None,
 ):
     """Decorator to register a render function for a command."""
+
     def decorator(fn: Callable) -> Callable:
         FORMATTERS[command] = FormatterSpec(
             render=fn,
@@ -77,6 +79,7 @@ def formatter_for(
             empty_message=empty_message,
         )
         return fn
+
     return decorator
 
 
@@ -127,6 +130,7 @@ def apply_formatter(command: str, result: dict, console) -> bool:
 # These live here (near the registry) rather than scattered across CLI files.
 # Imports are deferred to avoid circular dependencies at module load time.
 
+
 def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
@@ -148,10 +152,20 @@ def _register_all():
     # -- Task commands -------------------------------------------------------
 
     _task_sort = lambda t: (
-        {"IN_PROGRESS": 0, "WAITING_INPUT": 1, "ASSIGNED": 2, "READY": 3,
-         "AWAITING_APPROVAL": 4, "AWAITING_PLAN_APPROVAL": 5, "VERIFYING": 6,
-         "DEFINED": 7, "BLOCKED": 8, "PAUSED": 9, "FAILED": 10, "COMPLETED": 11,
-         }.get(t.status.value if t.status else "", 99),
+        {
+            "IN_PROGRESS": 0,
+            "WAITING_INPUT": 1,
+            "ASSIGNED": 2,
+            "READY": 3,
+            "AWAITING_APPROVAL": 4,
+            "AWAITING_PLAN_APPROVAL": 5,
+            "VERIFYING": 6,
+            "DEFINED": 7,
+            "BLOCKED": 8,
+            "PAUSED": 9,
+            "FAILED": 10,
+            "COMPLETED": 11,
+        }.get(t.status.value if t.status else "", 99),
         -(t.priority or 0),
     )
 
@@ -176,7 +190,10 @@ def _register_all():
             done = sum(1 for s in subtasks if s.get("status") in ("COMPLETED", "completed"))
             subtask_stats = (done, total)
         return format_task_detail(
-            task, deps_on=deps_on, dependents=dependents, subtask_stats=subtask_stats,
+            task,
+            deps_on=deps_on,
+            dependents=dependents,
+            subtask_stats=subtask_stats,
         )
 
     FORMATTERS["get_task"] = FormatterSpec(

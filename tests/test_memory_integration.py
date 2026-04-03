@@ -19,7 +19,10 @@ import pytest
 # memsearch is installed but the "local" embedding provider requires
 # sentence-transformers, which is an optional dependency.
 memsearch = pytest.importorskip("memsearch", reason="memsearch not installed")
-pytest.importorskip("sentence_transformers", reason="sentence-transformers not installed (required for local embeddings)")
+pytest.importorskip(
+    "sentence_transformers",
+    reason="sentence-transformers not installed (required for local embeddings)",
+)
 
 from src.memory import MemoryConfig, MemoryManager  # noqa: E402
 
@@ -84,8 +87,10 @@ class TestMemoryEndToEnd:
             # Search
             results = await mgr.search("test-proj", str(workspace), "JWT authentication")
             assert len(results) > 0
-            assert any("JWT" in r.get("content", "") or "authentication" in r.get("content", "").lower()
-                       for r in results)
+            assert any(
+                "JWT" in r.get("content", "") or "authentication" in r.get("content", "").lower()
+                for r in results
+            )
         finally:
             await mgr.close()
 
@@ -159,8 +164,7 @@ class TestMemoryEndToEnd:
         try:
             # Write a note
             (workspace / "notes" / "architecture.md").write_text(
-                "# Architecture Decision\n\n"
-                "We chose PostgreSQL over MySQL for its JSONB support.\n"
+                "# Architecture Decision\n\nWe chose PostgreSQL over MySQL for its JSONB support.\n"
             )
 
             instance = await mgr.get_instance("test-proj", str(workspace))

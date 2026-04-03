@@ -244,6 +244,7 @@ def load_template(file_path: str) -> PromptTemplate | None:
 # Rendering
 # ---------------------------------------------------------------------------
 
+
 def render_template(
     template: PromptTemplate,
     variables: dict[str, str] | None = None,
@@ -278,8 +279,7 @@ def render_template(
             effective[var.name] = var.default
         elif strict and var.required:
             raise ValueError(
-                f"Required variable '{var.name}' not provided for "
-                f"template '{template.name}'"
+                f"Required variable '{var.name}' not provided for template '{template.name}'"
             )
     # Also include any extra variables not declared in schema
     for key, value in variables.items():
@@ -296,6 +296,7 @@ def render_template(
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
+
 
 class PromptManager:
     """Manages prompt templates stored in a workspace's ``prompts/`` directory.
@@ -411,10 +412,7 @@ class PromptManager:
         for tmpl in templates:
             cat_counts[tmpl.category] = cat_counts.get(tmpl.category, 0) + 1
 
-        return [
-            {"category": cat, "count": count}
-            for cat, count in sorted(cat_counts.items())
-        ]
+        return [{"category": cat, "count": count} for cat, count in sorted(cat_counts.items())]
 
     def get_all_tags(self) -> list[str]:
         """Return a sorted list of all unique tags across templates."""

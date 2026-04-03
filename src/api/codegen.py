@@ -42,6 +42,7 @@ API_EXCLUDED = {
     "reply_to_user",
 }
 
+
 def _category_to_api_path(cat_name: str) -> str:
     """Derive API path segment from category name.
 
@@ -53,6 +54,7 @@ def _category_to_api_path(cat_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Input model generation from JSON Schema
 # ---------------------------------------------------------------------------
+
 
 def _json_schema_type_to_python(prop_schema: dict) -> type:
     """Map a JSON Schema property to a Python type."""
@@ -105,6 +107,7 @@ def _make_input_model(cmd_name: str, input_schema: dict) -> type[BaseModel]:
 # Route generation
 # ---------------------------------------------------------------------------
 
+
 def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
     """Create an async route handler that delegates to CommandHandler.execute()."""
     from typing import Annotated
@@ -140,6 +143,7 @@ def build_category_routers() -> list[APIRouter]:
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
     try:
         from src.mcp_registration import _discover_all_commands
+
         discovered = _discover_all_commands()
         for name, defn in discovered.items():
             if name not in tool_map:
@@ -187,7 +191,17 @@ def build_category_routers() -> list[APIRouter]:
                     description=defn.get("description", ""),
                     operation_id=cmd_name,
                     responses={
-                        422: {"description": "Command error", "content": {"application/json": {"schema": {"type": "object", "properties": {"error": {"type": "string"}}}}}},
+                        422: {
+                            "description": "Command error",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"error": {"type": "string"}},
+                                    }
+                                }
+                            },
+                        },
                     },
                 )
             except Exception:

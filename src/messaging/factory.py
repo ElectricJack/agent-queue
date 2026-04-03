@@ -54,6 +54,5 @@ def create_messaging_adapter(
         return TelegramMessagingAdapter(config, orchestrator)
     else:
         raise ValueError(
-            f"Unknown messaging platform: {platform!r}. "
-            f"Supported platforms: 'discord', 'telegram'"
+            f"Unknown messaging platform: {platform!r}. Supported platforms: 'discord', 'telegram'"
         )

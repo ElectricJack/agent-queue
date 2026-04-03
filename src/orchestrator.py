@@ -84,16 +84,28 @@ from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
-    format_task_started, format_task_failed,
-    format_task_blocked, format_pr_created, format_agent_question,
-    format_chain_stuck, format_stuck_defined_task,
+    format_task_started,
+    format_task_failed,
+    format_task_blocked,
+    format_pr_created,
+    format_agent_question,
+    format_chain_stuck,
+    format_stuck_defined_task,
     format_budget_warning,
-    format_task_started_embed, format_task_completed_embed,
-    format_task_failed_embed, format_task_blocked_embed,
-    format_pr_created_embed, format_agent_question_embed,
-    format_chain_stuck_embed, format_stuck_defined_task_embed,
+    format_task_started_embed,
+    format_task_completed_embed,
+    format_task_failed_embed,
+    format_task_blocked_embed,
+    format_pr_created_embed,
+    format_agent_question_embed,
+    format_chain_stuck_embed,
+    format_stuck_defined_task_embed,
     format_budget_warning_embed,
-    TaskStartedView, TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
+    TaskStartedView,
+    TaskFailedView,
+    TaskApprovalView,
+    TaskBlockedView,
+    AgentQuestionView,
 )
 from src.event_bus import EventBus
 from src.messaging.types import (
@@ -105,9 +117,20 @@ from src.messaging.types import (
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
-    AgentOutput, AgentProfile, AgentResult, AgentState,
-    PhaseResult, PipelineContext, ProjectStatus, RepoConfig, RepoSourceType,
-    Task, TaskStatus, TaskContext, TaskType, Workspace,
+    AgentOutput,
+    AgentProfile,
+    AgentResult,
+    AgentState,
+    PhaseResult,
+    PipelineContext,
+    ProjectStatus,
+    RepoConfig,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    TaskContext,
+    TaskType,
+    Workspace,
 )
 from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
@@ -169,9 +192,7 @@ class Orchestrator:
         self.config = config
         self.db = Database(config.database_path)
         self.bus = EventBus()
-        self.budget = BudgetManager(
-            global_budget=config.global_token_budget_daily
-        )
+        self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
         self._adapter_factory = adapter_factory
         # Live adapter instances keyed by agent_id.  Stored so we can call
@@ -223,11 +244,10 @@ class Orchestrator:
         if config.auto_task.use_llm_parser:
             try:
                 from src.chat_providers import create_chat_provider, LoggedChatProvider
+
                 provider = create_chat_provider(config.chat_provider)
                 if provider and self.llm_logger._enabled:
-                    provider = LoggedChatProvider(
-                        provider, self.llm_logger, caller="plan_parser"
-                    )
+                    provider = LoggedChatProvider(provider, self.llm_logger, caller="plan_parser")
                 self._chat_provider = provider
             except Exception:
                 pass
@@ -245,9 +265,8 @@ class Orchestrator:
         if hasattr(config, "memory") and config.memory.enabled:
             try:
                 from src.memory import MemoryManager
-                self.memory_manager = MemoryManager(
-                    config.memory, storage_root=config.data_dir
-                )
+
+                self.memory_manager = MemoryManager(config.memory, storage_root=config.data_dir)
             except Exception as e:
                 logger.warning("Memory manager initialization failed: %s", e)
         # Reference to the command handler, set by the bot after initialization.
@@ -275,6 +294,7 @@ class Orchestrator:
         # Wire LLM invocation callback into the plugin registry so plugins
         # can call ctx.invoke_llm() from cron jobs and command handlers.
         if hasattr(self, "plugin_registry") and self.plugin_registry:
+
             async def _plugin_invoke_llm(
                 prompt: str,
                 plugin_name: str,
@@ -286,6 +306,7 @@ class Orchestrator:
                 if model or provider:
                     from src.chat_providers import create_chat_provider
                     from src.config import ChatProviderConfig
+
                     cfg = ChatProviderConfig(
                         provider=provider or self.config.chat_provider.provider,
                         model=model or self.config.chat_provider.model,
@@ -298,7 +319,8 @@ class Orchestrator:
                     return resp.text
                 # Default: use the supervisor (has tool loop)
                 return await supervisor.chat(
-                    prompt, user_name=f"plugin:{plugin_name}",
+                    prompt,
+                    user_name=f"plugin:{plugin_name}",
                 )
 
             self.plugin_registry.set_invoke_llm_callback(_plugin_invoke_llm)
@@ -360,17 +382,19 @@ class Orchestrator:
                     install=pc.install,
                 )
             else:
-                await self.db.create_profile(AgentProfile(
-                    id=pc.id,
-                    name=pc.name,
-                    description=pc.description,
-                    model=pc.model,
-                    permission_mode=pc.permission_mode,
-                    allowed_tools=pc.allowed_tools,
-                    mcp_servers=pc.mcp_servers,
-                    system_prompt_suffix=pc.system_prompt_suffix,
-                    install=pc.install,
-                ))
+                await self.db.create_profile(
+                    AgentProfile(
+                        id=pc.id,
+                        name=pc.name,
+                        description=pc.description,
+                        model=pc.model,
+                        permission_mode=pc.permission_mode,
+                        allowed_tools=pc.allowed_tools,
+                        mcp_servers=pc.mcp_servers,
+                        system_prompt_suffix=pc.system_prompt_suffix,
+                        install=pc.install,
+                    )
+                )
 
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
         """Resolve the agent profile for a task using a three-level fallback chain.
@@ -501,8 +525,11 @@ class Orchestrator:
         await self._notify_channel(
             f"**Task Skipped:** `{task_id}` — {task.title}\n"
             f"Marked as COMPLETED to unblock dependency chain."
-            + (f"\n{len(unblocked)} task(s) will be unblocked in the next cycle."
-               if unblocked else ""),
+            + (
+                f"\n{len(unblocked)} task(s) will be unblocked in the next cycle."
+                if unblocked
+                else ""
+            ),
             project_id=task.project_id,
         )
 
@@ -544,12 +571,11 @@ class Orchestrator:
         if ws:
             self._remove_sentinel(ws.workspace_path)
         await self.db.release_workspaces_for_task(task_id)
-        await self.db.transition_task(task_id, TaskStatus.BLOCKED,
-                                      context="stop_task",
-                                      assigned_agent_id=None)
+        await self.db.transition_task(
+            task_id, TaskStatus.BLOCKED, context="stop_task", assigned_agent_id=None
+        )
         if agent_id:
-            await self.db.update_agent(agent_id, state=AgentState.IDLE,
-                                       current_task_id=None)
+            await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
         await self._notify_channel(
@@ -562,24 +588,23 @@ class Orchestrator:
             try:
                 await added_msg.delete()
             except Exception as e:
-                logger.debug("Could not delete task-added message for %s: %s",
-                             task_id, e)
+                logger.debug("Could not delete task-added message for %s: %s", task_id, e)
         started_msg = self._task_started_messages.pop(task_id, None)
         if started_msg is not None:
             try:
                 await started_msg.delete()
             except Exception as e:
-                logger.debug("Could not delete task-started message for %s: %s",
-                             task_id, e)
+                logger.debug("Could not delete task-started message for %s: %s", task_id, e)
         # Update the thread root message to reflect the stop
         if self._edit_thread_root:
             try:
                 await self._edit_thread_root(
-                    task_id, f"🛑 **Work stopped:** {task.title}", None,
+                    task_id,
+                    f"🛑 **Work stopped:** {task.title}",
+                    None,
                 )
             except Exception as e:
-                logger.debug("Could not edit thread root for %s: %s",
-                             task_id, e)
+                logger.debug("Could not edit thread root for %s: %s", task_id, e)
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
@@ -644,6 +669,7 @@ class Orchestrator:
         formatter (for logging) and the rich embed formatter (for Discord).
         """
         from src.models import Agent
+
         # Ensure we have proper model objects (may receive raw DB rows)
         if not isinstance(agent, Agent):
             agent = await self.db.get_agent(getattr(agent, "id", agent))
@@ -698,11 +724,10 @@ class Orchestrator:
         limit = project.budget_limit
 
         # Get current usage in the rolling window
-        window_start = time.time() - (
-            self.config.scheduling.rolling_window_hours * 3600
-        )
+        window_start = time.time() - (self.config.scheduling.rolling_window_hours * 3600)
         usage = await self.db.get_project_token_usage(
-            project_id, since=window_start,
+            project_id,
+            since=window_start,
         )
 
         pct = (usage / limit * 100) if limit > 0 else 0
@@ -741,7 +766,14 @@ class Orchestrator:
             project_id=project_id,
             payload=f"usage={usage:,}/{limit:,} ({pct:.0f}%), threshold={crossed}%",
         )
-        logger.info("Budget warning: project %s at %.0f%% (%s/%s tokens, threshold=%d%%)", project_id, pct, usage, limit, crossed)
+        logger.info(
+            "Budget warning: project %s at %.0f%% (%s/%s tokens, threshold=%d%%)",
+            project_id,
+            pct,
+            usage,
+            limit,
+            crossed,
+        )
 
     async def initialize(self) -> None:
         """Bootstrap the orchestrator and all subsystems.
@@ -771,6 +803,7 @@ class Orchestrator:
 
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
+
         self.plugin_registry = PluginRegistry(
             db=self.db,
             bus=self.bus,
@@ -793,10 +826,11 @@ class Orchestrator:
 
         # Initialize rule manager
         from src.rule_manager import RuleManager
+
         self.rule_manager = RuleManager(
             storage_root=self.config.data_dir,
             db=self.db,
-            hook_engine=self.hooks if hasattr(self, 'hooks') else None,
+            hook_engine=self.hooks if hasattr(self, "hooks") else None,
             orchestrator=self,
         )
 
@@ -808,7 +842,8 @@ class Orchestrator:
             if installed:
                 logger.info(
                     "Installed %d default global rules: %s",
-                    len(installed), installed,
+                    len(installed),
+                    installed,
                 )
         except Exception as e:
             logger.warning("Default rule installation failed: %s", e)
@@ -863,7 +898,11 @@ class Orchestrator:
         all_workspaces = await self.db.list_workspaces()
         for ws in all_workspaces:
             if ws.locked_by_agent_id:
-                logger.info("Recovery: releasing workspace lock '%s' (was locked by %s)", ws.id, ws.locked_by_agent_id)
+                logger.info(
+                    "Recovery: releasing workspace lock '%s' (was locked by %s)",
+                    ws.id,
+                    ws.locked_by_agent_id,
+                )
                 await self.db.release_workspace(ws.id)
             # Always clean sentinel files on startup — no agents are running
             self._remove_sentinel(ws.workspace_path)
@@ -871,10 +910,12 @@ class Orchestrator:
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
-            logger.info("Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title)
-            await self.db.transition_task(t.id, TaskStatus.READY,
-                                          context="recovery",
-                                          assigned_agent_id=None)
+            logger.info(
+                "Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title
+            )
+            await self.db.transition_task(
+                t.id, TaskStatus.READY, context="recovery", assigned_agent_id=None
+            )
 
     async def wait_for_running_tasks(self, timeout: float | None = None) -> None:
         """Wait for all background task executions to finish.
@@ -932,9 +973,7 @@ class Orchestrator:
             return None
 
         try:
-            memory_ctx = await self.memory_manager.build_context(
-                task.project_id, task, workspace
-            )
+            memory_ctx = await self.memory_manager.build_context(task.project_id, task, workspace)
             if not memory_ctx.is_empty:
                 return memory_ctx.to_context_block()
         except Exception as e:
@@ -1180,12 +1219,9 @@ class Orchestrator:
                 self._remove_sentinel(ws.workspace_path)
             await self.db.release_workspaces_for_task(action.task_id)
             await self.db.transition_task(
-                action.task_id, TaskStatus.BLOCKED,
-                context="timeout",
-                assigned_agent_id=None)
-            await self.db.update_agent(
-                action.agent_id, state=AgentState.IDLE,
-                current_task_id=None)
+                action.task_id, TaskStatus.BLOCKED, context="timeout", assigned_agent_id=None
+            )
+            await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(action.agent_id, None)
             await self._notify_channel(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
@@ -1205,12 +1241,14 @@ class Orchestrator:
                     self._remove_sentinel(ws.workspace_path)
                 await self.db.release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
-                    action.task_id, TaskStatus.READY,
+                    action.task_id,
+                    TaskStatus.READY,
                     context="execution_error",
-                    assigned_agent_id=None)
+                    assigned_agent_id=None,
+                )
                 await self.db.update_agent(
-                    action.agent_id, state=AgentState.IDLE,
-                    current_task_id=None)
+                    action.agent_id, state=AgentState.IDLE, current_task_id=None
+                )
             except Exception:
                 pass
             await self._notify_channel(
@@ -1253,10 +1291,13 @@ class Orchestrator:
         now = time.time()
         for task in paused:
             if task.resume_after and task.resume_after <= now:
-                await self.db.transition_task(task.id, TaskStatus.READY,
-                                              context="resume_paused",
-                                              assigned_agent_id=None,
-                                              resume_after=None)
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.READY,
+                    context="resume_paused",
+                    assigned_agent_id=None,
+                    resume_after=None,
+                )
 
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED tasks to READY when all dependencies are satisfied.
@@ -1287,13 +1328,11 @@ class Orchestrator:
             deps = await self.db.get_dependencies(task.id)
             if not deps:
                 # No dependencies — promote to READY
-                await self.db.transition_task(task.id, TaskStatus.READY,
-                                              context="deps_met_no_deps")
+                await self.db.transition_task(task.id, TaskStatus.READY, context="deps_met_no_deps")
             else:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
-                    await self.db.transition_task(task.id, TaskStatus.READY,
-                                                  context="deps_met")
+                    await self.db.transition_task(task.id, TaskStatus.READY, context="deps_met")
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Monitoring: detect DEFINED tasks stuck waiting for dependencies.
@@ -1353,10 +1392,15 @@ class Orchestrator:
                 "stuck_defined_task",
                 project_id=task.project_id,
                 task_id=task.id,
-                payload=f"stuck_hours={stuck_hours:.1f}, "
-                        f"blocking=[{blocking_info}]",
+                payload=f"stuck_hours={stuck_hours:.1f}, blocking=[{blocking_info}]",
             )
-            logger.info("Stuck task detected: %s — %s (DEFINED for %.1fh, blocked by %d deps)", task.id, task.title, stuck_hours, len(blocking))
+            logger.info(
+                "Stuck task detected: %s — %s (DEFINED for %.1fh, blocked by %d deps)",
+                task.id,
+                task.title,
+                stuck_hours,
+                len(blocking),
+            )
 
             self._stuck_notified_at[task.id] = now
 
@@ -1393,11 +1437,18 @@ class Orchestrator:
             return
 
         if archived_ids:
-            logger.info("Auto-archived %d terminal task(s) older than %.1fh: %s%s", len(archived_ids), archive_cfg.after_hours, ', '.join(archived_ids[:10]), '...' if len(archived_ids) > 10 else '')
+            logger.info(
+                "Auto-archived %d terminal task(s) older than %.1fh: %s%s",
+                len(archived_ids),
+                archive_cfg.after_hours,
+                ", ".join(archived_ids[:10]),
+                "..." if len(archived_ids) > 10 else "",
+            )
             for tid in archived_ids:
                 try:
                     await self.db.log_event(
-                        "task_auto_archived", task_id=tid,
+                        "task_auto_archived",
+                        task_id=tid,
                     )
                 except Exception:
                     pass
@@ -1510,8 +1561,7 @@ class Orchestrator:
             "chain_stuck",
             project_id=blocked_task.project_id,
             task_id=blocked_task.id,
-            payload=f"stuck_count={len(stuck)}, "
-                    f"stuck_ids={[t.id for t in stuck[:20]]}",
+            payload=f"stuck_count={len(stuck)}, stuck_ids={[t.id for t in stuck[:20]]}",
         )
 
     # Budget warning thresholds — notify once per threshold crossing.
@@ -1528,7 +1578,9 @@ class Orchestrator:
     _BUDGET_THRESHOLDS: list[int] = [80, 95]
 
     async def _check_budget_warning(
-        self, project_id: str, tokens_added: int,
+        self,
+        project_id: str,
+        tokens_added: int,
     ) -> None:
         """Send a budget warning if a project crosses a spending threshold.
 
@@ -1554,10 +1606,14 @@ class Orchestrator:
         for threshold in self._BUDGET_THRESHOLDS:
             if pct >= threshold > prev_threshold:
                 msg = format_budget_warning(
-                    project.name, usage, project.budget_limit,
+                    project.name,
+                    usage,
+                    project.budget_limit,
                 )
                 embed = format_budget_warning_embed(
-                    project.name, usage, project.budget_limit,
+                    project.name,
+                    usage,
+                    project.budget_limit,
                 )
                 await self._notify_channel(
                     msg,
@@ -1605,14 +1661,10 @@ class Orchestrator:
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
         # credit_weight target ratio to achieve proportional fairness.
-        window_start = time.time() - (
-            self.config.scheduling.rolling_window_hours * 3600
-        )
+        window_start = time.time() - (self.config.scheduling.rolling_window_hours * 3600)
         project_usage = {}
         for p in projects:
-            project_usage[p.id] = await self.db.get_project_token_usage(
-                p.id, since=window_start
-            )
+            project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
         # Active (BUSY) agent count per project — used to enforce each
         # project's max_concurrent_agents limit.  We look up the project
@@ -1623,9 +1675,7 @@ class Orchestrator:
             if a.state == AgentState.BUSY and a.current_task_id:
                 task = await self.db.get_task(a.current_task_id)
                 if task:
-                    active_counts[task.project_id] = (
-                        active_counts.get(task.project_id, 0) + 1
-                    )
+                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
 
         total_used = sum(project_usage.values())
 
@@ -1703,7 +1753,9 @@ class Orchestrator:
         """
         project = await self.db.get_project(task.project_id)
         ws = await self.db.acquire_workspace(
-            task.project_id, agent.id, task.id,
+            task.project_id,
+            agent.id,
+            task.id,
             preferred_workspace_id=task.preferred_workspace_id,
         )
 
@@ -1731,14 +1783,14 @@ class Orchestrator:
             if owner_task_id:
                 owner_task = await self.db.get_task(owner_task_id)
                 owner_active = (
-                    owner_task is not None
-                    and owner_task.status == TaskStatus.IN_PROGRESS
+                    owner_task is not None and owner_task.status == TaskStatus.IN_PROGRESS
                 )
 
             if owner_active:
                 logger.warning(
                     "Workspace %s has active sentinel (owner: %s) — releasing lock",
-                    workspace, owner_info,
+                    workspace,
+                    owner_info,
                 )
                 await self.db.release_workspace(ws.id)
                 return None
@@ -1746,7 +1798,8 @@ class Orchestrator:
                 # Stale sentinel from a crashed/completed task — clean it up
                 logger.info(
                     "Workspace %s has stale sentinel (owner: %s) — removing",
-                    workspace, owner_info,
+                    workspace,
+                    owner_info,
                 )
                 self._remove_sentinel(workspace)
         # Write our sentinel
@@ -1768,8 +1821,11 @@ class Orchestrator:
         #   in _complete_workspace.
         if task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)
-            branch_name = (parent.branch_name if parent and parent.branch_name
-                           else GitManager.make_branch_name(task.id, task.title))
+            branch_name = (
+                parent.branch_name
+                if parent and parent.branch_name
+                else GitManager.make_branch_name(task.id, task.title)
+            )
         else:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
@@ -1815,9 +1871,7 @@ class Orchestrator:
                 if await self.git.ahas_remote(workspace):
                     await self.git._arun(["fetch", "origin"], cwd=workspace)
                 try:
-                    await self.git._arun(
-                        ["checkout", default_branch], cwd=workspace
-                    )
+                    await self.git._arun(["checkout", default_branch], cwd=workspace)
                 except GitError:
                     pass  # May already be on default branch
                 if await self.git.ahas_remote(workspace):
@@ -1875,12 +1929,14 @@ class Orchestrator:
                     deleted_any = True
                     logger.info(
                         "Pre-task cleanup: removed archived plan %s (task %s)",
-                        fpath, task_id,
+                        fpath,
+                        task_id,
                     )
         except OSError as e:
             logger.warning(
                 "Pre-task cleanup: failed to clean plans dir %s: %s",
-                plans_dir, e,
+                plans_dir,
+                e,
             )
 
         if deleted_any:
@@ -1892,7 +1948,8 @@ class Orchestrator:
                     )
             except Exception as e:
                 logger.warning(
-                    "Pre-task cleanup: failed to commit plan deletions: %s", e,
+                    "Pre-task cleanup: failed to commit plan deletions: %s",
+                    e,
                 )
 
     async def _is_last_subtask(self, task: Task) -> bool:
@@ -1918,8 +1975,12 @@ class Orchestrator:
         return True
 
     async def _merge_and_push(
-        self, task: Task, repo: RepoConfig, workspace: str,
-        *, _max_retries: int = 3,
+        self,
+        task: Task,
+        repo: RepoConfig,
+        workspace: str,
+        *,
+        _max_retries: int = 3,
     ) -> None:
         """Merge the task branch into default and push.
 
@@ -1968,18 +2029,24 @@ class Orchestrator:
         else:
             # LINK / INIT repos have no remote — just merge locally.
             merged = await self.git.amerge_branch(
-                workspace, task.branch_name, repo.default_branch,
+                workspace,
+                task.branch_name,
+                repo.default_branch,
             )
             if not merged:
                 # Rebase fallback: rebase the task branch onto the default
                 # branch and retry the merge.  This resolves conflicts caused
                 # by the task branch being based on a stale snapshot.
                 rebased = await self.git.arebase_onto(
-                    workspace, task.branch_name, repo.default_branch,
+                    workspace,
+                    task.branch_name,
+                    repo.default_branch,
                 )
                 if rebased:
                     merged = await self.git.amerge_branch(
-                        workspace, task.branch_name, repo.default_branch,
+                        workspace,
+                        task.branch_name,
+                        repo.default_branch,
                     )
             if not merged:
                 await self._notify_channel(
@@ -1994,7 +2061,8 @@ class Orchestrator:
                 # right branch as a safety net.
                 try:
                     await self.git._arun(
-                        ["checkout", repo.default_branch], cwd=workspace,
+                        ["checkout", repo.default_branch],
+                        cwd=workspace,
                     )
                 except Exception:
                     pass  # best-effort recovery
@@ -2003,7 +2071,8 @@ class Orchestrator:
             # Clean up the task branch after successful local merge
             try:
                 await self.git.adelete_branch(
-                    workspace, task.branch_name,
+                    workspace,
+                    task.branch_name,
                     delete_remote=False,
                 )
             except Exception:
@@ -2013,14 +2082,18 @@ class Orchestrator:
         # Clean up the task branch after successful merge + push
         try:
             await self.git.adelete_branch(
-                workspace, task.branch_name,
+                workspace,
+                task.branch_name,
                 delete_remote=has_remote,
             )
         except Exception:
             pass  # branch cleanup is best-effort
 
     async def _create_pr_for_task(
-        self, task: Task, repo: RepoConfig, workspace: str,
+        self,
+        task: Task,
+        repo: RepoConfig,
+        workspace: str,
     ) -> str | None:
         """Push the task branch and create a PR. Returns the PR URL or None.
 
@@ -2050,7 +2123,9 @@ class Orchestrator:
             # chains that push intermediate results).  Task branches are
             # owned by a single agent, so force-pushing is safe.
             await self.git.apush_branch(
-                workspace, task.branch_name, force_with_lease=True,
+                workspace,
+                task.branch_name,
+                force_with_lease=True,
             )
         except Exception as e:
             await self._notify_channel(
@@ -2120,8 +2195,11 @@ class Orchestrator:
             # Get diff stat excluding plan files and non-code artifacts
             stat_output = await self.git._arun(
                 [
-                    "diff", "--stat", f"{merge_base}..HEAD",
-                    "--", ".",
+                    "diff",
+                    "--stat",
+                    f"{merge_base}..HEAD",
+                    "--",
+                    ".",
                     # Exclude plan files
                     ":!.claude/plan.md",
                     ":!plan.md",
@@ -2146,6 +2224,7 @@ class Orchestrator:
             summary = lines[-1] if lines else ""
 
             import re
+
             files_match = re.search(r"(\d+)\s+files?\s+changed", summary)
             insertions_match = re.search(r"(\d+)\s+insertions?", summary)
             deletions_match = re.search(r"(\d+)\s+deletions?", summary)
@@ -2161,9 +2240,7 @@ class Orchestrator:
             logger.debug("_task_has_code_changes failed (will proceed normally): %s", e)
             return False
 
-    async def _discover_and_store_plan(
-        self, task: Task, workspace: str
-    ) -> bool:
+    async def _discover_and_store_plan(self, task: Task, workspace: str) -> bool:
         """Discover a plan file, parse it, and store the parsed data for approval.
 
         Called after a task completes successfully.  Searches the workspace
@@ -2204,12 +2281,18 @@ class Orchestrator:
                 # On any error, fall through to normal behaviour
                 logger.debug(
                     "Auto-task: skip_if_implemented check failed for task %s: %s",
-                    task.id, e,
+                    task.id,
+                    e,
                 )
 
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
-            logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)
+            logger.debug(
+                "Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)",
+                task.id,
+                workspace,
+                config.plan_file_patterns,
+            )
             return False
 
         # Staleness check: compare the plan file's mtime against the
@@ -2230,15 +2313,16 @@ class Orchestrator:
                         "Auto-task: ignoring stale plan file %s for task %s "
                         "(plan mtime %.0f < exec start %.0f — file "
                         "predates this task's execution)",
-                        plan_path, task.id, plan_mtime, exec_start,
+                        plan_path,
+                        task.id,
+                        plan_mtime,
+                        exec_start,
                     )
                     # Archive it so it's not rediscovered by future tasks
                     try:
                         plans_dir = os.path.join(workspace, ".claude", "plans")
                         os.makedirs(plans_dir, exist_ok=True)
-                        stale_archive = os.path.join(
-                            plans_dir, f"stale-{task.id}-plan.md"
-                        )
+                        stale_archive = os.path.join(plans_dir, f"stale-{task.id}-plan.md")
                         os.rename(plan_path, stale_archive)
                     except OSError:
                         pass
@@ -2246,7 +2330,8 @@ class Orchestrator:
             except OSError as e:
                 logger.debug(
                     "Auto-task: staleness check failed for %s: %s (proceeding)",
-                    plan_path, e,
+                    plan_path,
+                    e,
                 )
 
         try:
@@ -2304,9 +2389,7 @@ class Orchestrator:
     # main and being re-discovered by subsequent tasks.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
-    async def _run_completion_pipeline(
-        self, ctx: PipelineContext
-    ) -> tuple[str | None, bool]:
+    async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
         phases = [
             ("plan_discover", self._phase_plan_discover),
@@ -2319,7 +2402,10 @@ class Orchestrator:
             except Exception as e:
                 logger.error(
                     "Pipeline phase '%s' failed for task %s: %s",
-                    name, ctx.task.id, e, exc_info=True,
+                    name,
+                    ctx.task.id,
+                    e,
+                    exc_info=True,
                 )
                 return (ctx.pr_url, False)
             if result == PhaseResult.STOP:
@@ -2458,14 +2544,18 @@ class Orchestrator:
         # Verification failed — attempt to reopen with feedback
         logger.warning(
             "Task %s: git verification failed (%d issues): %s",
-            task.id, len(failures), "; ".join(failures),
+            task.id,
+            len(failures),
+            "; ".join(failures),
         )
         reopened = await self._reopen_with_verification_feedback(task, failures)
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
 
     async def _reopen_with_verification_feedback(
-        self, task, failures: list[str],
+        self,
+        task,
+        failures: list[str],
     ) -> bool:
         """Reopen a task with git verification feedback.
 
@@ -2475,14 +2565,14 @@ class Orchestrator:
         max_retries = self.config.auto_task.max_verification_retries
         # Count previous verification attempts from task_context
         contexts = await self.db.get_task_contexts(task.id)
-        retry_count = sum(
-            1 for c in contexts if c.get("type") == "verification_feedback"
-        )
+        retry_count = sum(1 for c in contexts if c.get("type") == "verification_feedback")
 
         if retry_count >= max_retries:
             logger.warning(
                 "Task %s: verification retries exhausted (%d/%d)",
-                task.id, retry_count, max_retries,
+                task.id,
+                retry_count,
+                max_retries,
             )
             await self._notify_channel(
                 f"**Verification Failed:** Task `{task.id}` — "
@@ -2528,13 +2618,15 @@ class Orchestrator:
         )
         logger.info(
             "Task %s: reopened for verification (attempt %d/%d)",
-            task.id, retry_count + 1, max_retries,
+            task.id,
+            retry_count + 1,
+            max_retries,
         )
         return True
 
     async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
         """Delegate plan discovery to the Supervisor."""
-        if not hasattr(self, '_supervisor') or not self._supervisor:
+        if not hasattr(self, "_supervisor") or not self._supervisor:
             logger.info(
                 "Task %s: no supervisor available, using legacy plan discovery",
                 ctx.task.id,
@@ -2543,7 +2635,8 @@ class Orchestrator:
 
         logger.info(
             "Task %s: starting plan discovery via supervisor (workspace=%s)",
-            ctx.task.id, ctx.workspace_path,
+            ctx.task.id,
+            ctx.workspace_path,
         )
         result = await self._supervisor.on_task_completed(
             task_id=ctx.task.id,
@@ -2557,10 +2650,13 @@ class Orchestrator:
             )
             ctx.plan_needs_approval = True
         else:
-            reason = result.get("reason", "unknown") if isinstance(result, dict) else "non-dict result"
+            reason = (
+                result.get("reason", "unknown") if isinstance(result, dict) else "non-dict result"
+            )
             logger.info(
                 "Task %s: no plan found (reason: %s)",
-                ctx.task.id, reason,
+                ctx.task.id,
+                reason,
             )
         return PhaseResult.CONTINUE
 
@@ -2600,7 +2696,7 @@ class Orchestrator:
     # How often (seconds) to re-send reminders for tasks awaiting manual
     # approval (no PR URL).  Prevents notification spam for tasks that
     # legitimately need manual review.
-    _NO_PR_REMINDER_INTERVAL: int = 3600      # 1 hour
+    _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour
     # After this many seconds without approval, escalate the notification
     # tone from "awaiting review" to "stuck task" with stronger language.
     _NO_PR_ESCALATION_THRESHOLD: int = 86400  # 24 hours
@@ -2610,7 +2706,7 @@ class Orchestrator:
     # before the PR URL is set, and _create_pr_for_task sets the URL shortly
     # after.  Without the grace period, we might auto-complete a task that
     # was about to get a PR URL.
-    _NO_PR_AUTO_COMPLETE_GRACE: int = 120     # 2 minutes
+    _NO_PR_AUTO_COMPLETE_GRACE: int = 120  # 2 minutes
 
     async def _check_awaiting_approval(self) -> None:
         """Poll PR merge status for tasks in AWAITING_APPROVAL. Throttled to once per 60s.
@@ -2660,12 +2756,14 @@ class Orchestrator:
         if not task.requires_approval:
             if age >= self._NO_PR_AUTO_COMPLETE_GRACE:
                 await self.db.transition_task(
-                    task.id, TaskStatus.COMPLETED,
-                    context="auto_complete_no_pr")
+                    task.id, TaskStatus.COMPLETED, context="auto_complete_no_pr"
+                )
                 await self.db.log_event(
-                    "task_completed", project_id=task.project_id,
+                    "task_completed",
+                    project_id=task.project_id,
                     task_id=task.id,
-                    payload="auto-completed: no PR and approval not required")
+                    payload="auto-completed: no PR and approval not required",
+                )
                 await self._notify_channel(
                     f"**Auto-completed:** Task `{task.id}` — {task.title} "
                     f"(no PR created, approval not required).",
@@ -2691,9 +2789,11 @@ class Orchestrator:
                 project_id=task.project_id,
             )
             await self.db.log_event(
-                "approval_stuck", project_id=task.project_id,
+                "approval_stuck",
+                project_id=task.project_id,
                 task_id=task.id,
-                payload=f"no_pr_url, age={hours}h")
+                payload=f"no_pr_url, age={hours}h",
+            )
         else:
             await self._notify_channel(
                 f"🔍 **Awaiting manual approval:** Task `{task.id}` — "
@@ -2739,12 +2839,8 @@ class Orchestrator:
             return
 
         if merged is True:
-            await self.db.transition_task(
-                task.id, TaskStatus.COMPLETED,
-                context="pr_merged")
-            await self.db.log_event(
-                "task_completed", project_id=task.project_id,
-                task_id=task.id)
+            await self.db.transition_task(task.id, TaskStatus.COMPLETED, context="pr_merged")
+            await self.db.log_event("task_completed", project_id=task.project_id, task_id=task.id)
             await self._notify_channel(
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
                 project_id=task.project_id,
@@ -2753,15 +2849,15 @@ class Orchestrator:
             if task.branch_name:
                 try:
                     await self.git.adelete_branch(
-                        checkout_path, task.branch_name, delete_remote=True,
+                        checkout_path,
+                        task.branch_name,
+                        delete_remote=True,
                     )
                 except Exception:
                     pass  # branch cleanup is best-effort
         elif merged is None:
             # Closed without merge
-            await self.db.transition_task(
-                task.id, TaskStatus.BLOCKED,
-                context="pr_closed")
+            await self.db.transition_task(task.id, TaskStatus.BLOCKED, context="pr_closed")
             await self._notify_channel(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "
                 f"was closed without merging. Marked as BLOCKED.",
@@ -2863,10 +2959,7 @@ class Orchestrator:
             )
         else:
             # Normal task / final subtask: merge to default + push
-            push_line = (
-                f"4. `git push origin {default_branch}`\n"
-                if has_remote else ""
-            )
+            push_line = f"4. `git push origin {default_branch}`\n" if has_remote else ""
             delete_step = "5" if has_remote else "4"
             git_rules = (
                 f"\n\n## Important: Git Workflow\n"
@@ -3021,8 +3114,7 @@ class Orchestrator:
                     "upstream_work",
                     "## Completed Upstream Work\n"
                     "The following tasks were direct dependencies of your task "
-                    "and have already been completed:\n\n"
-                    + "\n\n".join(dep_sections)
+                    "and have already been completed:\n\n" + "\n\n".join(dep_sections),
                 )
 
         # Agent role instructions from profile
@@ -3040,9 +3132,7 @@ class Orchestrator:
         # the agent understands the user's intent and broader context.
         try:
             contexts = await self.db.get_task_contexts(task.id)
-            conv_ctx = next(
-                (c for c in contexts if c["type"] == "conversation_context"), None
-            )
+            conv_ctx = next((c for c in contexts if c["type"] == "conversation_context"), None)
             if conv_ctx and conv_ctx["content"]:
                 builder.add_context(
                     "additional_context",
@@ -3050,8 +3140,7 @@ class Orchestrator:
                     "The following is the conversation thread between the user and "
                     "the supervisor that led to the creation of this task. Use it to "
                     "understand the user's intent, any clarifications, and the "
-                    "broader goal behind the task:\n\n"
-                    + conv_ctx["content"],
+                    "broader goal behind the task:\n\n" + conv_ctx["content"],
                 )
         except Exception:
             pass  # Non-fatal — proceed without conversation context
@@ -3085,9 +3174,9 @@ class Orchestrator:
         if not project:
             logger.error("Sync workflow: project %s not found", action.project_id)
             await self.db.transition_task(
-                action.task_id, TaskStatus.FAILED, context="project_not_found")
-            await self.db.update_agent(action.agent_id, state=AgentState.IDLE,
-                                       current_task_id=None)
+                action.task_id, TaskStatus.FAILED, context="project_not_found"
+            )
+            await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
             return
 
         default_branch = project.repo_default_branch or "main"
@@ -3109,8 +3198,7 @@ class Orchestrator:
         try:
             # ── Phase 2: Wait for active tasks ──────────────────────────
             await _notify(
-                f"🔄 **Sync `{task.id}`** — Phase 2/4: "
-                f"Waiting for active tasks to complete…"
+                f"🔄 **Sync `{task.id}`** — Phase 2/4: Waiting for active tasks to complete…"
             )
 
             max_wait = 3600  # 1 hour max wait
@@ -3120,14 +3208,13 @@ class Orchestrator:
             while waited < max_wait:
                 active_tasks = await self.db.list_active_tasks(
                     project_id=action.project_id,
-                    exclude_statuses={TaskStatus.COMPLETED, TaskStatus.FAILED,
-                                      TaskStatus.BLOCKED},
+                    exclude_statuses={TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED},
                 )
                 # Filter out this sync task itself and tasks that aren't running
                 running = [
-                    t for t in active_tasks
-                    if t.id != task.id
-                    and t.status in (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
+                    t
+                    for t in active_tasks
+                    if t.id != task.id and t.status in (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
                 ]
 
                 if not running:
@@ -3149,8 +3236,8 @@ class Orchestrator:
                     f"after {max_wait}s. Aborting sync."
                 )
                 await self.db.transition_task(
-                    action.task_id, TaskStatus.FAILED,
-                    context="sync_timeout_waiting_for_tasks")
+                    action.task_id, TaskStatus.FAILED, context="sync_timeout_waiting_for_tasks"
+                )
                 return
 
             logger.info("Sync workflow %s: all active tasks completed", task.id)
@@ -3165,8 +3252,7 @@ class Orchestrator:
             workspace_info_lines = []
             for ws in workspaces:
                 workspace_info_lines.append(
-                    f"  - Path: {ws.workspace_path} "
-                    f"(id: {ws.id}, name: {ws.name or '—'})"
+                    f"  - Path: {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})"
                 )
             workspace_info = "\n".join(workspace_info_lines)
 
@@ -3224,32 +3310,30 @@ For EACH workspace listed above, perform these steps IN ORDER:
             try:
                 workspace = await self._prepare_workspace(task, agent)
             except Exception as e:
-                logger.error("Sync workflow %s: workspace prep failed: %s",
-                             task.id, e)
+                logger.error("Sync workflow %s: workspace prep failed: %s", task.id, e)
 
             if not workspace:
                 # Try to find any workspace path to use as working dir
                 if workspaces:
                     workspace = workspaces[0].workspace_path
-                    logger.warning("Sync workflow %s: using fallback workspace %s",
-                                   task.id, workspace)
+                    logger.warning(
+                        "Sync workflow %s: using fallback workspace %s", task.id, workspace
+                    )
                 else:
                     await _notify(
                         f"❌ **Sync `{task.id}`** — No workspace available for merge agent."
                     )
                     await self.db.transition_task(
-                        action.task_id, TaskStatus.FAILED,
-                        context="no_workspace_for_merge")
+                        action.task_id, TaskStatus.FAILED, context="no_workspace_for_merge"
+                    )
                     return
 
             # Launch the Claude Code agent for the merge work.
             if not self._adapter_factory:
-                await _notify(
-                    f"❌ **Sync `{task.id}`** — No adapter factory configured."
-                )
+                await _notify(f"❌ **Sync `{task.id}`** — No adapter factory configured.")
                 await self.db.transition_task(
-                    action.task_id, TaskStatus.FAILED,
-                    context="no_adapter_factory")
+                    action.task_id, TaskStatus.FAILED, context="no_adapter_factory"
+                )
                 return
 
             profile = await self._resolve_profile(task)
@@ -3273,7 +3357,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     )
                     thread_name = f"{task.id} | Sync Workspaces"[:100]
                     thread_result = await self._create_thread(
-                        thread_name, start_msg, action.project_id, task.id)
+                        thread_name, start_msg, action.project_id, task.id
+                    )
                     if thread_result:
                         thread_send = thread_result[0]
                 except Exception as e:
@@ -3301,8 +3386,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             if merge_succeeded:
                 logger.info("Sync workflow %s: merge completed successfully", task.id)
             else:
-                logger.warning("Sync workflow %s: merge agent result=%s",
-                               task.id, output.result)
+                logger.warning("Sync workflow %s: merge agent result=%s", task.id, output.result)
                 await _notify(
                     f"⚠️ **Sync `{task.id}`** — Merge agent finished with "
                     f"result: {output.result.value}. Proceeding to cleanup."
@@ -3310,9 +3394,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
         finally:
             # ── Phase 4: Cleanup & Resume ───────────────────────────────
-            await _notify(
-                f"🔄 **Sync `{task.id}`** — Phase 4/4: Cleanup & resume…"
-            )
+            await _notify(f"🔄 **Sync `{task.id}`** — Phase 4/4: Cleanup & resume…")
 
             # Release all workspace locks for this project (belt and suspenders).
             for ws in workspaces:
@@ -3326,19 +3408,17 @@ For EACH workspace listed above, perform these steps IN ORDER:
             await self.db.release_workspaces_for_task(action.task_id)
 
             # Resume the project.
-            await self.db.update_project(
-                action.project_id, status=ProjectStatus.ACTIVE)
-            logger.info("Sync workflow %s: project %s resumed",
-                        task.id, action.project_id)
+            await self.db.update_project(action.project_id, status=ProjectStatus.ACTIVE)
+            logger.info("Sync workflow %s: project %s resumed", task.id, action.project_id)
 
             # Free the agent.
             post_agent = await self.db.get_agent(action.agent_id)
-            next_state = (AgentState.PAUSED
-                          if post_agent and post_agent.state == AgentState.PAUSED
-                          else AgentState.IDLE)
-            await self.db.update_agent(action.agent_id,
-                                       state=next_state,
-                                       current_task_id=None)
+            next_state = (
+                AgentState.PAUSED
+                if post_agent and post_agent.state == AgentState.PAUSED
+                else AgentState.IDLE
+            )
+            await self.db.update_agent(action.agent_id, state=next_state, current_task_id=None)
 
             # Remove adapter reference.
             self._adapters.pop(action.agent_id, None)
@@ -3350,23 +3430,24 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 if current_task and current_task.status == TaskStatus.IN_PROGRESS:
                     if merge_succeeded:
                         await self.db.transition_task(
-                            action.task_id, TaskStatus.COMPLETED,
-                            context="sync_completed")
+                            action.task_id, TaskStatus.COMPLETED, context="sync_completed"
+                        )
                         await _notify(
                             f"✅ **Sync Workspaces completed:** `{task.id}` — "
                             f"All workspaces synchronized to `{default_branch}`."
                         )
                     else:
                         await self.db.transition_task(
-                            action.task_id, TaskStatus.COMPLETED,
-                            context="sync_completed_with_warnings")
+                            action.task_id,
+                            TaskStatus.COMPLETED,
+                            context="sync_completed_with_warnings",
+                        )
                         await _notify(
                             f"⚠️ **Sync Workspaces finished:** `{task.id}` — "
                             f"Completed with warnings. Check thread for details."
                         )
             except Exception as e:
-                logger.error("Sync workflow %s: final status update failed: %s",
-                             task.id, e)
+                logger.error("Sync workflow %s: final status update failed: %s", task.id, e)
 
     async def _execute_task(self, action: AssignAction) -> None:
         """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
@@ -3422,8 +3503,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
         await self.db.assign_task_to_agent(action.task_id, action.agent_id)
 
         # Start agent
-        await self.db.transition_task(action.task_id, TaskStatus.IN_PROGRESS,
-                                      context="agent_started")
+        await self.db.transition_task(
+            action.task_id, TaskStatus.IN_PROGRESS, context="agent_started"
+        )
         await self.db.update_agent(action.agent_id, state=AgentState.BUSY)
 
         task = await self.db.get_task(action.task_id)
@@ -3457,9 +3539,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # giving time for workspaces to free up.
             no_ws_backoff = 60  # seconds before retrying workspace acquisition
             await self.db.transition_task(
-                action.task_id, TaskStatus.PAUSED,
+                action.task_id,
+                TaskStatus.PAUSED,
                 context="no_workspace_available",
-                resume_after=time.time() + no_ws_backoff)
+                resume_after=time.time() + no_ws_backoff,
+            )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
             await self._notify_channel(
                 f"**No Workspace:** Task `{task.id}` paused for "
@@ -3483,8 +3567,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
         try:
             contexts = await self.db.get_task_contexts(task.id)
             _is_reopened = any(
-                c.get("type") in ("reopen_feedback", "thread_feedback")
-                for c in contexts
+                c.get("type") in ("reopen_feedback", "thread_feedback") for c in contexts
             )
         except Exception:
             pass
@@ -3517,8 +3600,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             try:
                 await added_msg.delete()
             except Exception as e:
-                logger.debug("Could not delete task-added message for %s: %s",
-                             task.id, e)
+                logger.debug("Could not delete task-added message for %s: %s", task.id, e)
 
         # Create a thread for streaming agent output.  If this is a reopened
         # task, the callback will reuse the existing thread instead of creating
@@ -3528,7 +3610,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
         if self._create_thread:
             try:
                 thread_name = f"{task.id} | {task.title}"[:100]
-                thread_result = await self._create_thread(thread_name, start_msg, action.project_id, task.id)
+                thread_result = await self._create_thread(
+                    thread_name, start_msg, action.project_id, task.id
+                )
                 if thread_result:
                     thread_send, thread_main_notify = thread_result
                     logger.debug("Created thread for task %s", task.id)
@@ -3545,7 +3629,13 @@ For EACH workspace listed above, perform these steps IN ORDER:
         # See ``_resolve_profile`` for the fallback chain.
         profile = await self._resolve_profile(task)
         if profile:
-            logger.info("Task %s: profile='%s' tools=%s mcp=%s", task.id, profile.id, profile.allowed_tools or '(default)', list(profile.mcp_servers.keys()) if profile.mcp_servers else '(none)')
+            logger.info(
+                "Task %s: profile='%s' tools=%s mcp=%s",
+                task.id,
+                profile.id,
+                profile.allowed_tools or "(default)",
+                list(profile.mcp_servers.keys()) if profile.mcp_servers else "(none)",
+            )
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
         adapter = self._adapter_factory.create("claude", profile=profile)
@@ -3641,10 +3731,14 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 # subsequent lines; use the entire text as context.
                 question_text = text.replace("**[AskUserQuestion]**", "").strip()
                 if not question_text:
-                    question_text = "(Agent is requesting user input — check the task thread for details.)"
+                    question_text = (
+                        "(Agent is requesting user input — check the task thread for details.)"
+                    )
                 try:
                     await self._notify_agent_question(
-                        task, agent, question_text,
+                        task,
+                        agent,
+                        question_text,
                         project_id=action.project_id,
                     )
                 except Exception as e:
@@ -3683,11 +3777,21 @@ For EACH workspace listed above, perform these steps IN ORDER:
             _rl_attempt += 1
             if _rl_attempt > _rl_max_retries:
                 # Auto-retries exhausted; let the normal PAUSED handling take over.
-                logger.info("Task %s: rate-limit retries exhausted (%d), pausing task.", task.id, _rl_max_retries)
+                logger.info(
+                    "Task %s: rate-limit retries exhausted (%d), pausing task.",
+                    task.id,
+                    _rl_max_retries,
+                )
                 break
 
             _backoff = min(_rl_base * (2 ** (_rl_attempt - 1)), _rl_max_backoff)
-            logger.info("Task %s: rate limited (attempt %d/%d), waiting %ds before retry.", task.id, _rl_attempt, _rl_max_retries, _backoff)
+            logger.info(
+                "Task %s: rate limited (attempt %d/%d), waiting %ds before retry.",
+                task.id,
+                _rl_attempt,
+                _rl_max_retries,
+                _backoff,
+            )
 
             await self._notify_channel(
                 "⏳ Claude is currently rate-limited. We will try again in a moment.",
@@ -3696,7 +3800,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
             await asyncio.sleep(_backoff)
 
-            await self._notify_channel("✅ Rate limit cleared — resuming now.", project_id=action.project_id)
+            await self._notify_channel(
+                "✅ Rate limit cleared — resuming now.", project_id=action.project_id
+            )
 
             # Re-initialise the adapter so the next call starts a fresh query.
             await adapter.start(ctx)
@@ -3711,13 +3817,16 @@ For EACH workspace listed above, perform these steps IN ORDER:
         # ------------------------------------------------------------------ #
         if output.tokens_used > 0:
             await self.db.record_token_usage(
-                action.project_id, action.agent_id,
-                action.task_id, output.tokens_used,
+                action.project_id,
+                action.agent_id,
+                action.task_id,
+                output.tokens_used,
             )
             # Check if the project's budget usage has crossed a warning threshold
             try:
                 await self._check_budget_warning(
-                    action.project_id, output.tokens_used,
+                    action.project_id,
+                    output.tokens_used,
                 )
             except Exception as e:
                 logger.warning("Budget warning check failed: %s", e)
@@ -3778,16 +3887,22 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # Build pipeline context
             ws = await self.db.get_workspace_for_task(task.id)
             project = await self.db.get_project(task.project_id)
-            default_branch = await self._get_default_branch(project, ws.workspace_path if ws else workspace)
+            default_branch = await self._get_default_branch(
+                project, ws.workspace_path if ws else workspace
+            )
             has_repo = bool(project and project.repo_url)
 
-            repo = RepoConfig(
-                id=f"project-{task.project_id}",
-                project_id=task.project_id,
-                source_type=ws.source_type if ws else RepoSourceType.LINK,
-                url=project.repo_url if project else "",
-                default_branch=default_branch,
-            ) if (has_repo or ws) and ws else None
+            repo = (
+                RepoConfig(
+                    id=f"project-{task.project_id}",
+                    project_id=task.project_id,
+                    source_type=ws.source_type if ws else RepoSourceType.LINK,
+                    url=project.repo_url if project else "",
+                    default_branch=default_branch,
+                )
+                if (has_repo or ws) and ws
+                else None
+            )
 
             ctx = PipelineContext(
                 task=task,
@@ -3824,17 +3939,14 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 )
                 # Notify in the task thread that a plan was found
                 if thread_send:
-                    await thread_send(
-                        "📋 **Plan detected** — processing for approval..."
-                    )
+                    await thread_send("📋 **Plan detected** — processing for approval...")
 
                 from src.discord.notifications import (
                     PlanApprovalView,
                     format_plan_approval_embed,
                 )
-                plan_view = PlanApprovalView(
-                    task.id, handler=self._get_handler()
-                )
+
+                plan_view = PlanApprovalView(task.id, handler=self._get_handler())
                 # Retrieve the stored plan content for the embed
                 plan_contexts = await self.db.get_task_contexts(task.id)
                 raw_ctx = next(
@@ -3851,6 +3963,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 plan_url = ""
                 if self.config.mcp_server.enabled:
                     from src.api.health import get_plan_url
+
                     plan_url = get_plan_url(task.id)
 
                 # Auto pre-create draft subtasks so approval uses the fast
@@ -3872,9 +3985,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                                 workspace_id=workspace_id,
                                 chain_dependencies=config.chain_dependencies,
                                 requires_approval=(
-                                    task.requires_approval
-                                    if config.inherit_approval
-                                    else False
+                                    task.requires_approval if config.inherit_approval else False
                                 ),
                                 base_priority=task.priority,
                             )
@@ -3889,17 +4000,22 @@ For EACH workspace listed above, perform these steps IN ORDER:
                                     )
                                     logger.info(
                                         "Task %s: added blocking dep %s → %s (parent)",
-                                        task.id, first_subtask_id, task.id,
+                                        task.id,
+                                        first_subtask_id,
+                                        task.id,
                                     )
                                 except Exception as e:
                                     logger.warning(
-                                        "Task %s: failed to add blocking dep "
-                                        "%s → %s: %s",
-                                        task.id, first_subtask_id, task.id, e,
+                                        "Task %s: failed to add blocking dep %s → %s: %s",
+                                        task.id,
+                                        first_subtask_id,
+                                        task.id,
+                                        e,
                                     )
 
                                 # Store draft subtask IDs for approve/delete/reject
                                 import json as _json
+
                                 await self.db.add_task_context(
                                     task.id,
                                     type="plan_draft_subtasks",
@@ -3909,7 +4025,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
                                 logger.info(
                                     "Task %s: auto-created %d draft subtasks",
-                                    task.id, len(created_info),
+                                    task.id,
+                                    len(created_info),
                                 )
                         finally:
                             self._plan_processing_locks.discard(action.project_id)
@@ -3923,19 +4040,17 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 # ── Auto-approve if task has auto_approve_plan set ──
                 if task.auto_approve_plan and created_info:
                     logger.info(
-                        "Task %s: auto_approve_plan=True — auto-approving plan "
-                        "with %d subtask(s)",
-                        task.id, len(created_info),
+                        "Task %s: auto_approve_plan=True — auto-approving plan with %d subtask(s)",
+                        task.id,
+                        len(created_info),
                     )
                     handler = self._get_handler()
-                    approve_result = await handler._cmd_approve_plan(
-                        {"task_id": task.id}
-                    )
+                    approve_result = await handler._cmd_approve_plan({"task_id": task.id})
                     if "error" in approve_result:
                         logger.warning(
-                            "Task %s: auto-approve failed: %s — falling back "
-                            "to manual approval",
-                            task.id, approve_result["error"],
+                            "Task %s: auto-approve failed: %s — falling back to manual approval",
+                            task.id,
+                            approve_result["error"],
                         )
                         # Fall through to manual approval below
                     else:
@@ -3964,8 +4079,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     # Populate parsed_steps from auto-created subtasks (if any).
                     # If none were created, the embed shows raw content via plan_url.
                     parsed_steps: list[dict] = [
-                        {"title": t["title"], "description": ""}
-                        for t in created_info
+                        {"title": t["title"], "description": ""} for t in created_info
                     ]
 
                     # Get a link to the last message in the thread — the agent's
@@ -4001,14 +4115,14 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     context="pr_created",
                     pr_url=pr_url,
                 )
-                await self.db.log_event("pr_created",
-                                        project_id=action.project_id,
-                                        task_id=action.task_id,
-                                        agent_id=action.agent_id,
-                                        payload=pr_url)
-                approval_view = TaskApprovalView(
-                    task.id, handler=self._get_handler()
+                await self.db.log_event(
+                    "pr_created",
+                    project_id=action.project_id,
+                    task_id=action.task_id,
+                    agent_id=action.agent_id,
+                    payload=pr_url,
                 )
+                approval_view = TaskApprovalView(task.id, handler=self._get_handler())
                 if thread_send:
                     await thread_send(format_pr_created(task, pr_url))
                 else:
@@ -4031,14 +4145,18 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 await _notify_brief(brief)
             elif completed_ok:
                 # No approval needed — mark completed
-                await self.db.transition_task(action.task_id, TaskStatus.COMPLETED,
-                                              context="completed_no_approval")
-                await self.db.log_event("task_completed",
-                                        project_id=action.project_id,
-                                        task_id=action.task_id,
-                                        agent_id=action.agent_id)
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.COMPLETED, context="completed_no_approval"
+                )
+                await self.db.log_event(
+                    "task_completed",
+                    project_id=action.project_id,
+                    task_id=action.task_id,
+                    agent_id=action.agent_id,
+                )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 from datetime import datetime, timezone as _tz
+
                 log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
                 log_path = f"logs/llm/{log_date}/tasks/{task.id}.jsonl"
                 brief_embed = format_task_completed_embed(task, agent, output)
@@ -4051,10 +4169,13 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 # thread root; for reopened threads this is a no-op since the
                 # thread already received the brief via _post above).
                 await _notify_brief(brief, embed=brief_embed)
-                await self.bus.emit("task.completed", {
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                })
+                await self.bus.emit(
+                    "task.completed",
+                    {
+                        "task_id": task.id,
+                        "project_id": task.project_id,
+                    },
+                )
 
                 # Auto-reload plugin if the task modified a plugin workspace
                 await self._check_plugin_workspace_update(task, ws)
@@ -4063,16 +4184,14 @@ For EACH workspace listed above, perform these steps IN ORDER:
             elif ctx.verification_reopened:
                 # Task was already reopened to READY by _phase_verify —
                 # don't transition to BLOCKED.
-                brief = (
-                    f"🔄 Task reopened for git verification: "
-                    f"{task.title} (`{task.id}`)"
-                )
+                brief = f"🔄 Task reopened for git verification: {task.title} (`{task.id}`)"
                 await _post(brief)
                 await _notify_brief(brief)
             else:
                 # Pipeline stopped and could not reopen — block the task
                 await self.db.transition_task(
-                    action.task_id, TaskStatus.BLOCKED,
+                    action.task_id,
+                    TaskStatus.BLOCKED,
                     context="verification_failed",
                 )
                 await _post(
@@ -4108,29 +4227,35 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     )
                     if note_paths and self.bus:
                         for note_path in note_paths:
-                            await self.bus.emit("note.created", {
-                                "project_id": task.project_id,
-                                "task_id": task.id,
-                                "note_path": note_path,
-                            })
+                            await self.bus.emit(
+                                "note.created",
+                                {
+                                    "project_id": task.project_id,
+                                    "task_id": task.id,
+                                    "note_path": note_path,
+                                },
+                            )
                 except Exception as e:
                     logger.warning("Note generation failed for task %s: %s", task.id, e)
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
-                await self.db.transition_task(action.task_id, TaskStatus.BLOCKED,
-                                              context="max_retries",
-                                              retry_count=new_retry)
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.BLOCKED, context="max_retries", retry_count=new_retry
+                )
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "
                     f"max retries ({task.max_retries}) exhausted"
                 )
             else:
-                await self.db.transition_task(action.task_id, TaskStatus.READY,
-                                              context="retry",
-                                              retry_count=new_retry,
-                                              assigned_agent_id=None)
+                await self.db.transition_task(
+                    action.task_id,
+                    TaskStatus.READY,
+                    context="retry",
+                    retry_count=new_retry,
+                    assigned_agent_id=None,
+                )
                 brief = (
                     f"⚠️ Task failed: {task.title} (`{task.id}`) — "
                     f"retry {new_retry}/{task.max_retries}"
@@ -4138,6 +4263,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # Full failure summary → thread; fallback to notifications if no thread
             if thread_send:
                 from src.discord.notifications import classify_error
+
                 error_type, suggestion = classify_error(output.error_message)
                 label = "Blocked" if new_retry >= task.max_retries else "Failed"
                 fail_lines = [
@@ -4192,9 +4318,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 except Exception as e:
                     logger.warning("Memory remember failed for task %s: %s", task.id, e)
 
-        elif output.result in (
-            AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT
-        ):
+        elif output.result in (AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT):
             # PAUSED path — the agent hit an API limit (rate or context window).
             # We set a future resume_after timestamp; _resume_paused_tasks()
             # will promote the task back to READY once the backoff expires.
@@ -4206,11 +4330,16 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 else self.config.pause_retry.token_exhaustion_retry_seconds
             )
             await self.db.transition_task(
-                action.task_id, TaskStatus.PAUSED,
+                action.task_id,
+                TaskStatus.PAUSED,
                 context="tokens_exhausted",
                 resume_after=time.time() + retry_secs,
             )
-            reason = "rate limit" if output.result == AgentResult.PAUSED_RATE_LIMIT else "token exhaustion"
+            reason = (
+                "rate limit"
+                if output.result == AgentResult.PAUSED_RATE_LIMIT
+                else "token exhaustion"
+            )
             await _post(
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
@@ -4221,7 +4350,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # and notify so a human can respond.
             question_text = output.question or output.summary or "(no question text)"
             await self.db.transition_task(
-                action.task_id, TaskStatus.WAITING_INPUT,
+                action.task_id,
+                TaskStatus.WAITING_INPUT,
                 context="agent_question",
             )
             await self.db.log_event(
@@ -4233,9 +4363,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             )
             msg = format_agent_question(task, agent, question_text)
             embed = format_agent_question_embed(task, agent, question_text)
-            question_view = AgentQuestionView(
-                task.id, handler=self._get_handler()
-            )
+            question_view = AgentQuestionView(task.id, handler=self._get_handler())
             if thread_send:
                 await thread_send(msg)
             else:
@@ -4277,12 +4405,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
         # /pause-agent) while it was BUSY.  If so, we respect the PAUSED
         # state instead of blindly resetting to IDLE.
         post_agent = await self.db.get_agent(action.agent_id)
-        next_state = (AgentState.PAUSED
-                      if post_agent and post_agent.state == AgentState.PAUSED
-                      else AgentState.IDLE)
-        await self.db.update_agent(action.agent_id,
-                                   state=next_state,
-                                   current_task_id=None)
+        next_state = (
+            AgentState.PAUSED
+            if post_agent and post_agent.state == AgentState.PAUSED
+            else AgentState.IDLE
+        )
+        await self.db.update_agent(action.agent_id, state=next_state, current_task_id=None)
 
         # Remove adapter reference — the adapter's subprocess has already
         # exited by this point (wait() returned), so this is just cleanup.
@@ -4295,8 +4423,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             try:
                 await added_msg.delete()
             except Exception as e:
-                logger.debug("Could not delete task-added message for %s: %s",
-                             action.task_id, e)
+                logger.debug("Could not delete task-added message for %s: %s", action.task_id, e)
 
         # Delete the Task Started message — the Task Completed/Failed embed
         # posted above is the only one we want to keep.
@@ -4305,8 +4432,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             try:
                 await started_msg.delete()
             except Exception as e:
-                logger.debug("Could not delete task-started message for %s: %s",
-                             action.task_id, e)
+                logger.debug("Could not delete task-started message for %s: %s", action.task_id, e)
 
     # ------------------------------------------------------------------
     # Plugin self-update detection
@@ -4350,7 +4476,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
         logger.info(
             "Task %s (%s) modified plugin workspace '%s' — auto-reloading plugin",
-            task.id, task.title, target_plugin,
+            task.id,
+            task.title,
+            target_plugin,
         )
 
         try:
@@ -4359,22 +4487,28 @@ For EACH workspace listed above, perform these steps IN ORDER:
         except Exception as e:
             logger.error(
                 "Failed to auto-reload plugin '%s' after task %s: %s",
-                target_plugin, task.id, e,
+                target_plugin,
+                task.id,
+                e,
                 exc_info=True,
             )
             # Emit a failure event so hooks/monitors can react
-            await self.bus.emit("plugin.reload_failed", {
-                "plugin": target_plugin,
-                "task_id": task.id,
-                "error": str(e),
-            })
+            await self.bus.emit(
+                "plugin.reload_failed",
+                {
+                    "plugin": target_plugin,
+                    "task_id": task.id,
+                    "error": str(e),
+                },
+            )
 
         # Update the thread-root message ("Agent working: ..." → final status).
         if _final_root_content is not None and self._edit_thread_root:
             try:
                 await self._edit_thread_root(
-                    action.task_id, _final_root_content, None,
+                    action.task_id,
+                    _final_root_content,
+                    None,
                 )
             except Exception as e:
-                logger.debug("Could not edit thread root for %s: %s",
-                             action.task_id, e)
+                logger.debug("Could not edit thread root for %s: %s", action.task_id, e)

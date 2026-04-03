@@ -76,6 +76,7 @@ def create_app(
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers
+
     register_all_routers(app)
 
     return app

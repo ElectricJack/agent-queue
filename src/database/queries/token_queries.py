@@ -10,7 +10,11 @@ class TokenQueryMixin:
     """Query mixin for token ledger operations.  Expects ``self._db``."""
 
     async def record_token_usage(
-        self, project_id: str, agent_id: str, task_id: str, tokens: int,
+        self,
+        project_id: str,
+        agent_id: str,
+        task_id: str,
+        tokens: int,
     ) -> None:
         """Append a token usage record."""
         await self._db.execute(
@@ -21,7 +25,9 @@ class TokenQueryMixin:
         await self._db.commit()
 
     async def get_project_token_usage(
-        self, project_id: str, since: float | None = None,
+        self,
+        project_id: str,
+        since: float | None = None,
     ) -> int:
         """Return total tokens consumed by a project, optionally since a timestamp."""
         if since:

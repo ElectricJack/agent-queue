@@ -13,6 +13,7 @@ from src.main import _parse_args
 # _deep_merge tests
 # ---------------------------------------------------------------------------
 
+
 class TestDeepMerge:
     def test_simple_override(self):
         base = {"a": 1, "b": 2}
@@ -60,6 +61,7 @@ class TestDeepMerge:
 # Profile loading via load_config
 # ---------------------------------------------------------------------------
 
+
 class TestProfileLoading:
     def _write_config(self, config_dir, data, filename="config.yaml"):
         path = config_dir / filename
@@ -73,22 +75,32 @@ class TestProfileLoading:
 
     def test_no_profile_backward_compatible(self, tmp_path):
         """Without --profile, load_config should work exactly as before."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "tok", "guild_id": "1"},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "tok", "guild_id": "1"},
+            },
+        )
         config = load_config(path)
         assert config.profile == ""
         assert config.discord.bot_token == "tok"
 
     def test_profile_overlay_applied(self, tmp_path):
         """Profile overlay should deep-merge over base config."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "base-token", "guild_id": "1"},
-            "scheduling": {"rolling_window_hours": 24},
-        })
-        self._write_profile(tmp_path, "dev", {
-            "scheduling": {"rolling_window_hours": 6},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "base-token", "guild_id": "1"},
+                "scheduling": {"rolling_window_hours": 24},
+            },
+        )
+        self._write_profile(
+            tmp_path,
+            "dev",
+            {
+                "scheduling": {"rolling_window_hours": 6},
+            },
+        )
         config = load_config(path, profile="dev")
         assert config.profile == "dev"
         assert config.scheduling.rolling_window_hours == 6
@@ -96,17 +108,23 @@ class TestProfileLoading:
         assert config.discord.bot_token == "base-token"
 
     def test_profile_not_found_raises(self, tmp_path):
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+            },
+        )
         with pytest.raises(FileNotFoundError, match="Profile 'nonexistent' not found"):
             load_config(path, profile="nonexistent")
 
     def test_profile_not_found_lists_available(self, tmp_path):
         """Error message should list available profiles when some exist."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+            },
+        )
         self._write_profile(tmp_path, "dev", {"scheduling": {}})
         self._write_profile(tmp_path, "staging", {"scheduling": {}})
         with pytest.raises(FileNotFoundError, match="Available profiles: dev, staging"):
@@ -114,13 +132,20 @@ class TestProfileLoading:
 
     def test_profile_from_env_var(self, tmp_path, monkeypatch):
         """AGENT_QUEUE_PROFILE env var should be used when no CLI profile."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-            "scheduling": {"rolling_window_hours": 24},
-        })
-        self._write_profile(tmp_path, "staging", {
-            "scheduling": {"rolling_window_hours": 12},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "scheduling": {"rolling_window_hours": 24},
+            },
+        )
+        self._write_profile(
+            tmp_path,
+            "staging",
+            {
+                "scheduling": {"rolling_window_hours": 12},
+            },
+        )
         monkeypatch.setenv("AGENT_QUEUE_PROFILE", "staging")
         config = load_config(path)
         assert config.profile == "staging"
@@ -128,16 +153,27 @@ class TestProfileLoading:
 
     def test_cli_profile_overrides_env_var(self, tmp_path, monkeypatch):
         """CLI --profile should take precedence over AGENT_QUEUE_PROFILE."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-            "scheduling": {"rolling_window_hours": 24},
-        })
-        self._write_profile(tmp_path, "dev", {
-            "scheduling": {"rolling_window_hours": 6},
-        })
-        self._write_profile(tmp_path, "staging", {
-            "scheduling": {"rolling_window_hours": 12},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "scheduling": {"rolling_window_hours": 24},
+            },
+        )
+        self._write_profile(
+            tmp_path,
+            "dev",
+            {
+                "scheduling": {"rolling_window_hours": 6},
+            },
+        )
+        self._write_profile(
+            tmp_path,
+            "staging",
+            {
+                "scheduling": {"rolling_window_hours": 12},
+            },
+        )
         monkeypatch.setenv("AGENT_QUEUE_PROFILE", "staging")
         config = load_config(path, profile="dev")
         assert config.profile == "dev"
@@ -145,19 +181,30 @@ class TestProfileLoading:
 
     def test_profile_applied_after_env_overlay(self, tmp_path, monkeypatch):
         """Profile should layer on top of env overlay."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "base", "guild_id": "1"},
-            "scheduling": {"rolling_window_hours": 24},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "base", "guild_id": "1"},
+                "scheduling": {"rolling_window_hours": 24},
+            },
+        )
         # Env overlay changes token
         env_overlay = tmp_path / "config.dev.yaml"
-        env_overlay.write_text(yaml.dump({
-            "discord": {"bot_token": "dev-token"},
-        }))
+        env_overlay.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "dev-token"},
+                }
+            )
+        )
         # Profile changes scheduling
-        self._write_profile(tmp_path, "local", {
-            "scheduling": {"rolling_window_hours": 1},
-        })
+        self._write_profile(
+            tmp_path,
+            "local",
+            {
+                "scheduling": {"rolling_window_hours": 1},
+            },
+        )
         monkeypatch.setenv("AGENT_QUEUE_ENV", "dev")
         config = load_config(path, profile="local")
         assert config.discord.bot_token == "dev-token"  # from env overlay
@@ -166,25 +213,29 @@ class TestProfileLoading:
 
     def test_profile_none_removal(self, tmp_path):
         """Profile with None values should remove keys from base."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-            "archive": {"enabled": True, "after_hours": 24},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "archive": {"enabled": True, "after_hours": 24},
+            },
+        )
         # Profile disables archive by removing after_hours (set to None)
         # Write raw YAML with null to test None handling
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
-        (profiles_dir / "test.yaml").write_text(
-            "archive:\n  enabled: false\n"
-        )
+        (profiles_dir / "test.yaml").write_text("archive:\n  enabled: false\n")
         config = load_config(path, profile="test")
         assert config.archive.enabled is False
 
     def test_profile_with_yml_extension(self, tmp_path):
         """Profiles with .yml extension should also be listed in error messages."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+            },
+        )
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
         (profiles_dir / "alt.yml").write_text(yaml.dump({"scheduling": {}}))
@@ -193,14 +244,22 @@ class TestProfileLoading:
 
     def test_profile_validation_runs_on_merged(self, tmp_path):
         """Validation should run on the final merged config."""
-        path = self._write_config(tmp_path, {
-            "discord": {"bot_token": "x", "guild_id": "1"},
-            "scheduling": {"rolling_window_hours": 24},
-        })
-        self._write_profile(tmp_path, "bad", {
-            "scheduling": {"rolling_window_hours": -1},
-        })
+        path = self._write_config(
+            tmp_path,
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "scheduling": {"rolling_window_hours": 24},
+            },
+        )
+        self._write_profile(
+            tmp_path,
+            "bad",
+            {
+                "scheduling": {"rolling_window_hours": -1},
+            },
+        )
         from src.config import ConfigValidationError
+
         with pytest.raises(ConfigValidationError):
             load_config(path, profile="bad")
 
@@ -208,6 +267,7 @@ class TestProfileLoading:
 # ---------------------------------------------------------------------------
 # CLI argument parsing
 # ---------------------------------------------------------------------------
+
 
 class TestParseArgs:
     def test_no_args(self):

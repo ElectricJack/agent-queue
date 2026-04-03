@@ -73,13 +73,16 @@ def _make_orchestrator(**overrides):
     orch.db.list_agents = AsyncMock(return_value=overrides.get("agents", []))
     in_progress = overrides.get("in_progress_tasks", [])
     ready_tasks = overrides.get("ready_tasks", [])
+
     async def mock_list_tasks(status=None):
         from src.models import TaskStatus
+
         if status == TaskStatus.IN_PROGRESS:
             return in_progress
         elif status == TaskStatus.READY:
             return ready_tasks
         return []
+
     orch.db.list_tasks = mock_list_tasks
     return orch
 
@@ -189,6 +192,7 @@ class TestReadyEndpointMessaging:
         deps._health_provider = AsyncMock(return_value=health_data)
         try:
             from fastapi import FastAPI
+
             app = FastAPI()
             app.include_router(router)
             transport = ASGITransport(app=app)
@@ -220,6 +224,7 @@ class TestReadyEndpointMessaging:
         deps._health_provider = AsyncMock(return_value=health_data)
         try:
             from fastapi import FastAPI
+
             app = FastAPI()
             app.include_router(router)
             transport = ASGITransport(app=app)

@@ -75,14 +75,14 @@ class DiscordConfig:
 
     bot_token: str = ""
     guild_id: str = ""
-    channels: dict[str, str] = field(default_factory=lambda: {
-        "channel": "agent-queue",
-        "agent_questions": "agent-questions",
-    })
-    authorized_users: list[str] = field(default_factory=list)
-    per_project_channels: PerProjectChannelsConfig = field(
-        default_factory=PerProjectChannelsConfig
+    channels: dict[str, str] = field(
+        default_factory=lambda: {
+            "channel": "agent-queue",
+            "agent_questions": "agent-questions",
+        }
     )
+    authorized_users: list[str] = field(default_factory=list)
+    per_project_channels: PerProjectChannelsConfig = field(default_factory=PerProjectChannelsConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
     rate_guard_warn: int = 1000
@@ -92,9 +92,13 @@ class DiscordConfig:
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not self.bot_token:
-            errors.append(ConfigError("discord", "bot_token", "bot_token is required for Discord connection"))
+            errors.append(
+                ConfigError("discord", "bot_token", "bot_token is required for Discord connection")
+            )
         if not self.guild_id:
-            errors.append(ConfigError("discord", "guild_id", "guild_id is required for Discord connection"))
+            errors.append(
+                ConfigError("discord", "guild_id", "guild_id is required for Discord connection")
+            )
         return errors
 
 
@@ -116,9 +120,15 @@ class TelegramConfig:
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not self.bot_token:
-            errors.append(ConfigError("telegram", "bot_token", "bot_token is required for Telegram connection"))
+            errors.append(
+                ConfigError(
+                    "telegram", "bot_token", "bot_token is required for Telegram connection"
+                )
+            )
         if not self.chat_id:
-            errors.append(ConfigError("telegram", "chat_id", "chat_id is required for Telegram connection"))
+            errors.append(
+                ConfigError("telegram", "chat_id", "chat_id is required for Telegram connection")
+            )
         return errors
 
 
@@ -180,11 +190,15 @@ class PauseRetryConfig:
         if self.rate_limit_backoff_seconds <= 0:
             errors.append(ConfigError("pause_retry", "rate_limit_backoff_seconds", "must be > 0"))
         if self.token_exhaustion_retry_seconds <= 0:
-            errors.append(ConfigError("pause_retry", "token_exhaustion_retry_seconds", "must be > 0"))
+            errors.append(
+                ConfigError("pause_retry", "token_exhaustion_retry_seconds", "must be > 0")
+            )
         if self.rate_limit_max_retries < 0:
             errors.append(ConfigError("pause_retry", "rate_limit_max_retries", "must be >= 0"))
         if self.rate_limit_max_backoff_seconds <= 0:
-            errors.append(ConfigError("pause_retry", "rate_limit_max_backoff_seconds", "must be > 0"))
+            errors.append(
+                ConfigError("pause_retry", "rate_limit_max_backoff_seconds", "must be > 0")
+            )
         return errors
 
 
@@ -193,26 +207,28 @@ class AutoTaskConfig:
     """Configuration for auto-generating tasks from implementation plans."""
 
     enabled: bool = True
-    plan_file_patterns: list[str] = field(default_factory=lambda: [
-        ".claude/plan.md",
-        "plan.md",
-        "docs/plans/*.md",
-        "plans/*.md",
-        "docs/plan.md",
-    ])
-    inherit_repo: bool = True           # Subtasks inherit parent's repo_id
-    inherit_approval: bool = True       # Subtasks inherit parent's requires_approval
-    base_priority: int = 100            # Base priority for generated tasks
-    chain_dependencies: bool = True     # Tasks depend on previous step
+    plan_file_patterns: list[str] = field(
+        default_factory=lambda: [
+            ".claude/plan.md",
+            "plan.md",
+            "docs/plans/*.md",
+            "plans/*.md",
+            "docs/plan.md",
+        ]
+    )
+    inherit_repo: bool = True  # Subtasks inherit parent's repo_id
+    inherit_approval: bool = True  # Subtasks inherit parent's requires_approval
+    base_priority: int = 100  # Base priority for generated tasks
+    chain_dependencies: bool = True  # Tasks depend on previous step
     rebase_between_subtasks: bool = False  # Rebase onto main between subtasks
-    mid_chain_rebase: bool = True       # Rebase onto main between subtasks to reduce drift
-    mid_chain_rebase_push: bool = False # Push rebased branch to remote between subtasks
-    max_plan_depth: int = 1             # Max nesting of plan-generated tasks
-    max_steps_per_plan: int = 20        # Cap phases from a single plan
-    use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
-    llm_parser_model: str = ""          # Model override for plan parsing
-    skip_if_implemented: bool = True    # Skip task generation if branch has substantial code changes
-    max_verification_retries: int = 2   # Max reopen attempts for git verification failures
+    mid_chain_rebase: bool = True  # Rebase onto main between subtasks to reduce drift
+    mid_chain_rebase_push: bool = False  # Push rebased branch to remote between subtasks
+    max_plan_depth: int = 1  # Max nesting of plan-generated tasks
+    max_steps_per_plan: int = 20  # Cap phases from a single plan
+    use_llm_parser: bool = False  # Use LLM (Claude) for plan parsing
+    llm_parser_model: str = ""  # Model override for plan parsing
+    skip_if_implemented: bool = True  # Skip task generation if branch has substantial code changes
+    max_verification_retries: int = 2  # Max reopen attempts for git verification failures
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -237,28 +253,31 @@ class ArchiveConfig:
 
     enabled: bool = True
     after_hours: float = 24.0  # Archive terminal tasks older than N hours
-    statuses: list[str] = field(
-        default_factory=lambda: ["COMPLETED", "FAILED", "BLOCKED"]
-    )
+    statuses: list[str] = field(default_factory=lambda: ["COMPLETED", "FAILED", "BLOCKED"])
 
     def validate(self) -> list[ConfigError]:
         from src.models import TaskStatus
+
         errors: list[ConfigError] = []
         if self.after_hours <= 0:
             errors.append(ConfigError("archive", "after_hours", "must be > 0"))
         valid_statuses = {s.name for s in TaskStatus}
         for status in self.statuses:
             if status not in valid_statuses:
-                errors.append(ConfigError(
-                    "archive", "statuses",
-                    f"'{status}' is not a valid TaskStatus (valid: {', '.join(sorted(valid_statuses))})"
-                ))
+                errors.append(
+                    ConfigError(
+                        "archive",
+                        "statuses",
+                        f"'{status}' is not a valid TaskStatus (valid: {', '.join(sorted(valid_statuses))})",
+                    )
+                )
         return errors
 
 
 @dataclass
 class MonitoringConfig:
     """Configuration for monitoring stuck or stalled tasks."""
+
     stuck_task_threshold_seconds: int = 3600  # 1 hour default
 
 
@@ -285,7 +304,9 @@ class MemoryConfig:
     recall_top_k: int = 5  # number of memories to inject
     compact_enabled: bool = False  # periodic LLM compaction
     compact_interval_hours: int = 24
-    compact_llm_provider: str = ""  # LLM for compaction (defaults to revision_provider or chat_provider)
+    compact_llm_provider: str = (
+        ""  # LLM for compaction (defaults to revision_provider or chat_provider)
+    )
     compact_llm_model: str = ""  # model override for compaction
     compact_recent_days: int = 7  # task memories younger than this are kept as-is
     compact_archive_days: int = 30  # task memories older than this are deleted after digesting
@@ -314,10 +335,13 @@ class MemoryConfig:
         if self.enabled:
             valid_providers = {"openai", "google", "voyage", "ollama", "local"}
             if self.embedding_provider not in valid_providers:
-                errors.append(ConfigError(
-                    "memory", "embedding_provider",
-                    f"must be one of {sorted(valid_providers)}, got '{self.embedding_provider}'"
-                ))
+                errors.append(
+                    ConfigError(
+                        "memory",
+                        "embedding_provider",
+                        f"must be one of {sorted(valid_providers)}, got '{self.embedding_provider}'",
+                    )
+                )
             if self.max_chunk_size <= 0:
                 errors.append(ConfigError("memory", "max_chunk_size", "must be > 0"))
         return errors
@@ -333,14 +357,15 @@ class LoggingConfig:
     with correlation context appended.
     """
 
-    level: str = "INFO"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
-    format: str = "text"      # "text" or "json"
+    level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    format: str = "text"  # "text" or "json"
     include_source: bool = False  # Include filename/lineno in JSON output
 
 
 @dataclass
 class ReflectionConfig:
     """Configuration for the Supervisor's action-reflect cycle."""
+
     level: str = "full"
     periodic_interval: int = 900
     max_depth: int = 3
@@ -352,7 +377,13 @@ class ReflectionConfig:
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.level not in self._VALID_LEVELS:
-            errors.append(ConfigError("reflection", "level", f"must be one of {sorted(self._VALID_LEVELS)}, got '{self.level}'"))
+            errors.append(
+                ConfigError(
+                    "reflection",
+                    "level",
+                    f"must be one of {sorted(self._VALID_LEVELS)}, got '{self.level}'",
+                )
+            )
         if self.max_depth < 1:
             errors.append(ConfigError("reflection", "max_depth", "must be >= 1"))
         if self.periodic_interval < 0:
@@ -367,6 +398,7 @@ class ReflectionConfig:
 @dataclass
 class ObservationConfig:
     """Configuration for the Supervisor's passive chat observation."""
+
     enabled: bool = True
     batch_window_seconds: int = 60
     max_buffer_size: int = 20
@@ -384,6 +416,7 @@ class ObservationConfig:
 @dataclass
 class SupervisorConfig:
     """Top-level Supervisor configuration."""
+
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
 
@@ -408,24 +441,28 @@ class ChatProviderConfig:
     """LLM provider settings for the Discord chat agent (not the coding agents)."""
 
     provider: str = "anthropic"  # "anthropic" or "ollama"
-    model: str = ""              # Empty = provider default
-    base_url: str = ""           # For Ollama
-    keep_alive: str = "1h"       # Ollama: how long to keep model loaded after last request
-    num_ctx: int = 0             # Ollama: context window size (0 = model default)
+    model: str = ""  # Empty = provider default
+    base_url: str = ""  # For Ollama
+    keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
+    num_ctx: int = 0  # Ollama: context window size (0 = model default)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         valid_providers = {"anthropic", "ollama"}
         if self.provider and self.provider not in valid_providers:
-            errors.append(ConfigError(
-                "chat_provider", "provider",
-                f"must be one of {sorted(valid_providers)}, got '{self.provider}'"
-            ))
+            errors.append(
+                ConfigError(
+                    "chat_provider",
+                    "provider",
+                    f"must be one of {sorted(valid_providers)}, got '{self.provider}'",
+                )
+            )
         if self.provider == "ollama" and not self.base_url:
-            errors.append(ConfigError(
-                "chat_provider", "base_url",
-                "base_url is required when provider is 'ollama'"
-            ))
+            errors.append(
+                ConfigError(
+                    "chat_provider", "base_url", "base_url is required when provider is 'ollama'"
+                )
+            )
         return errors
 
 
@@ -476,16 +513,18 @@ class McpServerConfig:
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.enabled and not (1 <= self.port <= 65535):
-            errors.append(ConfigError(
-                "mcp_server", "port",
-                f"must be between 1 and 65535, got {self.port}"
-            ))
+            errors.append(
+                ConfigError("mcp_server", "port", f"must be between 1 and 65535, got {self.port}")
+            )
         for cmd in self.excluded_commands:
             if not isinstance(cmd, str) or not cmd.strip():
-                errors.append(ConfigError(
-                    "mcp_server", "excluded_commands",
-                    f"excluded command names must be non-empty strings, got: {cmd!r}"
-                ))
+                errors.append(
+                    ConfigError(
+                        "mcp_server",
+                        "excluded_commands",
+                        f"excluded command names must be non-empty strings, got: {cmd!r}",
+                    )
+                )
         return errors
 
 
@@ -524,17 +563,21 @@ class AgentProfileConfig:
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not self.id:
-            errors.append(ConfigError(
-                "agent_profiles", "id",
-                f"profile with name '{self.name}' has an empty id"
-            ))
+            errors.append(
+                ConfigError(
+                    "agent_profiles", "id", f"profile with name '{self.name}' has an empty id"
+                )
+            )
         valid_permission_modes = {"default", "plan", "full", "bypassPermissions", ""}
         if self.permission_mode and self.permission_mode not in valid_permission_modes:
-            errors.append(ConfigError(
-                "agent_profiles", "permission_mode",
-                f"profile '{self.id}': permission_mode must be one of "
-                f"{sorted(m for m in valid_permission_modes if m)}, got '{self.permission_mode}'"
-            ))
+            errors.append(
+                ConfigError(
+                    "agent_profiles",
+                    "permission_mode",
+                    f"profile '{self.id}': permission_mode must be one of "
+                    f"{sorted(m for m in valid_permission_modes if m)}, got '{self.permission_mode}'",
+                )
+            )
         return errors
 
 
@@ -572,9 +615,7 @@ class AppConfig:
     non-critical settings updated from disk for hot-reloading.
     """
 
-    data_dir: str = field(
-        default_factory=lambda: os.path.expanduser("~/.agent-queue")
-    )
+    data_dir: str = field(default_factory=lambda: os.path.expanduser("~/.agent-queue"))
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
@@ -621,11 +662,14 @@ class AppConfig:
             # Check if parent dir is writable (could create workspace_dir)
             parent = os.path.dirname(self.workspace_dir)
             if parent and os.path.exists(parent) and not os.access(parent, os.W_OK):
-                errors.append(ConfigError(
-                    "app", "workspace_dir",
-                    f"'{self.workspace_dir}' is not writable and parent directory is not writable",
-                    severity="warning"
-                ))
+                errors.append(
+                    ConfigError(
+                        "app",
+                        "workspace_dir",
+                        f"'{self.workspace_dir}' is not writable and parent directory is not writable",
+                        severity="warning",
+                    )
+                )
 
         if not self.database_path:
             errors.append(ConfigError("app", "database_path", "database_path is required"))
@@ -634,20 +678,30 @@ class AppConfig:
             if db_parent and not os.path.exists(db_parent):
                 # Check if we can create the parent
                 grandparent = os.path.dirname(db_parent)
-                if grandparent and os.path.exists(grandparent) and not os.access(grandparent, os.W_OK):
-                    errors.append(ConfigError(
-                        "app", "database_path",
-                        f"parent directory '{db_parent}' does not exist and cannot be created",
-                        severity="warning"
-                    ))
+                if (
+                    grandparent
+                    and os.path.exists(grandparent)
+                    and not os.access(grandparent, os.W_OK)
+                ):
+                    errors.append(
+                        ConfigError(
+                            "app",
+                            "database_path",
+                            f"parent directory '{db_parent}' does not exist and cannot be created",
+                            severity="warning",
+                        )
+                    )
 
         # Validate messaging_platform field
         valid_platforms = {"discord", "telegram"}
         if self.messaging_platform not in valid_platforms:
-            errors.append(ConfigError(
-                "app", "messaging_platform",
-                f"must be one of {sorted(valid_platforms)}, got '{self.messaging_platform}'"
-            ))
+            errors.append(
+                ConfigError(
+                    "app",
+                    "messaging_platform",
+                    f"must be one of {sorted(valid_platforms)}, got '{self.messaging_platform}'",
+                )
+            )
 
         # Only validate the active messaging platform's config
         if self.messaging_platform == "discord":
@@ -672,25 +726,26 @@ class AppConfig:
         # Health check port range
         if self.health_check.enabled:
             if not (1 <= self.health_check.port <= 65535):
-                errors.append(ConfigError(
-                    "health_check", "port",
-                    f"must be between 1 and 65535, got {self.health_check.port}"
-                ))
+                errors.append(
+                    ConfigError(
+                        "health_check",
+                        "port",
+                        f"must be between 1 and 65535, got {self.health_check.port}",
+                    )
+                )
 
         # Monitoring threshold
         if self.monitoring.stuck_task_threshold_seconds < 0:
-            errors.append(ConfigError(
-                "monitoring", "stuck_task_threshold_seconds",
-                "must be >= 0"
-            ))
+            errors.append(ConfigError("monitoring", "stuck_task_threshold_seconds", "must be >= 0"))
 
         # Rate limits structure validation
         for scope, limits in self.rate_limits.items():
             if not isinstance(limits, dict):
-                errors.append(ConfigError(
-                    "rate_limits", scope,
-                    f"expected a dict, got {type(limits).__name__}"
-                ))
+                errors.append(
+                    ConfigError(
+                        "rate_limits", scope, f"expected a dict, got {type(limits).__name__}"
+                    )
+                )
 
         return errors
 
@@ -741,27 +796,59 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 
 HOT_RELOADABLE_SECTIONS = {
-    "scheduling", "monitoring", "hook_engine", "archive",
-    "llm_logging", "pause_retry", "agents_config", "auto_task",
-    "logging", "agent_profiles", "rate_limits",
+    "scheduling",
+    "monitoring",
+    "hook_engine",
+    "archive",
+    "llm_logging",
+    "pause_retry",
+    "agents_config",
+    "auto_task",
+    "logging",
+    "agent_profiles",
+    "rate_limits",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
 RESTART_REQUIRED_SECTIONS = {
-    "discord", "telegram", "messaging_platform", "data_dir", "workspace_dir",
-    "database_path", "chat_provider", "memory", "health_check",
+    "discord",
+    "telegram",
+    "messaging_platform",
+    "data_dir",
+    "workspace_dir",
+    "database_path",
+    "chat_provider",
+    "memory",
+    "health_check",
 }
 """Config sections that require a full restart to take effect."""
 
 # Mapping from AppConfig field names to the section names used in diff output.
 # Most fields map to themselves; these are the exceptions.
 _SECTION_FIELDS = {
-    "data_dir", "workspace_dir", "database_path", "profile", "env",
-    "messaging_platform", "discord", "telegram", "agents_config",
-    "scheduling", "pause_retry",
-    "chat_provider", "hook_engine", "health_check", "logging",
-    "monitoring", "archive", "auto_task", "memory", "llm_logging",
-    "agent_profiles", "global_token_budget_daily", "rate_limits",
+    "data_dir",
+    "workspace_dir",
+    "database_path",
+    "profile",
+    "env",
+    "messaging_platform",
+    "discord",
+    "telegram",
+    "agents_config",
+    "scheduling",
+    "pause_retry",
+    "chat_provider",
+    "hook_engine",
+    "health_check",
+    "logging",
+    "monitoring",
+    "archive",
+    "auto_task",
+    "memory",
+    "llm_logging",
+    "agent_profiles",
+    "global_token_budget_daily",
+    "rate_limits",
 }
 
 
@@ -879,19 +966,25 @@ class ConfigWatcher:
                 if hasattr(self._config, section) and hasattr(new_config, section):
                     setattr(self._config, section, getattr(new_config, section))
 
-            await self._bus.emit("config.reloaded", {
-                "changed_sections": sorted(hot_reloadable),
-                "config": self._config,
-            })
+            await self._bus.emit(
+                "config.reloaded",
+                {
+                    "changed_sections": sorted(hot_reloadable),
+                    "config": self._config,
+                },
+            )
             logger.info(
                 "Config hot-reload: updated sections: %s",
                 ", ".join(sorted(hot_reloadable)),
             )
 
         if restart_needed:
-            await self._bus.emit("config.restart_needed", {
-                "changed_sections": sorted(restart_needed),
-            })
+            await self._bus.emit(
+                "config.restart_needed",
+                {
+                    "changed_sections": sorted(restart_needed),
+                },
+            )
             logger.warning(
                 "Config reload: sections require restart to take effect: %s",
                 ", ".join(sorted(restart_needed)),
@@ -911,12 +1004,14 @@ class ConfigWatcher:
 
 def _substitute_env_vars(value: str) -> str:
     """Replace ${ENV_VAR} with environment variable values."""
+
     def replacer(match):
         var_name = match.group(1)
         env_val = os.environ.get(var_name)
         if env_val is None:
             raise ValueError(f"Environment variable {var_name} not set")
         return env_val
+
     return re.sub(r"\$\{(\w+)\}", replacer, value)
 
 
@@ -1066,9 +1161,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             pp = d["per_project_channels"]
             ppc = PerProjectChannelsConfig(
                 auto_create=pp.get("auto_create", False),
-                naming_convention=pp.get(
-                    "naming_convention", "{project_id}"
-                ),
+                naming_convention=pp.get("naming_convention", "{project_id}"),
                 category_name=pp.get("category_name", ""),
                 private=pp.get("private", True),
             )
@@ -1076,8 +1169,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         # merge into single "channel" entry (prefer control since that's where
         # the bot listens for chat).
         raw_channels = d.get("channels", config.discord.channels)
-        if "channel" not in raw_channels and ("control" in raw_channels or "notifications" in raw_channels):
-            merged_name = raw_channels.get("control") or raw_channels.get("notifications", "agent-queue")
+        if "channel" not in raw_channels and (
+            "control" in raw_channels or "notifications" in raw_channels
+        ):
+            merged_name = raw_channels.get("control") or raw_channels.get(
+                "notifications", "agent-queue"
+            )
             raw_channels = {
                 "channel": merged_name,
                 "agent_questions": raw_channels.get("agent_questions", "agent-questions"),
@@ -1099,9 +1196,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             bot_token=tg.get("bot_token", ""),
             chat_id=str(tg.get("chat_id", "")),
             authorized_users=[str(u) for u in tg.get("authorized_users", [])],
-            per_project_chats={
-                k: str(v) for k, v in tg.get("per_project_chats", {}).items()
-            },
+            per_project_chats={k: str(v) for k, v in tg.get("per_project_chats", {}).items()},
             use_topics=tg.get("use_topics", True),
         )
 
@@ -1110,9 +1205,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.agents_config = AgentsDefaultConfig(
             heartbeat_interval_seconds=a.get("heartbeat_interval_seconds", 30),
             stuck_timeout_seconds=a.get("stuck_timeout_seconds", 0),
-            graceful_shutdown_timeout_seconds=a.get(
-                "graceful_shutdown_timeout_seconds", 30
-            ),
+            graceful_shutdown_timeout_seconds=a.get("graceful_shutdown_timeout_seconds", 30),
         )
 
     if "scheduling" in raw:
@@ -1126,9 +1219,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         p = raw["pause_retry"]
         config.pause_retry = PauseRetryConfig(
             rate_limit_backoff_seconds=p.get("rate_limit_backoff_seconds", 60),
-            token_exhaustion_retry_seconds=p.get(
-                "token_exhaustion_retry_seconds", 300
-            ),
+            token_exhaustion_retry_seconds=p.get("token_exhaustion_retry_seconds", 300),
             rate_limit_max_retries=p.get("rate_limit_max_retries", 3),
             rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
         )
@@ -1184,9 +1275,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "monitoring" in raw:
         m = raw["monitoring"]
         config.monitoring = MonitoringConfig(
-            stuck_task_threshold_seconds=m.get(
-                "stuck_task_threshold_seconds", 3600
-            ),
+            stuck_task_threshold_seconds=m.get("stuck_task_threshold_seconds", 3600),
         )
 
     if "archive" in raw:
@@ -1201,10 +1290,16 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         at = raw["auto_task"]
         config.auto_task = AutoTaskConfig(
             enabled=at.get("enabled", True),
-            plan_file_patterns=at.get("plan_file_patterns", [
-                ".claude/plan.md", "plan.md",
-                "docs/plans/*.md", "plans/*.md", "docs/plan.md",
-            ]),
+            plan_file_patterns=at.get(
+                "plan_file_patterns",
+                [
+                    ".claude/plan.md",
+                    "plan.md",
+                    "docs/plans/*.md",
+                    "plans/*.md",
+                    "docs/plan.md",
+                ],
+            ),
             inherit_repo=at.get("inherit_repo", True),
             inherit_approval=at.get("inherit_approval", True),
             base_priority=at.get("base_priority", 100),
@@ -1262,17 +1357,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         for pid, pdata in raw["agent_profiles"].items():
             if not isinstance(pdata, dict):
                 continue
-            profiles.append(AgentProfileConfig(
-                id=pid,
-                name=pdata.get("name", pid),
-                description=pdata.get("description", ""),
-                model=pdata.get("model", ""),
-                permission_mode=pdata.get("permission_mode", ""),
-                allowed_tools=pdata.get("allowed_tools", []),
-                mcp_servers=pdata.get("mcp_servers", {}),
-                system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
-                install=pdata.get("install", {}),
-            ))
+            profiles.append(
+                AgentProfileConfig(
+                    id=pid,
+                    name=pdata.get("name", pid),
+                    description=pdata.get("description", ""),
+                    model=pdata.get("model", ""),
+                    permission_mode=pdata.get("permission_mode", ""),
+                    allowed_tools=pdata.get("allowed_tools", []),
+                    mcp_servers=pdata.get("mcp_servers", {}),
+                    system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
+                    install=pdata.get("install", {}),
+                )
+            )
         config.agent_profiles = profiles
 
     if "health_check" in raw:

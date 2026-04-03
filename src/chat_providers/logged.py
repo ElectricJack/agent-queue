@@ -16,6 +16,7 @@ The wrapper is intentionally thin: it delegates everything to the inner
 provider and only adds timing + logging in a ``finally`` block so that
 both successful responses and exceptions are captured.
 """
+
 from __future__ import annotations
 
 import time

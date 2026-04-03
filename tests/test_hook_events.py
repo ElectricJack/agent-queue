@@ -1,4 +1,5 @@
 """Tests for new hook event types: note events, file/folder watches, and new context steps."""
+
 from __future__ import annotations
 
 import asyncio
@@ -56,6 +57,7 @@ async def engine(db, bus, config):
 
 async def _create_project(db, project_id="test-project"):
     from src.models import Project
+
     project = Project(id=project_id, name="Test Project")
     await db.create_project(project)
     return project
@@ -68,7 +70,7 @@ async def _create_hook(db, **overrides) -> Hook:
         name="test-hook",
         enabled=True,
         trigger='{"type": "periodic", "interval_seconds": 3600}',
-        context_steps='[]',
+        context_steps="[]",
         prompt_template="Test prompt: {{step_0}}",
         cooldown_seconds=60,
     )
@@ -98,11 +100,14 @@ class TestHookProjectScoping:
         )
 
         # Emit event for project-b — hook belongs to project-a, should NOT fire
-        await bus.emit("task.completed", {
-            "_event_type": "task.completed",
-            "task_id": "t1",
-            "project_id": "project-b",
-        })
+        await bus.emit(
+            "task.completed",
+            {
+                "_event_type": "task.completed",
+                "task_id": "t1",
+                "project_id": "project-b",
+            },
+        )
         await asyncio.sleep(0.1)
 
         assert hook.id not in engine._running
@@ -122,11 +127,14 @@ class TestHookProjectScoping:
             context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
         )
 
-        await bus.emit("task.completed", {
-            "_event_type": "task.completed",
-            "task_id": "t2",
-            "project_id": "project-a",
-        })
+        await bus.emit(
+            "task.completed",
+            {
+                "_event_type": "task.completed",
+                "task_id": "t2",
+                "project_id": "project-a",
+            },
+        )
         await asyncio.sleep(0.1)
 
         assert hook.id in engine._running or len(await db.list_hook_runs(hook.id)) > 0
@@ -149,13 +157,16 @@ class TestNoteEventHooks:
             context_steps='[{"type": "shell", "command": "echo noted", "skip_llm_if_exit_zero": true}]',
         )
 
-        await bus.emit("note.created", {
-            "project_id": "test-project",
-            "note_name": "ideas.md",
-            "note_path": "/tmp/notes/ideas.md",
-            "title": "Ideas",
-            "operation": "created",
-        })
+        await bus.emit(
+            "note.created",
+            {
+                "project_id": "test-project",
+                "note_name": "ideas.md",
+                "note_path": "/tmp/notes/ideas.md",
+                "title": "Ideas",
+                "operation": "created",
+            },
+        )
         await asyncio.sleep(0.1)
 
         assert hook.id in engine._running or len(await db.list_hook_runs(hook.id)) > 0
@@ -173,13 +184,16 @@ class TestNoteEventHooks:
             context_steps='[{"type": "shell", "command": "echo updated", "skip_llm_if_exit_zero": true}]',
         )
 
-        await bus.emit("note.updated", {
-            "project_id": "test-project",
-            "note_name": "ideas.md",
-            "note_path": "/tmp/notes/ideas.md",
-            "title": "Ideas",
-            "operation": "updated",
-        })
+        await bus.emit(
+            "note.updated",
+            {
+                "project_id": "test-project",
+                "note_name": "ideas.md",
+                "note_path": "/tmp/notes/ideas.md",
+                "title": "Ideas",
+                "operation": "updated",
+            },
+        )
         await asyncio.sleep(0.1)
 
         assert hook.id in engine._running or len(await db.list_hook_runs(hook.id)) > 0
@@ -197,12 +211,15 @@ class TestNoteEventHooks:
             context_steps='[{"type": "shell", "command": "echo deleted", "skip_llm_if_exit_zero": true}]',
         )
 
-        await bus.emit("note.deleted", {
-            "project_id": "test-project",
-            "note_name": "old-note.md",
-            "note_path": "/tmp/notes/old-note.md",
-            "title": "Old Note",
-        })
+        await bus.emit(
+            "note.deleted",
+            {
+                "project_id": "test-project",
+                "note_name": "old-note.md",
+                "note_path": "/tmp/notes/old-note.md",
+                "title": "Old Note",
+            },
+        )
         await asyncio.sleep(0.1)
 
         assert hook.id in engine._running or len(await db.list_hook_runs(hook.id)) > 0
@@ -217,17 +234,21 @@ class TestNoteEventHooks:
             name="note-prompt-hook",
             trigger='{"type": "event", "event_type": "note.created"}',
             cooldown_seconds=0,
-            context_steps='[]',
+            context_steps="[]",
             prompt_template="Note {{event.note_name}} was {{event.operation}} in project {{event.project_id}}",
         )
 
-        with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
+        with patch.object(engine, "_invoke_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = ("OK", 50)
-            await engine._execute_hook(hook, "event:note.created", event_data={
-                "project_id": "test-project",
-                "note_name": "ideas.md",
-                "operation": "created",
-            })
+            await engine._execute_hook(
+                hook,
+                "event:note.created",
+                event_data={
+                    "project_id": "test-project",
+                    "note_name": "ideas.md",
+                    "operation": "created",
+                },
+            )
 
         runs = await db.list_hook_runs(hook.id)
         assert len(runs) == 1
@@ -247,14 +268,16 @@ class TestFileWatchHookIntegration:
         test_file = tmp_path / "config.yaml"
         test_file.write_text("key: value")
 
-        trigger = json.dumps({
-            "type": "event",
-            "event_type": "file.changed",
-            "watch": {
-                "paths": [str(test_file)],
-                "project_id": "test-project",
-            },
-        })
+        trigger = json.dumps(
+            {
+                "type": "event",
+                "event_type": "file.changed",
+                "watch": {
+                    "paths": [str(test_file)],
+                    "project_id": "test-project",
+                },
+            }
+        )
         await _create_hook(
             db,
             id="file-watch-hook",
@@ -278,16 +301,18 @@ class TestFileWatchHookIntegration:
         src_dir = tmp_path / "src"
         src_dir.mkdir()
 
-        trigger = json.dumps({
-            "type": "event",
-            "event_type": "folder.changed",
-            "watch": {
-                "paths": [str(src_dir)],
-                "recursive": True,
-                "extensions": [".py"],
-                "project_id": "test-project",
-            },
-        })
+        trigger = json.dumps(
+            {
+                "type": "event",
+                "event_type": "folder.changed",
+                "watch": {
+                    "paths": [str(src_dir)],
+                    "recursive": True,
+                    "extensions": [".py"],
+                    "project_id": "test-project",
+                },
+            }
+        )
         await _create_hook(
             db,
             id="folder-watch-hook",
@@ -307,14 +332,16 @@ class TestFileWatchHookIntegration:
         """Watches for deleted/disabled hooks should be cleaned up on sync."""
         await _create_project(db)
 
-        trigger = json.dumps({
-            "type": "event",
-            "event_type": "file.changed",
-            "watch": {
-                "paths": [str(tmp_path / "test.txt")],
-                "project_id": "test-project",
-            },
-        })
+        trigger = json.dumps(
+            {
+                "type": "event",
+                "event_type": "file.changed",
+                "watch": {
+                    "paths": [str(tmp_path / "test.txt")],
+                    "project_id": "test-project",
+                },
+            }
+        )
         hook = await _create_hook(
             db,
             id="temp-hook",

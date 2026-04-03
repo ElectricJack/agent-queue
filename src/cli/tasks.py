@@ -85,6 +85,7 @@ def task_approve(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Approve task '{task_id}'?"):
             console.print("[dim]Cancelled.[/]")
             return
@@ -108,6 +109,7 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Stop task '{task_id}'? This will mark it as FAILED."):
             console.print("[dim]Cancelled.[/]")
             return
@@ -131,6 +133,7 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Restart task '{task_id}'?"):
             console.print("[dim]Cancelled.[/]")
             return
@@ -167,7 +170,8 @@ def task_search(ctx: click.Context, query: str, project: str | None) -> None:
     q = query.lower()
     raw_tasks = result.get("tasks", [])
     matched = [
-        t for t in raw_tasks
+        t
+        for t in raw_tasks
         if q in (t.get("title", "")).lower() or q in (t.get("description", "")).lower()
     ]
     tasks = [task_proxy(t) for t in matched]

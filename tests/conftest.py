@@ -29,11 +29,13 @@ def claude_cli_authenticated(claude_cli_path: str, tmp_path_factory) -> str:
     authentication fails.
     """
     workspace = str(tmp_path_factory.mktemp("auth_check"))
-    adapter = ClaudeAdapter(ClaudeAdapterConfig(
-        model="claude-haiku-4-5-20251001",
-        permission_mode="bypassPermissions",
-        allowed_tools=[],
-    ))
+    adapter = ClaudeAdapter(
+        ClaudeAdapterConfig(
+            model="claude-haiku-4-5-20251001",
+            permission_mode="bypassPermissions",
+            allowed_tools=[],
+        )
+    )
     ctx = TaskContext(
         description="respond with only: ok",
         task_id="auth-check",
@@ -54,10 +56,9 @@ def claude_cli_authenticated(claude_cli_path: str, tmp_path_factory) -> str:
         return claude_cli_path  # unreachable, keeps type checker happy
 
     from src.models import AgentResult
+
     if result.result == AgentResult.FAILED:
-        pytest.skip(
-            f"Claude SDK auth check failed: {result.error_message or result.summary}"
-        )
+        pytest.skip(f"Claude SDK auth check failed: {result.error_message or result.summary}")
 
     return claude_cli_path
 

@@ -23,6 +23,7 @@ Related modules:
 
 See ``specs/command-handler.md`` for the command reference specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,8 +43,17 @@ from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    AgentProfile, Hook, Project, ProjectStatus, RepoSourceType,
-    Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
+    AgentProfile,
+    Hook,
+    Project,
+    ProjectStatus,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    TaskType,
+    VerificationType,
+    TASK_TYPE_VALUES,
+    Workspace,
     WorkspaceAgent,
 )
 from src.orchestrator import Orchestrator
@@ -86,7 +96,11 @@ async def _run_subprocess(
         proc.kill()
         await proc.communicate()
         raise
-    return proc.returncode, stdout_b.decode() if stdout_b else "", stderr_b.decode() if stderr_b else ""
+    return (
+        proc.returncode,
+        stdout_b.decode() if stdout_b else "",
+        stderr_b.decode() if stderr_b else "",
+    )
 
 
 async def _run_subprocess_shell(
@@ -123,7 +137,11 @@ async def _run_subprocess_shell(
         proc.kill()
         await proc.communicate()
         raise
-    return proc.returncode, stdout_b.decode() if stdout_b else "", stderr_b.decode() if stderr_b else ""
+    return (
+        proc.returncode,
+        stdout_b.decode() if stdout_b else "",
+        stderr_b.decode() if stderr_b else "",
+    )
 
 
 def _count_by(items, key_fn) -> dict[str, int]:
@@ -147,15 +165,16 @@ def _parse_delay(delay_str: str) -> int:
         return int(delay_str)
 
     import re as _re
+
     total = 0
-    pattern = _re.compile(r'(\d+)\s*([smhd])', _re.IGNORECASE)
+    pattern = _re.compile(r"(\d+)\s*([smhd])", _re.IGNORECASE)
     matches = pattern.findall(delay_str)
     if not matches:
         raise ValueError(
             f"Cannot parse delay '{delay_str}'. "
             "Use formats like '30s', '5m', '2h', '1d', or '2h30m'."
         )
-    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     for value, unit in matches:
         total += int(value) * multipliers[unit.lower()]
     return total
@@ -187,10 +206,10 @@ def _format_interval(seconds: int) -> str:
 # constants in ``src/discord/embeds.py`` but are duplicated here so the
 # command handler stays self-contained for formatting purposes.
 
-_TREE_BRANCH = "├── "   # Non-last child connector
-_TREE_LAST   = "└── "   # Last child connector
-_TREE_PIPE   = "│   "   # Continuation pipe for deeper levels
-_TREE_SPACE  = "    "   # Blank continuation (last child's subtree)
+_TREE_BRANCH = "├── "  # Non-last child connector
+_TREE_LAST = "└── "  # Last child connector
+_TREE_PIPE = "│   "  # Continuation pipe for deeper levels
+_TREE_SPACE = "    "  # Blank continuation (last child's subtree)
 
 # Discord messages cap at 2,000 characters.  We leave headroom for any
 # surrounding text the caller might prepend/append (embed wrapper, header, etc).
@@ -501,10 +520,7 @@ def _render_tree_node(
     if depth >= max_depth:
         completed, total = _count_subtree(children)
         noun = "subtask" if total == 1 else "subtasks"
-        lines.append(
-            f"{child_prefix}{_TREE_LAST}… ({total} more {noun}, "
-            f"{completed} complete)"
-        )
+        lines.append(f"{child_prefix}{_TREE_LAST}… ({total} more {noun}, {completed} complete)")
         return lines
 
     # -- Render each child recursively ---------------------------------------
@@ -650,7 +666,10 @@ def _format_task_tree(
 
         # Even depth-1 is too long — fall back to compact mode
         return _format_task_tree(
-            root_task, children, depth=depth, compact=True,
+            root_task,
+            children,
+            depth=depth,
+            compact=True,
         )
 
     return result
@@ -800,9 +819,7 @@ def _build_archive_note(
     if dependencies:
         dep_list = ", ".join(f"`{d}`" for d in sorted(dependencies))
         lines.append(f"**Dependencies:** {dep_list}")
-    lines.append(
-        f"**Archived:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    lines.append(f"**Archived:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
 
     # Description
@@ -935,16 +952,23 @@ class CommandHandler:
                     return await handler(args)
 
                 # Fallback to plugin registry
-                if hasattr(self.orchestrator, 'plugin_registry') and self.orchestrator.plugin_registry:
+                if (
+                    hasattr(self.orchestrator, "plugin_registry")
+                    and self.orchestrator.plugin_registry
+                ):
                     plugin_handler = self.orchestrator.plugin_registry.get_command(name)
                     if plugin_handler:
                         try:
                             result = await plugin_handler(args)
-                            self.orchestrator.plugin_registry.record_success(name.split(".")[0] if "." in name else name)
+                            self.orchestrator.plugin_registry.record_success(
+                                name.split(".")[0] if "." in name else name
+                            )
                             return result
                         except Exception as e:
                             plugin_name = name.split(".")[0] if "." in name else name
-                            await self.orchestrator.plugin_registry.record_failure(plugin_name, str(e))
+                            await self.orchestrator.plugin_registry.record_failure(
+                                plugin_name, str(e)
+                            )
                             logger.error("Plugin command %s failed: %s", name, e, exc_info=True)
                             return {"error": f"Plugin command failed: {e}"}
 
@@ -976,9 +1000,7 @@ class CommandHandler:
         if result.get("applied"):
             parts.append(f"Applied: {', '.join(result['applied'])}")
         if result.get("restart_required"):
-            parts.append(
-                f"Restart required: {', '.join(result['restart_required'])}"
-            )
+            parts.append(f"Restart required: {', '.join(result['restart_required'])}")
         return {
             "message": "Config reloaded.",
             "changed_sections": result["changed_sections"],
@@ -1061,15 +1083,17 @@ class CommandHandler:
                 total = sum(usage.values())
                 # Derive project name from cwd
                 project_name = os.path.basename(cwd) if cwd else "unknown"
-                active_sessions.append({
-                    "session_id": sid[:12],
-                    "project": project_name,
-                    "cwd": cwd,
-                    "started": started.strftime("%H:%M") if started else "?",
-                    "messages": msg_count,
-                    "usage": usage,
-                    "total_tokens": total,
-                })
+                active_sessions.append(
+                    {
+                        "session_id": sid[:12],
+                        "project": project_name,
+                        "cwd": cwd,
+                        "started": started.strftime("%H:%M") if started else "?",
+                        "messages": msg_count,
+                        "usage": usage,
+                        "total_tokens": total,
+                    }
+                )
 
         result["active_sessions"] = active_sessions
         result["active_session_count"] = len(active_sessions)
@@ -1090,8 +1114,10 @@ class CommandHandler:
                     cache_read = data.get("cacheReadInputTokens", 0)
                     cache_create = data.get("cacheCreationInputTokens", 0)
                     model_usage[short] = {
-                        "input": inp, "output": out,
-                        "cache_read": cache_read, "cache_create": cache_create,
+                        "input": inp,
+                        "output": out,
+                        "cache_read": cache_read,
+                        "cache_create": cache_create,
                         "total": inp + out + cache_read + cache_create,
                     }
                 result["model_usage"] = model_usage
@@ -1139,6 +1165,7 @@ class CommandHandler:
             auth_header = {"x-api-key": api_key}
 
         import aiohttp
+
         headers = {
             **auth_header,
             "content-type": "application/json",
@@ -1180,12 +1207,9 @@ class CommandHandler:
                     if reset_ts:
                         try:
                             from datetime import datetime, timezone
-                            reset_dt = datetime.fromtimestamp(
-                                float(reset_ts), tz=timezone.utc
-                            )
-                            rate_info["reset_human"] = reset_dt.strftime(
-                                "%Y-%m-%d %H:%M UTC"
-                            )
+
+                            reset_dt = datetime.fromtimestamp(float(reset_ts), tz=timezone.utc)
+                            rate_info["reset_human"] = reset_dt.strftime("%Y-%m-%d %H:%M UTC")
                             # Time until reset
                             now = datetime.now(timezone.utc)
                             delta = reset_dt - now
@@ -1246,13 +1270,19 @@ class CommandHandler:
                 agent_details.append(info)
 
         in_progress = [
-            {"id": t.id, "title": t.title, "project_id": t.project_id,
-             "assigned_agent": t.assigned_agent_id}
-            for t in tasks if t.status == TaskStatus.IN_PROGRESS
+            {
+                "id": t.id,
+                "title": t.title,
+                "project_id": t.project_id,
+                "assigned_agent": t.assigned_agent_id,
+            }
+            for t in tasks
+            if t.status == TaskStatus.IN_PROGRESS
         ]
         ready = [
             {"id": t.id, "title": t.title, "project_id": t.project_id}
-            for t in tasks if t.status == TaskStatus.READY
+            for t in tasks
+            if t.status == TaskStatus.READY
         ]
 
         return {
@@ -1426,13 +1456,16 @@ class CommandHandler:
                         # If old default branch ref doesn't exist, branch from HEAD
                         await git._arun(["branch", branch, "HEAD"], cwd=ws_path)
                     await git._arun(
-                        ["push", "-u", "origin", branch], cwd=ws_path,
+                        ["push", "-u", "origin", branch],
+                        cwd=ws_path,
                     )
                     branch_created = True
             except Exception as exc:
                 logger.warning(
                     "Could not verify/create branch %s for project %s: %s",
-                    branch, pid, exc,
+                    branch,
+                    pid,
+                    exc,
                 )
 
         await self.db.update_project(pid, repo_default_branch=branch)
@@ -1479,9 +1512,7 @@ class CommandHandler:
                         channel_id = str(ch["id"])
                         break
                 if not channel_id:
-                    return {
-                        "error": f"No text channel named '{channel_name}' found in this server"
-                    }
+                    return {"error": f"No text channel named '{channel_name}' found in this server"}
             else:
                 return {
                     "error": (
@@ -1492,10 +1523,12 @@ class CommandHandler:
                 }
 
         # Delegate to the existing set_project_channel handler.
-        return await self._cmd_set_project_channel({
-            "project_id": pid,
-            "channel_id": channel_id,
-        })
+        return await self._cmd_set_project_channel(
+            {
+                "project_id": pid,
+                "channel_id": channel_id,
+            }
+        )
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:
         """Return the Discord channel ID configured for a project."""
@@ -1544,7 +1577,7 @@ class CommandHandler:
         if tasks:
             return {
                 "error": f"Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. "
-                         "Stop them first."
+                "Stop them first."
             }
 
         # Capture channel ID before the DB cascade removes it.
@@ -1583,9 +1616,11 @@ class CommandHandler:
     # tasks still need attention (retry/fix or dependency resolution) and
     # should be visible in the default task list so the progress breakdown
     # numbers add up correctly.
-    _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset({
-        TaskStatus.COMPLETED,
-    })
+    _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset(
+        {
+            TaskStatus.COMPLETED,
+        }
+    )
 
     async def _resolve_root_task_id(self, task_id: str) -> str:
         """Walk up the parent chain to find the topmost ancestor task ID.
@@ -1632,10 +1667,7 @@ class CommandHandler:
         """
         result = dict(base_map) if base_map else {}
         # Find tree task IDs not already in the base map
-        missing_ids = [
-            tid for tid in _collect_tree_task_ids(tree_data)
-            if tid not in result
-        ]
+        missing_ids = [tid for tid in _collect_tree_task_ids(tree_data) if tid not in result]
         if missing_ids:
             # Batch-fetch all missing dependency data in two queries
             batch_result = await self.db.get_dependency_map_for_tasks(missing_ids)
@@ -1714,9 +1746,7 @@ class CommandHandler:
         str
             Multi-line formatted text ready for display.
         """
-        return "\n".join(
-            CommandHandler.format_task_with_dependencies(t) for t in tasks
-        )
+        return "\n".join(CommandHandler.format_task_with_dependencies(t) for t in tasks)
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
         """List tasks with configurable display mode.
@@ -1777,13 +1807,18 @@ class CommandHandler:
         # Also used as the fallback when tree/compact lack a project_id.
         if display_mode == "flat" or "project_id" not in args:
             return await self._list_tasks_flat(
-                args, kwargs, explicit_status,
+                args,
+                kwargs,
+                explicit_status,
                 show_dependencies=show_dependencies,
             )
 
         # ── Tree / Compact modes ───────────────────────────────────────
         return await self._list_tasks_hierarchical(
-            args, kwargs, explicit_status, compact=(display_mode == "compact"),
+            args,
+            kwargs,
+            explicit_status,
+            compact=(display_mode == "compact"),
             show_dependencies=show_dependencies,
         )
 
@@ -1952,7 +1987,9 @@ class CommandHandler:
             status_counts = _count_subtree_by_status(children)
 
             formatted = _format_task_tree(
-                root, children, compact=compact,
+                root,
+                children,
+                compact=compact,
             )
 
             tree_entry: dict = {
@@ -1967,7 +2004,8 @@ class CommandHandler:
             # callers that want to display it inline.
             if compact and subtask_total > 0:
                 tree_entry["progress_bar"] = progress_bar(
-                    completed, subtask_total,
+                    completed,
+                    subtask_total,
                 )
 
             trees.append(tree_entry)
@@ -1994,7 +2032,10 @@ class CommandHandler:
                 if dep_map:
                     for i, (root, children) in enumerate(raw_trees):
                         trees[i]["formatted"] = _format_task_tree(
-                            root, children, compact=False, dep_map=dep_map,
+                            root,
+                            children,
+                            compact=False,
+                            dep_map=dep_map,
                         )
 
         return {
@@ -2007,7 +2048,9 @@ class CommandHandler:
     # -- shared helpers ------------------------------------------------------
 
     def _apply_completion_filter(
-        self, tasks: list[Task], args: dict,
+        self,
+        tasks: list[Task],
+        args: dict,
     ) -> list[Task]:
         """Filter a task list by the ``include_completed`` / ``completed_only``
         convenience flags.  Used by both flat and hierarchical modes.
@@ -2075,7 +2118,8 @@ class CommandHandler:
                 td["blocks"] = []
 
     async def _build_dep_map(
-        self, tasks: list[Task],
+        self,
+        tasks: list[Task],
     ) -> dict[str, dict]:
         """Build a dependency map for annotating tree nodes.
 
@@ -2191,7 +2235,10 @@ class CommandHandler:
                 dep_map = None
 
         formatted = _format_task_tree(
-            root_task, children, compact=compact, max_depth=max_depth,
+            root_task,
+            children,
+            compact=compact,
+            max_depth=max_depth,
             dep_map=dep_map,
         )
 
@@ -2222,8 +2269,10 @@ class CommandHandler:
             if raw_task_type in TASK_TYPE_VALUES:
                 task_type = TaskType(raw_task_type)
             else:
-                return {"error": f"Invalid task_type '{raw_task_type}'. "
-                        f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"}
+                return {
+                    "error": f"Invalid task_type '{raw_task_type}'. "
+                    f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
+                }
         # Validate optional profile_id
         profile_id = args.get("profile_id")
         if profile_id:
@@ -2237,12 +2286,15 @@ class CommandHandler:
             if not ws:
                 return {"error": f"Workspace '{preferred_workspace_id}' not found"}
             if ws.project_id != project_id:
-                return {"error": f"Workspace '{preferred_workspace_id}' belongs to "
-                        f"project '{ws.project_id}', not '{project_id}'"}
+                return {
+                    "error": f"Workspace '{preferred_workspace_id}' belongs to "
+                    f"project '{ws.project_id}', not '{project_id}'"
+                }
         # Validate optional attachments (list of file paths)
         attachments = args.get("attachments", [])
         if attachments:
             import os
+
             valid_paths = []
             for path in attachments:
                 if os.path.isfile(path):
@@ -2309,8 +2361,7 @@ class CommandHandler:
             other_projects = await self.db.list_projects()
             text_to_check = f"{task.title} {task.description}".lower()
             mentioned = [
-                p.id for p in other_projects
-                if p.id != project_id and p.id.lower() in text_to_check
+                p.id for p in other_projects if p.id != project_id and p.id.lower() in text_to_check
             ]
             if mentioned:
                 result["warning"] = (
@@ -2353,11 +2404,13 @@ class CommandHandler:
             for dep_id in deps:
                 dep_task = await self.db.get_task(dep_id)
                 if dep_task:
-                    dep_details.append({
-                        "id": dep_task.id,
-                        "title": dep_task.title,
-                        "status": dep_task.status.value,
-                    })
+                    dep_details.append(
+                        {
+                            "id": dep_task.id,
+                            "title": dep_task.title,
+                            "status": dep_task.status.value,
+                        }
+                    )
             info["depends_on"] = dep_details
 
         dependents = await self.db.get_dependents(task.id)
@@ -2366,11 +2419,13 @@ class CommandHandler:
             for dep_id in dependents:
                 dep_task = await self.db.get_task(dep_id)
                 if dep_task:
-                    dep_details.append({
-                        "id": dep_task.id,
-                        "title": dep_task.title,
-                        "status": dep_task.status.value,
-                    })
+                    dep_details.append(
+                        {
+                            "id": dep_task.id,
+                            "title": dep_task.title,
+                            "status": dep_task.status.value,
+                        }
+                    )
             info["blocks"] = dep_details
 
         # Subtask info
@@ -2414,11 +2469,13 @@ class CommandHandler:
         for dep_id in sorted(dep_ids):
             dep_task = await self.db.get_task(dep_id)
             if dep_task:
-                depends_on.append({
-                    "id": dep_task.id,
-                    "title": dep_task.title,
-                    "status": dep_task.status.value,
-                })
+                depends_on.append(
+                    {
+                        "id": dep_task.id,
+                        "title": dep_task.title,
+                        "status": dep_task.status.value,
+                    }
+                )
 
         # Downstream: what this task blocks
         dependent_ids = await self.db.get_dependents(task.id)
@@ -2426,11 +2483,13 @@ class CommandHandler:
         for dep_id in sorted(dependent_ids):
             dep_task = await self.db.get_task(dep_id)
             if dep_task:
-                blocks.append({
-                    "id": dep_task.id,
-                    "title": dep_task.title,
-                    "status": dep_task.status.value,
-                })
+                blocks.append(
+                    {
+                        "id": dep_task.id,
+                        "title": dep_task.title,
+                        "status": dep_task.status.value,
+                    }
+                )
 
         return {
             "task_id": task.id,
@@ -2476,7 +2535,9 @@ class CommandHandler:
         # Check for duplicate edge.
         existing = await self.db.get_dependencies(task_id)
         if depends_on in existing:
-            return {"error": f"Dependency already exists: '{task_id}' already depends on '{depends_on}'"}
+            return {
+                "error": f"Dependency already exists: '{task_id}' already depends on '{depends_on}'"
+            }
 
         # Cycle detection — build the full graph and validate.
         all_deps = await self.db.get_all_dependencies()
@@ -2545,7 +2606,9 @@ class CommandHandler:
                 return {"error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
             old_status = task.status.value
             await self.db.transition_task(
-                args["task_id"], new_status, context="edit_task",
+                args["task_id"],
+                new_status,
+                context="edit_task",
             )
             status_changed = True
 
@@ -2569,7 +2632,9 @@ class CommandHandler:
             elif raw_tt in TASK_TYPE_VALUES:
                 updates["task_type"] = TaskType(raw_tt)
             else:
-                return {"error": f"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"}
+                return {
+                    "error": f"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
+                }
         if "max_retries" in args:
             updates["max_retries"] = args["max_retries"]
         if "verification_type" in args:
@@ -2577,7 +2642,9 @@ class CommandHandler:
             if raw_vt in VERIFICATION_VALUES:
                 updates["verification_type"] = VerificationType(raw_vt)
             else:
-                return {"error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"}
+                return {
+                    "error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"
+                }
         if "profile_id" in args:
             pid = args["profile_id"]
             if pid is not None:
@@ -2747,9 +2814,7 @@ class CommandHandler:
 
         tasks_to_archive: list = []
         for status in statuses_to_archive:
-            tasks_to_archive.extend(
-                await self.db.list_tasks(project_id=project_id, status=status)
-            )
+            tasks_to_archive.extend(await self.db.list_tasks(project_id=project_id, status=status))
 
         if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
@@ -2776,12 +2841,14 @@ class CommandHandler:
                 project_id=task.project_id,
                 task_id=task.id,
             )
-            archived.append({
-                "id": task.id,
-                "title": task.title,
-                "status": task.status.value,
-                "archive_path": archive_path,
-            })
+            archived.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status.value,
+                    "archive_path": archive_path,
+                }
+            )
 
         # Determine archive_dir for the response (use first task's project).
         archive_dir = None
@@ -2837,7 +2904,9 @@ class CommandHandler:
             return {"error": f"Failed to archive task '{task_id}'"}
 
         await self.db.log_event(
-            "task_archived", project_id=task.project_id, task_id=task_id,
+            "task_archived",
+            project_id=task.project_id,
+            task_id=task_id,
         )
         return {
             "archived": task_id,
@@ -2857,7 +2926,8 @@ class CommandHandler:
         project_id = args.get("project_id")
         limit = int(args.get("limit", 50))
         tasks = await self.db.list_archived_tasks(
-            project_id=project_id, limit=limit,
+            project_id=project_id,
+            limit=limit,
         )
         total = await self.db.count_archived_tasks(project_id=project_id)
         return {
@@ -2891,7 +2961,9 @@ class CommandHandler:
             return {"error": f"Failed to restore task '{task_id}'"}
 
         await self.db.log_event(
-            "task_restored", project_id=archived["project_id"], task_id=task_id,
+            "task_restored",
+            project_id=archived["project_id"],
+            task_id=task_id,
         )
         return {
             "restored": task_id,
@@ -2911,6 +2983,7 @@ class CommandHandler:
         # Count how many active terminal tasks would be archived now
         older_than_seconds = cfg.after_hours * 3600
         import time as _time
+
         cutoff = _time.time() - older_than_seconds
         eligible = 0
         if cfg.enabled and cfg.statuses:
@@ -2953,9 +3026,7 @@ class CommandHandler:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
         if task.status != TaskStatus.WAITING_INPUT:
-            return {
-                "error": f"Task is not waiting for input (status: {task.status.value})"
-            }
+            return {"error": f"Task is not waiting for input (status: {task.status.value})"}
 
         # Append the human reply to the task description so the agent sees it
         # when the task is re-executed.
@@ -3023,9 +3094,9 @@ class CommandHandler:
         workspace_path = args.get("workspace_path")
 
         logger.info(
-            "process_task_completion: starting plan discovery for task %s "
-            "(workspace=%s)",
-            task_id, workspace_path,
+            "process_task_completion: starting plan discovery for task %s (workspace=%s)",
+            task_id,
+            workspace_path,
         )
 
         config = self.orchestrator.config.auto_task
@@ -3033,8 +3104,7 @@ class CommandHandler:
         # Check if auto_task is enabled
         if not config.enabled:
             logger.info(
-                "process_task_completion: auto-task disabled, skipping plan "
-                "discovery for task %s",
+                "process_task_completion: auto-task disabled, skipping plan discovery for task %s",
                 task_id,
             )
             return {"plan_found": False, "reason": "Auto-task generation is disabled"}
@@ -3057,19 +3127,27 @@ class CommandHandler:
         if config.skip_if_implemented:
             try:
                 project = await self.db.get_project(task.project_id) if task.project_id else None
-                default_branch = await self.orchestrator._get_default_branch(project, workspace_path)
-                if await self.orchestrator.git.ahas_non_plan_changes(workspace_path, default_branch):
+                default_branch = await self.orchestrator._get_default_branch(
+                    project, workspace_path
+                )
+                if await self.orchestrator.git.ahas_non_plan_changes(
+                    workspace_path, default_branch
+                ):
                     logger.info(
                         "process_task_completion: skipping plan for task %s — "
                         "branch has substantial code changes beyond the plan file, "
                         "indicating the plan was already implemented",
                         task_id,
                     )
-                    return {"plan_found": False, "reason": "Plan already implemented (non-plan changes detected)"}
+                    return {
+                        "plan_found": False,
+                        "reason": "Plan already implemented (non-plan changes detected)",
+                    }
             except Exception as e:
                 logger.debug(
                     "process_task_completion: skip_if_implemented check failed for task %s: %s",
-                    task_id, e,
+                    task_id,
+                    e,
                 )
 
         # Find a plan file in the workspace
@@ -3080,14 +3158,16 @@ class CommandHandler:
             logger.info(
                 "process_task_completion: no plan file found for task %s "
                 "(searched patterns: %s in %s)",
-                task_id, plan_patterns, workspace_path,
+                task_id,
+                plan_patterns,
+                workspace_path,
             )
             return {"plan_found": False, "reason": "No plan file found"}
 
         logger.info(
-            "process_task_completion: found plan file %s for task %s — "
-            "running validation checks",
-            plan_file, task_id,
+            "process_task_completion: found plan file %s for task %s — running validation checks",
+            plan_file,
+            task_id,
         )
 
         # Staleness check: compare the plan file's mtime against the
@@ -3104,23 +3184,28 @@ class CommandHandler:
                         "process_task_completion: ignoring stale plan file %s for task %s "
                         "(plan mtime %.0f < exec start %.0f — file "
                         "predates this task's execution)",
-                        plan_file, task_id, plan_mtime, exec_start,
+                        plan_file,
+                        task_id,
+                        plan_mtime,
+                        exec_start,
                     )
                     # Archive stale plan so it's not rediscovered by future tasks
                     try:
                         plans_dir = os.path.join(workspace_path, ".claude", "plans")
                         os.makedirs(plans_dir, exist_ok=True)
-                        stale_archive = os.path.join(
-                            plans_dir, f"stale-{task_id}-plan.md"
-                        )
+                        stale_archive = os.path.join(plans_dir, f"stale-{task_id}-plan.md")
                         os.rename(plan_file, stale_archive)
                     except OSError:
                         pass
-                    return {"plan_found": False, "reason": "Plan file is stale (predates task execution)"}
+                    return {
+                        "plan_found": False,
+                        "reason": "Plan file is stale (predates task execution)",
+                    }
             except OSError as e:
                 logger.debug(
                     "process_task_completion: staleness check failed for %s: %s (proceeding)",
-                    plan_file, e,
+                    plan_file,
+                    e,
                 )
 
         # Read the plan file content
@@ -3150,12 +3235,14 @@ class CommandHandler:
         # at approval time (not by algorithmic parsing here).
         try:
             await self.db.add_task_context(
-                task_id, type="plan_archived_path",
+                task_id,
+                type="plan_archived_path",
                 label="Plan Archived Path",
                 content=archived_path,
             )
             await self.db.add_task_context(
-                task_id, type="plan_raw",
+                task_id,
+                type="plan_raw",
                 label="Plan Raw Content",
                 content=content,
             )
@@ -3165,7 +3252,9 @@ class CommandHandler:
         logger.info(
             "process_task_completion: plan stored for task %s — "
             "plan_found=True, archived=%s, content_length=%d",
-            task_id, archived_path, len(content),
+            task_id,
+            archived_path,
+            len(content),
         )
 
         return {
@@ -3212,9 +3301,7 @@ class CommandHandler:
         config = self.orchestrator.config.auto_task
 
         # ── Check for pre-created draft subtasks (parse-first workflow) ──
-        draft_ctx = next(
-            (c for c in contexts if c["type"] == "plan_draft_subtasks"), None
-        )
+        draft_ctx = next((c for c in contexts if c["type"] == "plan_draft_subtasks"), None)
 
         created_info: list[dict] = []
 
@@ -3225,7 +3312,8 @@ class CommandHandler:
             created_info = _json.loads(draft_ctx["content"])
             logger.info(
                 "approve_plan: found %d pre-created draft subtasks for %s",
-                len(created_info), task.id,
+                len(created_info),
+                task.id,
             )
 
             # Defense-in-depth: draft_ctx should always have subtasks, but
@@ -3256,13 +3344,13 @@ class CommandHandler:
                     if dep_task_id in draft_ids:
                         continue
                     try:
-                        await self.db.add_dependency(
-                            dep_task_id, depends_on=final_subtask_id
-                        )
+                        await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
                     except Exception as e:
                         logger.warning(
                             "Failed to add downstream dep %s→%s: %s",
-                            dep_task_id, final_subtask_id, e,
+                            dep_task_id,
+                            final_subtask_id,
+                            e,
                         )
         else:
             # ── Legacy workflow: create subtasks on approval ──
@@ -3310,18 +3398,17 @@ class CommandHandler:
                     dependents = await self.db.get_dependents(task.id)
                     for dep_task_id in dependents:
                         try:
-                            await self.db.add_dependency(
-                                dep_task_id, depends_on=final_subtask_id
-                            )
+                            await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
                         except Exception as e:
                             logger.warning(
                                 "Failed to add downstream dep %s→%s: %s",
-                                dep_task_id, final_subtask_id, e,
+                                dep_task_id,
+                                final_subtask_id,
+                                e,
                             )
             else:
                 logger.error(
-                    "approve_plan: supervisor unavailable — cannot create "
-                    "subtasks for task %s",
+                    "approve_plan: supervisor unavailable — cannot create subtasks for task %s",
                     task.id,
                 )
                 return {"error": "Supervisor is not available. Cannot create subtasks from plan."}
@@ -3358,7 +3445,8 @@ class CommandHandler:
             except Exception as e:
                 logger.warning(
                     "Background plan cleanup failed for task %s: %s",
-                    task.id, e,
+                    task.id,
+                    e,
                 )
 
         asyncio.create_task(_background_cleanup())
@@ -3394,6 +3482,7 @@ class CommandHandler:
         )
         if enumerated_ctx:
             import json as _json_cleanup
+
             try:
                 enumerated_paths = _json_cleanup.loads(enumerated_ctx["content"])
             except (ValueError, TypeError):
@@ -3404,13 +3493,16 @@ class CommandHandler:
                         os.remove(plan_path)
                         deleted_any = True
                         # Track the workspace directory for committing
-                        workspaces_with_deletions.add(os.path.dirname(
-                            os.path.dirname(plan_path) if ".claude" in plan_path
-                            else plan_path
-                        ))
+                        workspaces_with_deletions.add(
+                            os.path.dirname(
+                                os.path.dirname(plan_path) if ".claude" in plan_path else plan_path
+                            )
+                        )
                         logger.info("Plan cleanup: deleted enumerated plan file %s", plan_path)
                 except OSError as e:
-                    logger.warning("Plan cleanup: failed to delete enumerated plan %s: %s", plan_path, e)
+                    logger.warning(
+                        "Plan cleanup: failed to delete enumerated plan %s: %s", plan_path, e
+                    )
 
         # 2. Delete the archived plan file if it exists
         archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
@@ -3422,7 +3514,9 @@ class CommandHandler:
                     deleted_any = True
                     logger.info("Plan cleanup: deleted archived plan file %s", archived_path)
             except OSError as e:
-                logger.warning("Plan cleanup: failed to delete archived plan %s: %s", archived_path, e)
+                logger.warning(
+                    "Plan cleanup: failed to delete archived plan %s: %s", archived_path, e
+                )
 
         # 3. Safety net: also check configured plan patterns in all project workspaces
         ws = await self.db.get_workspace_for_task(task.id)
@@ -3433,6 +3527,7 @@ class CommandHandler:
 
         if workspace:
             import glob as _glob
+
             plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
             for pattern in plan_patterns:
                 full_pattern = os.path.join(workspace, pattern)
@@ -3456,6 +3551,7 @@ class CommandHandler:
                 if not ws_entry.workspace_path or not os.path.isdir(ws_entry.workspace_path):
                     continue
                 from src.plan_parser import find_all_plan_files
+
                 remaining = find_all_plan_files(ws_entry.workspace_path)
                 for pf in remaining:
                     try:
@@ -3465,7 +3561,9 @@ class CommandHandler:
                             workspaces_with_deletions.add(ws_entry.workspace_path)
                             logger.info("Plan cleanup: deleted remaining plan file %s", pf["path"])
                     except OSError as e:
-                        logger.warning("Plan cleanup: failed to delete remaining plan %s: %s", pf["path"], e)
+                        logger.warning(
+                            "Plan cleanup: failed to delete remaining plan %s: %s", pf["path"], e
+                        )
 
         # 4. Commit the deletions in each workspace that had files deleted
         if deleted_any and task.branch_name:
@@ -3484,9 +3582,18 @@ class CommandHandler:
                             ws_path,
                             f"chore: delete plan files after approval\n\nTask-Id: {task.id}",
                         )
-                        logger.info("Plan cleanup: committed plan file deletion in %s for task %s", ws_path, task.id)
+                        logger.info(
+                            "Plan cleanup: committed plan file deletion in %s for task %s",
+                            ws_path,
+                            task.id,
+                        )
                 except Exception as e:
-                    logger.warning("Plan cleanup: failed to commit deletion in %s for task %s: %s", ws_path, task.id, e)
+                    logger.warning(
+                        "Plan cleanup: failed to commit deletion in %s for task %s: %s",
+                        ws_path,
+                        task.id,
+                        e,
+                    )
 
     async def _delete_draft_subtasks(self, parent_task_id: str) -> int:
         """Delete draft subtasks that were pre-created by ``_cmd_process_plan``.
@@ -3498,9 +3605,7 @@ class CommandHandler:
         import json as _json
 
         contexts = await self.db.get_task_contexts(parent_task_id)
-        draft_ctx = next(
-            (c for c in contexts if c["type"] == "plan_draft_subtasks"), None
-        )
+        draft_ctx = next((c for c in contexts if c["type"] == "plan_draft_subtasks"), None)
         if not draft_ctx:
             return 0
 
@@ -3514,12 +3619,12 @@ class CommandHandler:
                 await self.db.delete_task(tid)
                 deleted += 1
             except Exception as e:
-                logger.warning(
-                    "delete_draft_subtasks: failed to delete %s: %s", tid, e
-                )
+                logger.warning("delete_draft_subtasks: failed to delete %s: %s", tid, e)
         logger.info(
             "delete_draft_subtasks: deleted %d/%d draft subtasks for %s",
-            deleted, len(draft_tasks), parent_task_id,
+            deleted,
+            len(draft_tasks),
+            parent_task_id,
         )
         return deleted
 
@@ -3694,7 +3799,10 @@ class CommandHandler:
         logger.info(
             "process_plan: found %d plan file(s) across %d workspace(s), "
             "picking newest: %s (ctime=%.0f)",
-            len(all_plan_files), len(workspaces), plan_path, newest["ctime"],
+            len(all_plan_files),
+            len(workspaces),
+            plan_path,
+            newest["ctime"],
         )
 
         # Track ALL enumerated plan file paths for cleanup later
@@ -3731,7 +3839,8 @@ class CommandHandler:
             await self.db.create_task(task)
             logger.info(
                 "process_plan: created synthetic task %s for plan in %s",
-                task_id, plan_path,
+                task_id,
+                plan_path,
             )
 
         # Archive the plan file
@@ -3762,6 +3871,7 @@ class CommandHandler:
 
         # Store ALL enumerated plan file paths so cleanup can delete them all
         import json as _json_ctx
+
         await self.db.add_task_context(
             task_id,
             type="plan_all_enumerated_paths",
@@ -3806,9 +3916,7 @@ class CommandHandler:
                 project_id=project_id,
                 workspace_id=workspace_id,
                 chain_dependencies=config.chain_dependencies,
-                requires_approval=(
-                    task.requires_approval if config.inherit_approval else False
-                ),
+                requires_approval=(task.requires_approval if config.inherit_approval else False),
                 base_priority=task.priority,
             )
 
@@ -3818,21 +3926,23 @@ class CommandHandler:
                 # this blocks the entire chain from executing until approval.
                 first_subtask_id = created_info[0]["id"]
                 try:
-                    await self.db.add_dependency(
-                        first_subtask_id, depends_on=task_id
-                    )
+                    await self.db.add_dependency(first_subtask_id, depends_on=task_id)
                     logger.info(
                         "process_plan: added blocking dep %s → %s (parent)",
-                        first_subtask_id, task_id,
+                        first_subtask_id,
+                        task_id,
                     )
                 except Exception as e:
                     logger.warning(
                         "process_plan: failed to add blocking dep %s → %s: %s",
-                        first_subtask_id, task_id, e,
+                        first_subtask_id,
+                        task_id,
+                        e,
                     )
 
                 # Store draft subtask IDs so approve/delete/reject can find them
                 import json as _json
+
                 await self.db.add_task_context(
                     task_id,
                     type="plan_draft_subtasks",
@@ -3842,16 +3952,14 @@ class CommandHandler:
 
                 logger.info(
                     "process_plan: supervisor created %d draft subtasks for %s",
-                    len(created_info), task_id,
+                    len(created_info),
+                    task_id,
                 )
 
         # Build the steps list for the approval embed from supervisor-created
         # subtasks.  If supervisor didn't create any, the embed will show the
         # raw plan content only.
-        parsed_steps = [
-            {"title": t["title"], "description": ""}
-            for t in created_info
-        ]
+        parsed_steps = [{"title": t["title"], "description": ""} for t in created_info]
 
         # Notify channel with approval embed
         try:
@@ -3905,8 +4013,7 @@ class CommandHandler:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
         old_status = task.status.value
-        await self.db.transition_task(task_id, TaskStatus(new_status),
-                                      context="admin_set_status")
+        await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
         return {
             "task_id": task_id,
             "old_status": old_status,
@@ -3922,9 +4029,7 @@ class CommandHandler:
         return {
             "skipped": args["task_id"],
             "unblocked_count": len(unblocked),
-            "unblocked": [
-                {"id": t.id, "title": t.title} for t in unblocked
-            ],
+            "unblocked": [{"id": t.id, "title": t.title} for t in unblocked],
         }
 
     async def _write_archive_note(
@@ -3943,9 +4048,7 @@ class CommandHandler:
         if not project:
             return None
 
-        archive_dir = os.path.join(
-            self.config.data_dir, "archived_tasks", task.project_id
-        )
+        archive_dir = os.path.join(self.config.data_dir, "archived_tasks", task.project_id)
         os.makedirs(archive_dir, exist_ok=True)
 
         note = _build_archive_note(task, result, dependencies)
@@ -3976,8 +4079,7 @@ class CommandHandler:
                 "title": task.title,
                 "status": task.status.value,
                 "stuck_downstream": [
-                    {"id": t.id, "title": t.title, "status": t.status.value}
-                    for t in stuck
+                    {"id": t.id, "title": t.title, "status": t.status.value} for t in stuck
                 ],
                 "stuck_count": len(stuck),
             }
@@ -3985,21 +4087,18 @@ class CommandHandler:
         # If project_id given (or fall back to active), list all blocked tasks
         # with stuck chains.
         pid = project_id or self._active_project_id
-        blocked_tasks = await self.db.list_tasks(
-            project_id=pid, status=TaskStatus.BLOCKED
-        )
+        blocked_tasks = await self.db.list_tasks(project_id=pid, status=TaskStatus.BLOCKED)
         chains = []
         for bt in blocked_tasks:
             stuck = await self.orchestrator._find_stuck_downstream(bt.id)
             if stuck:
-                chains.append({
-                    "blocked_task": {"id": bt.id, "title": bt.title},
-                    "stuck_downstream": [
-                        {"id": t.id, "title": t.title}
-                        for t in stuck
-                    ],
-                    "stuck_count": len(stuck),
-                })
+                chains.append(
+                    {
+                        "blocked_task": {"id": bt.id, "title": bt.title},
+                        "stuck_downstream": [{"id": t.id, "title": t.title} for t in stuck],
+                        "stuck_count": len(stuck),
+                    }
+                )
         return {
             "project_id": pid,
             "stuck_chains": chains,
@@ -4149,6 +4248,7 @@ class CommandHandler:
     async def _cmd_add_workspace(self, args: dict) -> dict:
         """Create a workspace for a project."""
         import uuid
+
         project_id = args["project_id"]
         project = await self.db.get_project(project_id)
         if not project:
@@ -4172,14 +4272,16 @@ class CommandHandler:
                 if os.path.realpath(ws.workspace_path) == path and ws.project_id != project_id:
                     return {
                         "error": f"Path '{path}' is already a workspace for "
-                                 f"project '{ws.project_id}'"
+                        f"project '{ws.project_id}'"
                     }
         elif source_type == RepoSourceType.CLONE:
             if not path:
                 # Auto-generate path under workspace_dir/{project_id}/
                 ws_name = name or f"checkout-{uuid.uuid4().hex[:6]}"
                 path = os.path.join(
-                    self.config.workspace_dir, project_id, ws_name,
+                    self.config.workspace_dir,
+                    project_id,
+                    ws_name,
                 )
             # Always store as absolute path
             path = os.path.realpath(path)
@@ -4247,7 +4349,7 @@ class CommandHandler:
         if ws.locked_by_agent_id:
             return {
                 "error": f"Workspace '{ws.id}' is locked by agent "
-                         f"'{ws.locked_by_agent_id}'. Release it first."
+                f"'{ws.locked_by_agent_id}'. Release it first."
             }
         await self.db.delete_workspace(ws.id)
         return {
@@ -4312,43 +4414,67 @@ class CommandHandler:
             try:
                 # Fetch latest remote state
                 await _run_subprocess(
-                    "git", "fetch", "origin", "--prune", "--quiet",
-                    cwd=ws_path, timeout=30,
+                    "git",
+                    "fetch",
+                    "origin",
+                    "--prune",
+                    "--quiet",
+                    cwd=ws_path,
+                    timeout=30,
                 )
 
                 main_ref = f"origin/{default_branch}"
 
                 # Verify main exists
                 check_rc, _, _ = await _run_subprocess(
-                    "git", "rev-parse", main_ref,
-                    cwd=ws_path, timeout=10,
+                    "git",
+                    "rev-parse",
+                    main_ref,
+                    cwd=ws_path,
+                    timeout=10,
                 )
                 if check_rc != 0:
                     continue
 
                 # Get current branch
                 cb_rc, cb_stdout, _ = await _run_subprocess(
-                    "git", "rev-parse", "--abbrev-ref", "HEAD",
-                    cwd=ws_path, timeout=10,
+                    "git",
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "HEAD",
+                    cwd=ws_path,
+                    timeout=10,
                 )
                 current_branch = cb_stdout.strip() if cb_rc == 0 else "unknown"
 
                 # Check for uncommitted merge conflict markers in working tree
                 has_working_tree_conflict = False
                 status_rc, status_stdout, _ = await _run_subprocess(
-                    "git", "status", "--porcelain",
-                    cwd=ws_path, timeout=10,
+                    "git",
+                    "status",
+                    "--porcelain",
+                    cwd=ws_path,
+                    timeout=10,
                 )
                 if status_rc == 0:
                     for line in status_stdout.splitlines():
-                        if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
+                        if (
+                            line.startswith("UU ")
+                            or line.startswith("AA ")
+                            or line.startswith("DD ")
+                        ):
                             has_working_tree_conflict = True
                             break
 
                 # List remote branches and check each for merge conflicts
                 br_rc, br_stdout, _ = await _run_subprocess(
-                    "git", "branch", "-r", "--list", "origin/*",
-                    cwd=ws_path, timeout=10,
+                    "git",
+                    "branch",
+                    "-r",
+                    "--list",
+                    "origin/*",
+                    cwd=ws_path,
+                    timeout=10,
                 )
                 if br_rc != 0:
                     continue
@@ -4363,15 +4489,21 @@ class CommandHandler:
                     branch_name = branch_ref.removeprefix("origin/")
 
                     # Skip main, HEAD, and dependabot branches
-                    if branch_name in (default_branch, "HEAD") or branch_name.startswith("dependabot/"):
+                    if branch_name in (default_branch, "HEAD") or branch_name.startswith(
+                        "dependabot/"
+                    ):
                         continue
                     if " -> " in branch_ref:
                         continue
 
                     # Find merge base
                     mb_rc, mb_stdout, _ = await _run_subprocess(
-                        "git", "merge-base", main_ref, branch_ref,
-                        cwd=ws_path, timeout=10,
+                        "git",
+                        "merge-base",
+                        main_ref,
+                        branch_ref,
+                        cwd=ws_path,
+                        timeout=10,
                     )
                     if mb_rc != 0:
                         continue
@@ -4379,8 +4511,13 @@ class CommandHandler:
 
                     # Use merge-tree to check for conflicts
                     _, mt_stdout, _ = await _run_subprocess(
-                        "git", "merge-tree", merge_base, main_ref, branch_ref,
-                        cwd=ws_path, timeout=10,
+                        "git",
+                        "merge-tree",
+                        merge_base,
+                        main_ref,
+                        branch_ref,
+                        cwd=ws_path,
+                        timeout=10,
                     )
                     merge_output = mt_stdout
 
@@ -4389,7 +4526,9 @@ class CommandHandler:
                         conflicting_files = []
                         for mline in merge_output.splitlines():
                             if mline.startswith("changed in both"):
-                                conflicting_files.append(mline.replace("changed in both", "").strip())
+                                conflicting_files.append(
+                                    mline.replace("changed in both", "").strip()
+                                )
 
                         # Extract task ID from branch name
                         if "/" in branch_name:
@@ -4399,33 +4538,43 @@ class CommandHandler:
 
                         # Commits behind main
                         behind_rc, behind_stdout, _ = await _run_subprocess(
-                            "git", "rev-list", "--count", f"{branch_ref}..{main_ref}",
-                            cwd=ws_path, timeout=10,
+                            "git",
+                            "rev-list",
+                            "--count",
+                            f"{branch_ref}..{main_ref}",
+                            cwd=ws_path,
+                            timeout=10,
                         )
                         behind_count = behind_stdout.strip() if behind_rc == 0 else "?"
 
-                        branch_conflicts.append({
-                            "branch": branch_name,
-                            "task_id": task_id_part,
-                            "conflicting_files": conflicting_files or ["unknown"],
-                            "commits_behind_main": behind_count,
-                        })
+                        branch_conflicts.append(
+                            {
+                                "branch": branch_name,
+                                "task_id": task_id_part,
+                                "conflicting_files": conflicting_files or ["unknown"],
+                                "commits_behind_main": behind_count,
+                            }
+                        )
 
                 if branch_conflicts or has_working_tree_conflict:
-                    results.append({
-                        "workspace_id": ws.id,
-                        "workspace_name": ws.name,
-                        "workspace_path": ws_path,
-                        "current_branch": current_branch,
-                        "locked_by_task_id": ws.locked_by_task_id,
-                        "locked_by_agent_id": ws.locked_by_agent_id,
-                        "has_working_tree_conflict": has_working_tree_conflict,
-                        "branch_conflicts": branch_conflicts,
-                    })
+                    results.append(
+                        {
+                            "workspace_id": ws.id,
+                            "workspace_name": ws.name,
+                            "workspace_path": ws_path,
+                            "current_branch": current_branch,
+                            "locked_by_task_id": ws.locked_by_task_id,
+                            "locked_by_agent_id": ws.locked_by_agent_id,
+                            "has_working_tree_conflict": has_working_tree_conflict,
+                            "branch_conflicts": branch_conflicts,
+                        }
+                    )
 
             except (asyncio.TimeoutError, OSError) as e:
                 logging.getLogger(__name__).warning(
-                    "Error scanning workspace %s for conflicts: %s", ws_path, e,
+                    "Error scanning workspace %s for conflicts: %s",
+                    ws_path,
+                    e,
                 )
                 continue
 
@@ -4468,8 +4617,7 @@ class CommandHandler:
 
         # Build a self-contained description with all context for the sync workflow.
         workspace_paths = "\n".join(
-            f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})"
-            for ws in workspaces
+            f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})" for ws in workspaces
         )
 
         description = f"""## Sync Workspaces — {project_id}
@@ -4608,10 +4756,7 @@ feature work stuck on feature branches across multiple workspaces.
             )
             rows = await cursor.fetchall()
             return {
-                "breakdown": [
-                    {"project_id": r["project_id"], "tokens": r["total"]}
-                    for r in rows
-                ],
+                "breakdown": [{"project_id": r["project_id"], "tokens": r["total"]} for r in rows],
                 "total": sum(r["total"] for r in rows),
             }
 
@@ -4641,16 +4786,20 @@ feature work stuck on feature branches across multiple workspaces.
             for ws in workspaces:
                 ws_path = ws.workspace_path
                 if not os.path.isdir(ws_path):
-                    repo_statuses.append({
-                        "workspace_id": ws.id,
-                        "error": f"Path not found: {ws_path}",
-                    })
+                    repo_statuses.append(
+                        {
+                            "workspace_id": ws.id,
+                            "error": f"Path not found: {ws_path}",
+                        }
+                    )
                     continue
                 if not await git.avalidate_checkout(ws_path):
-                    repo_statuses.append({
-                        "workspace_id": ws.id,
-                        "error": f"Not a valid git repository: {ws_path}",
-                    })
+                    repo_statuses.append(
+                        {
+                            "workspace_id": ws.id,
+                            "error": f"Not a valid git repository: {ws_path}",
+                        }
+                    )
                     continue
                 branch = await git.aget_current_branch(ws_path)
                 status_output = await git.aget_status(ws_path)
@@ -4700,27 +4849,33 @@ feature work stuck on feature branches across multiple workspaces.
                     else:
                         continue
                     if not os.path.isdir(repo_path):
-                        repo_statuses.append({
-                            "repo_id": repo.id,
-                            "error": f"Path not found: {repo_path}",
-                        })
+                        repo_statuses.append(
+                            {
+                                "repo_id": repo.id,
+                                "error": f"Path not found: {repo_path}",
+                            }
+                        )
                         continue
                     if not await git.avalidate_checkout(repo_path):
-                        repo_statuses.append({
-                            "repo_id": repo.id,
-                            "error": f"Not a valid git repository: {repo_path}",
-                        })
+                        repo_statuses.append(
+                            {
+                                "repo_id": repo.id,
+                                "error": f"Not a valid git repository: {repo_path}",
+                            }
+                        )
                         continue
                     branch = await git.aget_current_branch(repo_path)
                     status_output = await git.aget_status(repo_path)
                     recent_commits = await git.aget_recent_commits(repo_path, count=5)
-                    repo_statuses.append({
-                        "repo_id": repo.id,
-                        "path": repo_path,
-                        "branch": branch,
-                        "status": status_output or "(clean)",
-                        "recent_commits": recent_commits,
-                    })
+                    repo_statuses.append(
+                        {
+                            "repo_id": repo.id,
+                            "path": repo_path,
+                            "branch": branch,
+                            "status": status_output or "(clean)",
+                            "recent_commits": recent_commits,
+                        }
+                    )
             else:
                 return {
                     "error": f"Project '{project_id}' has no workspaces. "
@@ -4781,7 +4936,9 @@ feature work stuck on feature branches across multiple workspaces.
             return ""
 
     async def _resolve_workspace(
-        self, project_id: str, workspace: str | None,
+        self,
+        project_id: str,
+        workspace: str | None,
     ) -> tuple["Workspace | None", dict | None]:
         """Resolve a workspace by ID or name within a project.
 
@@ -4810,7 +4967,8 @@ feature work stuck on feature branches across multiple workspaces.
         return None, {"error": f"Workspace '{workspace}' not found"}
 
     async def _resolve_repo_path(
-        self, args: dict,
+        self,
+        args: dict,
     ) -> tuple[str | None, Project | None, dict | None]:
         """Resolve the git checkout path for a project.
 
@@ -4866,16 +5024,23 @@ feature work stuck on feature branches across multiple workspaces.
                 repo = repos[0]
                 if repo.source_type == RepoSourceType.LINK and repo.source_path:
                     checkout_path = repo.source_path
-                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                elif (
+                    repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT)
+                    and repo.checkout_base_path
+                ):
                     checkout_path = repo.checkout_base_path
 
         if not checkout_path:
             if not project:
                 return None, None, {"error": "No workspace found and no project context"}
-            return None, None, {
-                "error": f"Project '{project_id}' has no workspaces. "
-                f"Use /add-workspace to create one."
-            }
+            return (
+                None,
+                None,
+                {
+                    "error": f"Project '{project_id}' has no workspaces. "
+                    f"Use /add-workspace to create one."
+                },
+            )
 
         if not os.path.isdir(checkout_path):
             return None, project, {"error": f"Path not found: {checkout_path}"}
@@ -4896,7 +5061,11 @@ feature work stuck on feature branches across multiple workspaces.
         except GitError as e:
             return {"error": str(e)}
         if not committed:
-            return {"project_id": project_id, "committed": False, "message": "Nothing to commit — working tree clean"}
+            return {
+                "project_id": project_id,
+                "committed": False,
+                "message": "Nothing to commit — working tree clean",
+            }
         return {"project_id": project_id, "committed": True, "commit_message": message}
 
     async def _cmd_git_pull(self, args: dict) -> dict:
@@ -4949,9 +5118,15 @@ feature work stuck on feature branches across multiple workspaces.
         if err:
             return err
         project_id = args.get("project_id", "")
-        default_branch = args.get("default_branch") or (project.repo_default_branch if project else "main") or "main"
+        default_branch = (
+            args.get("default_branch")
+            or (project.repo_default_branch if project else "main")
+            or "main"
+        )
         try:
-            success = await self.orchestrator.git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self.orchestrator.git.amerge_branch(
+                checkout_path, branch_name, default_branch
+            )
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -5019,7 +5194,10 @@ feature work stuck on feature branches across multiple workspaces.
 
         try:
             url = await git.acreate_github_repo(
-                name, private=private, org=org, description=description,
+                name,
+                private=private,
+                org=org,
+                description=description,
             )
         except GitError as e:
             return {"error": str(e)}
@@ -5117,7 +5295,11 @@ feature work stuck on feature branches across multiple workspaces.
         if err:
             return err
         project_id = args.get("project_id", "")
-        base_branch = args.get("base_branch") or (project.repo_default_branch if project else "main") or "main"
+        base_branch = (
+            args.get("base_branch")
+            or (project.repo_default_branch if project else "main")
+            or "main"
+        )
         files = await self.orchestrator.git.aget_changed_files(checkout_path, base_branch)
         return {
             "project_id": project_id,
@@ -5252,7 +5434,8 @@ feature work stuck on feature branches across multiple workspaces.
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         """Return a warning string if any tasks are IN_PROGRESS for *project_id*."""
         in_progress = await self.db.list_tasks(
-            project_id=project_id, status=TaskStatus.IN_PROGRESS,
+            project_id=project_id,
+            status=TaskStatus.IN_PROGRESS,
         )
         if in_progress:
             return (
@@ -5424,7 +5607,9 @@ feature work stuck on feature branches across multiple workspaces.
                 interval_desc = f"every {secs} seconds"
             lines.append(f"## Trigger\n\nCheck {interval_desc}")
         elif trigger_type == "event":
-            event_type = trigger.get("event_type", "unknown") if isinstance(trigger, dict) else "unknown"
+            event_type = (
+                trigger.get("event_type", "unknown") if isinstance(trigger, dict) else "unknown"
+            )
             lines.append(f"## Trigger\n\nWhen {event_type}")
         else:
             lines.append(f"## Trigger\n\n{trigger_type}")
@@ -5617,22 +5802,25 @@ feature work stuck on feature branches across multiple workspaces.
             if trigger_type == "scheduled":
                 fire_at = trigger.get("fire_at", 0)
                 from datetime import datetime as _dt, timezone as _tz
+
                 fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
                 remaining = fire_at - time.time()
                 if remaining > 0:
                     next_str = f"in {_format_interval(int(remaining))}"
                 else:
                     next_str = "overdue (imminent)"
-                results.append({
-                    "hook_id": h.id,
-                    "name": h.name,
-                    "project_id": h.project_id,
-                    "schedule": "one-shot",
-                    "interval": "once",
-                    "last_run": "never",
-                    "next_run": next_str,
-                    "type": "scheduled",
-                })
+                results.append(
+                    {
+                        "hook_id": h.id,
+                        "name": h.name,
+                        "project_id": h.project_id,
+                        "schedule": "one-shot",
+                        "interval": "once",
+                        "last_run": "never",
+                        "next_run": next_str,
+                        "type": "scheduled",
+                    }
+                )
                 continue
 
             if trigger_type != "periodic":
@@ -5646,6 +5834,7 @@ feature work stuck on feature branches across multiple workspaces.
             last_dt = None
             if h.last_triggered_at:
                 from datetime import datetime as _dt, timezone as _tz
+
                 last_dt = _dt.fromtimestamp(h.last_triggered_at, tz=_tz.utc)
                 ago_seconds = int(time.time() - h.last_triggered_at)
                 if ago_seconds < 60:
@@ -5666,23 +5855,24 @@ feature work stuck on feature branches across multiple workspaces.
                 # Pure interval hook: next = last_run + interval
                 if h.last_triggered_at:
                     from datetime import datetime as _dt, timezone as _tz
-                    nxt = _dt.fromtimestamp(
-                        h.last_triggered_at + interval, tz=_tz.utc
-                    )
+
+                    nxt = _dt.fromtimestamp(h.last_triggered_at + interval, tz=_tz.utc)
                     next_str = format_next_run(nxt)
                 else:
                     next_str = "imminent (never run)"
                 schedule_desc = f"every {_format_interval(interval)}"
 
-            results.append({
-                "hook_id": h.id,
-                "name": h.name,
-                "project_id": h.project_id,
-                "schedule": schedule_desc,
-                "interval": _format_interval(interval),
-                "last_run": last_run_str,
-                "next_run": next_str,
-            })
+            results.append(
+                {
+                    "hook_id": h.id,
+                    "name": h.name,
+                    "project_id": h.project_id,
+                    "schedule": schedule_desc,
+                    "interval": _format_interval(interval),
+                    "last_run": last_run_str,
+                    "next_run": next_str,
+                }
+            )
 
         return {"hooks": results}
 
@@ -5782,15 +5972,18 @@ feature work stuck on feature branches across multiple workspaces.
             elif isinstance(fire_at, str):
                 try:
                     from datetime import datetime as _dt, timezone as _tz
+
                     # Try ISO format
-                    dt = _dt.fromisoformat(fire_at.replace('Z', '+00:00'))
+                    dt = _dt.fromisoformat(fire_at.replace("Z", "+00:00"))
                     fire_at_epoch = dt.timestamp()
                 except ValueError:
                     # Try as plain number
                     try:
                         fire_at_epoch = float(fire_at)
                     except ValueError:
-                        return {"error": f"Cannot parse fire_at '{fire_at}'. Use epoch timestamp or ISO-8601 format."}
+                        return {
+                            "error": f"Cannot parse fire_at '{fire_at}'. Use epoch timestamp or ISO-8601 format."
+                        }
             else:
                 return {"error": f"Invalid fire_at type: {type(fire_at).__name__}"}
 
@@ -5799,6 +5992,7 @@ feature work stuck on feature branches across multiple workspaces.
 
         # Generate a unique hook ID
         import uuid
+
         hook_id = f"sched-{name.lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
 
         trigger = {"type": "scheduled", "fire_at": fire_at_epoch}
@@ -5820,6 +6014,7 @@ feature work stuck on feature branches across multiple workspaces.
         await self.db.create_hook(hook)
 
         from datetime import datetime as _dt, timezone as _tz
+
         fire_at_iso = _dt.fromtimestamp(fire_at_epoch, tz=_tz.utc).isoformat()
         delay_human = _format_interval(int(fire_at_epoch - now))
 
@@ -5849,6 +6044,7 @@ feature work stuck on feature branches across multiple workspaces.
 
             fire_at = trigger.get("fire_at", 0)
             from datetime import datetime as _dt, timezone as _tz
+
             fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
 
             remaining = fire_at - now
@@ -5859,16 +6055,19 @@ feature work stuck on feature branches across multiple workspaces.
                 fires_in = "overdue"
                 status = "overdue"
 
-            results.append({
-                "hook_id": h.id,
-                "name": h.name,
-                "project_id": h.project_id,
-                "fire_at": fire_at_iso,
-                "fire_at_epoch": fire_at,
-                "fires_in": fires_in,
-                "status": status,
-                "prompt_template": h.prompt_template[:200] + ("..." if len(h.prompt_template) > 200 else ""),
-            })
+            results.append(
+                {
+                    "hook_id": h.id,
+                    "name": h.name,
+                    "project_id": h.project_id,
+                    "fire_at": fire_at_iso,
+                    "fire_at_epoch": fire_at,
+                    "fires_in": fires_in,
+                    "status": status,
+                    "prompt_template": h.prompt_template[:200]
+                    + ("..." if len(h.prompt_template) > 200 else ""),
+                }
+            )
 
         # Sort by fire_at
         results.sort(key=lambda r: r["fire_at_epoch"])
@@ -5887,7 +6086,9 @@ feature work stuck on feature branches across multiple workspaces.
             trigger = {}
 
         if trigger.get("type") != "scheduled":
-            return {"error": f"Hook '{hook_id}' is not a scheduled hook (type: {trigger.get('type', 'unknown')})"}
+            return {
+                "error": f"Hook '{hook_id}' is not a scheduled hook (type: {trigger.get('type', 'unknown')})"
+            }
 
         # Cancel if it's currently running
         hooks_engine = self.orchestrator.hooks
@@ -5918,9 +6119,7 @@ feature work stuck on feature branches across multiple workspaces.
         if not content:
             return {"error": "content is required"}
         if rule_type not in ("active", "passive"):
-            return {
-                "error": f"type must be 'active' or 'passive', got '{rule_type}'"
-            }
+            return {"error": f"type must be 'active' or 'passive', got '{rule_type}'"}
 
         result = await rm.async_save_rule(
             id=rule_id,
@@ -6058,13 +6257,15 @@ feature work stuck on feature branches across multiple workspaces.
                     title = first_line[2:].strip()
             except Exception:
                 pass
-            notes.append({
-                "name": fname,
-                "title": title,
-                "size_bytes": stat.st_size,
-                "modified": stat.st_mtime,
-                "path": fpath,
-            })
+            notes.append(
+                {
+                    "name": fname,
+                    "title": title,
+                    "size_bytes": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "path": fpath,
+                }
+            )
         return {"project_id": args["project_id"], "notes": notes}
 
     async def _cmd_write_note(self, args: dict) -> dict:
@@ -6092,18 +6293,23 @@ feature work stuck on feature branches across multiple workspaces.
         }
         if self.on_note_written:
             await self.on_note_written(
-                args["project_id"], f"{slug}.md", fpath,
+                args["project_id"],
+                f"{slug}.md",
+                fpath,
             )
         # Emit note event for hook automation
         event_type = "note.updated" if existed else "note.created"
         if hasattr(self.orchestrator, "bus"):
-            await self.orchestrator.bus.emit(event_type, {
-                "project_id": args["project_id"],
-                "note_name": f"{slug}.md",
-                "note_path": fpath,
-                "title": args["title"],
-                "operation": "updated" if existed else "created",
-            })
+            await self.orchestrator.bus.emit(
+                event_type,
+                {
+                    "project_id": args["project_id"],
+                    "note_name": f"{slug}.md",
+                    "note_path": fpath,
+                    "title": args["title"],
+                    "operation": "updated" if existed else "created",
+                },
+            )
         # Notes represent explicit user knowledge — trigger profile revision
         # so the knowledge is absorbed into the project profile.
         await self._trigger_note_profile_revision(args["project_id"], f"{slug}.md", args["content"])
@@ -6163,18 +6369,23 @@ feature work stuck on feature branches across multiple workspaces.
         if self.on_note_written:
             note_filename = os.path.basename(fpath)
             await self.on_note_written(
-                args["project_id"], note_filename, fpath,
+                args["project_id"],
+                note_filename,
+                fpath,
             )
         # Emit note event for hook automation
         event_type = "note.updated" if existed else "note.created"
         if hasattr(self.orchestrator, "bus"):
-            await self.orchestrator.bus.emit(event_type, {
-                "project_id": args["project_id"],
-                "note_name": os.path.basename(fpath),
-                "note_path": fpath,
-                "title": args["title"],
-                "operation": status,  # "appended" or "created"
-            })
+            await self.orchestrator.bus.emit(
+                event_type,
+                {
+                    "project_id": args["project_id"],
+                    "note_name": os.path.basename(fpath),
+                    "note_path": fpath,
+                    "title": args["title"],
+                    "operation": status,  # "appended" or "created"
+                },
+            )
         # Notes represent explicit user knowledge — trigger profile revision
         # so the knowledge is absorbed into the project profile.
         # Read the full note content (append may have added to existing content).
@@ -6194,7 +6405,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
+            }
 
         # Resolve specs directory — check repo specs/ first, then workspace specs/
         specs_path = args.get("specs_path")
@@ -6230,11 +6443,13 @@ feature work stuck on feature branches across multiple workspaces.
                         title = first_line[2:].strip()
                 except Exception:
                     pass
-                files.append({
-                    "name": fname,
-                    "title": title,
-                    "size_bytes": stat.st_size,
-                })
+                files.append(
+                    {
+                        "name": fname,
+                        "title": title,
+                        "size_bytes": stat.st_size,
+                    }
+                )
             return files
 
         return {
@@ -6256,12 +6471,15 @@ feature work stuck on feature branches across multiple workspaces.
         os.remove(fpath)
         # Emit note.deleted event for hook automation
         if hasattr(self.orchestrator, "bus"):
-            await self.orchestrator.bus.emit("note.deleted", {
-                "project_id": args["project_id"],
-                "note_name": os.path.basename(fpath),
-                "note_path": fpath,
-                "title": args["title"],
-            })
+            await self.orchestrator.bus.emit(
+                "note.deleted",
+                {
+                    "project_id": args["project_id"],
+                    "note_name": os.path.basename(fpath),
+                    "note_path": fpath,
+                    "title": args["title"],
+                },
+            )
         return {"deleted": fpath, "title": args["title"]}
 
     async def _cmd_promote_note(self, args: dict) -> dict:
@@ -6346,7 +6564,8 @@ feature work stuck on feature branches across multiple workspaces.
         except Exception as e:
             logger.warning(
                 "Profile revision after note write failed for project %s: %s",
-                project_id, e,
+                project_id,
+                e,
             )
 
     # -----------------------------------------------------------------------
@@ -6378,7 +6597,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{project_id}' not found"}
         workspace = await self.db.get_project_workspace_path(project_id)
         if not workspace:
-            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."
+            }
 
         try:
             results = await self.orchestrator.memory_manager.search(
@@ -6421,7 +6642,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{project_id}' not found"}
         workspace = await self.db.get_project_workspace_path(project_id)
         if not workspace:
-            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."
+            }
 
         try:
             stats = await self.orchestrator.memory_manager.stats(project_id, workspace)
@@ -6448,12 +6671,12 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{project_id}' not found"}
         workspace = await self.db.get_project_workspace_path(project_id)
         if not workspace:
-            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."
+            }
 
         try:
-            chunks_indexed = await self.orchestrator.memory_manager.reindex(
-                project_id, workspace
-            )
+            chunks_indexed = await self.orchestrator.memory_manager.reindex(project_id, workspace)
         except Exception as e:
             return {"error": f"Memory reindex failed: {e}"}
 
@@ -6583,9 +6806,7 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{project_id}' has no workspaces."}
 
         try:
-            result = await self.orchestrator.memory_manager.compact(
-                project_id, workspace
-            )
+            result = await self.orchestrator.memory_manager.compact(project_id, workspace)
         except Exception as e:
             return {"error": f"Memory compaction failed: {e}"}
 
@@ -6602,6 +6823,7 @@ feature work stuck on feature branches across multiple workspaces.
     def _get_prompt_manager(self, workspace: str):
         """Create a PromptManager for the given workspace."""
         from src.prompt_manager import PromptManager
+
         prompts_dir = os.path.join(workspace, "prompts")
         return PromptManager(prompts_dir)
 
@@ -6612,7 +6834,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
+            }
         pm = self._get_prompt_manager(workspace)
         templates = pm.list_templates(
             category=args.get("category"),
@@ -6632,7 +6856,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
+            }
         pm = self._get_prompt_manager(workspace)
         tmpl = pm.get_template(args["name"])
         if not tmpl:
@@ -6648,7 +6874,9 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Project '{args['project_id']}' not found"}
         workspace = await self.db.get_project_workspace_path(args["project_id"])
         if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
+            }
         pm = self._get_prompt_manager(workspace)
         variables = args.get("variables", {})
         rendered = pm.render(args["name"], variables)
@@ -6683,7 +6911,10 @@ feature work stuck on feature branches across multiple workspaces.
         orch = self.orchestrator
         if action == "pause":
             orch.pause()
-            return {"status": "paused", "message": "Orchestrator paused — no new tasks will be scheduled"}
+            return {
+                "status": "paused",
+                "message": "Orchestrator paused — no new tasks will be scheduled",
+            }
         elif action == "resume":
             orch.resume()
             return {"status": "running", "message": "Orchestrator resumed"}
@@ -6709,9 +6940,7 @@ feature work stuck on feature branches across multiple workspaces.
         mode = "force" if force else "graceful"
 
         # Log the shutdown event
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        )
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         shutdown_msg = (
             f"🛑 **Daemon shutdown initiated** ({mode})\n"
             f"**Reason:** {reason}\n"
@@ -6772,9 +7001,7 @@ feature work stuck on feature branches across multiple workspaces.
             await orch.wait_for_running_tasks(timeout=300)
 
         # Log the restart reason to the notification channel before restarting
-        await orch._notify_channel(
-            f"🔄 **Daemon restart initiated** — {reason}"
-        )
+        await orch._notify_channel(f"🔄 **Daemon restart initiated** — {reason}")
         orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
         return {
@@ -6795,8 +7022,11 @@ feature work stuck on feature branches across multiple workspaces.
 
         # git pull
         pull_rc, pull_stdout, pull_stderr = await _run_subprocess(
-            "git", "pull", "--ff-only",
-            cwd=repo_dir, timeout=30,
+            "git",
+            "pull",
+            "--ff-only",
+            cwd=repo_dir,
+            timeout=30,
         )
         if pull_rc != 0:
             stderr = pull_stderr.strip() or pull_stdout.strip()
@@ -6806,8 +7036,12 @@ feature work stuck on feature branches across multiple workspaces.
 
         # pip install -e . to pick up any dependency changes
         pip_rc, pip_stdout, pip_stderr = await _run_subprocess(
-            "pip", "install", "-e", ".",
-            cwd=repo_dir, timeout=120,
+            "pip",
+            "install",
+            "-e",
+            ".",
+            cwd=repo_dir,
+            timeout=120,
         )
         if pip_rc != 0:
             stderr = pip_stderr.strip() or pip_stdout.strip()
@@ -6932,12 +7166,23 @@ feature work stuck on feature branches across multiple workspaces.
         try:
             if mode == "grep":
                 _, stdout, _ = await _run_subprocess(
-                    "grep", "-rn", "--include=*", "-m", "50", pattern, validated,
+                    "grep",
+                    "-rn",
+                    "--include=*",
+                    "-m",
+                    "50",
+                    pattern,
+                    validated,
                     timeout=30,
                 )
             else:
                 _, stdout, _ = await _run_subprocess(
-                    "find", validated, "-name", pattern, "-type", "f",
+                    "find",
+                    validated,
+                    "-name",
+                    pattern,
+                    "-type",
+                    "f",
                     timeout=30,
                 )
             output = stdout[:4000] if stdout else "(no matches)"
@@ -6960,7 +7205,9 @@ feature work stuck on feature branches across multiple workspaces.
                 workspaces = await self.db.list_workspaces(project_id)
                 ws = next((w for w in workspaces if w.id == workspace_name), None)
             if not ws:
-                return {"error": f"Workspace '{workspace_name}' not found for project '{project_id}'."}
+                return {
+                    "error": f"Workspace '{workspace_name}' not found for project '{project_id}'."
+                }
             ws_path = ws.workspace_path
             ws_name = ws.name or ws.id
         else:
@@ -6980,11 +7227,15 @@ feature work stuck on feature branches across multiple workspaces.
         if raw_ws_path != ws_path:
             logger.debug(
                 "list_directory: resolved workspace path %r -> %r for project %s",
-                raw_ws_path, ws_path, project_id,
+                raw_ws_path,
+                ws_path,
+                project_id,
             )
         logger.debug(
             "list_directory: project=%s workspace=%s path=%s",
-            project_id, ws_name, ws_path,
+            project_id,
+            ws_name,
+            ws_path,
         )
 
         rel_path = args.get("path", "")
@@ -7088,7 +7339,11 @@ feature work stuck on feature branches across multiple workspaces.
                 )
             }
 
-        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+        new_content = (
+            content.replace(old_string, new_string)
+            if replace_all
+            else content.replace(old_string, new_string, 1)
+        )
 
         try:
             with open(validated, "w") as f:
@@ -7242,11 +7497,10 @@ feature work stuck on feature branches across multiple workspaces.
         result: dict = {"created": profile_id, "name": name}
         # Soft validation — warn about unrecognized tool names
         from src.known_tools import validate_tool_names
+
         unknown = validate_tool_names(profile.allowed_tools)
         if unknown:
-            result["warnings"] = [
-                f"Unrecognized tools (will still be set): {', '.join(unknown)}"
-            ]
+            result["warnings"] = [f"Unrecognized tools (will still be set): {', '.join(unknown)}"]
         return result
 
     async def _cmd_get_profile(self, args: dict) -> dict:
@@ -7278,8 +7532,14 @@ feature work stuck on feature branches across multiple workspaces.
 
         updates = {}
         for fld in (
-            "name", "description", "model", "permission_mode",
-            "allowed_tools", "mcp_servers", "system_prompt_suffix", "install",
+            "name",
+            "description",
+            "model",
+            "permission_mode",
+            "allowed_tools",
+            "mcp_servers",
+            "system_prompt_suffix",
+            "install",
         ):
             if fld in args:
                 updates[fld] = args[fld]
@@ -7296,6 +7556,7 @@ feature work stuck on feature branches across multiple workspaces.
         # Soft validation — warn about unrecognized tool names
         if "allowed_tools" in updates:
             from src.known_tools import validate_tool_names
+
             unknown = validate_tool_names(updates["allowed_tools"])
             if unknown:
                 result["warnings"] = [
@@ -7317,9 +7578,9 @@ feature work stuck on feature branches across multiple workspaces.
 
     async def _cmd_list_available_tools(self, args: dict) -> dict:
         from src.known_tools import CLAUDE_CODE_TOOLS, KNOWN_MCP_SERVERS
+
         tools = [
-            {"name": name, "description": desc}
-            for name, desc in sorted(CLAUDE_CODE_TOOLS.items())
+            {"name": name, "description": desc} for name, desc in sorted(CLAUDE_CODE_TOOLS.items())
         ]
         mcp_servers = [
             {
@@ -7336,6 +7597,7 @@ feature work stuck on feature branches across multiple workspaces.
     async def _cmd_check_profile(self, args: dict) -> dict:
         import shutil
         from src.known_tools import InstallManifest
+
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
             return {"error": "profile_id is required"}
@@ -7355,7 +7617,11 @@ feature work stuck on feature branches across multiple workspaces.
         for pkg in manifest.npm:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "npm", "list", "-g", pkg, "--depth=0",
+                    "npm",
+                    "list",
+                    "-g",
+                    pkg,
+                    "--depth=0",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -7369,6 +7635,7 @@ feature work stuck on feature branches across multiple workspaces.
         for pkg in manifest.pip:
             try:
                 import importlib.metadata
+
                 importlib.metadata.version(pkg)
             except Exception:
                 issues.append(f"pip package not installed: {pkg}")
@@ -7392,6 +7659,7 @@ feature work stuck on feature branches across multiple workspaces.
 
         profile = await self.db.get_profile(profile_id)
         from src.known_tools import InstallManifest
+
         manifest = InstallManifest.from_dict(profile.install)
 
         if manifest.is_empty:
@@ -7406,10 +7674,13 @@ feature work stuck on feature branches across multiple workspaces.
         return await self._install_manifest(profile_id, manifest)
 
     async def _install_manifest(
-        self, profile_id: str, manifest: "InstallManifest",
+        self,
+        profile_id: str,
+        manifest: "InstallManifest",
     ) -> dict:
         """Shared logic for installing an InstallManifest's dependencies."""
         import shutil
+
         installed: list[str] = []
         already_present: list[str] = []
         manual: list[str] = []
@@ -7418,7 +7689,11 @@ feature work stuck on feature branches across multiple workspaces.
         for pkg in manifest.npm:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "npm", "list", "-g", pkg, "--depth=0",
+                    "npm",
+                    "list",
+                    "-g",
+                    pkg,
+                    "--depth=0",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -7432,7 +7707,10 @@ feature work stuck on feature branches across multiple workspaces.
 
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "npm", "install", "-g", pkg,
+                    "npm",
+                    "install",
+                    "-g",
+                    pkg,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -7441,9 +7719,7 @@ feature work stuck on feature branches across multiple workspaces.
                     installed.append(f"npm:{pkg}")
                 else:
                     stderr = await proc.stderr.read()
-                    manual.append(
-                        f"npm install failed for {pkg}: {stderr.decode().strip()}"
-                    )
+                    manual.append(f"npm install failed for {pkg}: {stderr.decode().strip()}")
             except Exception as e:
                 manual.append(f"npm install failed for {pkg}: {e}")
 
@@ -7451,6 +7727,7 @@ feature work stuck on feature branches across multiple workspaces.
         for pkg in manifest.pip:
             try:
                 import importlib.metadata
+
                 importlib.metadata.version(pkg)
                 already_present.append(f"pip:{pkg}")
                 continue
@@ -7459,7 +7736,9 @@ feature work stuck on feature branches across multiple workspaces.
 
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "pip", "install", pkg,
+                    "pip",
+                    "install",
+                    pkg,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -7468,9 +7747,7 @@ feature work stuck on feature branches across multiple workspaces.
                     installed.append(f"pip:{pkg}")
                 else:
                     stderr = await proc.stderr.read()
-                    manual.append(
-                        f"pip install failed for {pkg}: {stderr.decode().strip()}"
-                    )
+                    manual.append(f"pip install failed for {pkg}: {stderr.decode().strip()}")
             except Exception as e:
                 manual.append(f"pip install failed for {pkg}: {e}")
 
@@ -7494,6 +7771,7 @@ feature work stuck on feature branches across multiple workspaces.
 
     async def _cmd_export_profile(self, args: dict) -> dict:
         import yaml as _yaml
+
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
             return {"error": "profile_id is required"}
@@ -7532,9 +7810,12 @@ feature work stuck on feature branches across multiple workspaces.
         # Optionally create a GitHub gist
         if args.get("create_gist"):
             import tempfile
+
             try:
                 with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yaml", delete=False,
+                    mode="w",
+                    suffix=".yaml",
+                    delete=False,
                     prefix=f"agent-profile-{profile_id}-",
                 ) as f:
                     f.write(yaml_text)
@@ -7542,8 +7823,12 @@ feature work stuck on feature branches across multiple workspaces.
 
                 env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
                 proc = await asyncio.create_subprocess_exec(
-                    "gh", "gist", "create", "--public",
-                    "--desc", f"Agent Profile: {profile.name}",
+                    "gh",
+                    "gist",
+                    "create",
+                    "--public",
+                    "--desc",
+                    f"Agent Profile: {profile.name}",
                     tmp_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -7567,6 +7852,7 @@ feature work stuck on feature branches across multiple workspaces.
     async def _cmd_import_profile(self, args: dict) -> dict:
         import yaml as _yaml
         from src.known_tools import InstallManifest
+
         source = args.get("source", "").strip()
         if not source:
             return {"error": "source is required (YAML text or gist URL)"}
@@ -7578,7 +7864,11 @@ feature work stuck on feature branches across multiple workspaces.
             try:
                 env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
                 proc = await asyncio.create_subprocess_exec(
-                    "gh", "gist", "view", gist_id, "--raw",
+                    "gh",
+                    "gist",
+                    "view",
+                    gist_id,
+                    "--raw",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
@@ -7609,7 +7899,9 @@ feature work stuck on feature branches across multiple workspaces.
         overwrite = args.get("overwrite", False)
         existing = await self.db.get_profile(profile_id)
         if existing and not overwrite:
-            return {"error": f"Profile '{profile_id}' already exists (use overwrite=true to replace)"}
+            return {
+                "error": f"Profile '{profile_id}' already exists (use overwrite=true to replace)"
+            }
 
         profile = AgentProfile(
             id=profile_id,
@@ -7660,6 +7952,7 @@ feature work stuck on feature branches across multiple workspaces.
     async def _cmd_browse_tools(self, args: dict) -> dict:
         """List available tool categories with metadata."""
         from src.tool_registry import ToolRegistry
+
         registry = ToolRegistry()
         return {"categories": registry.get_categories()}
 
@@ -7671,23 +7964,19 @@ feature work stuck on feature branches across multiple workspaces.
         layer knows which schemas to add.
         """
         from src.tool_registry import ToolRegistry
+
         category = args.get("category", "")
         registry = ToolRegistry()
         names = registry.get_category_tool_names(category)
         if names is None:
             available = [c["name"] for c in registry.get_categories()]
             return {
-                "error": (
-                    f"Unknown category: {category}. "
-                    f"Available: {', '.join(available)}"
-                ),
+                "error": (f"Unknown category: {category}. Available: {', '.join(available)}"),
             }
         return {
             "loaded": category,
             "tools_added": names,
-            "message": (
-                f"{len(names)} {category} tools are now available."
-            ),
+            "message": (f"{len(names)} {category} tools are now available."),
         }
 
     async def _cmd_send_message(self, args: dict) -> dict:
@@ -7714,7 +8003,7 @@ feature work stuck on feature branches across multiple workspaces.
 
     async def _cmd_plugin_list(self, args: dict) -> dict:
         """List installed plugins."""
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         # Get all plugins from DB (includes disabled/errored)
@@ -7746,7 +8035,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         # Try loaded plugin first
@@ -7766,7 +8055,7 @@ feature work stuck on feature branches across multiple workspaces.
         url = args.get("url")
         if not url:
             return {"error": "url is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         branch = args.get("branch")
@@ -7774,7 +8063,9 @@ feature work stuck on feature branches across multiple workspaces.
 
         try:
             installed_name = await self.orchestrator.plugin_registry.install_from_git(
-                url, branch=branch, name=name,
+                url,
+                branch=branch,
+                name=name,
             )
             return {
                 "installed": installed_name,
@@ -7788,13 +8079,14 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         rev = args.get("rev")
         try:
             new_rev = await self.orchestrator.plugin_registry.update_plugin(
-                name, rev=rev,
+                name,
+                rev=rev,
             )
             return {
                 "updated": name,
@@ -7809,7 +8101,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         try:
@@ -7823,7 +8115,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         try:
@@ -7837,7 +8129,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         try:
@@ -7851,7 +8143,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         try:
@@ -7865,7 +8157,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         plugin_info = self.orchestrator.plugin_registry.get_plugin(name)
@@ -7875,6 +8167,7 @@ feature work stuck on feature branches across multiple workspaces.
             if not db_plugin:
                 return {"error": f"Plugin '{name}' not found"}
             import json
+
             try:
                 config = json.loads(db_plugin.get("config", "{}"))
             except (json.JSONDecodeError, TypeError):
@@ -7888,6 +8181,7 @@ feature work stuck on feature branches across multiple workspaces.
             if new_config:
                 if isinstance(new_config, str):
                     import json
+
                     new_config = json.loads(new_config)
                 await loaded.context.save_config(new_config)
                 return {"name": name, "config": new_config, "message": "Config updated"}
@@ -7900,7 +8194,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         loaded = self.orchestrator.plugin_registry._plugins.get(name)
@@ -7915,7 +8209,7 @@ feature work stuck on feature branches across multiple workspaces.
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
-        if not hasattr(self.orchestrator, 'plugin_registry'):
+        if not hasattr(self.orchestrator, "plugin_registry"):
             return {"error": "Plugin system not initialized"}
 
         loaded = self.orchestrator.plugin_registry._plugins.get(name)
@@ -7923,6 +8217,7 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": f"Plugin '{name}' is not loaded"}
 
         from src.plugins.loader import reset_prompts
+
         count = reset_prompts(loaded.install_path)
         return {"name": name, "reset_count": count, "message": f"Reset {count} prompts"}
 

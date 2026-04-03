@@ -1,18 +1,30 @@
 import pytest
 from src.models import (
-    Project, Task, Agent, TaskStatus, AgentState, ProjectStatus, TaskType,
+    Project,
+    Task,
+    Agent,
+    TaskStatus,
+    AgentState,
+    ProjectStatus,
+    TaskType,
 )
 from src.scheduler import Scheduler, SchedulerState, AssignAction
 
 
 def make_project(id="p-1", name="alpha", weight=1.0, max_agents=2, **kw):
-    return Project(id=id, name=name, credit_weight=weight,
-                   max_concurrent_agents=max_agents, **kw)
+    return Project(id=id, name=name, credit_weight=weight, max_concurrent_agents=max_agents, **kw)
 
 
 def make_task(id="t-1", project_id="p-1", status=TaskStatus.READY, priority=100, **kw):
-    return Task(id=id, project_id=project_id, title=f"Task {id}",
-                description="test", status=status, priority=priority, **kw)
+    return Task(
+        id=id,
+        project_id=project_id,
+        title=f"Task {id}",
+        description="test",
+        status=status,
+        priority=priority,
+        **kw,
+    )
 
 
 def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, **kw):
@@ -325,8 +337,9 @@ class TestSyncTaskExclusivity:
         state = SchedulerState(
             projects=[make_project(max_agents=3)],
             tasks=[
-                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
-                          status=TaskStatus.ASSIGNED),
+                make_task(
+                    id="t-sync", priority=1, task_type=TaskType.SYNC, status=TaskStatus.ASSIGNED
+                ),
                 make_task(id="t-regular", priority=50),
             ],
             agents=[make_agent(id="a-1"), make_agent(id="a-2")],
@@ -342,8 +355,9 @@ class TestSyncTaskExclusivity:
         state = SchedulerState(
             projects=[make_project(max_agents=3)],
             tasks=[
-                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
-                          status=TaskStatus.IN_PROGRESS),
+                make_task(
+                    id="t-sync", priority=1, task_type=TaskType.SYNC, status=TaskStatus.IN_PROGRESS
+                ),
                 make_task(id="t-regular", priority=50),
             ],
             agents=[make_agent()],
@@ -362,8 +376,7 @@ class TestSyncTaskExclusivity:
                 make_project(id="p-2", name="beta"),
             ],
             tasks=[
-                make_task(id="t-sync", project_id="p-1", priority=1,
-                          task_type=TaskType.SYNC),
+                make_task(id="t-sync", project_id="p-1", priority=1, task_type=TaskType.SYNC),
                 make_task(id="t-regular", project_id="p-2", priority=50),
             ],
             agents=[make_agent(id="a-1"), make_agent(id="a-2")],
@@ -381,8 +394,9 @@ class TestSyncTaskExclusivity:
         state = SchedulerState(
             projects=[make_project()],
             tasks=[
-                make_task(id="t-sync", priority=1, task_type=TaskType.SYNC,
-                          status=TaskStatus.COMPLETED),
+                make_task(
+                    id="t-sync", priority=1, task_type=TaskType.SYNC, status=TaskStatus.COMPLETED
+                ),
                 make_task(id="t-regular", priority=50),
             ],
             agents=[make_agent()],

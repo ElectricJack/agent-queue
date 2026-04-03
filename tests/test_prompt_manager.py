@@ -30,6 +30,7 @@ from src.prompt_manager import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def prompts_dir(tmp_path):
     """Create a temporary prompts directory with subdirectories."""
@@ -80,7 +81,8 @@ def sample_template_file(prompts_dir, sample_template_content):
 def populated_prompts_dir(prompts_dir):
     """Create a prompts directory with multiple templates across categories."""
     # System template
-    (prompts_dir / "system" / "chat-agent.md").write_text(textwrap.dedent("""\
+    (prompts_dir / "system" / "chat-agent.md").write_text(
+        textwrap.dedent("""\
         ---
         name: chat-agent
         description: System prompt for the chat bot
@@ -94,10 +96,12 @@ def populated_prompts_dir(prompts_dir):
         ---
 
         You are AgentQueue. Workspaces: {{workspace_dir}}
-    """))
+    """)
+    )
 
     # Task templates
-    (prompts_dir / "task" / "plan-generation.md").write_text(textwrap.dedent("""\
+    (prompts_dir / "task" / "plan-generation.md").write_text(
+        textwrap.dedent("""\
         ---
         name: plan-generation
         description: Prompt for generating implementation plans
@@ -117,9 +121,11 @@ def populated_prompts_dir(prompts_dir):
         # Task: {{task_title}}
 
         Generate a plan with up to {{max_steps}} phases.
-    """))
+    """)
+    )
 
-    (prompts_dir / "task" / "execution.md").write_text(textwrap.dedent("""\
+    (prompts_dir / "task" / "execution.md").write_text(
+        textwrap.dedent("""\
         ---
         name: execution
         description: Prompt for direct task execution
@@ -129,10 +135,12 @@ def populated_prompts_dir(prompts_dir):
         ---
 
         Execute the task directly. No planning.
-    """))
+    """)
+    )
 
     # Hooks template
-    (prompts_dir / "hooks" / "test-watcher.md").write_text(textwrap.dedent("""\
+    (prompts_dir / "hooks" / "test-watcher.md").write_text(
+        textwrap.dedent("""\
         ---
         name: test-watcher
         description: Hook for watching test results
@@ -149,7 +157,8 @@ def populated_prompts_dir(prompts_dir):
         ```
         {{step_0}}
         ```
-    """))
+    """)
+    )
 
     # README should be skipped
     (prompts_dir / "README.md").write_text("# Prompts\nThis is a README.")
@@ -167,8 +176,8 @@ def manager(populated_prompts_dir):
 # parse_frontmatter
 # ---------------------------------------------------------------------------
 
-class TestParseFrontmatter:
 
+class TestParseFrontmatter:
     def test_valid_frontmatter(self):
         content = "---\nname: test\ndescription: hello\n---\nBody here."
         fm, body = parse_frontmatter(content)
@@ -222,8 +231,8 @@ class TestParseFrontmatter:
 # load_template
 # ---------------------------------------------------------------------------
 
-class TestLoadTemplate:
 
+class TestLoadTemplate:
     def test_load_valid_template(self, sample_template_file):
         tmpl = load_template(str(sample_template_file))
         assert tmpl is not None
@@ -304,8 +313,8 @@ class TestLoadTemplate:
 # render_template
 # ---------------------------------------------------------------------------
 
-class TestRenderTemplate:
 
+class TestRenderTemplate:
     def test_basic_rendering(self, sample_template_file):
         tmpl = load_template(str(sample_template_file))
         result = render_template(tmpl, {"task_title": "Fix Bug #42"})
@@ -315,10 +324,13 @@ class TestRenderTemplate:
 
     def test_all_variables_provided(self, sample_template_file):
         tmpl = load_template(str(sample_template_file))
-        result = render_template(tmpl, {
-            "task_title": "My Task",
-            "workspace_path": "/home/dev/project",
-        })
+        result = render_template(
+            tmpl,
+            {
+                "task_title": "My Task",
+                "workspace_path": "/home/dev/project",
+            },
+        )
         assert "# My Task" in result
         assert "`/home/dev/project`" in result
 
@@ -342,10 +354,13 @@ class TestRenderTemplate:
         tmpl = load_template(str(sample_template_file))
         # Add an undeclared variable to the body
         tmpl.body += "\n{{extra_var}}"
-        result = render_template(tmpl, {
-            "task_title": "Test",
-            "extra_var": "EXTRA_VALUE",
-        })
+        result = render_template(
+            tmpl,
+            {
+                "task_title": "Test",
+                "extra_var": "EXTRA_VALUE",
+            },
+        )
         assert "EXTRA_VALUE" in result
 
     def test_no_variables_returns_body_unchanged(self, prompts_dir):
@@ -360,8 +375,8 @@ class TestRenderTemplate:
 # PromptManager
 # ---------------------------------------------------------------------------
 
-class TestPromptManager:
 
+class TestPromptManager:
     def test_list_all_templates(self, manager):
         templates = manager.list_templates()
         names = [t.name for t in templates]

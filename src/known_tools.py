@@ -64,6 +64,7 @@ KNOWN_MCP_NAMES: frozenset[str] = frozenset(KNOWN_MCP_SERVERS)
 # Validation
 # ---------------------------------------------------------------------------
 
+
 def validate_tool_names(tools: list[str]) -> list[str]:
     """Return unrecognized tool names (warnings, not errors)."""
     return [t for t in tools if t not in KNOWN_TOOL_NAMES]
@@ -72,6 +73,7 @@ def validate_tool_names(tools: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Install manifest
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class InstallManifest:

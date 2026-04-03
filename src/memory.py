@@ -66,9 +66,7 @@ class MemoryManager:
 
     def __init__(self, config: MemoryConfig, storage_root: str = "") -> None:
         self.config = config
-        self._storage_root = os.path.expanduser(
-            storage_root or "~/.agent-queue"
-        )
+        self._storage_root = os.path.expanduser(storage_root or "~/.agent-queue")
         self._instances: dict[str, Any] = {}  # project_id -> MemSearch
         self._watchers: dict[str, Any] = {}
         self._last_compact: dict[str, float] = {}  # project_id -> timestamp
@@ -131,9 +129,7 @@ class MemoryManager:
                     paths.append(docs_dir)
         return paths
 
-    async def _index_project_doc_files(
-        self, instance: Any, workspace_path: str
-    ) -> None:
+    async def _index_project_doc_files(self, instance: Any, workspace_path: str) -> None:
         """Index individual project documentation files (CLAUDE.md, README.md, etc.).
 
         These files live at the workspace root and aren't inside a directory
@@ -347,10 +343,16 @@ class MemoryManager:
             current_profile = PROFILE_SEED_TEMPLATE
 
         # Extract task metadata for the revision prompt
-        task_type = task.task_type.value if (task.task_type and hasattr(task.task_type, "value")) else "unknown"
+        task_type = (
+            task.task_type.value
+            if (task.task_type and hasattr(task.task_type, "value"))
+            else "unknown"
+        )
         status = output.result.value if hasattr(output.result, "value") else str(output.result)
         summary = output.summary or "No summary available."
-        files_changed = "\n".join(f"- {f}" for f in (output.files_changed or [])) or "No files changed."
+        files_changed = (
+            "\n".join(f"- {f}" for f in (output.files_changed or [])) or "No files changed."
+        )
 
         # Optionally include recent notes in revision context
         notes_section = ""
@@ -532,7 +534,9 @@ class MemoryManager:
                 return None
 
             await self.update_profile(project_id, new_profile.strip(), workspace_path)
-            logger.info(f"Profile regenerated for project {project_id} from {len(task_summaries)} tasks")
+            logger.info(
+                f"Profile regenerated for project {project_id} from {len(task_summaries)} tasks"
+            )
             return new_profile.strip()
 
         except Exception as e:
@@ -560,9 +564,15 @@ class MemoryManager:
             NOTE_GENERATION_USER_PROMPT,
         )
 
-        task_type = task.task_type.value if (task.task_type and hasattr(task.task_type, "value")) else "unknown"
+        task_type = (
+            task.task_type.value
+            if (task.task_type and hasattr(task.task_type, "value"))
+            else "unknown"
+        )
         summary = output.summary or "No summary available."
-        files_changed = "\n".join(f"- {f}" for f in (output.files_changed or [])) or "No files changed."
+        files_changed = (
+            "\n".join(f"- {f}" for f in (output.files_changed or [])) or "No files changed."
+        )
 
         user_prompt = NOTE_GENERATION_USER_PROMPT.format(
             task_title=task.title,
@@ -702,9 +712,7 @@ class MemoryManager:
                 return None
 
             await self.update_profile(project_id, new_profile.strip(), workspace_path)
-            logger.info(
-                f"Note '{note_filename}' promoted into profile for project {project_id}"
-            )
+            logger.info(f"Note '{note_filename}' promoted into profile for project {project_id}")
             return new_profile.strip()
 
         except Exception as e:
@@ -777,6 +785,7 @@ class MemoryManager:
                     dt = time.gmtime(mtime)
                     # ISO year-week key, e.g. "2026-W11"
                     import datetime as _dt
+
                     d = _dt.date(dt.tm_year, dt.tm_mon, dt.tm_mday)
                     iso_year, iso_week, _ = d.isocalendar()
                     week_key = f"{iso_year}-W{iso_week:02d}"
@@ -900,9 +909,7 @@ class MemoryManager:
             logger.warning(f"Digest summarization failed: {e}")
             return ""
 
-    async def build_context(
-        self, project_id: str, task: Any, workspace_path: str
-    ) -> MemoryContext:
+    async def build_context(self, project_id: str, task: Any, workspace_path: str) -> MemoryContext:
         """Build a structured, tiered memory context for a task.
 
         Returns a ``MemoryContext`` with fields for each priority tier:
@@ -1244,7 +1251,11 @@ class MemoryManager:
 
         # Safely extract enum values
         status = output.result.value if hasattr(output.result, "value") else str(output.result)
-        task_type = task.task_type.value if (task.task_type and hasattr(task.task_type, "value")) else "unknown"
+        task_type = (
+            task.task_type.value
+            if (task.task_type and hasattr(task.task_type, "value"))
+            else "unknown"
+        )
         tokens = output.tokens_used if output.tokens_used else 0
 
         files_section = "No files changed."

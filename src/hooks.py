@@ -62,6 +62,7 @@ Integration with the orchestrator:
     the integration points.
     See ``specs/hooks.md`` for the full specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -198,9 +199,7 @@ class HookEngine:
             base_dir = watch_cfg.get("base_dir", "")
             if not base_dir:
                 try:
-                    ws_path = await self.db.get_project_workspace_path(
-                        hook.project_id
-                    )
+                    ws_path = await self.db.get_project_workspace_path(hook.project_id)
                     if ws_path:
                         base_dir = ws_path
                 except Exception:
@@ -265,7 +264,8 @@ class HookEngine:
         # and the old asyncio task may keep running alongside the new hook.
         active_hook_ids = {h.id for h in hooks}
         orphaned = [
-            hid for hid in self._running
+            hid
+            for hid in self._running
             if hid not in active_hook_ids and not self._running[hid].done()
         ]
         for hid in orphaned:
@@ -276,8 +276,7 @@ class HookEngine:
             self._running[hid].cancel()
         # Also clean up finished orphaned entries
         stale = [
-            hid for hid in self._running
-            if hid not in active_hook_ids and self._running[hid].done()
+            hid for hid in self._running if hid not in active_hook_ids and self._running[hid].done()
         ]
         for hid in stale:
             self._running.pop(hid, None)
@@ -300,7 +299,9 @@ class HookEngine:
             if checked_projects.get(hook.project_id, False):
                 logger.debug(
                     "Skipping hook %s (%s): project %s is paused",
-                    hook.id, hook.name, hook.project_id,
+                    hook.id,
+                    hook.name,
+                    hook.project_id,
                 )
                 continue
 
@@ -315,22 +316,14 @@ class HookEngine:
                         # Check schedule constraints (if any)
                         schedule = parse_schedule(trigger)
                         if schedule is not None:
-                            now_dt = datetime.fromtimestamp(
-                                now, tz=timezone.utc
-                            )
+                            now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
                             last_dt = (
-                                datetime.fromtimestamp(last, tz=timezone.utc)
-                                if last
-                                else None
+                                datetime.fromtimestamp(last, tz=timezone.utc) if last else None
                             )
-                            if not matches_schedule(
-                                schedule, now=now_dt, last_run=last_dt
-                            ):
+                            if not matches_schedule(schedule, now=now_dt, last_run=last_dt):
                                 continue  # Schedule doesn't match — skip
 
-                        now_iso = datetime.fromtimestamp(
-                            now, tz=timezone.utc
-                        ).isoformat()
+                        now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
                         timing_data: dict = {
                             "current_time": now_iso,
                             "current_time_epoch": now,
@@ -341,34 +334,24 @@ class HookEngine:
                             ).isoformat()
                             timing_data["last_run_time_epoch"] = last
                             timing_data["seconds_since_last_run"] = now - last
-                        self._launch_hook(
-                            hook, "periodic", event_data=timing_data
-                        )
+                        self._launch_hook(hook, "periodic", event_data=timing_data)
 
             elif trigger_type == "scheduled":
                 fire_at = trigger.get("fire_at")
                 if fire_at is not None and now >= fire_at:
                     if self._check_cooldown(hook, now):
-                        now_iso = datetime.fromtimestamp(
-                            now, tz=timezone.utc
-                        ).isoformat()
-                        scheduled_iso = datetime.fromtimestamp(
-                            fire_at, tz=timezone.utc
-                        ).isoformat()
+                        now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+                        scheduled_iso = datetime.fromtimestamp(fire_at, tz=timezone.utc).isoformat()
                         timing_data: dict = {
                             "current_time": now_iso,
                             "current_time_epoch": now,
                             "scheduled_for": scheduled_iso,
                             "scheduled_for_epoch": fire_at,
                         }
-                        self._launch_hook(
-                            hook, "scheduled", event_data=timing_data
-                        )
+                        self._launch_hook(hook, "scheduled", event_data=timing_data)
                         # Auto-delete the hook after launching (one-shot).
                         # Use fire-and-forget so tick() doesn't block.
-                        asyncio.create_task(
-                            self._delete_scheduled_hook(hook.id, hook.name)
-                        )
+                        asyncio.create_task(self._delete_scheduled_hook(hook.id, hook.name))
 
         # Phase 3: Poll file watcher for filesystem changes.
         # The file watcher emits file.changed / folder.changed events on
@@ -422,7 +405,9 @@ class HookEngine:
             if project and project.status == ProjectStatus.PAUSED:
                 logger.debug(
                     "Skipping hook %s (%s): project %s is paused",
-                    hook.id, hook.name, hook.project_id,
+                    hook.id,
+                    hook.name,
+                    hook.project_id,
                 )
                 continue
 
@@ -481,9 +466,7 @@ class HookEngine:
         # Persist to DB so the timestamp survives daemon restarts.
         # Fire-and-forget — errors are logged but don't block hook launch.
         asyncio.create_task(self._persist_last_triggered(hook.id, now))
-        task = asyncio.create_task(
-            self._execute_hook(hook, trigger_reason, event_data)
-        )
+        task = asyncio.create_task(self._execute_hook(hook, trigger_reason, event_data))
         self._running[hook.id] = task
 
     async def _persist_last_triggered(self, hook_id: str, ts: float) -> None:
@@ -509,12 +492,11 @@ class HookEngine:
             await self.db.delete_hook(hook_id)
             logger.info(
                 "Auto-deleted scheduled hook %s (%s) after firing",
-                hook_id, hook_name,
+                hook_id,
+                hook_name,
             )
         except Exception as e:
-            logger.warning(
-                "Failed to auto-delete scheduled hook %s: %s", hook_id, e
-            )
+            logger.warning("Failed to auto-delete scheduled hook %s: %s", hook_id, e)
 
     async def _execute_hook(
         self,
@@ -582,26 +564,32 @@ class HookEngine:
             try:
                 thread_name = f"🪝 Hook: {hook.name}"[:100]
                 initial_msg = (
-                    f"**Hook running** — trigger: `{trigger_reason}`\n"
-                    f"Project: `{hook.project_id}`"
+                    f"**Hook running** — trigger: `{trigger_reason}`\nProject: `{hook.project_id}`"
                 )
                 thread_result = await orchestrator._create_thread(
-                    thread_name, initial_msg, hook.project_id, None,
+                    thread_name,
+                    initial_msg,
+                    hook.project_id,
+                    None,
                 )
                 if thread_result:
                     thread_send, _thread_main_notify = thread_result
                     logger.debug(
                         "Created thread for hook %s (%s)",
-                        hook.name, hook.id,
+                        hook.name,
+                        hook.id,
                     )
                 else:
                     logger.warning(
-                        "Thread creation returned None for hook %s", hook.name,
+                        "Thread creation returned None for hook %s",
+                        hook.name,
                     )
             except Exception as e:
                 logger.error(
                     "Failed to create thread for hook %s: %s",
-                    hook.name, e, exc_info=True,
+                    hook.name,
+                    e,
+                    exc_info=True,
                 )
         elif orchestrator:
             # No thread callback — fall back to main channel notification
@@ -626,7 +614,9 @@ class HookEngine:
                         await thread_send(f"🔧 `{detail}`")
 
             response, tokens = await self._invoke_llm(
-                hook, prompt, trigger_reason=trigger_reason,
+                hook,
+                prompt,
+                trigger_reason=trigger_reason,
                 on_progress=_on_hook_progress,
                 event_data=event_data,
             )
@@ -638,9 +628,7 @@ class HookEngine:
                 tokens_used=tokens,
                 completed_at=time.time(),
             )
-            logger.info(
-                "Hook %s completed, tokens=%d", hook.name, tokens
-            )
+            logger.info("Hook %s completed, tokens=%d", hook.name, tokens)
 
             # Build completion message
             parts = [f"🪝 Hook **{hook.name}** completed."]
@@ -699,6 +687,7 @@ class HookEngine:
 
         Unrecognized placeholders are left unchanged.
         """
+
         def replacer(match):
             key = match.group(1)
             if key == "event":
@@ -713,7 +702,9 @@ class HookEngine:
         return re.sub(r"\{\{(.+?)\}\}", replacer, template)
 
     async def _build_hook_context(
-        self, hook: Hook, trigger_reason: str,
+        self,
+        hook: Hook,
+        trigger_reason: str,
         event_data: dict | None = None,
     ) -> str:
         """Build a dynamic context preamble for the hook's LLM prompt.
@@ -738,21 +729,15 @@ class HookEngine:
         project = await self.db.get_project(hook.project_id)
         project_name = project.name if project else hook.project_id
 
-        workspace_dir = await self.db.get_project_workspace_path(
-            hook.project_id
-        )
+        workspace_dir = await self.db.get_project_workspace_path(hook.project_id)
 
         # Build optional context lines (only include if available)
-        ws_line = (
-            f"Workspace: `{workspace_dir}`\n" if workspace_dir else ""
-        )
-        repo_line = (
-            f"Repository: `{project.repo_url}`\n"
-            if project and project.repo_url else ""
-        )
+        ws_line = f"Workspace: `{workspace_dir}`\n" if workspace_dir else ""
+        repo_line = f"Repository: `{project.repo_url}`\n" if project and project.repo_url else ""
         branch_line = (
             f"Default branch: `{project.repo_default_branch}`\n"
-            if project and project.repo_default_branch else ""
+            if project and project.repo_default_branch
+            else ""
         )
 
         # Build timing context for periodic and scheduled hooks
@@ -762,9 +747,7 @@ class HookEngine:
             if event_data.get("current_time"):
                 parts.append(f"Current time: `{event_data['current_time']}`")
             if event_data.get("scheduled_for"):
-                parts.append(
-                    f"Originally scheduled for: `{event_data['scheduled_for']}`"
-                )
+                parts.append(f"Originally scheduled for: `{event_data['scheduled_for']}`")
             parts.append("This is a one-shot scheduled hook — it will auto-delete after this run.")
             timing_line = "\n".join(parts) + "\n"
         elif event_data and trigger_reason == "periodic":
@@ -772,14 +755,10 @@ class HookEngine:
             if event_data.get("current_time"):
                 parts.append(f"Current time: `{event_data['current_time']}`")
             if event_data.get("last_run_time"):
-                parts.append(
-                    f"Last run: `{event_data['last_run_time']}`"
-                )
+                parts.append(f"Last run: `{event_data['last_run_time']}`")
                 secs = event_data.get("seconds_since_last_run")
                 if secs is not None:
-                    parts.append(
-                        f"Elapsed since last run: {int(secs)}s"
-                    )
+                    parts.append(f"Elapsed since last run: {int(secs)}s")
             else:
                 parts.append("Last run: *first run*")
             timing_line = "\n".join(parts) + "\n"
@@ -787,21 +766,26 @@ class HookEngine:
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
-        builder.set_identity("hook-context", {
-            "hook_name": hook.name,
-            "project_id": hook.project_id or "",
-            "project_name": project_name,
-            "workspace_dir": ws_line,
-            "repo_url": repo_line,
-            "default_branch": branch_line,
-            "trigger_reason": trigger_reason,
-            "timing_context": timing_line,
-        })
+        builder.set_identity(
+            "hook-context",
+            {
+                "hook_name": hook.name,
+                "project_id": hook.project_id or "",
+                "project_name": project_name,
+                "workspace_dir": ws_line,
+                "repo_url": repo_line,
+                "default_branch": branch_line,
+                "trigger_reason": trigger_reason,
+                "timing_context": timing_line,
+            },
+        )
         result, _ = builder.build()
         return result
 
     async def _invoke_llm(
-        self, hook: Hook, prompt: str,
+        self,
+        hook: Hook,
+        prompt: str,
         trigger_reason: str = "unknown",
         on_progress=None,
         event_data: dict | None = None,
@@ -814,7 +798,9 @@ class HookEngine:
         """
         # Build dynamic context preamble
         context_preamble = await self._build_hook_context(
-            hook, trigger_reason, event_data=event_data,
+            hook,
+            trigger_reason,
+            event_data=event_data,
         )
 
         if self._supervisor:
@@ -831,7 +817,7 @@ class HookEngine:
                 hook_provider = create_chat_provider(provider_config)
                 if hook_provider:
                     orchestrator = self._orchestrator
-                    if hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
+                    if hasattr(orchestrator, "llm_logger") and orchestrator.llm_logger._enabled:
                         hook_provider = LoggedChatProvider(
                             hook_provider, orchestrator.llm_logger, caller="hook_engine"
                         )
@@ -871,10 +857,8 @@ class HookEngine:
         supervisor.set_active_project(hook.project_id)
 
         provider = create_chat_provider(provider_config)
-        if provider and hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
-            provider = LoggedChatProvider(
-                provider, orchestrator.llm_logger, caller="hook_engine"
-            )
+        if provider and hasattr(orchestrator, "llm_logger") and orchestrator.llm_logger._enabled:
+            provider = LoggedChatProvider(provider, orchestrator.llm_logger, caller="hook_engine")
         supervisor._provider = provider
 
         if not supervisor._provider:
@@ -909,9 +893,7 @@ class HookEngine:
         now = time.time()
         self._last_run_time[hook.id] = now
         asyncio.create_task(self._persist_last_triggered(hook.id, now))
-        task = asyncio.create_task(
-            self._execute_hook(hook, "manual")
-        )
+        task = asyncio.create_task(self._execute_hook(hook, "manual"))
         self._running[hook.id] = task
         return hook.id
 
@@ -926,9 +908,7 @@ class HookEngine:
                 task.cancel()
         # Wait for all to finish
         if self._running:
-            await asyncio.gather(
-                *self._running.values(), return_exceptions=True
-            )
+            await asyncio.gather(*self._running.values(), return_exceptions=True)
         self._running.clear()
 
     def set_orchestrator(self, orchestrator) -> None:

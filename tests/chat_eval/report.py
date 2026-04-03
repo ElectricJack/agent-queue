@@ -76,20 +76,20 @@ def generate_report(run: EvalRunResult) -> str:
         lines.append("")
         for case_result in failed[:50]:  # Cap at 50
             lines.append(f"### {case_result.case_id}")
-            lines.append(f"**Category:** {case_result.category} "
-                         f"| **Difficulty:** {case_result.difficulty}")
+            lines.append(
+                f"**Category:** {case_result.category} | **Difficulty:** {case_result.difficulty}"
+            )
             if case_result.error:
                 lines.append(f"**Error:** {case_result.error}")
             for i, tr in enumerate(case_result.turn_results):
                 if not tr.passed:
-                    lines.append(f"- Turn {i+1}: \"{tr.user_message[:80]}\"")
+                    lines.append(f'- Turn {i + 1}: "{tr.user_message[:80]}"')
                     for m in tr.tool_matches:
                         if not m.matched:
                             lines.append(f"  - MISSING: `{m.expected_name}`")
                         elif not m.args_matched:
                             lines.append(
-                                f"  - ARG MISMATCH: `{m.expected_name}` "
-                                f"keys={m.mismatched_keys}"
+                                f"  - ARG MISMATCH: `{m.expected_name}` keys={m.mismatched_keys}"
                             )
                     for f in tr.forbidden_tools_called:
                         lines.append(f"  - FORBIDDEN: `{f}`")
@@ -120,8 +120,7 @@ def generate_regression_report(
     lines.append("|-------|--------|----------|---------|-------|")
     for r in regressions:
         lines.append(
-            f"| {r.scope} | {r.metric} | {r.baseline:.1%} "
-            f"| {r.current:.1%} | {r.delta:+.1%} |"
+            f"| {r.scope} | {r.metric} | {r.baseline:.1%} | {r.current:.1%} | {r.delta:+.1%} |"
         )
     lines.append("")
 

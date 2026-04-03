@@ -5,6 +5,7 @@ normalized ``ChatResponse``) and expose a ``model_name`` property.  This
 abstraction lets the rest of the codebase swap between Anthropic, Ollama, or
 future providers without any changes to calling code.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -21,13 +22,11 @@ class ChatProvider(ABC):
         system: str,
         tools: list[dict] | None = None,
         max_tokens: int = 1024,
-    ) -> ChatResponse:
-        ...
+    ) -> ChatResponse: ...
 
     @property
     @abstractmethod
-    def model_name(self) -> str:
-        ...
+    def model_name(self) -> str: ...
 
     async def is_model_loaded(self) -> bool:
         """Check whether the model is ready to serve requests.

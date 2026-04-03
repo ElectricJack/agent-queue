@@ -60,11 +60,14 @@ class TestSetControlInterfaceValidProject:
     async def test_valid_project_and_channel(self, handler, db):
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "channel_name": "my-project-control",
-            "guild_channels": GUILD_CHANNELS,
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "channel_name": "my-project-control",
+                "guild_channels": GUILD_CHANNELS,
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == "p-1"
@@ -79,11 +82,14 @@ class TestSetControlInterfaceValidProject:
         """Leading '#' in channel_name should be stripped automatically."""
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "channel_name": "#my-project-control",
-            "guild_channels": GUILD_CHANNELS,
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "channel_name": "#my-project-control",
+                "guild_channels": GUILD_CHANNELS,
+            },
+        )
 
         assert "error" not in result
         assert result["channel_id"] == "222222222222222222"
@@ -92,11 +98,14 @@ class TestSetControlInterfaceValidProject:
         """When _resolved_channel_id is supplied (Discord slash cmd), skip lookup."""
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "channel_name": "some-channel",
-            "_resolved_channel_id": "999999999999999999",
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "channel_name": "some-channel",
+                "_resolved_channel_id": "999999999999999999",
+            },
+        )
 
         assert "error" not in result
         assert result["channel_id"] == "999999999999999999"
@@ -108,11 +117,14 @@ class TestSetControlInterfaceMissingChannel:
     async def test_channel_not_found(self, handler, db):
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "channel_name": "nonexistent-channel",
-            "guild_channels": GUILD_CHANNELS,
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "channel_name": "nonexistent-channel",
+                "guild_channels": GUILD_CHANNELS,
+            },
+        )
 
         assert "error" in result
         assert "nonexistent-channel" in result["error"]
@@ -121,10 +133,13 @@ class TestSetControlInterfaceMissingChannel:
         """Without guild_channels or _resolved_channel_id, we can't resolve."""
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "channel_name": "my-project-control",
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "channel_name": "my-project-control",
+            },
+        )
 
         assert "error" in result
         assert "guild context" in result["error"].lower() or "channel_id" in result["error"]
@@ -134,20 +149,26 @@ class TestSetControlInterfaceMissingProject:
     """Test with a project that doesn't exist."""
 
     async def test_project_not_found(self, handler, db):
-        result = await handler.execute("set_control_interface", {
-            "project_id": "nonexistent-project",
-            "channel_name": "my-project-control",
-            "_resolved_channel_id": "222222222222222222",
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "nonexistent-project",
+                "channel_name": "my-project-control",
+                "_resolved_channel_id": "222222222222222222",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"].lower()
 
     async def test_missing_project_id(self, handler):
-        result = await handler.execute("set_control_interface", {
-            "channel_name": "my-project-control",
-            "guild_channels": GUILD_CHANNELS,
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "channel_name": "my-project-control",
+                "guild_channels": GUILD_CHANNELS,
+            },
+        )
 
         assert "error" in result
         assert "project_id" in result["error"].lower()
@@ -155,10 +176,13 @@ class TestSetControlInterfaceMissingProject:
     async def test_missing_channel_name(self, handler, db):
         await db.create_project(Project(id="p-1", name="alpha"))
 
-        result = await handler.execute("set_control_interface", {
-            "project_id": "p-1",
-            "guild_channels": GUILD_CHANNELS,
-        })
+        result = await handler.execute(
+            "set_control_interface",
+            {
+                "project_id": "p-1",
+                "guild_channels": GUILD_CHANNELS,
+            },
+        )
 
         assert "error" in result
         assert "channel_name" in result["error"].lower()

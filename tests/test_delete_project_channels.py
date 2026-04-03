@@ -91,10 +91,13 @@ class TestDeleteProjectArchiveFlag:
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
-        result = await handler.execute("delete_project", {
-            "project_id": "p-1",
-            "archive_channels": True,
-        })
+        result = await handler.execute(
+            "delete_project",
+            {
+                "project_id": "p-1",
+                "archive_channels": True,
+            },
+        )
 
         assert "error" not in result
         assert result.get("archive_channels") is True

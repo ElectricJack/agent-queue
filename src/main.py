@@ -142,11 +142,15 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     # (~3s) inside the task so it never blocks orchestrator startup.
     mcp_task: asyncio.Task | None = None
     if config.mcp_server.enabled:
+
         async def run_mcp():
             try:
                 from src.embedded_mcp import run_mcp_server
+
                 await run_mcp_server(
-                    orch, config, shutdown_event,
+                    orch,
+                    config,
+                    shutdown_event,
                     health_provider=_health_prov,
                     plan_content_provider=_plan_content,
                 )

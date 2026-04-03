@@ -49,6 +49,7 @@ def runner():
 
 # Mock response helpers
 
+
 def _mock_response(data, status_code=200):
     """Create a mock httpx response."""
     mock = AsyncMock()
@@ -189,77 +190,116 @@ class TestFormatterCompatibility:
 
     def test_format_task_table(self):
         tasks = [
-            task_proxy({
-                "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
-                "priority": 100, "task_type": "feature", "title": "Test task",
-                "assigned_agent": "ws-1",
-            }),
+            task_proxy(
+                {
+                    "id": "task-1",
+                    "project_id": "proj",
+                    "status": "IN_PROGRESS",
+                    "priority": 100,
+                    "task_type": "feature",
+                    "title": "Test task",
+                    "assigned_agent": "ws-1",
+                }
+            ),
         ]
         table = format_task_table(tasks, title="Test")
         assert table is not None
 
     def test_format_task_detail(self):
-        t = task_proxy({
-            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
-            "priority": 100, "task_type": "bugfix", "title": "Fix bug",
-            "assigned_agent": None, "description": "A bug fix",
-            "requires_approval": False,
-        })
+        t = task_proxy(
+            {
+                "id": "task-1",
+                "project_id": "proj",
+                "status": "IN_PROGRESS",
+                "priority": 100,
+                "task_type": "bugfix",
+                "title": "Fix bug",
+                "assigned_agent": None,
+                "description": "A bug fix",
+                "requires_approval": False,
+            }
+        )
         panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
         assert panel is not None
 
     def test_format_task_detail_with_subtask_stats(self):
-        t = task_proxy({
-            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
-            "priority": 100, "title": "Parent task",
-            "description": "Has subtasks",
-        })
+        t = task_proxy(
+            {
+                "id": "task-1",
+                "project_id": "proj",
+                "status": "IN_PROGRESS",
+                "priority": 100,
+                "title": "Parent task",
+                "description": "Has subtasks",
+            }
+        )
         panel = format_task_detail(t, subtask_stats=(3, 5))
         assert panel is not None
 
     def test_format_agent_table(self):
         agents = [
-            agent_proxy({
-                "workspace_id": "ws-1", "name": "Agent 1", "state": "busy",
-                "current_task_id": "task-1",
-            }),
-            agent_proxy({
-                "workspace_id": "ws-2", "name": "Agent 2", "state": "idle",
-                "current_task_id": None,
-            }),
+            agent_proxy(
+                {
+                    "workspace_id": "ws-1",
+                    "name": "Agent 1",
+                    "state": "busy",
+                    "current_task_id": "task-1",
+                }
+            ),
+            agent_proxy(
+                {
+                    "workspace_id": "ws-2",
+                    "name": "Agent 2",
+                    "state": "idle",
+                    "current_task_id": None,
+                }
+            ),
         ]
         table = format_agent_table(agents)
         assert table is not None
 
     def test_format_hook_table(self):
         hooks = [
-            hook_proxy({
-                "id": "hook-abc123def456", "name": "Test Hook",
-                "project_id": "proj", "enabled": True,
-                "trigger": {"type": "event", "event": "task_completed"},
-                "cooldown_seconds": 300,
-            }),
+            hook_proxy(
+                {
+                    "id": "hook-abc123def456",
+                    "name": "Test Hook",
+                    "project_id": "proj",
+                    "enabled": True,
+                    "trigger": {"type": "event", "event": "task_completed"},
+                    "cooldown_seconds": 300,
+                }
+            ),
         ]
         table = format_hook_table(hooks)
         assert table is not None
 
     def test_format_hook_run_table(self):
         runs = [
-            hook_run_proxy({
-                "id": "run-abcdef123456", "status": "completed",
-                "trigger_reason": "Manual trigger",
-                "tokens_used": 1234, "started_at": 1700000000.0,
-            }),
+            hook_run_proxy(
+                {
+                    "id": "run-abcdef123456",
+                    "status": "completed",
+                    "trigger_reason": "Manual trigger",
+                    "tokens_used": 1234,
+                    "started_at": 1700000000.0,
+                }
+            ),
         ]
         table = format_hook_run_table(runs)
         assert table is not None
 
     def test_format_project_table(self):
         projects = [
-            project_proxy({
-                "id": "proj", "name": "Test Project", "status": "ACTIVE",
-                "discord_channel_id": "123456", "max_concurrent_agents": 2,
-            }),
+            project_proxy(
+                {
+                    "id": "proj",
+                    "name": "Test Project",
+                    "status": "ACTIVE",
+                    "discord_channel_id": "123456",
+                    "max_concurrent_agents": 2,
+                }
+            ),
         ]
         table = format_project_table(projects)
         assert table is not None
@@ -283,8 +323,15 @@ class TestFormatterCompatibility:
 class TestFormatterRegistry:
     def test_formatters_registered(self):
         from src.cli.formatter_registry import FORMATTERS
-        expected = {"list_tasks", "get_task", "list_agents", "list_hooks",
-                    "list_hook_runs", "list_projects"}
+
+        expected = {
+            "list_tasks",
+            "get_task",
+            "list_agents",
+            "list_hooks",
+            "list_hook_runs",
+            "list_projects",
+        }
         assert expected.issubset(set(FORMATTERS.keys()))
 
     def test_apply_formatter_list(self):
@@ -296,9 +343,15 @@ class TestFormatterRegistry:
         console = Console(file=buf, width=120)
         result = {
             "tasks": [
-                {"id": "t-1", "project_id": "p", "title": "Test",
-                 "status": "READY", "priority": 100, "assigned_agent": None,
-                 "task_type": None},
+                {
+                    "id": "t-1",
+                    "project_id": "p",
+                    "title": "Test",
+                    "status": "READY",
+                    "priority": 100,
+                    "assigned_agent": None,
+                    "task_type": None,
+                },
             ],
             "total": 1,
         }
@@ -314,10 +367,15 @@ class TestFormatterRegistry:
         buf = StringIO()
         console = Console(file=buf, width=120)
         result = {
-            "id": "t-1", "project_id": "p", "title": "Detail Test",
-            "status": "IN_PROGRESS", "priority": 100,
-            "description": "A task", "assigned_agent": None,
-            "depends_on": [], "blocks": [],
+            "id": "t-1",
+            "project_id": "p",
+            "title": "Detail Test",
+            "status": "IN_PROGRESS",
+            "priority": 100,
+            "description": "A task",
+            "assigned_agent": None,
+            "depends_on": [],
+            "blocks": [],
         }
         assert apply_formatter("get_task", result, console) is True
         output = buf.getvalue()
@@ -416,6 +474,7 @@ class TestCLIClient:
         mock_http = self._mock_httpx_for_typed(200, {"custom": "result"})
         # Override .post for the fallback path
         import httpx
+
         fallback_resp = MagicMock(spec=httpx.Response)
         fallback_resp.json = lambda: _ok({"custom": "result"})
         mock_http.post.return_value = fallback_resp
@@ -438,9 +497,18 @@ class TestCLIClient:
 class TestStyles:
     def test_status_icons_complete(self):
         expected = {
-            "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT",
-            "PAUSED", "VERIFYING", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
-            "COMPLETED", "FAILED", "BLOCKED",
+            "DEFINED",
+            "READY",
+            "ASSIGNED",
+            "IN_PROGRESS",
+            "WAITING_INPUT",
+            "PAUSED",
+            "VERIFYING",
+            "AWAITING_APPROVAL",
+            "AWAITING_PLAN_APPROVAL",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
         }
         assert expected.issubset(set(STATUS_ICONS.keys()))
 
@@ -463,11 +531,13 @@ class TestAutoCommands:
     def test_no_cmd_group(self):
         """The flat 'cmd' group should no longer exist."""
         from src.cli.app import cli
+
         assert "cmd" not in cli.commands
 
     def test_category_groups_exist(self):
         """Each tool_registry category should have a CLI group."""
         from src.cli.app import cli
+
         expected = {"git", "memory", "file", "system", "task", "hook", "agent", "project", "plugin"}
         actual = set(cli.commands.keys())
         for group in expected:
@@ -476,6 +546,7 @@ class TestAutoCommands:
     def test_git_group_has_commands(self):
         """The git group should have auto-generated commands."""
         from src.cli.app import cli
+
         git_group = cli.commands.get("git")
         assert git_group is not None
         assert len(git_group.commands) > 10
@@ -485,6 +556,7 @@ class TestAutoCommands:
     def test_task_group_merges_handcrafted_and_auto(self):
         """Task group should contain both hand-crafted and auto-generated commands."""
         from src.cli.app import cli
+
         task_group = cli.commands.get("task")
         assert task_group is not None
         # Hand-crafted (interactive commands)
@@ -500,6 +572,7 @@ class TestAutoCommands:
     def test_handcrafted_create_has_wizard_options(self):
         """Hand-crafted create should have interactive wizard options."""
         from src.cli.app import cli
+
         task_group = cli.commands.get("task")
         create_cmd = task_group.commands.get("create")
         assert create_cmd is not None
@@ -510,6 +583,7 @@ class TestAutoCommands:
     def test_excluded_not_present(self):
         """Dangerous commands should not appear in any group."""
         from src.cli.app import cli
+
         all_cmd_names: set[str] = set()
         for group_name, group in cli.commands.items():
             if hasattr(group, "commands"):
@@ -521,6 +595,7 @@ class TestAutoCommands:
     def test_auto_command_help(self, runner):
         """Auto-generated command should have --help from JSON Schema."""
         from src.cli.app import cli
+
         # memory_search is now under aq memory as "search"
         result = runner.invoke(cli, ["memory", "search", "--help"])
         assert result.exit_code == 0
@@ -530,6 +605,7 @@ class TestAutoCommands:
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
         from src.cli.auto_commands import _strip_category_prefix
+
         assert _strip_category_prefix("git_commit", "git") == "commit"
         assert _strip_category_prefix("memory_search", "memory") == "search"
         assert _strip_category_prefix("compact_memory", "memory") == "compact"
@@ -569,19 +645,24 @@ class TestCLICommands:
         """Auto-generated list_tasks should use Rich formatter, not raw JSON."""
         from src.cli.app import cli
 
-        mock = self._mock_client({
-            "list_tasks": {
-                "tasks": [
-                    {
-                        "id": "task-1", "project_id": "proj",
-                        "title": "Test task", "status": "IN_PROGRESS",
-                        "priority": 100, "task_type": "feature",
-                        "assigned_agent": "ws-1",
-                    },
-                ],
-                "total": 1,
-            },
-        })
+        mock = self._mock_client(
+            {
+                "list_tasks": {
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "project_id": "proj",
+                            "title": "Test task",
+                            "status": "IN_PROGRESS",
+                            "priority": 100,
+                            "task_type": "feature",
+                            "assigned_agent": "ws-1",
+                        },
+                    ],
+                    "total": 1,
+                },
+            }
+        )
 
         with patch("src.cli.app._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "list"])
@@ -594,17 +675,23 @@ class TestCLICommands:
         """Auto-generated get_task should use Rich detail formatter."""
         from src.cli.app import cli
 
-        mock = self._mock_client({
-            "get_task": {
-                "id": "task-1", "project_id": "proj",
-                "title": "Test task", "status": "IN_PROGRESS",
-                "priority": 100, "description": "A test task",
-                "assigned_agent": None, "task_type": "feature",
-                "requires_approval": False,
-                "depends_on": [],
-                "blocks": [],
-            },
-        })
+        mock = self._mock_client(
+            {
+                "get_task": {
+                    "id": "task-1",
+                    "project_id": "proj",
+                    "title": "Test task",
+                    "status": "IN_PROGRESS",
+                    "priority": 100,
+                    "description": "A test task",
+                    "assigned_agent": None,
+                    "task_type": "feature",
+                    "requires_approval": False,
+                    "depends_on": [],
+                    "blocks": [],
+                },
+            }
+        )
 
         with patch("src.cli.app._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "get", "--task-id", "task-1"])
@@ -615,14 +702,20 @@ class TestCLICommands:
         """Auto-generated list_projects should use Rich formatter."""
         from src.cli.app import cli
 
-        mock = self._mock_client({
-            "list_projects": {
-                "projects": [
-                    {"id": "proj", "name": "Test", "status": "ACTIVE",
-                     "max_concurrent_agents": 2},
-                ],
-            },
-        })
+        mock = self._mock_client(
+            {
+                "list_projects": {
+                    "projects": [
+                        {
+                            "id": "proj",
+                            "name": "Test",
+                            "status": "ACTIVE",
+                            "max_concurrent_agents": 2,
+                        },
+                    ],
+                },
+            }
+        )
 
         with patch("src.cli.app._get_client", return_value=mock):
             result = runner.invoke(cli, ["project", "list"])
@@ -638,36 +731,42 @@ class TestCLICommands:
 class TestDaemonCommands:
     def test_start_help(self, runner):
         from src.cli.app import cli
+
         result = runner.invoke(cli, ["start", "--help"])
         assert result.exit_code == 0
         assert "Start the agent-queue daemon" in result.output
 
     def test_stop_help(self, runner):
         from src.cli.app import cli
+
         result = runner.invoke(cli, ["stop", "--help"])
         assert result.exit_code == 0
         assert "Stop the agent-queue daemon" in result.output
 
     def test_restart_help(self, runner):
         from src.cli.app import cli
+
         result = runner.invoke(cli, ["restart", "--help"])
         assert result.exit_code == 0
         assert "Restart the agent-queue daemon" in result.output
 
     def test_logs_help(self, runner):
         from src.cli.app import cli
+
         result = runner.invoke(cli, ["logs", "--help"])
         assert result.exit_code == 0
         assert "View daemon logs" in result.output
 
     def test_read_pid_no_file(self, tmp_path):
         from src.cli.daemon import _read_pid
+
         with patch("src.cli.daemon.PID_FILE", str(tmp_path / "nonexistent.pid")):
             assert _read_pid() is None
 
     def test_read_pid_stale(self, tmp_path):
         """Stale PID file (process not running) should return None and clean up."""
         from src.cli.daemon import _read_pid
+
         pid_file = tmp_path / "daemon.pid"
         pid_file.write_text("999999999")  # PID that almost certainly doesn't exist
         with patch("src.cli.daemon.PID_FILE", str(pid_file)):
@@ -676,16 +775,19 @@ class TestDaemonCommands:
 
     def test_is_daemon_running_false(self):
         from src.cli.daemon import is_daemon_running
+
         with patch("src.cli.daemon._find_daemon_pid", return_value=None):
             assert is_daemon_running() is False
 
     def test_is_daemon_running_true(self):
         from src.cli.daemon import is_daemon_running
+
         with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
             assert is_daemon_running() is True
 
     def test_stop_not_running(self, runner):
         from src.cli.app import cli
+
         with patch("src.cli.daemon._find_daemon_pid", return_value=None):
             result = runner.invoke(cli, ["stop"])
             assert result.exit_code == 0
@@ -735,13 +837,15 @@ class TestDaemonNotRunningPrompt:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(side_effect=mock_aenter)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.execute = AsyncMock(return_value={
-            "display_mode": "flat",
-            "tasks": [],
-            "total": 0,
-            "hidden_completed": 0,
-            "filtered": True,
-        })
+        mock_client.execute = AsyncMock(
+            return_value={
+                "display_mode": "flat",
+                "tasks": [],
+                "total": 0,
+                "hidden_completed": 0,
+                "filtered": True,
+            }
+        )
 
         with (
             patch("src.cli.app._get_client", return_value=mock_client),

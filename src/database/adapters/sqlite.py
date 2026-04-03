@@ -111,8 +111,7 @@ class SQLiteDatabaseAdapter(
 
         now = time.time()
         await self._db.execute(
-            "UPDATE tasks SET status = ?, assigned_agent_id = ?, updated_at = ? "
-            "WHERE id = ?",
+            "UPDATE tasks SET status = ?, assigned_agent_id = ?, updated_at = ? WHERE id = ?",
             (TaskStatus.ASSIGNED.value, agent_id, now, task_id),
         )
         await self._db.execute(

@@ -17,31 +17,36 @@ class AgentQueryMixin:
             "pid, last_heartbeat, total_tokens_used, "
             "session_tokens_used, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (agent.id, agent.name, agent.agent_type,
-             agent.state.value, agent.current_task_id,
-             agent.pid, agent.last_heartbeat,
-             agent.total_tokens_used, agent.session_tokens_used, time.time()),
+            (
+                agent.id,
+                agent.name,
+                agent.agent_type,
+                agent.state.value,
+                agent.current_task_id,
+                agent.pid,
+                agent.last_heartbeat,
+                agent.total_tokens_used,
+                agent.session_tokens_used,
+                time.time(),
+            ),
         )
         await self._db.commit()
 
     async def get_agent(self, agent_id: str) -> Agent | None:
         """Fetch a single agent by ID."""
-        cursor = await self._db.execute(
-            "SELECT * FROM agents WHERE id = ?", (agent_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return self._row_to_agent(row)
 
     async def list_agents(
-        self, state: AgentState | None = None,
+        self,
+        state: AgentState | None = None,
     ) -> list[Agent]:
         """List agents, optionally filtered by state."""
         if state:
-            cursor = await self._db.execute(
-                "SELECT * FROM agents WHERE state = ?", (state.value,)
-            )
+            cursor = await self._db.execute("SELECT * FROM agents WHERE state = ?", (state.value,))
         else:
             cursor = await self._db.execute("SELECT * FROM agents")
         rows = await cursor.fetchall()
@@ -57,9 +62,7 @@ class AgentQueryMixin:
             sets.append(f"{key} = ?")
             vals.append(value)
         vals.append(agent_id)
-        await self._db.execute(
-            f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", vals
-        )
+        await self._db.execute(f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", vals)
         await self._db.commit()
 
     async def delete_agent(self, agent_id: str) -> None:
@@ -73,10 +76,12 @@ class AgentQueryMixin:
         5. agent record
         """
         await self._db.execute(
-            "DELETE FROM token_ledger WHERE agent_id = ?", (agent_id,),
+            "DELETE FROM token_ledger WHERE agent_id = ?",
+            (agent_id,),
         )
         await self._db.execute(
-            "DELETE FROM task_results WHERE agent_id = ?", (agent_id,),
+            "DELETE FROM task_results WHERE agent_id = ?",
+            (agent_id,),
         )
         await self._db.execute(
             "UPDATE workspaces SET locked_by_agent_id = NULL, "
@@ -89,7 +94,8 @@ class AgentQueryMixin:
             (agent_id,),
         )
         await self._db.execute(
-            "DELETE FROM agents WHERE id = ?", (agent_id,),
+            "DELETE FROM agents WHERE id = ?",
+            (agent_id,),
         )
         await self._db.commit()
 

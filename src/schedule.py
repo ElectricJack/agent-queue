@@ -45,6 +45,7 @@ Supported cron features:
 
 See ``specs/hooks.md`` for the periodic hook trigger specification.
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,13 +57,20 @@ logger = logging.getLogger(__name__)
 
 # Day name -> weekday index (Monday=0, matching Python's weekday())
 DAY_NAMES: dict[str, int] = {
-    "mon": 0, "monday": 0,
-    "tue": 1, "tuesday": 1,
-    "wed": 2, "wednesday": 2,
-    "thu": 3, "thursday": 3,
-    "fri": 4, "friday": 4,
-    "sat": 5, "saturday": 5,
-    "sun": 6, "sunday": 6,
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
 }
 
 
@@ -128,9 +136,7 @@ def matches_schedule(
     return True
 
 
-def _matches_times(
-    times: list[str], now: datetime, tolerance_seconds: int
-) -> bool:
+def _matches_times(times: list[str], now: datetime, tolerance_seconds: int) -> bool:
     """Check if current time matches any of the specified times.
 
     Each time is HH:MM in 24-hour format.  A match occurs if the current
@@ -221,6 +227,7 @@ def _matches_days_of_month(days: list[int], now: datetime) -> bool:
 # Cron parsing
 # ---------------------------------------------------------------------------
 
+
 def _matches_cron(
     expr: str,
     now: datetime,
@@ -269,8 +276,7 @@ def _cron_field_matches(field: str, value: int, min_val: int, max_val: int) -> b
     # Handle comma-separated list
     if "," in field:
         return any(
-            _cron_field_matches(part.strip(), value, min_val, max_val)
-            for part in field.split(",")
+            _cron_field_matches(part.strip(), value, min_val, max_val) for part in field.split(",")
         )
 
     # Wildcard
@@ -333,10 +339,7 @@ def describe_schedule(schedule: dict) -> str:
         parts.append(f"at {times_str}")
 
     if "days_of_week" in schedule:
-        days_str = ", ".join(
-            d if isinstance(d, str) else str(d)
-            for d in schedule["days_of_week"]
-        )
+        days_str = ", ".join(d if isinstance(d, str) else str(d) for d in schedule["days_of_week"])
         parts.append(f"on {days_str}")
 
     if "days_of_month" in schedule:
@@ -384,8 +387,9 @@ def next_run_time(
     end = now + timedelta(hours=max_lookahead_hours)
 
     while candidate <= end:
-        if matches_schedule(schedule, now=candidate, last_run=last_run,
-                            tolerance_seconds=tolerance_seconds):
+        if matches_schedule(
+            schedule, now=candidate, last_run=last_run, tolerance_seconds=tolerance_seconds
+        ):
             return candidate
         candidate += timedelta(minutes=1)
 

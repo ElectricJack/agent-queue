@@ -51,9 +51,13 @@ class ScriptedProvider(ChatProvider):
 
     def add_tool_call(self, name: str, args: dict | None = None) -> None:
         """Queue a response containing a single tool use block."""
-        self._queue.append(ChatResponse(content=[
-            ToolUseBlock(id=f"toolu_{uuid.uuid4().hex[:12]}", name=name, input=args or {}),
-        ]))
+        self._queue.append(
+            ChatResponse(
+                content=[
+                    ToolUseBlock(id=f"toolu_{uuid.uuid4().hex[:12]}", name=name, input=args or {}),
+                ]
+            )
+        )
 
     def add_tool_calls(self, calls: list[tuple[str, dict]]) -> None:
         """Queue a response containing multiple tool use blocks."""
@@ -69,13 +73,17 @@ class ScriptedProvider(ChatProvider):
         The supervisor requires reply_to_user to deliver responses after
         tool use.  This is the standard way to end a tool-use sequence.
         """
-        self._queue.append(ChatResponse(content=[
-            ToolUseBlock(
-                id=f"toolu_{uuid.uuid4().hex[:12]}",
-                name="reply_to_user",
-                input={"message": message},
-            ),
-        ]))
+        self._queue.append(
+            ChatResponse(
+                content=[
+                    ToolUseBlock(
+                        id=f"toolu_{uuid.uuid4().hex[:12]}",
+                        name="reply_to_user",
+                        input={"message": message},
+                    ),
+                ]
+            )
+        )
 
     def add_tool_then_text(self, name: str, args: dict, text: str) -> None:
         """Queue a tool call followed by a reply_to_user delivery.
@@ -101,13 +109,16 @@ class ScriptedProvider(ChatProvider):
             response = self._queue.pop(0)
 
         import copy
-        self._calls.append(ProviderCall(
-            messages=copy.deepcopy(messages),
-            system=system,
-            tools=tools,
-            max_tokens=max_tokens,
-            response=response,
-        ))
+
+        self._calls.append(
+            ProviderCall(
+                messages=copy.deepcopy(messages),
+                system=system,
+                tools=tools,
+                max_tokens=max_tokens,
+                response=response,
+            )
+        )
         return response
 
     @property
@@ -151,18 +162,23 @@ class RecordingProvider(ChatProvider):
     ) -> ChatResponse:
         start = time.monotonic()
         response = await self._inner.create_message(
-            messages=messages, system=system, tools=tools, max_tokens=max_tokens,
-        )
-        elapsed = time.monotonic() - start
-        self._latencies.append(elapsed)
-
-        self._calls.append(ProviderCall(
             messages=messages,
             system=system,
             tools=tools,
             max_tokens=max_tokens,
-            response=response,
-        ))
+        )
+        elapsed = time.monotonic() - start
+        self._latencies.append(elapsed)
+
+        self._calls.append(
+            ProviderCall(
+                messages=messages,
+                system=system,
+                tools=tools,
+                max_tokens=max_tokens,
+                response=response,
+            )
+        )
         return response
 
     @property

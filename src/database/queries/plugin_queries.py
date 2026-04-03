@@ -33,29 +33,37 @@ class PluginQueryMixin:
             "install_path, status, config, permissions, error_message, "
             "installed_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-            (plugin_id, version, source_url, source_rev, source_branch,
-             install_path, status, config, permissions, now, now),
+            (
+                plugin_id,
+                version,
+                source_url,
+                source_rev,
+                source_branch,
+                install_path,
+                status,
+                config,
+                permissions,
+                now,
+                now,
+            ),
         )
         await self._db.commit()
 
     async def get_plugin(self, plugin_id: str) -> dict | None:
         """Fetch a single plugin by ID."""
-        cursor = await self._db.execute(
-            "SELECT * FROM plugins WHERE id = ?", (plugin_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM plugins WHERE id = ?", (plugin_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return self._row_to_plugin_dict(row)
 
     async def list_plugins(
-        self, status: str | None = None,
+        self,
+        status: str | None = None,
     ) -> list[dict]:
         """List plugins with optional status filter."""
         if status:
-            cursor = await self._db.execute(
-                "SELECT * FROM plugins WHERE status = ?", (status,)
-            )
+            cursor = await self._db.execute("SELECT * FROM plugins WHERE status = ?", (status,))
         else:
             cursor = await self._db.execute("SELECT * FROM plugins")
         rows = await cursor.fetchall()
@@ -73,19 +81,13 @@ class PluginQueryMixin:
         sets.append("updated_at = ?")
         vals.append(time.time())
         vals.append(plugin_id)
-        await self._db.execute(
-            f"UPDATE plugins SET {', '.join(sets)} WHERE id = ?", vals
-        )
+        await self._db.execute(f"UPDATE plugins SET {', '.join(sets)} WHERE id = ?", vals)
         await self._db.commit()
 
     async def delete_plugin(self, plugin_id: str) -> None:
         """Delete a plugin record."""
-        await self._db.execute(
-            "DELETE FROM plugin_data WHERE plugin_id = ?", (plugin_id,)
-        )
-        await self._db.execute(
-            "DELETE FROM plugins WHERE id = ?", (plugin_id,)
-        )
+        await self._db.execute("DELETE FROM plugin_data WHERE plugin_id = ?", (plugin_id,))
+        await self._db.execute("DELETE FROM plugins WHERE id = ?", (plugin_id,))
         await self._db.commit()
 
     # --- Plugin Data ---
@@ -126,9 +128,7 @@ class PluginQueryMixin:
 
     async def delete_plugin_data_all(self, plugin_id: str) -> None:
         """Delete all data for a plugin."""
-        await self._db.execute(
-            "DELETE FROM plugin_data WHERE plugin_id = ?", (plugin_id,)
-        )
+        await self._db.execute("DELETE FROM plugin_data WHERE plugin_id = ?", (plugin_id,))
         await self._db.commit()
 
     async def list_plugin_data(self, plugin_id: str) -> dict[str, Any]:

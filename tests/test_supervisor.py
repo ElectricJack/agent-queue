@@ -1,10 +1,12 @@
 """Tests for Supervisor — the single intelligent entity."""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_supervisor():
     from src.supervisor import Supervisor
+
     orch = MagicMock()
     orch.config = MagicMock()
     orch.llm_logger = MagicMock()
@@ -51,7 +53,9 @@ def _make_resp(text_parts=None, tool_uses=None):
 
 def test_supervisor_class_exists():
     from src.supervisor import Supervisor
+
     assert Supervisor is not None
+
 
 def test_supervisor_inherits_chat_behavior():
     sup = _make_supervisor()
@@ -60,24 +64,31 @@ def test_supervisor_inherits_chat_behavior():
     assert hasattr(sup, "summarize")
     assert hasattr(sup, "handler")
 
+
 def test_supervisor_has_reflection_engine():
     sup = _make_supervisor()
     assert hasattr(sup, "reflection")
     assert sup.reflection is not None
 
+
 def test_backward_compat_import():
     from src.chat_agent import ChatAgent
+
     assert ChatAgent is not None
+
 
 def test_backward_compat_is_supervisor():
     from src.chat_agent import ChatAgent
     from src.supervisor import Supervisor
+
     assert ChatAgent is Supervisor
+
 
 def test_set_active_project():
     sup = _make_supervisor()
     sup.set_active_project("my-project")
     assert sup._active_project_id == "my-project"
+
 
 def test_build_system_prompt_returns_string():
     sup = _make_supervisor()
@@ -85,10 +96,12 @@ def test_build_system_prompt_returns_string():
     assert isinstance(prompt, str)
     assert len(prompt) > 0
 
+
 def test_process_hook_llm_exists():
     sup = _make_supervisor()
     assert hasattr(sup, "process_hook_llm")
     assert callable(sup.process_hook_llm)
+
 
 def test_process_hook_llm_sets_project():
     """process_hook_llm sets active project before processing."""
@@ -128,14 +141,18 @@ def test_chat_reply_to_user_after_tool_use():
     sup._provider = MagicMock()
 
     # First call: LLM uses a tool
-    resp1 = _make_resp(tool_uses=[
-        _make_tool_use("create_task", {"title": "Fix login"}, "tu-1"),
-    ])
+    resp1 = _make_resp(
+        tool_uses=[
+            _make_tool_use("create_task", {"title": "Fix login"}, "tu-1"),
+        ]
+    )
 
     # Second call: LLM calls reply_to_user
-    resp2 = _make_resp(tool_uses=[
-        _make_reply_tool_use("Task **Fix login** created successfully."),
-    ])
+    resp2 = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use("Task **Fix login** created successfully."),
+        ]
+    )
 
     sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
     sup.handler.execute = AsyncMock(return_value={"id": "t-123", "title": "Fix login"})
@@ -151,10 +168,12 @@ def test_chat_reply_to_user_with_other_tools():
     sup._provider = MagicMock()
 
     # LLM calls a tool AND reply_to_user in the same response
-    resp = _make_resp(tool_uses=[
-        _make_tool_use("create_task", {"title": "Fix bug"}, "tu-1"),
-        _make_reply_tool_use("Created task to fix the bug.", "tu-reply"),
-    ])
+    resp = _make_resp(
+        tool_uses=[
+            _make_tool_use("create_task", {"title": "Fix bug"}, "tu-1"),
+            _make_reply_tool_use("Created task to fix the bug.", "tu-reply"),
+        ]
+    )
 
     sup._provider.create_message = AsyncMock(return_value=resp)
     sup.handler.execute = AsyncMock(return_value={"id": "t-456"})
@@ -169,17 +188,21 @@ def test_chat_nudges_llm_when_no_reply_to_user():
     sup._provider = MagicMock()
 
     # Round 1: tool use
-    resp1 = _make_resp(tool_uses=[
-        _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
-    ])
+    resp1 = _make_resp(
+        tool_uses=[
+            _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
+        ]
+    )
 
     # Round 2: LLM returns text without reply_to_user (gets nudged)
     resp2 = _make_resp(text_parts=["Done. Actions taken: memory_search"])
 
     # Round 3: LLM calls reply_to_user after nudge
-    resp3 = _make_resp(tool_uses=[
-        _make_reply_tool_use("I searched memory and found relevant results."),
-    ])
+    resp3 = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use("I searched memory and found relevant results."),
+        ]
+    )
 
     sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2, resp3])
     sup.handler.execute = AsyncMock(return_value={"results": []})
@@ -196,9 +219,11 @@ def test_chat_max_nudges_then_returns():
     sup._provider = MagicMock()
 
     # Round 1: tool use
-    resp_tool = _make_resp(tool_uses=[
-        _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
-    ])
+    resp_tool = _make_resp(
+        tool_uses=[
+            _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
+        ]
+    )
 
     # Rounds 2, 3: text without reply_to_user (nudged twice)
     resp_text1 = _make_resp(text_parts=["Some text"])
@@ -222,21 +247,23 @@ def test_chat_triggers_reflection_on_reply():
     sup._provider = MagicMock()
 
     # First call: LLM uses a tool
-    resp1 = _make_resp(tool_uses=[
-        _make_tool_use("create_task", {"title": "Fix login"}, "tu-1"),
-    ])
+    resp1 = _make_resp(
+        tool_uses=[
+            _make_tool_use("create_task", {"title": "Fix login"}, "tu-1"),
+        ]
+    )
 
     # Second call: reply_to_user
-    resp2 = _make_resp(tool_uses=[
-        _make_reply_tool_use("Task created."),
-    ])
+    resp2 = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use("Task created."),
+        ]
+    )
 
     # Third call (reflection)
     resp_reflect = _make_resp(text_parts=["Reflection: task verified."])
 
-    sup._provider.create_message = AsyncMock(
-        side_effect=[resp1, resp2, resp_reflect]
-    )
+    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2, resp_reflect])
     sup.handler.execute = AsyncMock(return_value={"id": "t-123", "title": "Fix login"})
 
     result = asyncio.run(sup.chat("Create a task to fix login", "testuser"))
@@ -295,29 +322,37 @@ def test_process_hook_llm_uses_hook_trigger():
     sup._provider = MagicMock()
 
     # First call: LLM uses a tool
-    resp1 = _make_resp(tool_uses=[
-        _make_tool_use("list_tasks", {"status": "ready"}, "tu-1"),
-    ])
+    resp1 = _make_resp(
+        tool_uses=[
+            _make_tool_use("list_tasks", {"status": "ready"}, "tu-1"),
+        ]
+    )
 
     # Second call: reply_to_user
-    resp2 = _make_resp(tool_uses=[
-        _make_reply_tool_use("Hook done"),
-    ])
+    resp2 = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use("Hook done"),
+        ]
+    )
 
     sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
     sup.handler.execute = AsyncMock(return_value={"tasks": []})
 
     # Track what trigger the reflection sees
     triggers_seen = []
+
     def track_should(trigger):
         triggers_seen.append(trigger)
         return False  # Skip actual reflection for test speed
+
     sup.reflection.should_reflect = track_should
 
     asyncio.run(
         sup.process_hook_llm(
-            hook_context="ctx", rendered_prompt="prompt",
-            project_id="p1", hook_name="my-hook",
+            hook_context="ctx",
+            rendered_prompt="prompt",
+            project_id="p1",
+            hook_name="my-hook",
         )
     )
     assert any("hook" in t for t in triggers_seen)
@@ -347,8 +382,10 @@ def test_full_integration_supervisor_replaces_chat_agent():
 def test_reflection_engine_wired_to_config():
     """ReflectionEngine uses config values from SupervisorConfig."""
     from src.config import AppConfig
+
     app = AppConfig()
     from src.reflection import ReflectionEngine
+
     engine = ReflectionEngine(app.supervisor.reflection)
     assert engine.level == "full"
     assert engine._config.max_depth == 3
@@ -362,9 +399,9 @@ def test_on_task_completed_exists():
 
 def test_on_task_completed_calls_process():
     sup = _make_supervisor()
-    sup.handler.execute = AsyncMock(return_value={
-        "plan_found": False, "reason": "No plan file found"
-    })
+    sup.handler.execute = AsyncMock(
+        return_value={"plan_found": False, "reason": "No plan file found"}
+    )
 
     result = asyncio.run(
         sup.on_task_completed(
@@ -375,10 +412,11 @@ def test_on_task_completed_calls_process():
     )
 
     sup.handler.execute.assert_called_once_with(
-        "process_task_completion", {
+        "process_task_completion",
+        {
             "task_id": "t-123",
             "workspace_path": "/tmp/workspace",
-        }
+        },
     )
     assert result["plan_found"] is False
 
@@ -399,9 +437,7 @@ def test_on_task_completed_sets_project():
 
 def test_on_task_completed_returns_plan_found():
     sup = _make_supervisor()
-    sup.handler.execute = AsyncMock(return_value={
-        "plan_found": True, "steps_count": 3
-    })
+    sup.handler.execute = AsyncMock(return_value={"plan_found": True, "steps_count": 3})
 
     result = asyncio.run(
         sup.on_task_completed(
@@ -446,11 +482,13 @@ def test_observe_returns_decision():
 
     result = asyncio.run(
         sup.observe(
-            messages=[{
-                "author": "alice",
-                "content": "the particle system needs work",
-                "timestamp": 1000.0,
-            }],
+            messages=[
+                {
+                    "author": "alice",
+                    "content": "the particle system needs work",
+                    "timestamp": 1000.0,
+                }
+            ],
             project_id="my-game",
         )
     )
@@ -462,9 +500,7 @@ def test_observe_without_provider_returns_ignore():
     """observe() returns ignore when LLM is not available."""
     sup = _make_supervisor()
     sup._provider = None
-    result = asyncio.run(
-        sup.observe(messages=[], project_id="test")
-    )
+    result = asyncio.run(sup.observe(messages=[], project_id="test"))
     assert result["action"] == "ignore"
 
 
@@ -485,6 +521,7 @@ def test_observe_handles_llm_error():
 def test_reply_to_user_tool_in_registry():
     """reply_to_user is registered as a core tool."""
     from src.tool_registry import ToolRegistry
+
     registry = ToolRegistry()
     core = registry.get_core_tools()
     names = [t["name"] for t in core]
@@ -494,6 +531,7 @@ def test_reply_to_user_tool_in_registry():
 def test_reply_to_user_tool_schema():
     """reply_to_user has the expected schema."""
     from src.tool_registry import ToolRegistry
+
     registry = ToolRegistry()
     all_tools = {t["name"]: t for t in registry.get_all_tools()}
     tool = all_tools["reply_to_user"]
@@ -506,9 +544,11 @@ def test_chat_reply_to_user_empty_message_returns_done():
     sup = _make_supervisor()
     sup._provider = MagicMock()
 
-    resp = _make_resp(tool_uses=[
-        _make_reply_tool_use(""),
-    ])
+    resp = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use(""),
+        ]
+    )
     sup._provider.create_message = AsyncMock(return_value=resp)
 
     result = asyncio.run(sup.chat("Do something", "testuser"))
@@ -520,7 +560,6 @@ def test_system_prompt_mentions_reply_to_user():
     sup = _make_supervisor()
     prompt = sup._build_system_prompt()
     assert "reply_to_user" in prompt
-
 
 
 # test_chat_max_rounds_returns_fallback removed — agents now run without step limits

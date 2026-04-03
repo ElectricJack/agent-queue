@@ -35,7 +35,6 @@ CASES: list[TestCase] = [
         tags=["project", "task", "creation", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- View task then approve ---
     TestCase(
         id="multi-view-then-approve",
@@ -59,14 +58,16 @@ CASES: list[TestCase] = [
         difficulty=Difficulty.MEDIUM,
         setup_commands=[
             ("create_project", {"name": "Test", "project_id": "p-test"}),
-            ("create_task", {
-                "project_id": "p-test",
-                "title": "review auth module",
-                "task_id": "t-1",
-            }),
+            (
+                "create_task",
+                {
+                    "project_id": "p-test",
+                    "title": "review auth module",
+                    "task_id": "t-1",
+                },
+            ),
         ],
     ),
-
     # --- List projects then pause one ---
     TestCase(
         id="multi-list-then-pause-project",
@@ -89,7 +90,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Beta", "project_id": "p-beta"}),
         ],
     ),
-
     # --- Git workflow: branch, commit, push ---
     TestCase(
         id="multi-git-branch-commit-push",
@@ -112,7 +112,6 @@ CASES: list[TestCase] = [
         tags=["git", "branch", "commit", "push", "workflow"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- List agents then delete one ---
     TestCase(
         id="multi-list-agents-then-delete",
@@ -135,7 +134,6 @@ CASES: list[TestCase] = [
             ("create_agent", {"name": "agent-2"}),
         ],
     ),
-
     # --- View task then edit it ---
     TestCase(
         id="multi-view-then-edit-task",
@@ -158,7 +156,6 @@ CASES: list[TestCase] = [
         tags=["task", "view", "edit", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Get task result then view diff ---
     TestCase(
         id="multi-result-then-diff",
@@ -181,7 +178,6 @@ CASES: list[TestCase] = [
         tags=["task", "result", "diff", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Create task then add dependency ---
     TestCase(
         id="multi-create-task-add-dependency",
@@ -205,14 +201,16 @@ CASES: list[TestCase] = [
         difficulty=Difficulty.HARD,
         setup_commands=[
             ("create_project", {"name": "Deploy Project", "project_id": "p-1"}),
-            ("create_task", {
-                "project_id": "p-1",
-                "title": "run integration tests",
-                "task_id": "t-2",
-            }),
+            (
+                "create_task",
+                {
+                    "project_id": "p-1",
+                    "title": "run integration tests",
+                    "task_id": "t-2",
+                },
+            ),
         ],
     ),
-
     # --- Check status then stop a failing task ---
     TestCase(
         id="multi-status-then-stop",
@@ -233,7 +231,6 @@ CASES: list[TestCase] = [
         tags=["status", "stop", "debugging", "context-carry"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- Create agent then pause it ---
     TestCase(
         id="multi-create-agent-then-pause",
@@ -254,7 +251,6 @@ CASES: list[TestCase] = [
         tags=["agent", "create", "pause", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Create hook then fire it ---
     TestCase(
         id="multi-create-hook-then-fire",
@@ -273,7 +269,6 @@ CASES: list[TestCase] = [
         tags=["hook", "create", "fire", "context-carry"],
         difficulty=Difficulty.HARD,
     ),
-
     # --- View task then reopen with feedback ---
     TestCase(
         id="multi-view-then-reopen",
@@ -302,7 +297,6 @@ CASES: list[TestCase] = [
         tags=["task", "reopen", "feedback", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- List tasks then archive completed ---
     TestCase(
         id="multi-list-then-archive",
@@ -328,7 +322,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Cleanup Project", "project_id": "p-1"}),
         ],
     ),
-
     # --- Write note then read it back ---
     TestCase(
         id="multi-write-note-then-read",
@@ -351,7 +344,6 @@ CASES: list[TestCase] = [
         tags=["notes", "write", "read", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Check chain health then view dependencies ---
     TestCase(
         id="multi-health-then-dependencies",
@@ -377,7 +369,6 @@ CASES: list[TestCase] = [
         tags=["health", "dependencies", "investigation"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- Three-turn task lifecycle: create, view, stop ---
     TestCase(
         id="multi-task-lifecycle-create-view-stop",
@@ -405,7 +396,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Perf Project", "project_id": "p-1"}),
         ],
     ),
-
     # --- Git log then diff ---
     TestCase(
         id="multi-git-log-then-diff",
@@ -426,7 +416,6 @@ CASES: list[TestCase] = [
         tags=["git", "log", "diff", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Edit project then set active ---
     TestCase(
         id="multi-edit-project-then-set-active",
@@ -455,7 +444,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Old Name", "project_id": "p-1"}),
         ],
     ),
-
     # --- Skip task then restart it ---
     TestCase(
         id="multi-skip-then-restart",
@@ -478,7 +466,6 @@ CASES: list[TestCase] = [
         tags=["task", "skip", "restart", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- List workspaces then release one ---
     TestCase(
         id="multi-list-workspaces-then-release",
@@ -497,11 +484,9 @@ CASES: list[TestCase] = [
         tags=["workspace", "list", "release", "context-carry"],
         difficulty=Difficulty.HARD,
     ),
-
     # -----------------------------------------------------------------------
     # Supervisor-specific multi-step workflows (post-refactor additions)
     # -----------------------------------------------------------------------
-
     # --- Create task then approve it ---
     TestCase(
         id="multi-create-task-then-approve",
@@ -524,7 +509,6 @@ CASES: list[TestCase] = [
         tags=["task", "approval", "supervisor-workflow", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Create task then reopen with feedback ---
     TestCase(
         id="multi-create-task-then-reopen",
@@ -547,7 +531,6 @@ CASES: list[TestCase] = [
         tags=["task", "reopen", "feedback", "supervisor-workflow", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Search memory then create task from findings ---
     TestCase(
         id="multi-memory-search-then-task",
@@ -568,7 +551,6 @@ CASES: list[TestCase] = [
         tags=["memory", "task", "supervisor-workflow", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Browse tools then load a category ---
     TestCase(
         id="multi-browse-tools-then-load",

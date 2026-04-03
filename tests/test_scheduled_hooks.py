@@ -1,4 +1,5 @@
 """Tests for scheduled (one-shot) hooks."""
+
 from __future__ import annotations
 
 import asyncio
@@ -129,6 +130,7 @@ class TestScheduledHookTick:
     async def test_scheduled_hook_skipped_when_paused(self, engine, db):
         """Scheduled hooks for paused projects should not fire."""
         from src.models import ProjectStatus
+
         project = await _create_project(db)
         await db.update_project(project.id, status=ProjectStatus.PAUSED.value)
 
@@ -158,14 +160,20 @@ class TestScheduledHookTick:
 
         # Create real hooks to fill concurrency slots (max_concurrent=2)
         blocker1 = Hook(
-            id="blocker-1", project_id="test-project", name="blocker-1",
+            id="blocker-1",
+            project_id="test-project",
+            name="blocker-1",
             trigger='{"type": "periodic", "interval_seconds": 999999}',
-            prompt_template="Block", cooldown_seconds=999999,
+            prompt_template="Block",
+            cooldown_seconds=999999,
         )
         blocker2 = Hook(
-            id="blocker-2", project_id="test-project", name="blocker-2",
+            id="blocker-2",
+            project_id="test-project",
+            name="blocker-2",
             trigger='{"type": "periodic", "interval_seconds": 999999}',
-            prompt_template="Block", cooldown_seconds=999999,
+            prompt_template="Block",
+            cooldown_seconds=999999,
         )
         await db.create_hook(blocker1)
         await db.create_hook(blocker2)
@@ -190,30 +198,37 @@ class TestScheduledHookTick:
 class TestParseDelay:
     def test_seconds(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("30s") == 30
 
     def test_minutes(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("5m") == 300
 
     def test_hours(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("2h") == 7200
 
     def test_days(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("1d") == 86400
 
     def test_combined(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("2h30m") == 9000
 
     def test_plain_integer(self):
         from src.command_handler import _parse_delay
+
         assert _parse_delay("120") == 120
 
     def test_invalid_raises(self):
         from src.command_handler import _parse_delay
+
         with pytest.raises(ValueError, match="Cannot parse delay"):
             _parse_delay("foo")
 
@@ -225,6 +240,7 @@ class TestScheduleHookCommand:
     @pytest.fixture
     async def handler(self, db):
         from src.command_handler import CommandHandler
+
         orch = MagicMock()
         orch.db = db
         orch.hooks = MagicMock()
@@ -234,12 +250,15 @@ class TestScheduleHookCommand:
     @pytest.mark.asyncio
     async def test_schedule_with_delay(self, handler, db):
         await _create_project(db)
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Check deploy status",
-            "delay": "30m",
-            "name": "check-deploy",
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Check deploy status",
+                "delay": "30m",
+                "name": "check-deploy",
+            },
+        )
         assert "created" in result
         assert result["name"] == "check-deploy"
         assert "fires_in" in result
@@ -254,11 +273,14 @@ class TestScheduleHookCommand:
     async def test_schedule_with_fire_at_epoch(self, handler, db):
         await _create_project(db)
         future_time = time.time() + 7200
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Do something later",
-            "fire_at": future_time,
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Do something later",
+                "fire_at": future_time,
+            },
+        )
         assert "created" in result
         assert result["fire_at_epoch"] == future_time
 
@@ -266,54 +288,70 @@ class TestScheduleHookCommand:
     async def test_schedule_with_fire_at_iso(self, handler, db):
         await _create_project(db)
         from datetime import datetime, timezone, timedelta
+
         future = datetime.now(timezone.utc) + timedelta(hours=2)
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Do something later",
-            "fire_at": future.isoformat(),
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Do something later",
+                "fire_at": future.isoformat(),
+            },
+        )
         assert "created" in result
 
     @pytest.mark.asyncio
     async def test_schedule_rejects_past_fire_at(self, handler, db):
         await _create_project(db)
         past_time = time.time() - 100
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Too late",
-            "fire_at": past_time,
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Too late",
+                "fire_at": past_time,
+            },
+        )
         assert "error" in result
         assert "future" in result["error"]
 
     @pytest.mark.asyncio
     async def test_schedule_rejects_both_fire_at_and_delay(self, handler, db):
         await _create_project(db)
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Confused",
-            "fire_at": time.time() + 100,
-            "delay": "5m",
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Confused",
+                "fire_at": time.time() + 100,
+                "delay": "5m",
+            },
+        )
         assert "error" in result
         assert "not both" in result["error"]
 
     @pytest.mark.asyncio
     async def test_schedule_rejects_neither_fire_at_nor_delay(self, handler, db):
         await _create_project(db)
-        result = await handler.execute("schedule_hook", {
-            "project_id": "test-project",
-            "prompt_template": "Missing time",
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "test-project",
+                "prompt_template": "Missing time",
+            },
+        )
         assert "error" in result
 
     @pytest.mark.asyncio
     async def test_schedule_rejects_invalid_project(self, handler, db):
-        result = await handler.execute("schedule_hook", {
-            "project_id": "nonexistent",
-            "prompt_template": "No project",
-            "delay": "5m",
-        })
+        result = await handler.execute(
+            "schedule_hook",
+            {
+                "project_id": "nonexistent",
+                "prompt_template": "No project",
+                "delay": "5m",
+            },
+        )
         assert "error" in result
 
 
@@ -324,6 +362,7 @@ class TestListScheduledCommand:
     @pytest.fixture
     async def handler(self, db):
         from src.command_handler import CommandHandler
+
         orch = MagicMock()
         orch.db = db
         orch.hooks = MagicMock()
@@ -352,7 +391,9 @@ class TestListScheduledCommand:
         await _create_project(db)
         # Create a periodic hook — should not show up
         periodic = Hook(
-            id="periodic-hook", project_id="test-project", name="periodic",
+            id="periodic-hook",
+            project_id="test-project",
+            name="periodic",
             trigger='{"type": "periodic", "interval_seconds": 3600}',
             prompt_template="Test",
         )
@@ -380,6 +421,7 @@ class TestCancelScheduledCommand:
     @pytest.fixture
     async def handler(self, db):
         from src.command_handler import CommandHandler
+
         orch = MagicMock()
         orch.db = db
         orch.hooks = MagicMock()
@@ -407,7 +449,9 @@ class TestCancelScheduledCommand:
     async def test_cancel_rejects_periodic_hook(self, handler, db):
         await _create_project(db)
         periodic = Hook(
-            id="periodic-hook", project_id="test-project", name="periodic",
+            id="periodic-hook",
+            project_id="test-project",
+            name="periodic",
             trigger='{"type": "periodic", "interval_seconds": 3600}',
             prompt_template="Test",
         )
@@ -425,6 +469,7 @@ class TestHookSchedulesIncludesScheduled:
     @pytest.fixture
     async def handler(self, db):
         from src.command_handler import CommandHandler
+
         orch = MagicMock()
         orch.db = db
         orch.hooks = MagicMock()

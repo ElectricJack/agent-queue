@@ -32,6 +32,21 @@ You:  create agent claude-1 and assign it to my-app
 You:  add a task to add rate limiting to the API
 ```
 
+## Development
+
+After cloning, install dev dependencies and set up the pre-commit hooks to enforce formatting:
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+```
+
+This runs [ruff](https://docs.astral.sh/ruff/) formatting and linting on every commit. To format the entire codebase manually:
+
+```bash
+ruff format .
+```
+
 ## Documentation
 
 - **[Full docs](https://electricjack.github.io/agent-queue/)** — architecture, commands, hooks, adapters

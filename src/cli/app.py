@@ -44,6 +44,7 @@ def _run(coro):
 
     if loop and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     else:
@@ -53,6 +54,7 @@ def _run(coro):
 def _get_client(api_url: str | None = None):
     """Create a CLIClient instance."""
     from .client import CLIClient
+
     return CLIClient(base_url=api_url)
 
 
@@ -70,8 +72,13 @@ def _handle_errors(func):
             return func(*args, **kwargs)
         except DaemonNotRunningError:
             console.print("[bold red]Daemon is not running.[/]")
-            if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in ("", "y", "yes"):
+            if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in (
+                "",
+                "y",
+                "yes",
+            ):
                 from .daemon import start_daemon
+
                 if start_daemon():
                     console.print()
                     # Retry the original command
@@ -138,11 +145,15 @@ def _print_full_help(ctx: click.Context) -> None:
 
 @click.group(invoke_without_command=True)
 @click.option(
-    "--api-url", envvar="AGENT_QUEUE_API_URL", default=None,
+    "--api-url",
+    envvar="AGENT_QUEUE_API_URL",
+    default=None,
     help="Daemon API URL (default: from config or http://127.0.0.1:8081)",
 )
 @click.option(
-    "--help-all", is_flag=True, default=False,
+    "--help-all",
+    is_flag=True,
+    default=False,
     help="Print complete help for all commands (for LLM ingestion).",
 )
 @click.version_option(version="0.1.0", prog_name="aq")
@@ -210,9 +221,9 @@ def status(ctx: click.Context) -> None:
 # Register command modules — importing them triggers @cli.group() decorators
 # ---------------------------------------------------------------------------
 
-from . import daemon   # noqa: E402, F401
-from . import tasks    # noqa: E402, F401
-from . import projects # noqa: E402, F401
+from . import daemon  # noqa: E402, F401
+from . import tasks  # noqa: E402, F401
+from . import projects  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 
 
@@ -221,6 +232,7 @@ from . import plugins  # noqa: E402, F401
 # ---------------------------------------------------------------------------
 
 from .auto_commands import register_auto_commands  # noqa: E402
+
 register_auto_commands(cli, console)
 
 
@@ -232,8 +244,10 @@ register_auto_commands(cli, console)
 def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
     """Try to load a plugin's config from the database (best-effort)."""
     import json
+
     try:
         from .client import PluginClient
+
         client = PluginClient()
 
         async def _fetch():
@@ -255,6 +269,7 @@ def _load_plugin_cli_groups() -> None:
     """Dynamically register CLI groups from installed aq.plugins entry points."""
     try:
         from importlib.metadata import entry_points
+
         for ep in entry_points(group="aq.plugins"):
             try:
                 cls = ep.load()

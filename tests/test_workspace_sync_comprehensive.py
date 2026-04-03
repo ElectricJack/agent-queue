@@ -26,7 +26,10 @@ import pytest
 from src.config import AutoTaskConfig
 from src.git.manager import GitError, GitManager
 from src.models import (
-    RepoConfig, RepoSourceType, Task, TaskStatus,
+    RepoConfig,
+    RepoSourceType,
+    Task,
+    TaskStatus,
 )
 
 
@@ -34,9 +37,14 @@ from src.models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(args: list[str], cwd: str) -> str:
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -44,8 +52,7 @@ def _git(args: list[str], cwd: str) -> str:
 def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -85,29 +92,43 @@ def _make_repo(source_type=RepoSourceType.CLONE, **overrides) -> RepoConfig:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def two_agent_clones(tmp_path):
     """Bare remote with two agent clones, each starting from same initial commit."""
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     agent1 = str(tmp_path / "agent1")
     subprocess.run(
         ["git", "clone", str(remote), agent1],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(agent1) / "README.md").write_text("init\n")
     _git(["add", "."], cwd=agent1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=agent1,
+    )
     _git(["push", "origin", "main"], cwd=agent1)
 
     agent2 = str(tmp_path / "agent2")
     subprocess.run(
         ["git", "clone", str(remote), agent2],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
 
@@ -118,14 +139,16 @@ def three_agent_clones(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     agents = {}
     for i in range(1, 4):
         agent_path = str(tmp_path / f"agent{i}")
         subprocess.run(
             ["git", "clone", str(remote), agent_path],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         agents[f"agent{i}"] = agent_path
 
@@ -133,8 +156,18 @@ def three_agent_clones(tmp_path):
     a1 = agents["agent1"]
     (pathlib.Path(a1) / "README.md").write_text("init\n")
     _git(["add", "."], cwd=a1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=a1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=a1,
+    )
     _git(["push", "origin", "main"], cwd=a1)
 
     # Pull initial commit into other agents
@@ -148,6 +181,7 @@ def three_agent_clones(tmp_path):
 # ===========================================================================
 # 1. Concurrent push race conditions
 # ===========================================================================
+
 
 class TestConcurrentPushRaceConditions:
     """End-to-end tests for concurrent agent push race conditions.
@@ -173,7 +207,9 @@ class TestConcurrentPushRaceConditions:
         # All three merge — each may need to retry due to the previous push
         for i in range(1, 4):
             success, err = mgr.sync_and_merge(
-                agents[f"agent{i}"], f"task/agent{i}-race", max_retries=3,
+                agents[f"agent{i}"],
+                f"task/agent{i}-race",
+                max_retries=3,
             )
             assert success is True, f"Agent {i} failed: {err}"
 
@@ -181,7 +217,8 @@ class TestConcurrentPushRaceConditions:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", agents["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         for i in range(1, 4):
@@ -213,7 +250,9 @@ class TestConcurrentPushRaceConditions:
         # before agent 1 pushed, but sync_and_merge fetches latest
         _git(["checkout", "main"], cwd=agent2)
         success2, err2 = mgr.sync_and_merge(
-            agent2, "task/a2-interleave", max_retries=2,
+            agent2,
+            "task/a2-interleave",
+            max_retries=2,
         )
         assert success2 is True
         assert err2 == ""
@@ -222,7 +261,8 @@ class TestConcurrentPushRaceConditions:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent1 work" in log
@@ -252,10 +292,7 @@ class TestConcurrentPushRaceConditions:
         assert success is True
         assert err == ""
         # Verify pull --rebase was called between push attempts
-        pull_rebase_calls = [
-            c for c in calls
-            if c[:2] == ["pull", "--rebase"]
-        ]
+        pull_rebase_calls = [c for c in calls if c[:2] == ["pull", "--rebase"]]
         assert len(pull_rebase_calls) == 1
         assert pull_rebase_calls[0] == ["pull", "--rebase", "origin", "main"]
 
@@ -263,6 +300,7 @@ class TestConcurrentPushRaceConditions:
 # ===========================================================================
 # 2. Merge conflict detection and rebase recovery
 # ===========================================================================
+
 
 class TestMergeConflictAndRebaseRecovery:
     """End-to-end tests for merge conflict detection and rebase fallback."""
@@ -319,7 +357,8 @@ class TestMergeConflictAndRebaseRecovery:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent1 other" in log
@@ -379,7 +418,8 @@ class TestMergeConflictAndRebaseRecovery:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         assert (pathlib.Path(verify) / "new_feature.txt").exists()
         assert (pathlib.Path(verify) / "agent1_feature.txt").exists()
@@ -388,6 +428,7 @@ class TestMergeConflictAndRebaseRecovery:
 # ===========================================================================
 # 3. Workspace reset after failed merge-and-push
 # ===========================================================================
+
 
 class TestWorkspaceResetAfterFailure:
     """Verify workspace recovery leaves clones ready for the next task."""
@@ -440,8 +481,9 @@ class TestWorkspaceResetAfterFailure:
         mgr.create_branch(agent1, "task/failed")
         _git_commit(agent1, "failed.txt", "failed", "failed work")
         _git(["checkout", "main"], cwd=agent1)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "merge", "task/failed"], cwd=agent1)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "merge", "task/failed"], cwd=agent1
+        )
 
         # Local main diverged from origin
         assert _head_sha(agent1) != origin_sha
@@ -460,15 +502,19 @@ class TestWorkspaceResetAfterFailure:
             # Agent 2 creates its branch BEFORE agent 1 pushes (stale base)
             mgr.prepare_for_task(agent2, f"task/fail-{attempt}")
             _git_commit(
-                agent2, "README.md",
-                f"agent2 v{attempt}\n", f"agent2 attempt {attempt}",
+                agent2,
+                "README.md",
+                f"agent2 v{attempt}\n",
+                f"agent2 attempt {attempt}",
             )
             _git(["checkout", "main"], cwd=agent2)
 
             # Agent 1 pushes a conflicting change (same file, different content)
             _git_commit(
-                agent1, "README.md",
-                f"agent1 v{attempt}\n", f"agent1 attempt {attempt}",
+                agent1,
+                "README.md",
+                f"agent1 v{attempt}\n",
+                f"agent1 attempt {attempt}",
             )
             _git(["push", "origin", "main"], cwd=agent1)
 
@@ -491,6 +537,7 @@ class TestWorkspaceResetAfterFailure:
 # ===========================================================================
 # 4. Retried task branch rebase
 # ===========================================================================
+
 
 class TestRetriedTaskBranchRebase:
     """Tests for retried tasks where the branch already exists.
@@ -588,6 +635,7 @@ class TestRetriedTaskBranchRebase:
 # 5. force-with-lease push behavior
 # ===========================================================================
 
+
 class TestForceWithLeasePushBehavior:
     """End-to-end tests for --force-with-lease in various scenarios."""
 
@@ -630,7 +678,8 @@ class TestForceWithLeasePushBehavior:
         assert remote_sha == local_sha
 
     def test_force_with_lease_rejects_concurrent_branch_update(
-        self, two_agent_clones,
+        self,
+        two_agent_clones,
     ):
         """force-with-lease fails if another clone updated the branch."""
         mgr = GitManager()
@@ -694,6 +743,7 @@ class TestForceWithLeasePushBehavior:
 # 6. Subtask chain drift and mid-chain rebase
 # ===========================================================================
 
+
 @pytest.mark.skip(reason="mid_chain_rebase replaced by mid_chain_sync; see test_git_manager.py")
 class TestSubtaskChainDrift:
     """End-to-end tests for subtask chain drift reduction.
@@ -750,11 +800,11 @@ class TestSubtaskChainDrift:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
-        for expected in ("subtask 1", "subtask 2", "subtask 3",
-                         "concurrent 1", "concurrent 2"):
+        for expected in ("subtask 1", "subtask 2", "subtask 3", "concurrent 1", "concurrent 2"):
             assert expected in log
 
     def test_chain_without_rebase_accumulates_drift(self, two_agent_clones):
@@ -838,7 +888,9 @@ class TestSubtaskChainDrift:
         assert "subtask 1 README" in log
 
     def test_full_chain_final_merge_after_mid_chain_conflict(
-        self, two_agent_clones, tmp_path,
+        self,
+        two_agent_clones,
+        tmp_path,
     ):
         """Chain with mid-chain conflict still merges at the end via rebase fallback."""
         mgr = GitManager()
@@ -867,7 +919,8 @@ class TestSubtaskChainDrift:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "step 1 work" in log
@@ -879,20 +932,29 @@ class TestSubtaskChainDrift:
 # 7. Orchestrator integration: _merge_and_push with sync_and_merge
 # ===========================================================================
 
+
 class _FakeOrchestrator:
     """Minimal stand-in for testing orchestrator methods in isolation."""
 
     def __init__(self, git: GitManager, config=None):
         self.git = git
-        self.config = config or type("C", (), {
-            "auto_task": AutoTaskConfig(),
-        })()
+        self.config = (
+            config
+            or type(
+                "C",
+                (),
+                {
+                    "auto_task": AutoTaskConfig(),
+                },
+            )()
+        )
         self._notifications: list[str] = []
 
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
     from src.orchestrator import Orchestrator as _Orch
+
     _merge_and_push = _Orch._merge_and_push
     # _mid_chain_rebase was removed; now inlined in orchestrator using git.mid_chain_sync
 
@@ -927,9 +989,12 @@ class TestOrchestratorMergeAndPushIntegration:
     @pytest.mark.asyncio
     async def test_push_failure_recovery_and_notification(self, orch, git):
         """Push failure sends detailed notification and recovers workspace."""
-        git.async_and_merge = AsyncMock(return_value=(
-            False, "push_failed: remote rejected (non-fast-forward)",
-        ))
+        git.async_and_merge = AsyncMock(
+            return_value=(
+                False,
+                "push_failed: remote rejected (non-fast-forward)",
+            )
+        )
         git.arecover_workspace = AsyncMock()
         task = _make_task(id="my-task")
         repo = _make_repo()
@@ -957,7 +1022,9 @@ class TestOrchestratorMergeAndPushIntegration:
         await orch._merge_and_push(task, repo, "/workspace")
 
         git.adelete_branch.assert_called_once_with(
-            "/workspace", "task/cleanup-test", delete_remote=True,
+            "/workspace",
+            "task/cleanup-test",
+            delete_remote=True,
         )
         assert not orch._notifications
 
@@ -976,12 +1043,16 @@ class TestOrchestratorMergeAndPushIntegration:
         await orch._merge_and_push(task, repo, "/workspace")
 
         git.arebase_onto.assert_called_once_with(
-            "/workspace", "task/test-branch", "main",
+            "/workspace",
+            "task/test-branch",
+            "main",
         )
         assert git.amerge_branch.call_count == 2
         assert not orch._notifications
         git.adelete_branch.assert_called_once_with(
-            "/workspace", "task/test-branch", delete_remote=False,
+            "/workspace",
+            "task/test-branch",
+            delete_remote=False,
         )
 
 
@@ -996,9 +1067,13 @@ class TestOrchestratorMidChainRebaseIntegration:
     @pytest.mark.asyncio
     async def test_mid_chain_disabled_skips(self, git):
         """When mid_chain_rebase is False, no rebase is attempted."""
-        config = type("C", (), {
-            "auto_task": AutoTaskConfig(mid_chain_rebase=False),
-        })()
+        config = type(
+            "C",
+            (),
+            {
+                "auto_task": AutoTaskConfig(mid_chain_rebase=False),
+            },
+        )()
         orch = _FakeOrchestrator(git, config)
         task = _make_task(
             branch_name="parent/branch",
@@ -1015,9 +1090,13 @@ class TestOrchestratorMidChainRebaseIntegration:
     @pytest.mark.asyncio
     async def test_mid_chain_no_chain_deps_skips(self, git):
         """Without chain_dependencies, mid-chain rebase is skipped."""
-        config = type("C", (), {
-            "auto_task": AutoTaskConfig(chain_dependencies=False),
-        })()
+        config = type(
+            "C",
+            (),
+            {
+                "auto_task": AutoTaskConfig(chain_dependencies=False),
+            },
+        )()
         orch = _FakeOrchestrator(git, config)
         task = _make_task(
             branch_name="parent/branch",
@@ -1035,13 +1114,17 @@ class TestOrchestratorMidChainRebaseIntegration:
     async def test_mid_chain_success_with_push(self, git):
         """Mid-chain rebase with push enabled passes push=True."""
         git.mid_chain_rebase.return_value = True
-        config = type("C", (), {
-            "auto_task": AutoTaskConfig(
-                mid_chain_rebase=True,
-                mid_chain_rebase_push=True,
-                chain_dependencies=True,
-            ),
-        })()
+        config = type(
+            "C",
+            (),
+            {
+                "auto_task": AutoTaskConfig(
+                    mid_chain_rebase=True,
+                    mid_chain_rebase_push=True,
+                    chain_dependencies=True,
+                ),
+            },
+        )()
         orch = _FakeOrchestrator(git, config)
         task = _make_task(
             branch_name="parent/branch",
@@ -1054,16 +1137,23 @@ class TestOrchestratorMidChainRebaseIntegration:
 
         assert result is True
         git.mid_chain_rebase.assert_called_once_with(
-            "/workspace", "parent/branch", "develop", push=True,
+            "/workspace",
+            "parent/branch",
+            "develop",
+            push=True,
         )
 
     @pytest.mark.asyncio
     async def test_mid_chain_exception_returns_false(self, git):
         """Unexpected exceptions during mid-chain rebase return False."""
         git.mid_chain_rebase.side_effect = RuntimeError("unexpected")
-        config = type("C", (), {
-            "auto_task": AutoTaskConfig(),
-        })()
+        config = type(
+            "C",
+            (),
+            {
+                "auto_task": AutoTaskConfig(),
+            },
+        )()
         orch = _FakeOrchestrator(git, config)
         task = _make_task(
             branch_name="parent/branch",

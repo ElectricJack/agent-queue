@@ -1,7 +1,13 @@
 import pytest
 from src.models import (
-    Task, Agent, AgentOutput, AgentResult, TaskStatus, AgentState,
-    Workspace, RepoSourceType,
+    Task,
+    Agent,
+    AgentOutput,
+    AgentResult,
+    TaskStatus,
+    AgentState,
+    Workspace,
+    RepoSourceType,
 )
 from src.discord.notifications import (
     format_task_started,
@@ -16,10 +22,16 @@ from src.discord.notifications import (
     format_task_started_embed,
 )
 
+
 class TestNotificationFormatting:
     def test_format_task_started(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D", branch_name="feat/add-feature")
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Add feature",
+            description="D",
+            branch_name="feat/add-feature",
+        )
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
         result = format_task_started(task, agent)
         assert "Task Started" in result
@@ -40,30 +52,46 @@ class TestNotificationFormatting:
         assert "Branch" not in result
 
     def test_format_task_started_with_workspace(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D", branch_name="feat/add-feature")
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Add feature",
+            description="D",
+            branch_name="feat/add-feature",
+        )
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        ws = Workspace(id="ws-1", project_id="p-1",
-                       workspace_path="/home/user/workspaces/ws-1",
-                       source_type=RepoSourceType.CLONE, name="workspace-alpha")
+        ws = Workspace(
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/home/user/workspaces/ws-1",
+            source_type=RepoSourceType.CLONE,
+            name="workspace-alpha",
+        )
         result = format_task_started(task, agent, workspace=ws)
         assert "workspace-alpha" in result
         assert "Workspace" in result
 
     def test_format_task_started_with_workspace_no_name(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D")
+        task = Task(id="t-1", project_id="p-1", title="Add feature", description="D")
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        ws = Workspace(id="ws-1", project_id="p-1",
-                       workspace_path="/home/user/workspaces/ws-1",
-                       source_type=RepoSourceType.CLONE)
+        ws = Workspace(
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/home/user/workspaces/ws-1",
+            source_type=RepoSourceType.CLONE,
+        )
         result = format_task_started(task, agent, workspace=ws)
         assert "/home/user/workspaces/ws-1" in result
         assert "Workspace" in result
 
     def test_format_task_started_embed(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D", branch_name="feat/add-feature")
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Add feature",
+            description="D",
+            branch_name="feat/add-feature",
+        )
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
         embed = format_task_started_embed(task, agent)
         assert embed is not None
@@ -91,12 +119,21 @@ class TestNotificationFormatting:
         assert len(embed.fields) == 4  # Task ID, Project, Agent, Status
 
     def test_format_task_started_embed_with_workspace(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D", branch_name="feat/add-feature")
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Add feature",
+            description="D",
+            branch_name="feat/add-feature",
+        )
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        ws = Workspace(id="ws-1", project_id="p-1",
-                       workspace_path="/home/user/workspaces/ws-1",
-                       source_type=RepoSourceType.CLONE, name="workspace-alpha")
+        ws = Workspace(
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/home/user/workspaces/ws-1",
+            source_type=RepoSourceType.CLONE,
+            name="workspace-alpha",
+        )
         embed = format_task_started_embed(task, agent, workspace=ws)
         field_names = [f.name for f in embed.fields]
         field_values = [f.value for f in embed.fields]
@@ -104,12 +141,14 @@ class TestNotificationFormatting:
         assert "`workspace-alpha`" in field_values
 
     def test_format_task_started_embed_with_workspace_no_name(self):
-        task = Task(id="t-1", project_id="p-1", title="Add feature",
-                    description="D")
+        task = Task(id="t-1", project_id="p-1", title="Add feature", description="D")
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        ws = Workspace(id="ws-1", project_id="p-1",
-                       workspace_path="/home/user/workspaces/ws-1",
-                       source_type=RepoSourceType.CLONE)
+        ws = Workspace(
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/home/user/workspaces/ws-1",
+            source_type=RepoSourceType.CLONE,
+        )
         embed = format_task_started_embed(task, agent, workspace=ws)
         field_names = [f.name for f in embed.fields]
         field_values = [f.value for f in embed.fields]
@@ -119,8 +158,12 @@ class TestNotificationFormatting:
     def test_format_task_completed(self):
         task = Task(id="t-1", project_id="p-1", title="Fix bug", description="D")
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        output = AgentOutput(result=AgentResult.COMPLETED, summary="Fixed it",
-                             tokens_used=5000, files_changed=["src/foo.py"])
+        output = AgentOutput(
+            result=AgentResult.COMPLETED,
+            summary="Fixed it",
+            tokens_used=5000,
+            files_changed=["src/foo.py"],
+        )
         result = format_task_completed(task, agent, output)
         assert "t-1" in result
         assert "Fix bug" in result
@@ -130,11 +173,16 @@ class TestNotificationFormatting:
         assert "src/foo.py" in result
 
     def test_format_task_failed(self):
-        task = Task(id="t-1", project_id="p-1", title="Broken",
-                    description="D", retry_count=1, max_retries=3)
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Broken",
+            description="D",
+            retry_count=1,
+            max_retries=3,
+        )
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
-        output = AgentOutput(result=AgentResult.FAILED,
-                             error_message="Syntax error in foo.py")
+        output = AgentOutput(result=AgentResult.FAILED, error_message="Syntax error in foo.py")
         result = format_task_failed(task, agent, output)
         assert "Failed" in result
         assert "p-1" in result  # project context
@@ -142,8 +190,7 @@ class TestNotificationFormatting:
         assert "Syntax error" in result
 
     def test_format_task_blocked(self):
-        task = Task(id="t-1", project_id="p-1", title="Stuck",
-                    description="D", max_retries=3)
+        task = Task(id="t-1", project_id="p-1", title="Stuck", description="D", max_retries=3)
         result = format_task_blocked(task)
         assert "Blocked" in result
         assert "p-1" in result  # project context
@@ -171,19 +218,26 @@ class TestNotificationFormatting:
         assert "https://github.com/org/repo/pull/42" in result
 
     def test_format_chain_stuck_includes_project(self):
-        blocked = Task(id="t-1", project_id="p-1", title="Blocker", description="D",
-                       status=TaskStatus.BLOCKED)
+        blocked = Task(
+            id="t-1", project_id="p-1", title="Blocker", description="D", status=TaskStatus.BLOCKED
+        )
         stuck = [
-            Task(id="t-2", project_id="p-1", title="Downstream 1", description="D",
-                 status=TaskStatus.DEFINED),
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="Downstream 1",
+                description="D",
+                status=TaskStatus.DEFINED,
+            ),
         ]
         result = format_chain_stuck(blocked, stuck)
         assert "Chain Stuck" in result
         assert "t-2" in result
 
     def test_format_stuck_defined_task_includes_project(self):
-        task = Task(id="t-1", project_id="p-1", title="Waiting", description="D",
-                    status=TaskStatus.DEFINED)
+        task = Task(
+            id="t-1", project_id="p-1", title="Waiting", description="D", status=TaskStatus.DEFINED
+        )
         blocking = [("t-0", "Blocker", "BLOCKED")]
         result = format_stuck_defined_task(task, blocking, stuck_hours=3.5)
         assert "Stuck" in result
@@ -195,7 +249,6 @@ class TestProjectContextPrefixing:
 
     def test_prepend_project_tag(self):
         from src.discord.bot import AgentQueueBot
+
         result = AgentQueueBot._prepend_project_tag("**Task Started:** `t-1`", "my-project")
         assert result == "[`my-project`] **Task Started:** `t-1`"
-
-

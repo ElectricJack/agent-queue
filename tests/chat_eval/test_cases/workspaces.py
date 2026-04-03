@@ -91,8 +91,7 @@ CASES: list[TestCase] = [
         turns=[
             Turn(
                 user_message=(
-                    "add a workspace called 'staging' for project p-1 "
-                    "pointing to /opt/staging/app"
+                    "add a workspace called 'staging' for project p-1 pointing to /opt/staging/app"
                 ),
                 expected_tools=[
                     ExpectedTool(

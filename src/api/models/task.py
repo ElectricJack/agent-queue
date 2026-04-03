@@ -13,6 +13,7 @@ from . import TaskBrief, TaskRef
 # Shared task structures
 # ---------------------------------------------------------------------------
 
+
 class TaskDetail(BaseModel):
     id: str
     project_id: str
@@ -37,6 +38,7 @@ class TaskDetail(BaseModel):
 
 class TaskDict(BaseModel):
     """Loose task dict as returned in list results."""
+
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
@@ -46,6 +48,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
+
 
 class ListTasksResponse(BaseModel):
     display_mode: str = "flat"

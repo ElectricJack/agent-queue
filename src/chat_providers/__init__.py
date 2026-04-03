@@ -10,6 +10,7 @@ The factory function ``create_chat_provider`` selects between Anthropic
 
 See specs/chat-providers/providers.md for the full specification.
 """
+
 from __future__ import annotations
 
 from src.config import ChatProviderConfig

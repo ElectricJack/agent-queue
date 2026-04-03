@@ -82,11 +82,14 @@ class TestWorkspaceResolution:
         checkout = _make_dir(str(tmp_path / "ws-checkout"))
 
         await db.create_project(Project(id="p-ws", name="Workspace Project"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-ws",
-            workspace_path=checkout,
-            source_type=RepoSourceType.LINK,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-ws",
+                workspace_path=checkout,
+                source_type=RepoSourceType.LINK,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-ws"})
 
@@ -97,23 +100,33 @@ class TestWorkspaceResolution:
         mock_git.avalidate_checkout.assert_called_once_with(checkout)
 
     async def test_workspace_takes_priority_over_legacy_repo(
-        self, handler, db, tmp_path, mock_git,
+        self,
+        handler,
+        db,
+        tmp_path,
+        mock_git,
     ):
         """When both workspaces and legacy repos exist, workspace wins."""
         ws_path = _make_dir(str(tmp_path / "workspace"))
         repo_path = _make_dir(str(tmp_path / "legacy-repo"))
 
         await db.create_project(Project(id="p-both", name="Both"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-both",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
-        await db.create_repo(RepoConfig(
-            id="r-legacy", project_id="p-both",
-            source_type=RepoSourceType.LINK,
-            source_path=repo_path,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-both",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_repo(
+            RepoConfig(
+                id="r-legacy",
+                project_id="p-both",
+                source_type=RepoSourceType.LINK,
+                source_path=repo_path,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-both"})
 
@@ -134,12 +147,14 @@ class TestLinkedRepo:
         checkout = _make_dir(str(tmp_path / "linked-checkout"))
 
         await db.create_project(Project(id="p-link", name="Linked Project"))
-        await db.create_repo(RepoConfig(
-            id="r-link",
-            project_id="p-link",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-link",
+                project_id="p-link",
+                source_type=RepoSourceType.LINK,
+                source_path=checkout,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-link"})
 
@@ -154,12 +169,14 @@ class TestLinkedRepo:
         checkout = _make_dir(str(tmp_path / "linked-only"))
 
         await db.create_project(Project(id="p-link2", name="Link2"))
-        await db.create_repo(RepoConfig(
-            id="r-link2",
-            project_id="p-link2",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-link2",
+                project_id="p-link2",
+                source_type=RepoSourceType.LINK,
+                source_path=checkout,
+            )
+        )
 
         handler.set_active_project("p-link2")
         path, project, err = await handler._resolve_repo_path({})
@@ -177,13 +194,15 @@ class TestClonedRepo:
         checkout = _make_dir(str(tmp_path / "clone-checkout"))
 
         await db.create_project(Project(id="p-clone", name="Cloned Project"))
-        await db.create_repo(RepoConfig(
-            id="r-clone",
-            project_id="p-clone",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/example/repo.git",
-            checkout_base_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-clone",
+                project_id="p-clone",
+                source_type=RepoSourceType.CLONE,
+                url="https://github.com/example/repo.git",
+                checkout_base_path=checkout,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-clone"})
 
@@ -198,13 +217,15 @@ class TestClonedRepo:
         checkout = _make_dir(str(tmp_path / "clone-by-id"))
 
         await db.create_project(Project(id="p-clone2", name="Clone2"))
-        await db.create_repo(RepoConfig(
-            id="r-clone2",
-            project_id="p-clone2",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/example/repo.git",
-            checkout_base_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-clone2",
+                project_id="p-clone2",
+                source_type=RepoSourceType.CLONE,
+                url="https://github.com/example/repo.git",
+                checkout_base_path=checkout,
+            )
+        )
 
         handler.set_active_project("p-clone2")
         path, project, err = await handler._resolve_repo_path({})
@@ -222,12 +243,14 @@ class TestInitRepo:
         checkout = _make_dir(str(tmp_path / "init-checkout"))
 
         await db.create_project(Project(id="p-init", name="Init Project"))
-        await db.create_repo(RepoConfig(
-            id="r-init",
-            project_id="p-init",
-            source_type=RepoSourceType.INIT,
-            checkout_base_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-init",
+                project_id="p-init",
+                source_type=RepoSourceType.INIT,
+                checkout_base_path=checkout,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-init"})
 
@@ -247,10 +270,12 @@ class TestNoWorkspaces:
 
     async def test_no_workspaces_returns_error(self, handler, db):
         """Project has no workspaces and no repos → error."""
-        await db.create_project(Project(
-            id="p-empty",
-            name="Empty Project",
-        ))
+        await db.create_project(
+            Project(
+                id="p-empty",
+                name="Empty Project",
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-empty"})
 
@@ -268,9 +293,11 @@ class TestInvalidProject:
     """Invalid / non-existent project_id → returns error."""
 
     async def test_nonexistent_project(self, handler):
-        path, project, err = await handler._resolve_repo_path({
-            "project_id": "nonexistent-project",
-        })
+        path, project, err = await handler._resolve_repo_path(
+            {
+                "project_id": "nonexistent-project",
+            }
+        )
 
         assert path is None
         assert project is None
@@ -280,9 +307,11 @@ class TestInvalidProject:
 
     async def test_empty_project_id_treated_as_missing(self, handler):
         """Empty string project_id with no repo_id → error."""
-        path, project, err = await handler._resolve_repo_path({
-            "project_id": "",
-        })
+        path, project, err = await handler._resolve_repo_path(
+            {
+                "project_id": "",
+            }
+        )
 
         assert path is None
         assert err is not None
@@ -321,12 +350,14 @@ class TestPathValidation:
         nonexistent = str(tmp_path / "vanished-checkout")
 
         await db.create_project(Project(id="p-vanish", name="Vanished"))
-        await db.create_repo(RepoConfig(
-            id="r-vanish",
-            project_id="p-vanish",
-            source_type=RepoSourceType.LINK,
-            source_path=nonexistent,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-vanish",
+                project_id="p-vanish",
+                source_type=RepoSourceType.LINK,
+                source_path=nonexistent,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-vanish"})
 
@@ -341,12 +372,14 @@ class TestPathValidation:
         mock_git.avalidate_checkout.return_value = False
 
         await db.create_project(Project(id="p-nogit", name="Not Git"))
-        await db.create_repo(RepoConfig(
-            id="r-nogit",
-            project_id="p-nogit",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-nogit",
+                project_id="p-nogit",
+                source_type=RepoSourceType.LINK,
+                source_path=checkout,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-nogit"})
 
@@ -357,13 +390,15 @@ class TestPathValidation:
     async def test_clone_repo_missing_checkout_base_path(self, handler, db, tmp_path):
         """CLONE repo with empty checkout_base_path → falls through to error."""
         await db.create_project(Project(id="p-nobase", name="No Base"))
-        await db.create_repo(RepoConfig(
-            id="r-nobase",
-            project_id="p-nobase",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/example/repo.git",
-            checkout_base_path="",  # not set
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-nobase",
+                project_id="p-nobase",
+                source_type=RepoSourceType.CLONE,
+                url="https://github.com/example/repo.git",
+                checkout_base_path="",  # not set
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-nobase"})
 
@@ -374,12 +409,14 @@ class TestPathValidation:
     async def test_link_repo_missing_source_path(self, handler, db, tmp_path):
         """LINK repo with empty source_path → falls through to error."""
         await db.create_project(Project(id="p-nosrc", name="No Src"))
-        await db.create_repo(RepoConfig(
-            id="r-nosrc",
-            project_id="p-nosrc",
-            source_type=RepoSourceType.LINK,
-            source_path="",  # not set
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-nosrc",
+                project_id="p-nosrc",
+                source_type=RepoSourceType.LINK,
+                source_path="",  # not set
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-nosrc"})
 
@@ -402,18 +439,22 @@ class TestMultipleRepos:
         checkout2 = _make_dir(str(tmp_path / "repo2"))
 
         await db.create_project(Project(id="p-multi", name="Multi Repo"))
-        await db.create_repo(RepoConfig(
-            id="r-first",
-            project_id="p-multi",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout1,
-        ))
-        await db.create_repo(RepoConfig(
-            id="r-second",
-            project_id="p-multi",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout2,
-        ))
+        await db.create_repo(
+            RepoConfig(
+                id="r-first",
+                project_id="p-multi",
+                source_type=RepoSourceType.LINK,
+                source_path=checkout1,
+            )
+        )
+        await db.create_repo(
+            RepoConfig(
+                id="r-second",
+                project_id="p-multi",
+                source_type=RepoSourceType.LINK,
+                source_path=checkout2,
+            )
+        )
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-multi"})
 
@@ -421,4 +462,3 @@ class TestMultipleRepos:
         assert project is not None
         # Should have used the first repo returned by list_repos
         assert path in (checkout1, checkout2)
-

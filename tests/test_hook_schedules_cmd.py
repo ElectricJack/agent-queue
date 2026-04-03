@@ -1,4 +1,5 @@
 """Tests for hook_schedules and fire_all_scheduled_hooks commands."""
+
 from __future__ import annotations
 
 import json
@@ -119,11 +120,13 @@ class TestHookSchedulesCommand:
         await _setup_project(db)
         await _create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 3600,
-                "schedule": {"times": ["02:00"], "days_of_week": ["mon"]},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 3600,
+                    "schedule": {"times": ["02:00"], "days_of_week": ["mon"]},
+                }
+            ),
         )
         result = await handler.execute("hook_schedules", {})
         hooks = result["hooks"]
@@ -178,11 +181,13 @@ class TestHookSchedulesCommand:
         await _setup_project(db)
         await _create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 3600,
-                "schedule": {"cron": "0 2 * * *"},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 3600,
+                    "schedule": {"cron": "0 2 * * *"},
+                }
+            ),
         )
         result = await handler.execute("hook_schedules", {})
         assert "Cron:" in result["hooks"][0]["schedule"]
@@ -234,8 +239,6 @@ class TestFireAllScheduledHooks:
         await _setup_project(db, "proj-b")
         await _create_hook(db, id="h1", name="H1", project_id="proj-a")
         await _create_hook(db, id="h2", name="H2", project_id="proj-b")
-        result = await handler.execute(
-            "fire_all_scheduled_hooks", {"project_id": "proj-a"}
-        )
+        result = await handler.execute("fire_all_scheduled_hooks", {"project_id": "proj-a"})
         assert result["count"] == 1
         assert "H1" in result["fired"]

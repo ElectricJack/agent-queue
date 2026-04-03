@@ -19,6 +19,7 @@ Design boundaries:
 
 See ``specs/supervisor.md`` for the full behavioral specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,6 +49,7 @@ from src.reflection import ReflectionEngine, ReflectionVerdict
 # Tool definitions have moved to tool_registry.py.
 # TOOLS is kept as a backward-compatible alias.
 from src.tool_registry import ToolRegistry as _ToolRegistry
+
 TOOLS = _ToolRegistry().get_all_tools()
 
 # ---------------------------------------------------------------------------
@@ -129,8 +131,9 @@ class Supervisor:
     slash commands and the supervisor use the same code path.
     """
 
-    def __init__(self, orchestrator: Orchestrator, config: AppConfig,
-                 llm_logger: LLMLogger | None = None):
+    def __init__(
+        self, orchestrator: Orchestrator, config: AppConfig, llm_logger: LLMLogger | None = None
+    ):
         """Initialise the supervisor.
 
         Args:
@@ -155,9 +158,7 @@ class Supervisor:
         """Create LLM provider. Returns True if provider is ready."""
         provider = create_chat_provider(self.config.chat_provider)
         if provider and self._llm_logger and self._llm_logger._enabled:
-            provider = LoggedChatProvider(
-                provider, self._llm_logger, caller="supervisor.chat"
-            )
+            provider = LoggedChatProvider(provider, self._llm_logger, caller="supervisor.chat")
         self._provider = provider
         return self._provider is not None
 
@@ -262,10 +263,12 @@ class Supervisor:
             action_results=action_results,
         )
 
-        messages.append({
-            "role": "user",
-            "content": f"[system reflection]: {reflection_prompt}",
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": f"[system reflection]: {reflection_prompt}",
+            }
+        )
 
         try:
             reflect_resp = await self._provider.create_message(
@@ -282,11 +285,18 @@ class Supervisor:
                 messages.append({"role": "assistant", "content": reflect_resp.tool_uses})
                 for tool_use in reflect_resp.tool_uses:
                     result = await self._execute_tool(tool_use.name, tool_use.input)
-                    messages.append({"role": "user", "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tool_use.id,
-                        "content": json.dumps(result),
-                    }]})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use.id,
+                                    "content": json.dumps(result),
+                                }
+                            ],
+                        }
+                    )
 
             estimated_tokens = len(reflection_prompt) // 4
             self.reflection.record_tokens(estimated_tokens)
@@ -333,7 +343,11 @@ class Supervisor:
 
         try:
             return await self._chat_inner(
-                text, user_name, history, on_progress, _reflection_trigger,
+                text,
+                user_name,
+                history,
+                on_progress,
+                _reflection_trigger,
                 cancel_event=cancel_event,
             )
         finally:
@@ -381,6 +395,7 @@ class Supervisor:
         ``chat()`` calls clobber each other's cancellation state.
         """
         from src.tool_registry import ToolRegistry
+
         registry = ToolRegistry()
 
         # Use compressed schemas for local LLMs with small context windows
@@ -413,9 +428,7 @@ class Supervisor:
 
         # Set the conversation context on the handler so that any tasks
         # created during this chat session inherit the thread chain.
-        self.handler._current_conversation_context = (
-            self._serialize_conversation_context(messages)
-        )
+        self.handler._current_conversation_context = self._serialize_conversation_context(messages)
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
@@ -456,19 +469,23 @@ class Supervisor:
                 # after having used tools, nudge it to call reply_to_user
                 if tool_actions and nudge_count < max_nudges:
                     nudge_count += 1
-                    messages.append({
-                        "role": "assistant",
-                        "content": response or "(no text)",
-                    })
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "[system]: You must call the `reply_to_user` tool "
-                            "to deliver your response. Do not just stop — "
-                            "compose a complete answer that addresses the "
-                            "user's request and call `reply_to_user` with it."
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": response or "(no text)",
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[system]: You must call the `reply_to_user` tool "
+                                "to deliver your response. Do not just stop — "
+                                "compose a complete answer that addresses the "
+                                "user's request and call `reply_to_user` with it."
+                            ),
+                        }
+                    )
                     continue  # Re-enter the loop
 
                 # No tools were used at all — direct conversational response
@@ -492,11 +509,13 @@ class Supervisor:
             for tool_use in resp.tool_uses:
                 if tool_use.name == "reply_to_user":
                     # Acknowledge the reply tool call but don't execute it
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use.id,
-                        "content": json.dumps({"status": "delivered"}),
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": json.dumps({"status": "delivered"}),
+                        }
+                    )
                     continue
 
                 label = _tool_label(tool_use.name, tool_use.input)
@@ -504,26 +523,31 @@ class Supervisor:
                     await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
-                accumulated_tool_results.append({
-                    "tool": label,
-                    "result": result,
-                })
+                accumulated_tool_results.append(
+                    {
+                        "tool": label,
+                        "result": result,
+                    }
+                )
 
                 # If load_tools was called, expand active tool set
                 if tool_use.name == "load_tools" and "loaded" in result:
                     category = result["loaded"]
                     cat_tools = registry.get_category_tools(
-                        category, compressed=compressed,
+                        category,
+                        compressed=compressed,
                     )
                     if cat_tools:
                         for t in cat_tools:
                             active_tools[t["name"]] = t
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": json.dumps(result),
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": json.dumps(result),
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})
 
@@ -541,10 +565,12 @@ class Supervisor:
 
                 # --- Reflection pass (after tool use) ---
                 if tool_actions:
-                    messages.append({
-                        "role": "assistant",
-                        "content": response or "Done.",
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": response or "Done.",
+                        }
+                    )
                     verdict = await self.reflect(
                         trigger=_reflection_trigger,
                         action_summary=", ".join(tool_actions),
@@ -553,8 +579,11 @@ class Supervisor:
                         active_tools=active_tools,
                     )
 
-                    if (verdict and not verdict.passed
-                            and not getattr(self, "_reflection_retry_active", False)):
+                    if (
+                        verdict
+                        and not verdict.passed
+                        and not getattr(self, "_reflection_retry_active", False)
+                    ):
                         self._reflection_retry_active = True
                         try:
                             retry_prompt = (
@@ -564,8 +593,7 @@ class Supervisor:
                             )
                             if verdict.suggested_followup:
                                 retry_prompt += (
-                                    f"**Suggested followup:** "
-                                    f"{verdict.suggested_followup}\n"
+                                    f"**Suggested followup:** {verdict.suggested_followup}\n"
                                 )
                             retry_prompt += (
                                 f"\n**Original user request:** {text}\n\n"
@@ -597,16 +625,18 @@ class Supervisor:
             self._provider._caller = "supervisor.summarize"
         try:
             resp = await self._provider.create_message(
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Summarize this Discord conversation concisely. "
-                        "Preserve key details: project names, task IDs, repo names, "
-                        "decisions made, and any pending questions or requests. "
-                        "Keep it factual and brief.\n\n"
-                        f"{transcript}"
-                    ),
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Summarize this Discord conversation concisely. "
+                            "Preserve key details: project names, task IDs, repo names, "
+                            "decisions made, and any pending questions or requests. "
+                            "Keep it factual and brief.\n\n"
+                            f"{transcript}"
+                        ),
+                    }
+                ],
                 system="You are a helpful assistant that summarizes conversations.",
                 max_tokens=512,
             )
@@ -620,7 +650,9 @@ class Supervisor:
                 self._provider._caller = prev_caller
 
     async def expand_rule_prompt(
-        self, rule_content: str, project_id: str | None = None,
+        self,
+        rule_content: str,
+        project_id: str | None = None,
     ) -> str | None:
         """Expand a rule's natural language into a specific, actionable hook prompt.
 
@@ -636,29 +668,31 @@ class Supervisor:
             self._provider._caller = "supervisor.expand_rule"
         try:
             resp = await self._provider.create_message(
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Convert the following rule into a specific, actionable "
-                        "operational prompt. This prompt will be given to an AI "
-                        "supervisor agent on a recurring schedule. The agent has "
-                        "access to shell commands (bash), file I/O, and task "
-                        "creation tools.\n\n"
-                        "Your output must be ONLY the prompt text — no "
-                        "explanations, preamble, or markdown fences.\n\n"
-                        "The prompt you write should:\n"
-                        "1. State the objective in one sentence\n"
-                        "2. List the exact shell commands to run for health/"
-                        "status checks (with literal command strings)\n"
-                        "3. Explain how to interpret the output of each command "
-                        "(what 'healthy' vs 'unhealthy' looks like)\n"
-                        "4. Specify exactly what action to take for each outcome "
-                        "(including the 'everything is fine, do nothing' case)\n"
-                        "5. Call out edge cases (e.g. process running but not "
-                        "responding, port in use by something else)\n\n"
-                        f"Rule content:\n\n{rule_content}"
-                    ),
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Convert the following rule into a specific, actionable "
+                            "operational prompt. This prompt will be given to an AI "
+                            "supervisor agent on a recurring schedule. The agent has "
+                            "access to shell commands (bash), file I/O, and task "
+                            "creation tools.\n\n"
+                            "Your output must be ONLY the prompt text — no "
+                            "explanations, preamble, or markdown fences.\n\n"
+                            "The prompt you write should:\n"
+                            "1. State the objective in one sentence\n"
+                            "2. List the exact shell commands to run for health/"
+                            "status checks (with literal command strings)\n"
+                            "3. Explain how to interpret the output of each command "
+                            "(what 'healthy' vs 'unhealthy' looks like)\n"
+                            "4. Specify exactly what action to take for each outcome "
+                            "(including the 'everything is fine, do nothing' case)\n"
+                            "5. Call out edge cases (e.g. process running but not "
+                            "responding, port in use by something else)\n\n"
+                            f"Rule content:\n\n{rule_content}"
+                        ),
+                    }
+                ],
                 system=(
                     "You are an expert at writing operational runbook prompts. "
                     "You produce clear, specific instructions that another AI "
@@ -678,8 +712,11 @@ class Supervisor:
                 self._provider._caller = prev_caller
 
     async def process_hook_llm(
-        self, hook_context: str, rendered_prompt: str,
-        project_id: str | None = None, hook_name: str = "unknown",
+        self,
+        hook_context: str,
+        rendered_prompt: str,
+        project_id: str | None = None,
+        hook_name: str = "unknown",
         on_progress=None,
     ) -> str:
         """Process a hook's LLM invocation through the Supervisor."""
@@ -752,7 +789,7 @@ class Supervisor:
         ws_instructions = ""
         if workspace_id:
             ws_instructions = (
-                f"- Set preferred_workspace_id to \"{workspace_id}\" on every "
+                f'- Set preferred_workspace_id to "{workspace_id}" on every '
                 f"task so they all run in the same workspace as the parent.\n"
             )
 
@@ -763,9 +800,7 @@ class Supervisor:
                 "(so intermediate tasks don't block the chain).\n"
             )
         elif requires_approval:
-            approval_instructions = (
-                "- Set requires_approval to true on every task.\n"
-            )
+            approval_instructions = "- Set requires_approval to true on every task.\n"
 
         prompt = f"""You are breaking an implementation plan into executable tasks.
 
@@ -830,7 +865,9 @@ Read the plan below and create one task per implementation phase using the creat
         except Exception as e:
             logger.error(
                 "break_plan_into_tasks: supervisor chat failed for parent %s: %s",
-                parent_task_id, e, exc_info=True,
+                parent_task_id,
+                e,
+                exc_info=True,
             )
             self.handler._plan_subtask_creation_mode = False
             return []
@@ -883,12 +920,14 @@ Read the plan below and create one task per implementation phase using the creat
             except Exception as e:
                 logger.warning(
                     "break_plan_into_tasks: failed to post-process task %s: %s",
-                    task.id, e,
+                    task.id,
+                    e,
                 )
 
         logger.info(
             "break_plan_into_tasks: created %d tasks from plan for parent %s",
-            len(created_info), parent_task_id,
+            len(created_info),
+            parent_task_id,
         )
         return created_info
 
@@ -910,6 +949,7 @@ Read the plan below and create one task per implementation phase using the creat
         Never raises — errors are caught, returns {"plan_found": False}.
         """
         import logging
+
         logger = logging.getLogger(__name__)
 
         try:
@@ -918,22 +958,25 @@ Read the plan below and create one task per implementation phase using the creat
 
             logger.info(
                 "on_task_completed: processing task %s (project=%s, workspace=%s)",
-                task_id, project_id, workspace_path,
+                task_id,
+                project_id,
+                workspace_path,
             )
 
             result = await self.handler.execute(
-                "process_task_completion", {
+                "process_task_completion",
+                {
                     "task_id": task_id,
                     "workspace_path": workspace_path,
-                }
+                },
             )
 
             # Log the result — surface errors that execute() may have wrapped
             if isinstance(result, dict) and result.get("error"):
                 logger.error(
-                    "on_task_completed: process_task_completion returned error "
-                    "for task %s: %s",
-                    task_id, result["error"],
+                    "on_task_completed: process_task_completion returned error for task %s: %s",
+                    task_id,
+                    result["error"],
                 )
             elif isinstance(result, dict):
                 logger.info(
@@ -945,7 +988,8 @@ Read the plan below and create one task per implementation phase using the creat
             else:
                 logger.warning(
                     "on_task_completed: unexpected result type for task %s: %r",
-                    task_id, result,
+                    task_id,
+                    result,
                 )
 
             if self._provider:
@@ -955,6 +999,7 @@ Read the plan below and create one task per implementation phase using the creat
                     summary += " — plan found, awaiting approval"
 
                 from src.tool_registry import ToolRegistry
+
                 registry = ToolRegistry()
                 active_tools = {t["name"]: t for t in registry.get_core_tools()}
 
@@ -970,7 +1015,9 @@ Read the plan below and create one task per implementation phase using the creat
         except Exception as e:
             logger.error(
                 "on_task_completed: unhandled exception for task %s: %s",
-                task_id, e, exc_info=True,
+                task_id,
+                e,
+                exc_info=True,
             )
             return {"plan_found": False}
 
@@ -1010,9 +1057,9 @@ Read the plan below and create one task per implementation phase using the creat
             f"### Instructions\n"
             f"Decide one of:\n"
             f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
-            f'2. **memory** — worth remembering. Respond: '
+            f"2. **memory** — worth remembering. Respond: "
             f'{{"action": "memory", "content": "what to remember"}}\n'
-            f'3. **suggest** — actionable work item. Respond: '
+            f"3. **suggest** — actionable work item. Respond: "
             f'{{"action": "suggest", "content": "suggestion text", '
             f'"suggestion_type": "task|answer|context|warning", '
             f'"task_title": "optional task title"}}\n\n'
@@ -1044,11 +1091,10 @@ Read the plan below and create one task per implementation phase using the creat
             on parse failure.
         """
         import json as _json
+
         if text.startswith("```"):
             lines = text.split("\n")
-            text = "\n".join(
-                l for l in lines if not l.startswith("```")
-            ).strip()
+            text = "\n".join(l for l in lines if not l.startswith("```")).strip()
         try:
             result = _json.loads(text)
             if isinstance(result, dict) and "action" in result:
@@ -1057,7 +1103,6 @@ Read the plan below and create one task per implementation phase using the creat
         except (_json.JSONDecodeError, TypeError):
             pass
         return {"action": "ignore"}
-
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.

@@ -102,6 +102,7 @@ class BrowseRulesResponse(BaseModel):
 
 class RuleOperationResponse(BaseModel):
     """Generic response for rule save/load/delete (delegated to rule_manager)."""
+
     model_config = {"extra": "allow"}
 
 

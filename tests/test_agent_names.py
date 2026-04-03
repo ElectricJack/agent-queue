@@ -62,16 +62,14 @@ class TestNamePools:
         assert len(CODENAMES) == len(set(CODENAMES))
 
     def test_all_names_are_strings(self):
-        for pool in [LEGENDARY_NAMES, ASTRO_NAMES, ELEMENT_NAMES,
-                     NATURE_NAMES, TITLES, CODENAMES]:
+        for pool in [LEGENDARY_NAMES, ASTRO_NAMES, ELEMENT_NAMES, NATURE_NAMES, TITLES, CODENAMES]:
             for name in pool:
                 assert isinstance(name, str)
                 assert len(name) > 0
 
     def test_names_are_title_case(self):
         """All pool entries should be title-cased for display."""
-        for pool in [LEGENDARY_NAMES, ASTRO_NAMES, ELEMENT_NAMES,
-                     NATURE_NAMES, TITLES, CODENAMES]:
+        for pool in [LEGENDARY_NAMES, ASTRO_NAMES, ELEMENT_NAMES, NATURE_NAMES, TITLES, CODENAMES]:
             for name in pool:
                 assert name[0].isupper(), f"'{name}' should start with uppercase"
 
@@ -236,9 +234,7 @@ class TestGenerateUniqueAgentName:
             for _ in range(20):
                 name = await generate_unique_agent_name(db)
                 agent_id = name.lower().replace(" ", "-")
-                assert agent_id not in generated_ids, (
-                    f"Duplicate agent ID: {agent_id}"
-                )
+                assert agent_id not in generated_ids, f"Duplicate agent ID: {agent_id}"
                 generated_ids.add(agent_id)
                 # Register the agent so future names must avoid it
                 agent = Agent(id=agent_id, name=name, agent_type="claude")

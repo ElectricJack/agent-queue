@@ -87,8 +87,13 @@ class TestCorrelationContext:
 
     def test_all_fields_together(self):
         with CorrelationContext(
-            task_id="t1", project_id="p1", cycle_id="c1",
-            component="orch", hook_id="h1", agent_id="a1", command="cmd",
+            task_id="t1",
+            project_id="p1",
+            cycle_id="c1",
+            component="orch",
+            hook_id="h1",
+            agent_id="a1",
+            command="cmd",
         ):
             ctx = get_correlation_context()
             assert len(ctx) == 7
@@ -188,6 +193,7 @@ class TestStructuredFormatter:
             raise ValueError("test error")
         except ValueError:
             import sys
+
             record = self._make_record("Error occurred")
             record.exc_info = sys.exc_info()
         output = fmt.format(record)

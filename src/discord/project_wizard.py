@@ -169,13 +169,12 @@ class ProjectInfoModal(discord.ui.Modal, title="Project Information"):
         state.project_name = self.name_input.value.strip()
         state.description = self.description_input.value.strip()
         state.tech_stack = self.tech_stack_input.value.strip()
-        state.default_branch = (
-            self.default_branch_input.value.strip() or "main"
-        )
+        state.default_branch = self.default_branch_input.value.strip() or "main"
 
         if not state.project_name:
             await interaction.response.send_message(
-                "Project name is required.", ephemeral=True,
+                "Project name is required.",
+                ephemeral=True,
             )
             return
 
@@ -187,7 +186,9 @@ class ProjectInfoModal(discord.ui.Modal, title="Project Information"):
         )
         view = RepoChoiceView(self._handler, self._bot)
         await interaction.response.send_message(
-            embed=embed, view=view, ephemeral=True,
+            embed=embed,
+            view=view,
+            ephemeral=True,
         )
 
 
@@ -207,11 +208,13 @@ class RepoChoiceView(discord.ui.View):
     @discord.ui.button(
         label="Create GitHub Repo",
         style=discord.ButtonStyle.primary,
-        emoji="\U0001F4E6",
+        emoji="\U0001f4e6",
         row=0,
     )
     async def create_repo_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         state = _get_or_create_state(interaction.user.id)
         modal = GitHubRepoModal(self._handler, self._bot, default_name=state.project_id)
@@ -220,11 +223,13 @@ class RepoChoiceView(discord.ui.View):
     @discord.ui.button(
         label="Use Existing Repo",
         style=discord.ButtonStyle.secondary,
-        emoji="\U0001F517",
+        emoji="\U0001f517",
         row=0,
     )
     async def existing_repo_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         modal = ExistingRepoModal(self._handler, self._bot)
         await interaction.response.send_modal(modal)
@@ -232,11 +237,13 @@ class RepoChoiceView(discord.ui.View):
     @discord.ui.button(
         label="Skip (No Repo)",
         style=discord.ButtonStyle.secondary,
-        emoji="\u23ED\uFE0F",
+        emoji="\u23ed\ufe0f",
         row=0,
     )
     async def skip_repo_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         state = _get_or_create_state(interaction.user.id)
         state.repo_url = ""
@@ -257,11 +264,15 @@ class RepoChoiceView(discord.ui.View):
         row=1,
     )
     async def cancel_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         _cleanup_state(interaction.user.id)
         await interaction.response.edit_message(
-            content="Project wizard cancelled.", embed=None, view=None,
+            content="Project wizard cancelled.",
+            embed=None,
+            view=None,
         )
 
     async def on_timeout(self) -> None:
@@ -407,11 +418,15 @@ class WorkspaceCountView(discord.ui.View):
         row=1,
     )
     async def cancel_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         _cleanup_state(interaction.user.id)
         await interaction.response.edit_message(
-            content="Project wizard cancelled.", embed=None, view=None,
+            content="Project wizard cancelled.",
+            embed=None,
+            view=None,
         )
 
 
@@ -431,11 +446,13 @@ class WorkspaceLocationView(discord.ui.View):
     @discord.ui.button(
         label="Use Default Location",
         style=discord.ButtonStyle.primary,
-        emoji="\U0001F4C1",
+        emoji="\U0001f4c1",
         row=0,
     )
     async def default_location_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         state = _get_or_create_state(interaction.user.id)
         state.workspace_root = ""  # Empty = use default
@@ -444,11 +461,13 @@ class WorkspaceLocationView(discord.ui.View):
     @discord.ui.button(
         label="Custom Location",
         style=discord.ButtonStyle.secondary,
-        emoji="\U0001F4DD",
+        emoji="\U0001f4dd",
         row=0,
     )
     async def custom_location_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         modal = WorkspaceLocationModal(self._handler, self._bot)
         await interaction.response.send_modal(modal)
@@ -459,11 +478,15 @@ class WorkspaceLocationView(discord.ui.View):
         row=1,
     )
     async def cancel_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button,
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
     ) -> None:
         _cleanup_state(interaction.user.id)
         await interaction.response.edit_message(
-            content="Project wizard cancelled.", embed=None, view=None,
+            content="Project wizard cancelled.",
+            embed=None,
+            view=None,
         )
 
 
@@ -550,15 +573,16 @@ async def _execute_wizard(
             except discord.NotFound:
                 pass
 
-            result = await handler.execute("create_github_repo", {
-                "name": state.repo_name or state.project_id,
-                "visibility": state.repo_visibility,
-                "org": state.repo_org,
-            })
+            result = await handler.execute(
+                "create_github_repo",
+                {
+                    "name": state.repo_name or state.project_id,
+                    "visibility": state.repo_visibility,
+                    "org": state.repo_org,
+                },
+            )
             if "error" in result:
-                raise WizardError(
-                    f"GitHub repo creation failed: {result['error']}"
-                )
+                raise WizardError(f"GitHub repo creation failed: {result['error']}")
             state.repo_url = result.get("repo_url", "")
 
         # Step 2: Create project
@@ -582,9 +606,7 @@ async def _execute_wizard(
 
         # Step 3: Clone workspaces
         for i in range(state.workspace_count):
-            progress.description = (
-                f"Creating workspace {i + 1}/{state.workspace_count}..."
-            )
+            progress.description = f"Creating workspace {i + 1}/{state.workspace_count}..."
             try:
                 await interaction.edit_original_response(embed=progress)
             except discord.NotFound:
@@ -597,15 +619,16 @@ async def _execute_wizard(
             # If a custom workspace root was specified, build the path
             if state.workspace_root:
                 import uuid as _uuid
+
                 ws_name = f"checkout-{_uuid.uuid4().hex[:6]}"
                 ws_args["path"] = os.path.join(
-                    state.workspace_root, project_id, ws_name,
+                    state.workspace_root,
+                    project_id,
+                    ws_name,
                 )
             result = await handler.execute("add_workspace", ws_args)
             if "error" in result:
-                raise WizardError(
-                    f"Workspace {i + 1} creation failed: {result['error']}"
-                )
+                raise WizardError(f"Workspace {i + 1} creation failed: {result['error']}")
             ws_id = result.get("created")
             if ws_id:
                 created_workspaces.append(ws_id)
@@ -621,22 +644,16 @@ async def _execute_wizard(
 
             guild = interaction.guild
             ppc = bot.config.discord.per_project_channels
-            channel_name = ppc.naming_convention.format(
-                project_id=project_id
-            )
+            channel_name = ppc.naming_convention.format(project_id=project_id)
 
             # Look up optional category
             target_category = None
             if ppc.category_name:
-                target_category = discord.utils.get(
-                    guild.categories, name=ppc.category_name
-                )
+                target_category = discord.utils.get(guild.categories, name=ppc.category_name)
 
             # Make the channel private: deny @everyone, allow the bot
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(
-                    read_messages=False
-                ),
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 guild.me: discord.PermissionOverwrite(
                     read_messages=True,
                     send_messages=True,
@@ -655,10 +672,13 @@ async def _execute_wizard(
                 )
 
                 # Link channel to project in the database
-                await handler.execute("set_project_channel", {
-                    "project_id": project_id,
-                    "channel_id": str(new_channel.id),
-                })
+                await handler.execute(
+                    "set_project_channel",
+                    {
+                        "project_id": project_id,
+                        "channel_id": str(new_channel.id),
+                    },
+                )
 
                 # Update bot's in-memory channel cache
                 bot.update_project_channel(project_id, new_channel)
@@ -733,20 +753,27 @@ async def _execute_wizard(
         # -- Rollback --
         for ws_id in reversed(created_workspaces):
             try:
-                await handler.execute("remove_workspace", {
-                    "workspace_id": ws_id,
-                })
+                await handler.execute(
+                    "remove_workspace",
+                    {
+                        "workspace_id": ws_id,
+                    },
+                )
             except Exception:
                 logger.warning("Rollback: failed to remove workspace %s", ws_id)
 
         if created_project:
             try:
-                await handler.execute("delete_project", {
-                    "project_id": state.project_id,
-                })
+                await handler.execute(
+                    "delete_project",
+                    {
+                        "project_id": state.project_id,
+                    },
+                )
             except Exception:
                 logger.warning(
-                    "Rollback: failed to delete project %s", state.project_id,
+                    "Rollback: failed to delete project %s",
+                    state.project_id,
                 )
 
         embed = error_embed(
@@ -769,16 +796,22 @@ async def _execute_wizard(
         # Best-effort rollback
         for ws_id in reversed(created_workspaces):
             try:
-                await handler.execute("remove_workspace", {
-                    "workspace_id": ws_id,
-                })
+                await handler.execute(
+                    "remove_workspace",
+                    {
+                        "workspace_id": ws_id,
+                    },
+                )
             except Exception:
                 pass
         if created_project:
             try:
-                await handler.execute("delete_project", {
-                    "project_id": state.project_id,
-                })
+                await handler.execute(
+                    "delete_project",
+                    {
+                        "project_id": state.project_id,
+                    },
+                )
             except Exception:
                 pass
 

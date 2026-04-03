@@ -117,9 +117,9 @@ class ImportProfileResponse(BaseModel):
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_agents": ListAgentsResponse,
     "create_agent": ListAgentsResponse,  # deprecated, returns error
-    "edit_agent": ListAgentsResponse,    # deprecated, returns error
+    "edit_agent": ListAgentsResponse,  # deprecated, returns error
     "delete_agent": ListAgentsResponse,  # deprecated, returns error
-    "pause_agent": ListAgentsResponse,   # deprecated, returns error
+    "pause_agent": ListAgentsResponse,  # deprecated, returns error
     "resume_agent": ListAgentsResponse,  # deprecated, returns error
     "get_agent_error": GetAgentErrorResponse,
     "list_profiles": ListProfilesResponse,

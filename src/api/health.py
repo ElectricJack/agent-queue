@@ -52,17 +52,10 @@ async def health() -> JSONResponse:
     """
     checks = await _get_checks()
 
-    all_ok = all(
-        (c.get("ok", False) if isinstance(c, dict) else bool(c))
-        for c in checks.values()
-    )
+    all_ok = all((c.get("ok", False) if isinstance(c, dict) else bool(c)) for c in checks.values())
     status = "healthy" if all_ok else "degraded"
 
-    uptime = (
-        round(time.monotonic() - deps._started_at, 2)
-        if deps._started_at is not None
-        else 0
-    )
+    uptime = round(time.monotonic() - deps._started_at, 2) if deps._started_at is not None else 0
 
     body = {
         "status": status,

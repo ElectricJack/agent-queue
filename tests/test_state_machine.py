@@ -36,12 +36,7 @@ class TestValidTransitions:
 class TestInvalidTransitions:
     @pytest.mark.parametrize(
         "state,event",
-        [
-            (s, e)
-            for s in ALL_STATUSES
-            for e in ALL_EVENTS
-            if (s, e) not in VALID_TASK_TRANSITIONS
-        ],
+        [(s, e) for s in ALL_STATUSES for e in ALL_EVENTS if (s, e) not in VALID_TASK_TRANSITIONS],
     )
     def test_invalid_transition_rejected(self, state, event):
         with pytest.raises(InvalidTransition):
@@ -62,7 +57,8 @@ class TestTransitionTableCompleteness:
         """Terminal states should only have admin/recovery outgoing transitions."""
         terminal = {TaskStatus.COMPLETED, TaskStatus.BLOCKED}
         admin_events = {
-            TaskEvent.ADMIN_SKIP, TaskEvent.ADMIN_STOP,
+            TaskEvent.ADMIN_SKIP,
+            TaskEvent.ADMIN_STOP,
             TaskEvent.ADMIN_RESTART,
         }
         for state in terminal:

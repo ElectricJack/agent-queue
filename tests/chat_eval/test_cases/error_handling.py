@@ -112,7 +112,6 @@ CASES: list[TestCase] = [
         tags=["git", "missing-args", "minimal"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Partial arguments ---
     TestCase(
         id="error-add-dependency-partial",
@@ -156,7 +155,6 @@ CASES: list[TestCase] = [
         tags=["project", "missing-args"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- Typos and near-misses ---
     TestCase(
         id="error-misspelled-command",
@@ -186,7 +184,6 @@ CASES: list[TestCase] = [
         tags=["task", "wrong-format", "robustness"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- Ambiguous target type ---
     TestCase(
         id="error-delete-ambiguous-type",
@@ -218,7 +215,6 @@ CASES: list[TestCase] = [
         tags=["pause", "ambiguous-type"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Missing context for scoped operations ---
     TestCase(
         id="error-list-tasks-no-project",

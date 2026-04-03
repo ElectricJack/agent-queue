@@ -94,7 +94,8 @@ class DatabaseBackend(Protocol):
     ) -> list[Task]: ...
     async def list_active_tasks_all_projects(self) -> list[Task]: ...
     async def count_tasks_by_status(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> dict[str, int]: ...
     async def update_task(self, task_id: str, **kwargs) -> None: ...
     async def transition_task(
@@ -109,7 +110,12 @@ class DatabaseBackend(Protocol):
     async def get_task_updated_at(self, task_id: str) -> float | None: ...
     async def get_task_created_at(self, task_id: str) -> float | None: ...
     async def add_task_context(
-        self, task_id: str, *, type: str, label: str, content: str,
+        self,
+        task_id: str,
+        *,
+        type: str,
+        label: str,
+        content: str,
     ) -> str: ...
     async def get_task_contexts(self, task_id: str) -> list[dict]: ...
     async def get_subtasks(self, parent_task_id: str) -> list[Task]: ...
@@ -124,11 +130,13 @@ class DatabaseBackend(Protocol):
     async def are_dependencies_met(self, task_id: str) -> bool: ...
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]: ...
     async def get_blocking_dependencies(
-        self, task_id: str,
+        self,
+        task_id: str,
     ) -> list[tuple[str, str, str]]: ...
     async def get_dependents(self, task_id: str) -> set[str]: ...
     async def get_dependency_map_for_tasks(
-        self, task_ids: list[str],
+        self,
+        task_ids: list[str],
     ) -> dict[str, dict]: ...
     async def remove_dependency(self, task_id: str, depends_on: str) -> None: ...
     async def remove_all_dependencies_on(self, depends_on_task_id: str) -> None: ...
@@ -146,14 +154,20 @@ class DatabaseBackend(Protocol):
     async def create_workspace(self, workspace: Workspace) -> None: ...
     async def get_workspace(self, workspace_id: str) -> Workspace | None: ...
     async def get_workspace_by_name(
-        self, project_id: str, name: str,
+        self,
+        project_id: str,
+        name: str,
     ) -> Workspace | None: ...
     async def list_workspaces(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> list[Workspace]: ...
     async def delete_workspace(self, workspace_id: str) -> None: ...
     async def acquire_workspace(
-        self, project_id: str, agent_id: str, task_id: str,
+        self,
+        project_id: str,
+        agent_id: str,
+        task_id: str,
         preferred_workspace_id: str | None = None,
     ) -> Workspace | None: ...
     async def release_workspace(self, workspace_id: str) -> None: ...
@@ -166,16 +180,25 @@ class DatabaseBackend(Protocol):
     # --- Token Ledger ---
 
     async def record_token_usage(
-        self, project_id: str, agent_id: str, task_id: str, tokens: int,
+        self,
+        project_id: str,
+        agent_id: str,
+        task_id: str,
+        tokens: int,
     ) -> None: ...
     async def get_project_token_usage(
-        self, project_id: str, since: float | None = None,
+        self,
+        project_id: str,
+        since: float | None = None,
     ) -> int: ...
 
     # --- Task Results ---
 
     async def save_task_result(
-        self, task_id: str, agent_id: str, output,
+        self,
+        task_id: str,
+        agent_id: str,
+        output,
     ) -> None: ...
     async def get_task_result(self, task_id: str) -> dict | None: ...
     async def get_task_results(self, task_id: str) -> list[dict]: ...
@@ -197,7 +220,9 @@ class DatabaseBackend(Protocol):
     async def create_hook(self, hook: Hook) -> None: ...
     async def get_hook(self, hook_id: str) -> Hook | None: ...
     async def list_hooks(
-        self, project_id: str | None = None, enabled: bool | None = None,
+        self,
+        project_id: str | None = None,
+        enabled: bool | None = None,
     ) -> list[Hook]: ...
     async def update_hook(self, hook_id: str, **kwargs) -> None: ...
     async def delete_hook(self, hook_id: str) -> None: ...
@@ -210,7 +235,9 @@ class DatabaseBackend(Protocol):
     async def update_hook_run(self, run_id: str, **kwargs) -> None: ...
     async def get_last_hook_run(self, hook_id: str) -> HookRun | None: ...
     async def list_hook_runs(
-        self, hook_id: str, limit: int = 20,
+        self,
+        hook_id: str,
+        limit: int = 20,
     ) -> list[HookRun]: ...
 
     # --- Atomic Operations ---
@@ -221,19 +248,25 @@ class DatabaseBackend(Protocol):
 
     async def archive_task(self, task_id: str) -> bool: ...
     async def archive_completed_tasks(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> list[str]: ...
     async def archive_old_terminal_tasks(
-        self, statuses: list[str], older_than_seconds: float,
+        self,
+        statuses: list[str],
+        older_than_seconds: float,
     ) -> list[str]: ...
     async def list_archived_tasks(
-        self, project_id: str | None = None, limit: int = 50,
+        self,
+        project_id: str | None = None,
+        limit: int = 50,
     ) -> list[dict]: ...
     async def get_archived_task(self, task_id: str) -> dict | None: ...
     async def restore_archived_task(self, task_id: str) -> bool: ...
     async def delete_archived_task(self, task_id: str) -> bool: ...
     async def count_archived_tasks(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> int: ...
 
     # --- Chat Analyzer Suggestions ---
@@ -248,27 +281,43 @@ class DatabaseBackend(Protocol):
         context_snapshot: str | None = None,
     ) -> int: ...
     async def resolve_chat_analyzer_suggestion(
-        self, suggestion_id: int, status: str,
+        self,
+        suggestion_id: int,
+        status: str,
     ) -> None: ...
     async def get_suggestion_hash_exists(
-        self, project_id: str, suggestion_hash: str,
+        self,
+        project_id: str,
+        suggestion_hash: str,
     ) -> bool: ...
     async def count_recent_suggestions(
-        self, project_id: str, since: float,
+        self,
+        project_id: str,
+        since: float,
     ) -> int: ...
     async def get_suggestion(self, suggestion_id: int) -> dict | None: ...
     async def get_recent_suggestions(
-        self, channel_id: int, hours: int = 24,
+        self,
+        channel_id: int,
+        hours: int = 24,
     ) -> list[dict]: ...
     async def update_suggestion_status(
-        self, suggestion_id: int, status: str, resolved_at: float | None = None,
+        self,
+        suggestion_id: int,
+        status: str,
+        resolved_at: float | None = None,
     ) -> None: ...
     async def get_last_dismiss_time(
-        self, project_id: str, channel_id: int,
+        self,
+        project_id: str,
+        channel_id: int,
     ) -> float | None: ...
     async def get_analyzer_suggestion_stats(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> dict: ...
     async def get_analyzer_suggestion_history(
-        self, project_id: str | None = None, limit: int = 20,
+        self,
+        project_id: str | None = None,
+        limit: int = 20,
     ) -> list[dict]: ...

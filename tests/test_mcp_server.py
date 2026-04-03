@@ -47,6 +47,7 @@ from src.mcp_interfaces import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 async def db(tmp_path):
     """Create a fresh in-memory database for each test."""
@@ -131,11 +132,17 @@ async def populated_db(db):
 # Serialization helper tests
 # ---------------------------------------------------------------------------
 
+
 class TestSerializationHelpers:
     def test_task_to_dict(self):
         task = Task(
-            id="t1", project_id="p1", title="Test task", description="A test",
-            priority=100, status=TaskStatus.READY, task_type=TaskType.FEATURE,
+            id="t1",
+            project_id="p1",
+            title="Test task",
+            description="A test",
+            priority=100,
+            status=TaskStatus.READY,
+            task_type=TaskType.FEATURE,
         )
         d = task_to_dict(task)
         assert d["id"] == "t1"
@@ -155,19 +162,32 @@ class TestSerializationHelpers:
         assert d["credit_weight"] == 2.0
 
     def test_agent_to_dict(self):
-        agent = Agent(id="a1", name="Agent 1", agent_type="claude", state=AgentState.BUSY, current_task_id="t1")
+        agent = Agent(
+            id="a1",
+            name="Agent 1",
+            agent_type="claude",
+            state=AgentState.BUSY,
+            current_task_id="t1",
+        )
         d = agent_to_dict(agent)
         assert d["id"] == "a1"
         assert d["state"] == "BUSY"
 
     def test_profile_to_dict(self):
-        profile = AgentProfile(id="dev", name="Developer", allowed_tools=["Read", "Write"], mcp_servers={"test": {"command": "npx test"}})
+        profile = AgentProfile(
+            id="dev",
+            name="Developer",
+            allowed_tools=["Read", "Write"],
+            mcp_servers={"test": {"command": "npx test"}},
+        )
         d = profile_to_dict(profile)
         assert d["id"] == "dev"
         assert "test" in d["mcp_servers"]
 
     def test_workspace_to_dict(self):
-        ws = Workspace(id="ws1", project_id="p1", workspace_path="/tmp/ws", source_type=RepoSourceType.LINK)
+        ws = Workspace(
+            id="ws1", project_id="p1", workspace_path="/tmp/ws", source_type=RepoSourceType.LINK
+        )
         d = workspace_to_dict(ws)
         assert d["id"] == "ws1"
         assert d["source_type"] == "link"
@@ -184,6 +204,7 @@ class TestResourceSchemes:
 # ---------------------------------------------------------------------------
 # MCP server integration tests
 # ---------------------------------------------------------------------------
+
 
 def _make_mock_context(db, event_bus, command_handler=None):
     ctx = MagicMock()
@@ -216,6 +237,7 @@ def _build_test_mcp(populated_db, mock_context):
 @pytest.fixture
 async def mcp_server(populated_db):
     from src.event_bus import EventBus
+
     test_bus = EventBus()
     ctx = _make_mock_context(populated_db, test_bus)
     yield _build_test_mcp(populated_db, ctx)
@@ -224,6 +246,7 @@ async def mcp_server(populated_db):
 @pytest.fixture
 async def mcp_server_with_handler(populated_db):
     from src.event_bus import EventBus
+
     test_bus = EventBus()
     mock_handler = AsyncMock()
     ctx = _make_mock_context(populated_db, test_bus, mock_handler)
@@ -233,6 +256,7 @@ async def mcp_server_with_handler(populated_db):
 class TestDynamicToolRegistration:
     async def test_all_non_excluded_tools_registered(self, mcp_server):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
         tools = await mcp_server.list_tools()
         tool_names = {t.name for t in tools}
         for defn in _ALL_TOOL_DEFINITIONS:
@@ -244,6 +268,7 @@ class TestDynamicToolRegistration:
 
     async def test_excluded_commands_not_registered(self, mcp_server):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
         tools = await mcp_server.list_tools()
         tool_names = {t.name for t in tools}
         for cmd in DEFAULT_EXCLUDED_COMMANDS:
@@ -273,8 +298,15 @@ class TestDynamicToolRegistration:
     async def test_core_tools_present(self, mcp_server):
         tools = await mcp_server.list_tools()
         tool_names = {t.name for t in tools}
-        for name in ["create_task", "stop_task", "approve_task", "list_projects",
-                      "add_dependency", "list_workspaces", "list_agents"]:
+        for name in [
+            "create_task",
+            "stop_task",
+            "approve_task",
+            "list_projects",
+            "add_dependency",
+            "list_workspaces",
+            "list_agents",
+        ]:
             assert name in tool_names
 
     async def test_dangerous_commands_excluded(self, mcp_server):
@@ -297,7 +329,9 @@ class TestMCPToolCalls:
         server, mock_handler = mcp_server_with_handler
         mock_handler.execute.return_value = {"success": True}
         await server.call_tool("create_task", {"project_id": "p1", "title": "New"})
-        mock_handler.execute.assert_called_once_with("create_task", {"project_id": "p1", "title": "New"})
+        mock_handler.execute.assert_called_once_with(
+            "create_task", {"project_id": "p1", "title": "New"}
+        )
 
     async def test_tool_handles_error_response(self, mcp_server_with_handler):
         server, mock_handler = mcp_server_with_handler
@@ -311,9 +345,14 @@ class TestMCPResourceListing:
     async def test_resources_registered(self, mcp_server):
         resources = await mcp_server.list_resources()
         uris = {str(r.uri) for r in resources}
-        for uri in ["agentqueue://tasks", "agentqueue://tasks/active",
-                     "agentqueue://projects", "agentqueue://agents",
-                     "agentqueue://profiles", "agentqueue://workspaces"]:
+        for uri in [
+            "agentqueue://tasks",
+            "agentqueue://tasks/active",
+            "agentqueue://projects",
+            "agentqueue://agents",
+            "agentqueue://profiles",
+            "agentqueue://workspaces",
+        ]:
             assert uri in uris
 
 
@@ -347,9 +386,14 @@ class TestMCPResourceReads:
 
 class TestMCPPrompts:
     async def test_create_task_prompt(self, mcp_server):
-        result = await mcp_server.get_prompt("create_task_prompt", {
-            "project_id": "test-project", "task_type": "bugfix", "context": "500 errors",
-        })
+        result = await mcp_server.get_prompt(
+            "create_task_prompt",
+            {
+                "project_id": "test-project",
+                "task_type": "bugfix",
+                "context": "500 errors",
+            },
+        )
         text = result.messages[0].content.text
         assert "Test Project" in text
         assert "bugfix" in text
@@ -368,6 +412,7 @@ class TestRegisterCommandTools:
     def test_custom_exclusion_set(self):
         from mcp.server import FastMCP
         from src.mcp_registration import register_command_tools
+
         test_mcp = FastMCP(name="test")
         registered = register_command_tools(test_mcp, excluded={"list_projects", "create_task"})
         assert "list_projects" not in registered
@@ -376,6 +421,7 @@ class TestRegisterCommandTools:
     def test_empty_exclusion_registers_all(self):
         from mcp.server import FastMCP
         from src.mcp_registration import register_command_tools
+
         test_mcp = FastMCP(name="test")
         registered = register_command_tools(test_mcp, excluded=set())
         assert set(registered) == {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -384,11 +430,13 @@ class TestRegisterCommandTools:
 class TestExclusionConfiguration:
     def test_defaults_only(self):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
+
         assert get_effective_exclusions(config_path=None) == DEFAULT_EXCLUDED_COMMANDS
 
     def test_config_yaml_merges_with_defaults(self, tmp_path):
         import yaml
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
+
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump({"mcp_server": {"excluded_commands": ["list_tasks"]}}))
         result = get_effective_exclusions(config_path=str(config_file))
@@ -397,6 +445,7 @@ class TestExclusionConfiguration:
 
     def test_env_var_merges_with_defaults(self, monkeypatch):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
+
         monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "list_tasks,create_task")
         result = get_effective_exclusions(config_path=None)
         assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
@@ -404,10 +453,12 @@ class TestExclusionConfiguration:
 
     def test_missing_config_file_uses_defaults(self):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
+
         assert get_effective_exclusions(config_path="/nonexistent") == DEFAULT_EXCLUDED_COMMANDS
 
     def test_empty_env_var_no_effect(self, monkeypatch):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
+
         monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "")
         assert get_effective_exclusions(config_path=None) == DEFAULT_EXCLUDED_COMMANDS
 
@@ -415,6 +466,7 @@ class TestExclusionConfiguration:
 class TestDriftDetection:
     async def test_no_missing_tools(self, mcp_server):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
         tools = await mcp_server.list_tools()
         registered = {t.name for t in tools}
         for name in {d["name"] for d in _ALL_TOOL_DEFINITIONS}:
@@ -438,6 +490,7 @@ class TestDriftDetection:
 
     async def test_registered_count_matches_expected(self, mcp_server):
         from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
         tools = await mcp_server.list_tools()
         all_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
         expected = len(all_names) - len(DEFAULT_EXCLUDED_COMMANDS & all_names)
@@ -451,6 +504,7 @@ class TestDriftDetection:
         definitions provide better descriptions and parameter schemas.
         """
         from src.mcp_registration import _discover_all_commands
+
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
         missing = sorted(set(all_commands) - explicit)
@@ -468,6 +522,7 @@ class TestDriftDetection:
         one must be renamed.
         """
         from collections import Counter
+
         names = [d["name"] for d in _ALL_TOOL_DEFINITIONS]
         dupes = {n: c for n, c in Counter(names).items() if c > 1}
         assert not dupes, (
@@ -486,9 +541,11 @@ class TestDriftDetection:
         import inspect
         import re
         from src.command_handler import CommandHandler
+
         source = inspect.getsource(CommandHandler)
-        method_names = re.findall(r'async def (_cmd_\w+)\(self', source)
+        method_names = re.findall(r"async def (_cmd_\w+)\(self", source)
         from collections import Counter
+
         dupes = {n: c for n, c in Counter(method_names).items() if c > 1}
         assert not dupes, (
             f"Duplicate _cmd_* methods in CommandHandler: {dupes}. "

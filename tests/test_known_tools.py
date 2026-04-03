@@ -54,11 +54,13 @@ class TestInstallManifest:
         assert m.is_empty
 
     def test_from_dict_full(self):
-        m = InstallManifest.from_dict({
-            "npm": ["@anthropic/mcp-playwright"],
-            "pip": ["black"],
-            "commands": ["docker", "node"],
-        })
+        m = InstallManifest.from_dict(
+            {
+                "npm": ["@anthropic/mcp-playwright"],
+                "pip": ["black"],
+                "commands": ["docker", "node"],
+            }
+        )
         assert m.npm == ["@anthropic/mcp-playwright"]
         assert m.pip == ["black"]
         assert m.commands == ["docker", "node"]

@@ -27,6 +27,7 @@ class TaskStatus(Enum):
     the orchestrator writes directly via db.update_task(). The state machine
     module is used only for validation logging. See specs/models-and-state-machine.md.
     """
+
     DEFINED = "DEFINED"
     READY = "READY"
     ASSIGNED = "ASSIGNED"
@@ -202,6 +203,7 @@ class Project:
     on the project — one repo per project.  Multiple workspaces per project
     are managed via the Workspace model (see ``workspaces`` table).
     """
+
     id: str
     name: str
     credit_weight: float = 1.0
@@ -209,7 +211,7 @@ class Project:
     status: ProjectStatus = ProjectStatus.ACTIVE
     total_tokens_used: int = 0
     budget_limit: int | None = None
-    discord_channel_id: str | None = None          # Per-project Discord channel
+    discord_channel_id: str | None = None  # Per-project Discord channel
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
@@ -243,13 +245,17 @@ class Task:
     resume_after: float | None = None  # unix timestamp
     requires_approval: bool = False
     pr_url: str | None = None
-    plan_source: str | None = None       # path to archived plan file that generated this task
-    is_plan_subtask: bool = False         # True if auto-generated from a plan
-    task_type: TaskType | None = None     # categorization: feature, bugfix, refactor, etc.
-    profile_id: str | None = None        # which AgentProfile to configure the agent with
-    preferred_workspace_id: str | None = None  # hint: use this workspace (e.g. for merge-conflict tasks)
-    attachments: list[str] = field(default_factory=list)  # absolute paths to attached files (images, etc.)
-    auto_approve_plan: bool = False    # if True, auto-approve any plan this task generates
+    plan_source: str | None = None  # path to archived plan file that generated this task
+    is_plan_subtask: bool = False  # True if auto-generated from a plan
+    task_type: TaskType | None = None  # categorization: feature, bugfix, refactor, etc.
+    profile_id: str | None = None  # which AgentProfile to configure the agent with
+    preferred_workspace_id: str | None = (
+        None  # hint: use this workspace (e.g. for merge-conflict tasks)
+    )
+    attachments: list[str] = field(
+        default_factory=list
+    )  # absolute paths to attached files (images, etc.)
+    auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
 
 
 @dataclass
@@ -322,14 +328,14 @@ class AgentProfile:
     (system default).  See specs/agent-profiles.md.
     """
 
-    id: str                              # slug: "reviewer", "web-developer"
-    name: str                            # display name
+    id: str  # slug: "reviewer", "web-developer"
+    name: str  # display name
     description: str = ""
-    model: str = ""                      # override model (empty = use default)
-    permission_mode: str = ""            # override (empty = use default)
+    model: str = ""  # override model (empty = use default)
+    permission_mode: str = ""  # override (empty = use default)
     allowed_tools: list[str] = field(default_factory=list)  # tool whitelist
     mcp_servers: dict[str, dict] = field(default_factory=dict)  # name -> server config
-    system_prompt_suffix: str = ""       # appended to agent instructions
+    system_prompt_suffix: str = ""  # appended to agent instructions
     install: dict = field(default_factory=dict)  # auto-install manifest (future)
 
 
@@ -351,7 +357,9 @@ class TaskContext:
     checkout_path: str = ""
     branch_name: str = ""
     attached_context: list[str] = field(default_factory=list)
-    image_paths: list[str] = field(default_factory=list)  # absolute paths to images the agent should examine
+    image_paths: list[str] = field(
+        default_factory=list
+    )  # absolute paths to images the agent should examine
     mcp_servers: dict[str, dict] = field(default_factory=dict)
 
 
@@ -419,7 +427,16 @@ class MemoryContext:
 
     @property
     def is_empty(self) -> bool:
-        return not any([self.profile, self.project_docs, self.notes, self.recent_tasks, self.search_results, self.memory_folder])
+        return not any(
+            [
+                self.profile,
+                self.project_docs,
+                self.notes,
+                self.recent_tasks,
+                self.search_results,
+                self.memory_folder,
+            ]
+        )
 
 
 @dataclass
@@ -437,9 +454,9 @@ class Hook:
     project_id: str
     name: str
     enabled: bool = True
-    trigger: str = '{}'          # JSON: {"type": "periodic", "interval_seconds": 7200}
-    context_steps: str = '[]'    # JSON array of step configs
-    prompt_template: str = ''    # Template with {{step_0}}, {{event}} placeholders
+    trigger: str = "{}"  # JSON: {"type": "periodic", "interval_seconds": 7200}
+    context_steps: str = "[]"  # JSON array of step configs
+    prompt_template: str = ""  # Template with {{step_0}}, {{event}} placeholders
     llm_config: str | None = None  # JSON: {"provider": "anthropic", "model": "..."}
     cooldown_seconds: int = 3600
     max_tokens_per_run: int | None = None
@@ -462,8 +479,8 @@ class HookRun:
     id: str
     hook_id: str
     project_id: str
-    trigger_reason: str          # "periodic", "cron", "event:task_completed", "manual"
-    status: str = 'running'      # running, completed, failed, skipped
+    trigger_reason: str  # "periodic", "cron", "event:task_completed", "manual"
+    status: str = "running"  # running, completed, failed, skipped
     event_data: str | None = None
     context_results: str | None = None
     prompt_sent: str | None = None
@@ -477,6 +494,7 @@ class HookRun:
 
 class PhaseResult(Enum):
     """Outcome of a single completion pipeline phase."""
+
     CONTINUE = "continue"
     STOP = "stop"
     ERROR = "error"
@@ -485,6 +503,7 @@ class PhaseResult(Enum):
 @dataclass
 class CompletionPhase:
     """Descriptor for one phase in the completion pipeline."""
+
     name: str
     builtin: bool = True
     blocking: bool = True
@@ -493,6 +512,7 @@ class CompletionPhase:
 @dataclass
 class PipelineContext:
     """Passed through each phase of the completion pipeline."""
+
     task: Task
     agent: Agent
     output: AgentOutput

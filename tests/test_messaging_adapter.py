@@ -153,12 +153,16 @@ class TestCreateMessagingAdapter:
         config = AppConfig()
         config.messaging_platform = "discord"
 
-        with patch.dict("sys.modules", {"src.discord.adapter": MagicMock(DiscordMessagingAdapter=mock_cls)}):
+        with patch.dict(
+            "sys.modules", {"src.discord.adapter": MagicMock(DiscordMessagingAdapter=mock_cls)}
+        ):
             with patch("src.messaging.factory.DiscordMessagingAdapter", mock_cls, create=True):
                 # Re-import to pick up the patch — or just call directly
                 from src.messaging.factory import create_messaging_adapter as factory
+
                 # Patch the import inside the function
                 import src.messaging.factory as fmod
+
                 original = fmod.create_messaging_adapter
 
                 def patched_factory(cfg, orch):
@@ -180,9 +184,12 @@ class TestCreateMessagingAdapter:
         config = AppConfig()
         config.messaging_platform = "telegram"
 
-        with patch.dict("sys.modules", {"src.telegram.adapter": MagicMock(TelegramMessagingAdapter=mock_cls)}):
+        with patch.dict(
+            "sys.modules", {"src.telegram.adapter": MagicMock(TelegramMessagingAdapter=mock_cls)}
+        ):
             from src.messaging.factory import create_messaging_adapter as factory
             import src.messaging.factory as fmod
+
             original = fmod.create_messaging_adapter
 
             def patched_factory(cfg, orch):
@@ -292,7 +299,6 @@ class TestAppConfigMessagingPlatform:
         config.llm_logging = MagicMock(validate=MagicMock(return_value=[]))
         config.memory = MagicMock(validate=MagicMock(return_value=[]))
 
-
         errors = config.validate()
         error_strs = [str(e) for e in errors]
         # No telegram errors should appear
@@ -314,7 +320,6 @@ class TestAppConfigMessagingPlatform:
         config.archive = MagicMock(validate=MagicMock(return_value=[]))
         config.llm_logging = MagicMock(validate=MagicMock(return_value=[]))
         config.memory = MagicMock(validate=MagicMock(return_value=[]))
-
 
         errors = config.validate()
         error_strs = [str(e) for e in errors]

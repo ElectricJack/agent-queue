@@ -14,13 +14,16 @@ from pydantic import BaseModel
 # Shared base / mixin models
 # ---------------------------------------------------------------------------
 
+
 class ErrorResponse(BaseModel):
     """Standard error response returned by all endpoints on failure."""
+
     error: str
 
 
 class TaskRef(BaseModel):
     """Minimal task reference used in dependency lists, unblocked lists, etc."""
+
     id: str
     title: str
     status: str = ""
@@ -28,6 +31,7 @@ class TaskRef(BaseModel):
 
 class TaskBrief(BaseModel):
     """Brief task info used in status overviews and list results."""
+
     id: str
     title: str
     project_id: str
@@ -38,6 +42,7 @@ class TaskBrief(BaseModel):
 # ---------------------------------------------------------------------------
 # Aggregate RESPONSE_MODELS from all category modules
 # ---------------------------------------------------------------------------
+
 
 def get_all_response_models() -> dict[str, type[BaseModel]]:
     """Collect RESPONSE_MODELS from every category module."""

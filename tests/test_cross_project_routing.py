@@ -5,6 +5,7 @@ Covers:
 - edit_task with project_id to move tasks between projects
 - Discord bot channel context includes other projects hint
 """
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -196,9 +197,7 @@ class TestChannelContextHint:
         }
         current_project = "agent-queue"
 
-        other_projects = [
-            pid for pid in project_channels if pid != current_project
-        ]
+        other_projects = [pid for pid in project_channels if pid != current_project]
         assert "mech-fighters" in other_projects
         assert "web-app" in other_projects
         assert "agent-queue" not in other_projects
@@ -217,7 +216,5 @@ class TestChannelContextHint:
         project_channels = {"agent-queue": "channel-obj-1"}
         current_project = "agent-queue"
 
-        other_projects = [
-            pid for pid in project_channels if pid != current_project
-        ]
+        other_projects = [pid for pid in project_channels if pid != current_project]
         assert other_projects == []

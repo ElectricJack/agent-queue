@@ -98,19 +98,24 @@ async def project_with_repo(db, tmp_path):
 
     # Create the directory so _resolve_repo_path doesn't fail the isdir check
     import os
+
     os.makedirs(checkout_path, exist_ok=True)
 
-    await db.create_project(Project(
-        id=project_id,
-        name="Test Project",
-    ))
-    await db.create_repo(RepoConfig(
-        id=repo_id,
-        project_id=project_id,
-        source_type=RepoSourceType.LINK,
-        source_path=checkout_path,
-        default_branch="main",
-    ))
+    await db.create_project(
+        Project(
+            id=project_id,
+            name="Test Project",
+        )
+    )
+    await db.create_repo(
+        RepoConfig(
+            id=repo_id,
+            project_id=project_id,
+            source_type=RepoSourceType.LINK,
+            source_path=checkout_path,
+            default_branch="main",
+        )
+    )
     return project_id, repo_id, checkout_path
 
 
@@ -125,33 +130,43 @@ class TestCreateBranch:
     async def test_success(self, handler, mock_git, project_with_repo):
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("create_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/new-thing",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/new-thing",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["branch"] == "feature/new-thing"
         assert result["status"] == "created"
         mock_git.acreate_branch.assert_called_once_with(
-            checkout_path, "feature/new-thing",
+            checkout_path,
+            "feature/new-thing",
         )
 
     async def test_missing_branch_name(self, handler, project_with_repo):
         project_id, repo_id, _ = project_with_repo
 
-        result = await handler.execute("create_branch", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert result == {"error": "branch_name is required"}
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("create_branch", {
-            "project_id": "nonexistent",
-            "branch_name": "feature/x",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "project_id": "nonexistent",
+                "branch_name": "feature/x",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -160,10 +175,13 @@ class TestCreateBranch:
         project_id, _, _ = project_with_repo
         mock_git.acreate_branch.side_effect = GitError("branch already exists")
 
-        result = await handler.execute("create_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/dup",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/dup",
+            },
+        )
 
         assert "error" in result
         assert "branch already exists" in result["error"]
@@ -180,17 +198,21 @@ class TestCheckoutBranch:
     async def test_success(self, handler, mock_git, project_with_repo):
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("checkout_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/existing",
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/existing",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["branch"] == "feature/existing"
         assert result["status"] == "checked_out"
         mock_git.acheckout_branch.assert_called_once_with(
-            checkout_path, "feature/existing",
+            checkout_path,
+            "feature/existing",
         )
 
     async def test_branch_not_found(self, handler, mock_git, project_with_repo):
@@ -199,10 +221,13 @@ class TestCheckoutBranch:
             "error: pathspec 'no-such-branch' did not match any file(s) known to git"
         )
 
-        result = await handler.execute("checkout_branch", {
-            "project_id": project_id,
-            "branch_name": "no-such-branch",
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "no-such-branch",
+            },
+        )
 
         assert "error" in result
         assert "no-such-branch" in result["error"]
@@ -210,17 +235,23 @@ class TestCheckoutBranch:
     async def test_missing_branch_name(self, handler, project_with_repo):
         project_id, _, _ = project_with_repo
 
-        result = await handler.execute("checkout_branch", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert result == {"error": "branch_name is required"}
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("checkout_branch", {
-            "project_id": "nonexistent",
-            "branch_name": "main",
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "project_id": "nonexistent",
+                "branch_name": "main",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -231,6 +262,7 @@ class TestCheckoutBranch:
 
         # Create an IN_PROGRESS task for this project
         from src.models import Task
+
         task = Task(
             id="task-1",
             project_id=project_id,
@@ -240,10 +272,13 @@ class TestCheckoutBranch:
         )
         await db.create_task(task)
 
-        result = await handler.execute("checkout_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/switch",
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/switch",
+            },
+        )
 
         assert "error" not in result
         assert result["status"] == "checked_out"
@@ -263,27 +298,34 @@ class TestCommitChanges:
         project_id, repo_id, checkout_path = project_with_repo
         mock_git.acommit_all.return_value = True
 
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-            "message": "feat: add new feature",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+                "message": "feat: add new feature",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["commit_message"] == "feat: add new feature"
         assert result["status"] == "committed"
         mock_git.acommit_all.assert_called_once_with(
-            checkout_path, "feat: add new feature",
+            checkout_path,
+            "feat: add new feature",
         )
 
     async def test_nothing_to_commit(self, handler, mock_git, project_with_repo):
         project_id, _, _ = project_with_repo
         mock_git.acommit_all.return_value = False  # nothing to commit
 
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-            "message": "empty commit",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+                "message": "empty commit",
+            },
+        )
 
         assert "error" not in result
         assert result["status"] == "nothing_to_commit"
@@ -292,17 +334,23 @@ class TestCommitChanges:
     async def test_missing_message(self, handler, project_with_repo):
         project_id, _, _ = project_with_repo
 
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert result == {"error": "message is required"}
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("commit_changes", {
-            "project_id": "nonexistent",
-            "message": "some message",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": "nonexistent",
+                "message": "some message",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -311,10 +359,13 @@ class TestCommitChanges:
         project_id, _, _ = project_with_repo
         mock_git.acommit_all.side_effect = GitError("failed to commit")
 
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-            "message": "a commit",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+                "message": "a commit",
+            },
+        )
 
         assert "error" in result
         assert "failed to commit" in result["error"]
@@ -324,6 +375,7 @@ class TestCommitChanges:
         mock_git.acommit_all.return_value = True
 
         from src.models import Task
+
         task = Task(
             id="task-running",
             project_id=project_id,
@@ -333,10 +385,13 @@ class TestCommitChanges:
         )
         await db.create_task(task)
 
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-            "message": "fix: something",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+                "message": "fix: something",
+            },
+        )
 
         assert "error" not in result
         assert result["status"] == "committed"
@@ -355,17 +410,21 @@ class TestPushBranch:
     async def test_success_with_explicit_branch(self, handler, mock_git, project_with_repo):
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("push_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/push-me",
-        })
+        result = await handler.execute(
+            "push_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/push-me",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["branch"] == "feature/push-me"
         assert result["status"] == "pushed"
         mock_git.apush_branch.assert_called_once_with(
-            checkout_path, "feature/push-me",
+            checkout_path,
+            "feature/push-me",
         )
 
     async def test_success_with_current_branch(self, handler, mock_git, project_with_repo):
@@ -373,28 +432,33 @@ class TestPushBranch:
         project_id, _, checkout_path = project_with_repo
         mock_git.aget_current_branch.return_value = "feature/auto-detect"
 
-        result = await handler.execute("push_branch", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "push_branch",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["branch"] == "feature/auto-detect"
         assert result["status"] == "pushed"
         mock_git.aget_current_branch.assert_called_with(checkout_path)
         mock_git.apush_branch.assert_called_once_with(
-            checkout_path, "feature/auto-detect",
+            checkout_path,
+            "feature/auto-detect",
         )
 
     async def test_push_failure(self, handler, mock_git, project_with_repo):
         project_id, _, _ = project_with_repo
-        mock_git.apush_branch.side_effect = GitError(
-            "git push origin feature/x failed: rejected"
-        )
+        mock_git.apush_branch.side_effect = GitError("git push origin feature/x failed: rejected")
 
-        result = await handler.execute("push_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/x",
-        })
+        result = await handler.execute(
+            "push_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/x",
+            },
+        )
 
         assert "error" in result
         assert "rejected" in result["error"]
@@ -404,18 +468,24 @@ class TestPushBranch:
         project_id, _, _ = project_with_repo
         mock_git.aget_current_branch.return_value = ""
 
-        result = await handler.execute("push_branch", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "push_branch",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" in result
         assert "Could not determine current branch" in result["error"]
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("push_branch", {
-            "project_id": "nonexistent",
-            "branch_name": "main",
-        })
+        result = await handler.execute(
+            "push_branch",
+            {
+                "project_id": "nonexistent",
+                "branch_name": "main",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -433,10 +503,13 @@ class TestMergeBranch:
         project_id, repo_id, checkout_path = project_with_repo
         mock_git.amerge_branch.return_value = True
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/done",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/done",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -444,17 +517,22 @@ class TestMergeBranch:
         assert result["target"] == "main"
         assert result["status"] == "merged"
         mock_git.amerge_branch.assert_called_once_with(
-            checkout_path, "feature/done", "main",
+            checkout_path,
+            "feature/done",
+            "main",
         )
 
     async def test_conflict_scenario(self, handler, mock_git, project_with_repo):
         project_id, _, checkout_path = project_with_repo
         mock_git.amerge_branch.return_value = False  # conflict
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/conflicting",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/conflicting",
+            },
+        )
 
         assert "error" not in result  # conflict is not an error, just a status
         assert result["status"] == "conflict"
@@ -465,17 +543,23 @@ class TestMergeBranch:
     async def test_missing_branch_name(self, handler, project_with_repo):
         project_id, _, _ = project_with_repo
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert result == {"error": "branch_name is required"}
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("merge_branch", {
-            "project_id": "nonexistent",
-            "branch_name": "feature/x",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": "nonexistent",
+                "branch_name": "feature/x",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -484,10 +568,13 @@ class TestMergeBranch:
         project_id, _, _ = project_with_repo
         mock_git.amerge_branch.side_effect = GitError("fatal: not a git repo")
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/bad",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/bad",
+            },
+        )
 
         assert "error" in result
         assert "not a git repo" in result["error"]
@@ -501,28 +588,38 @@ class TestMergeBranch:
         checkout_path = str(tmp_path / "workspaces" / "proj-develop")
         os.makedirs(checkout_path, exist_ok=True)
 
-        await db.create_project(Project(
-            id=project_id,
-            name="Develop Project",
-            repo_default_branch="develop",
-        ))
-        await db.create_workspace(Workspace(
-            id="ws-develop", project_id=project_id,
-            workspace_path=checkout_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await db.create_project(
+            Project(
+                id=project_id,
+                name="Develop Project",
+                repo_default_branch="develop",
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-develop",
+                project_id=project_id,
+                workspace_path=checkout_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
 
         mock_git.amerge_branch.return_value = True
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/custom-default",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/custom-default",
+            },
+        )
 
         assert "error" not in result
         assert result["target"] == "develop"
         mock_git.amerge_branch.assert_called_once_with(
-            checkout_path, "feature/custom-default", "develop",
+            checkout_path,
+            "feature/custom-default",
+            "develop",
         )
 
     async def test_warns_if_tasks_in_progress(self, handler, db, mock_git, project_with_repo):
@@ -530,18 +627,24 @@ class TestMergeBranch:
         mock_git.amerge_branch.return_value = True
 
         from src.models import Task
-        await db.create_task(Task(
-            id="task-active",
-            project_id=project_id,
-            title="Active",
-            description="Running",
-            status=TaskStatus.IN_PROGRESS,
-        ))
 
-        result = await handler.execute("merge_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/merge-warn",
-        })
+        await db.create_task(
+            Task(
+                id="task-active",
+                project_id=project_id,
+                title="Active",
+                description="Running",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/merge-warn",
+            },
+        )
 
         assert "error" not in result
         assert result["status"] == "merged"
@@ -560,14 +663,16 @@ class TestGitLog:
     async def test_success(self, handler, mock_git, project_with_repo):
         project_id, repo_id, checkout_path = project_with_repo
         mock_git.aget_recent_commits.return_value = (
-            "abc1234 feat: add feature\n"
-            "def5678 fix: bug fix"
+            "abc1234 feat: add feature\ndef5678 fix: bug fix"
         )
         mock_git.aget_current_branch.return_value = "feature/test"
 
-        result = await handler.execute("git_log", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "git_log",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -576,38 +681,49 @@ class TestGitLog:
         assert "def5678" in result["log"]
         # Default count is 10
         mock_git.aget_recent_commits.assert_called_once_with(
-            checkout_path, count=10,
+            checkout_path,
+            count=10,
         )
 
     async def test_custom_count(self, handler, mock_git, project_with_repo):
         project_id, _, checkout_path = project_with_repo
         mock_git.aget_recent_commits.return_value = "abc1234 commit"
 
-        result = await handler.execute("git_log", {
-            "project_id": project_id,
-            "count": 3,
-        })
+        result = await handler.execute(
+            "git_log",
+            {
+                "project_id": project_id,
+                "count": 3,
+            },
+        )
 
         assert "error" not in result
         mock_git.aget_recent_commits.assert_called_once_with(
-            checkout_path, count=3,
+            checkout_path,
+            count=3,
         )
 
     async def test_empty_log(self, handler, mock_git, project_with_repo):
         project_id, _, _ = project_with_repo
         mock_git.aget_recent_commits.return_value = ""
 
-        result = await handler.execute("git_log", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "git_log",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["log"] == "(no commits)"
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("git_log", {
-            "project_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "git_log",
+            {
+                "project_id": "nonexistent",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -626,9 +742,12 @@ class TestGitDiff:
         project_id, repo_id, checkout_path = project_with_repo
         mock_git._arun.return_value = "diff --git a/file.py b/file.py\n+new line"
 
-        result = await handler.execute("git_diff", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -638,15 +757,15 @@ class TestGitDiff:
 
     async def test_diff_against_base_branch(self, handler, mock_git, project_with_repo):
         project_id, _, checkout_path = project_with_repo
-        mock_git.aget_diff.return_value = (
-            "diff --git a/src/app.py b/src/app.py\n"
-            "+import new_module"
-        )
+        mock_git.aget_diff.return_value = "diff --git a/src/app.py b/src/app.py\n+import new_module"
 
-        result = await handler.execute("git_diff", {
-            "project_id": project_id,
-            "base_branch": "main",
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": project_id,
+                "base_branch": "main",
+            },
+        )
 
         assert "error" not in result
         assert result["base_branch"] == "main"
@@ -657,9 +776,12 @@ class TestGitDiff:
         project_id, _, checkout_path = project_with_repo
         mock_git._arun.return_value = ""
 
-        result = await handler.execute("git_diff", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["diff"] == "(no changes)"
@@ -668,17 +790,23 @@ class TestGitDiff:
         project_id, _, _ = project_with_repo
         mock_git._arun.side_effect = GitError("fatal: bad revision")
 
-        result = await handler.execute("git_diff", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" in result
         assert "bad revision" in result["error"]
 
     async def test_invalid_project(self, handler):
-        result = await handler.execute("git_diff", {
-            "project_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": "nonexistent",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -688,10 +816,13 @@ class TestGitDiff:
         project_id, _, _ = project_with_repo
         mock_git.aget_diff.side_effect = GitError("fatal: bad object 'develop'")
 
-        result = await handler.execute("git_diff", {
-            "project_id": project_id,
-            "base_branch": "develop",
-        })
+        result = await handler.execute(
+            "git_diff",
+            {
+                "project_id": project_id,
+                "base_branch": "develop",
+            },
+        )
 
         assert "error" in result
         assert "bad object" in result["error"]
@@ -707,9 +838,12 @@ class TestResolveRepoPath:
 
     async def test_missing_project_id_no_active(self, handler):
         """Commands without project_id and no active project should error."""
-        result = await handler.execute("create_branch", {
-            "branch_name": "feature/orphan",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "branch_name": "feature/orphan",
+            },
+        )
 
         assert "error" in result
         assert "project_id" in result["error"].lower() or "required" in result["error"].lower()
@@ -718,15 +852,19 @@ class TestResolveRepoPath:
         """Commands should work when project_id is explicitly specified."""
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("create_branch", {
-            "project_id": project_id,
-            "branch_name": "feature/via-repo-id",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "project_id": project_id,
+                "branch_name": "feature/via-repo-id",
+            },
+        )
 
         assert "error" not in result
         assert result["status"] == "created"
         mock_git.acreate_branch.assert_called_once_with(
-            checkout_path, "feature/via-repo-id",
+            checkout_path,
+            "feature/via-repo-id",
         )
 
 
@@ -743,16 +881,20 @@ class TestActiveProjectFallback:
         project_id, repo_id, checkout_path = project_with_repo
         handler.set_active_project(project_id)
 
-        result = await handler.execute("create_branch", {
-            "branch_name": "feature/auto-project",
-        })
+        result = await handler.execute(
+            "create_branch",
+            {
+                "branch_name": "feature/auto-project",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["branch"] == "feature/auto-project"
         assert result["status"] == "created"
         mock_git.acreate_branch.assert_called_once_with(
-            checkout_path, "feature/auto-project",
+            checkout_path,
+            "feature/auto-project",
         )
 
     async def test_commit_changes_infers_active_project(self, handler, mock_git, project_with_repo):
@@ -761,15 +903,19 @@ class TestActiveProjectFallback:
         mock_git.acommit_all.return_value = True
         handler.set_active_project(project_id)
 
-        result = await handler.execute("commit_changes", {
-            "message": "feat: auto-inferred project",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "message": "feat: auto-inferred project",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["status"] == "committed"
         mock_git.acommit_all.assert_called_once_with(
-            checkout_path, "feat: auto-inferred project",
+            checkout_path,
+            "feat: auto-inferred project",
         )
 
     async def test_push_branch_infers_active_project(self, handler, mock_git, project_with_repo):
@@ -784,17 +930,23 @@ class TestActiveProjectFallback:
         assert result["project_id"] == project_id
         assert result["status"] == "pushed"
         mock_git.apush_branch.assert_called_once_with(
-            checkout_path, "feature/auto",
+            checkout_path,
+            "feature/auto",
         )
 
-    async def test_checkout_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+    async def test_checkout_branch_infers_active_project(
+        self, handler, mock_git, project_with_repo
+    ):
         """checkout_branch should work without project_id when active project is set."""
         project_id, repo_id, checkout_path = project_with_repo
         handler.set_active_project(project_id)
 
-        result = await handler.execute("checkout_branch", {
-            "branch_name": "feature/existing",
-        })
+        result = await handler.execute(
+            "checkout_branch",
+            {
+                "branch_name": "feature/existing",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -806,9 +958,12 @@ class TestActiveProjectFallback:
         mock_git.amerge_branch.return_value = True
         handler.set_active_project(project_id)
 
-        result = await handler.execute("merge_branch", {
-            "branch_name": "feature/auto-merge",
-        })
+        result = await handler.execute(
+            "merge_branch",
+            {
+                "branch_name": "feature/auto-merge",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -843,15 +998,19 @@ class TestActiveProjectFallback:
         mock_git.acommit_all.return_value = True
         handler.set_active_project(project_id)
 
-        result = await handler.execute("git_commit", {
-            "message": "feat: inferred commit",
-        })
+        result = await handler.execute(
+            "git_commit",
+            {
+                "message": "feat: inferred commit",
+            },
+        )
 
         assert "error" not in result
         assert result["committed"] is True
         assert result["project_id"] == project_id
         mock_git.acommit_all.assert_called_once_with(
-            checkout_path, "feat: inferred commit",
+            checkout_path,
+            "feat: inferred commit",
         )
 
     async def test_git_pull_infers_active_project(self, handler, mock_git, project_with_repo):
@@ -902,20 +1061,27 @@ class TestActiveProjectFallback:
         assert result["pushed"] == "feature/auto"
         assert result["project_id"] == project_id
 
-    async def test_git_create_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+    async def test_git_create_branch_infers_active_project(
+        self, handler, mock_git, project_with_repo
+    ):
         """git_create_branch (old-style) should work without repo_id when active project is set."""
         project_id, repo_id, checkout_path = project_with_repo
         handler.set_active_project(project_id)
 
-        result = await handler.execute("git_create_branch", {
-            "branch_name": "feature/auto-branch",
-        })
+        result = await handler.execute(
+            "git_create_branch",
+            {
+                "branch_name": "feature/auto-branch",
+            },
+        )
 
         assert "error" not in result
         assert result["created_branch"] == "feature/auto-branch"
         assert result["project_id"] == project_id
 
-    async def test_git_changed_files_infers_active_project(self, handler, mock_git, project_with_repo):
+    async def test_git_changed_files_infers_active_project(
+        self, handler, mock_git, project_with_repo
+    ):
         """git_changed_files (old-style) should work without repo_id when active project is set."""
         project_id, repo_id, checkout_path = project_with_repo
         mock_git.aget_changed_files.return_value = ["file1.py", "file2.py"]
@@ -931,12 +1097,17 @@ class TestActiveProjectFallback:
         """Without active project, commands should still fail gracefully."""
         handler.set_active_project(None)
 
-        result = await handler.execute("git_commit", {
-            "message": "should fail",
-        })
+        result = await handler.execute(
+            "git_commit",
+            {
+                "message": "should fail",
+            },
+        )
 
         assert "error" in result
-        assert "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+        assert (
+            "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+        )
 
     async def test_get_git_status_infers_active_project(self, handler, mock_git, project_with_repo):
         """get_git_status should work without project_id when active project is set."""
@@ -959,7 +1130,9 @@ class TestActiveProjectFallback:
         result = await handler.execute("get_git_status", {})
 
         assert "error" in result
-        assert "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+        assert (
+            "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+        )
 
     async def test_git_merge_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_merge (old-style) should work without repo_id when active project is set."""
@@ -967,9 +1140,12 @@ class TestActiveProjectFallback:
         mock_git.amerge_branch.return_value = True
         handler.set_active_project(project_id)
 
-        result = await handler.execute("git_merge", {
-            "branch_name": "feature/auto-merge",
-        })
+        result = await handler.execute(
+            "git_merge",
+            {
+                "branch_name": "feature/auto-merge",
+            },
+        )
 
         assert "error" not in result
         assert result["merged"] is True
@@ -982,15 +1158,20 @@ class TestActiveProjectFallback:
         mock_git.acreate_pr.return_value = "https://github.com/test/repo/pull/1"
         handler.set_active_project(project_id)
 
-        result = await handler.execute("git_create_pr", {
-            "title": "Test PR",
-        })
+        result = await handler.execute(
+            "git_create_pr",
+            {
+                "title": "Test PR",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
         assert "pr_url" in result
 
-    async def test_explicit_project_id_overrides_active(self, handler, db, mock_git, project_with_repo, tmp_path):
+    async def test_explicit_project_id_overrides_active(
+        self, handler, db, mock_git, project_with_repo, tmp_path
+    ):
         """Explicit project_id should take precedence over active project."""
         project_id, repo_id, checkout_path = project_with_repo
 
@@ -998,10 +1179,13 @@ class TestActiveProjectFallback:
         handler.set_active_project("some-other-project")
 
         # But explicitly pass the real project_id
-        result = await handler.execute("commit_changes", {
-            "project_id": project_id,
-            "message": "explicit project",
-        })
+        result = await handler.execute(
+            "commit_changes",
+            {
+                "project_id": project_id,
+                "message": "explicit project",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -1020,34 +1204,46 @@ class TestCreateGithubRepo:
         mock_git.acheck_gh_auth.return_value = True
         mock_git.acreate_github_repo.return_value = "https://github.com/user/my-app"
 
-        result = await handler.execute("create_github_repo", {
-            "name": "my-app",
-        })
+        result = await handler.execute(
+            "create_github_repo",
+            {
+                "name": "my-app",
+            },
+        )
 
         assert "error" not in result
         assert result["created"] is True
         assert result["repo_url"] == "https://github.com/user/my-app"
         assert result["name"] == "my-app"
         mock_git.acreate_github_repo.assert_called_once_with(
-            "my-app", private=True, org=None, description="",
+            "my-app",
+            private=True,
+            org=None,
+            description="",
         )
 
     async def test_success_with_options(self, handler, mock_git):
         mock_git.acheck_gh_auth.return_value = True
         mock_git.acreate_github_repo.return_value = "https://github.com/my-org/my-app"
 
-        result = await handler.execute("create_github_repo", {
-            "name": "my-app",
-            "private": False,
-            "org": "my-org",
-            "description": "A cool app",
-        })
+        result = await handler.execute(
+            "create_github_repo",
+            {
+                "name": "my-app",
+                "private": False,
+                "org": "my-org",
+                "description": "A cool app",
+            },
+        )
 
         assert "error" not in result
         assert result["created"] is True
         assert result["repo_url"] == "https://github.com/my-org/my-app"
         mock_git.acreate_github_repo.assert_called_once_with(
-            "my-app", private=False, org="my-org", description="A cool app",
+            "my-app",
+            private=False,
+            org="my-org",
+            description="A cool app",
         )
 
     async def test_missing_name(self, handler, mock_git):
@@ -1058,9 +1254,12 @@ class TestCreateGithubRepo:
     async def test_gh_not_authenticated(self, handler, mock_git):
         mock_git.acheck_gh_auth.return_value = False
 
-        result = await handler.execute("create_github_repo", {
-            "name": "my-app",
-        })
+        result = await handler.execute(
+            "create_github_repo",
+            {
+                "name": "my-app",
+            },
+        )
 
         assert "error" in result
         assert "not authenticated" in result["error"].lower()
@@ -1072,9 +1271,12 @@ class TestCreateGithubRepo:
             "gh repo create failed: Name already exists"
         )
 
-        result = await handler.execute("create_github_repo", {
-            "name": "my-app",
-        })
+        result = await handler.execute(
+            "create_github_repo",
+            {
+                "name": "my-app",
+            },
+        )
 
         assert "error" in result
         assert "Name already exists" in result["error"]
@@ -1092,12 +1294,15 @@ class TestGenerateReadme:
         """README generated with description and tech stack, committed and pushed."""
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-            "name": "My Awesome App",
-            "description": "A web application for managing tasks.",
-            "tech_stack": "Python, FastAPI, PostgreSQL",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+                "name": "My Awesome App",
+                "description": "A web application for managing tasks.",
+                "tech_stack": "Python, FastAPI, PostgreSQL",
+            },
+        )
 
         assert "error" not in result
         assert result["committed"] is True
@@ -1105,6 +1310,7 @@ class TestGenerateReadme:
         assert result["status"] == "generated"
 
         import os
+
         readme_path = os.path.join(checkout_path, "README.md")
         assert os.path.isfile(readme_path)
         with open(readme_path) as f:
@@ -1116,7 +1322,8 @@ class TestGenerateReadme:
         assert "- PostgreSQL" in content
 
         mock_git.acommit_all.assert_called_once_with(
-            checkout_path, "Add generated README.md",
+            checkout_path,
+            "Add generated README.md",
         )
         mock_git.apush_branch.assert_called_once()
 
@@ -1124,15 +1331,19 @@ class TestGenerateReadme:
         """README generated with only name, no description or tech stack."""
         project_id, repo_id, checkout_path = project_with_repo
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-            "name": "Minimal Project",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+                "name": "Minimal Project",
+            },
+        )
 
         assert "error" not in result
         assert result["committed"] is True
 
         import os
+
         readme_path = os.path.join(checkout_path, "README.md")
         with open(readme_path) as f:
             content = f.read()
@@ -1143,18 +1354,24 @@ class TestGenerateReadme:
         """Error returned when name is missing."""
         project_id, _, _ = project_with_repo
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert result == {"error": "name is required"}
 
     async def test_invalid_project(self, handler):
         """Error returned for nonexistent project."""
-        result = await handler.execute("generate_readme", {
-            "project_id": "nonexistent",
-            "name": "Test",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": "nonexistent",
+                "name": "Test",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
@@ -1164,10 +1381,13 @@ class TestGenerateReadme:
         project_id, _, checkout_path = project_with_repo
         mock_git.acommit_all.side_effect = GitError("commit failed")
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-            "name": "Test",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+                "name": "Test",
+            },
+        )
 
         assert "error" in result
         assert "commit failed" in result["error"]
@@ -1177,10 +1397,13 @@ class TestGenerateReadme:
         project_id, _, checkout_path = project_with_repo
         mock_git.apush_branch.side_effect = GitError("push failed")
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-            "name": "Test",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+                "name": "Test",
+            },
+        )
 
         assert "error" not in result
         assert result["committed"] is True
@@ -1191,10 +1414,13 @@ class TestGenerateReadme:
         project_id, _, checkout_path = project_with_repo
         mock_git.acommit_all.return_value = False
 
-        result = await handler.execute("generate_readme", {
-            "project_id": project_id,
-            "name": "Test",
-        })
+        result = await handler.execute(
+            "generate_readme",
+            {
+                "project_id": project_id,
+                "name": "Test",
+            },
+        )
 
         assert "error" not in result
         assert result["committed"] is False

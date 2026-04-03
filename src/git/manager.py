@@ -81,17 +81,16 @@ class GitManager:
     # freezing WSL entirely when the daemon runs headless).
     _SUBPROCESS_ENV: dict[str, str] = {
         **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",    # git: never prompt for credentials
-        "GIT_ASKPASS": "/bin/false",    # git: reject askpass-based prompts
-        "GH_PROMPT_DISABLED": "1",     # gh CLI: never prompt interactively
+        "GIT_TERMINAL_PROMPT": "0",  # git: never prompt for credentials
+        "GIT_ASKPASS": "/bin/false",  # git: reject askpass-based prompts
+        "GH_PROMPT_DISABLED": "1",  # gh CLI: never prompt interactively
     }
 
     # Default timeout (seconds) for git operations.  Clone/fetch can be slow
     # on large repos so we allow a generous window, but never infinite.
     _GIT_TIMEOUT = 120
 
-    def _run(self, args: list[str], cwd: str | None = None,
-             timeout: int | None = None) -> str:
+    def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str:
         try:
             result = subprocess.run(
                 ["git"] + args,
@@ -110,8 +109,9 @@ class GitManager:
             raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
         return result.stdout.strip()
 
-    async def _arun(self, args: list[str], cwd: str | None = None,
-                    timeout: int | None = None) -> str:
+    async def _arun(
+        self, args: list[str], cwd: str | None = None, timeout: int | None = None
+    ) -> str:
         """Async version of :meth:`_run` using ``asyncio.create_subprocess_exec``.
 
         Does not block the event loop — suitable for use from the orchestrator
@@ -120,7 +120,8 @@ class GitManager:
         effective_timeout = timeout or self._GIT_TIMEOUT
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", *args,
+                "git",
+                *args,
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -128,7 +129,8 @@ class GitManager:
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=effective_timeout,
+                    proc.communicate(),
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 try:
@@ -149,7 +151,9 @@ class GitManager:
         return stdout_str
 
     async def _arun_subprocess(
-        self, cmd: list[str], cwd: str | None = None,
+        self,
+        cmd: list[str],
+        cwd: str | None = None,
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess:
         """Async helper for non-git commands (e.g. ``gh`` CLI).
@@ -168,7 +172,8 @@ class GitManager:
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=effective_timeout,
+                    proc.communicate(),
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 try:
@@ -237,7 +242,9 @@ class GitManager:
             return []
 
     def pull_latest_main(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         """Fetch from origin and hard-reset the default branch to match remote.
 
@@ -254,12 +261,12 @@ class GitManager:
         repos) or used in worktree-aware callers that skip checkout.
         """
         self._run(["fetch", "origin"], cwd=checkout_path)
-        self._run(
-            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
-        )
+        self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
 
     def _rebase_onto_default(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         """Attempt to rebase the current branch onto ``origin/<default_branch>``.
 
@@ -268,9 +275,7 @@ class GitManager:
         state — it just won't have the latest main changes incorporated.
         """
         try:
-            self._run(
-                ["rebase", f"origin/{default_branch}"], cwd=checkout_path
-            )
+            self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
         except GitError:
             # Conflicts during rebase — abort and leave branch as-is.
             # The agent can still work with the branch; it just won't
@@ -281,7 +286,9 @@ class GitManager:
                 pass  # rebase may not be in progress if it failed early
 
     def prepare_for_task(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> None:
         """Fetch latest and create a task branch off the default branch.
@@ -309,7 +316,9 @@ class GitManager:
             # checked out in the source repo. Instead, fetch updates and create
             # the new branch directly from the remote default branch.
             try:
-                self._run(["checkout", "-b", branch_name, f"origin/{default_branch}"], cwd=checkout_path)
+                self._run(
+                    ["checkout", "-b", branch_name, f"origin/{default_branch}"], cwd=checkout_path
+                )
             except GitError:
                 # Branch already exists (retry) — switch to it and rebase
                 # onto latest origin/<default_branch> so agent has fresh code.
@@ -347,8 +356,11 @@ class GitManager:
                 self._rebase_onto_default(checkout_path, default_branch)
 
     def switch_to_branch(
-        self, checkout_path: str, branch_name: str,
-        default_branch: str = "main", rebase: bool = False,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        default_branch: str = "main",
+        rebase: bool = False,
     ) -> None:
         """Switch to an existing branch, pulling latest and optionally rebasing.
 
@@ -374,8 +386,9 @@ class GitManager:
         except GitError:
             # Branch doesn't exist locally — try tracking remote
             try:
-                self._run(["checkout", "-b", branch_name, f"origin/{branch_name}"],
-                           cwd=checkout_path)
+                self._run(
+                    ["checkout", "-b", branch_name, f"origin/{branch_name}"], cwd=checkout_path
+                )
             except GitError:
                 # No remote branch either (e.g. LINK repo) — create fresh
                 self._run(["checkout", "-b", branch_name], cwd=checkout_path)
@@ -390,7 +403,9 @@ class GitManager:
             self._rebase_onto_default(checkout_path, default_branch)
 
     def mid_chain_sync(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> bool:
         """Push intermediate subtask work and rebase onto latest main.
@@ -439,7 +454,8 @@ class GitManager:
         # 3. Rebase onto origin/<default_branch>.
         try:
             self._run(
-                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
+                ["rebase", f"origin/{default_branch}"],
+                cwd=checkout_path,
             )
         except GitError:
             # Rebase conflicts — abort and leave branch as-is.
@@ -461,7 +477,9 @@ class GitManager:
         return True
 
     def pull_branch(
-        self, checkout_path: str, branch_name: str | None = None,
+        self,
+        checkout_path: str,
+        branch_name: str | None = None,
     ) -> str:
         """Pull (fetch + merge) a branch from the ``origin`` remote.
 
@@ -476,7 +494,10 @@ class GitManager:
         return branch_name
 
     def push_branch(
-        self, checkout_path: str, branch_name: str, *,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        *,
         force_with_lease: bool = False,
     ) -> None:
         """Push a local branch to the ``origin`` remote.
@@ -496,7 +517,9 @@ class GitManager:
         self._run(args, cwd=checkout_path)
 
     def rebase_onto(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         target_branch: str = "main",
     ) -> bool:
         """Rebase branch onto target. Returns True on success, False on conflict.
@@ -511,7 +534,8 @@ class GitManager:
         need to rebase an arbitrary branch onto any target.
         """
         original = self._run(
-            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=checkout_path,
         )
         self._run(["checkout", branch_name], cwd=checkout_path)
         # Use local target branch — callers that need remote state
@@ -535,7 +559,9 @@ class GitManager:
             return False
 
     def merge_branch(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> bool:
         """Merge branch into default. Returns True if successful, False if conflict.
@@ -565,8 +591,11 @@ class GitManager:
             return False
 
     def sync_and_merge(
-        self, checkout_path: str, branch_name: str,
-        default_branch: str = "main", max_retries: int = 1,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        default_branch: str = "main",
+        max_retries: int = 1,
     ) -> tuple[bool, str]:
         """Pull latest main, merge branch, push. Returns (success, error_msg).
 
@@ -602,7 +631,9 @@ class GitManager:
             # Rebase the task branch onto origin/<default_branch> so it
             # incorporates upstream changes, then retry the merge.
             rebased = self.rebase_onto(
-                checkout_path, branch_name, default_branch,
+                checkout_path,
+                branch_name,
+                default_branch,
             )
             if not rebased:
                 # Rebase itself conflicted — give up
@@ -641,7 +672,9 @@ class GitManager:
         return (False, "push_failed_exhausted")  # pragma: no cover
 
     def recover_workspace(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         """Reset workspace to a clean state after a failed merge-and-push.
 
@@ -661,7 +694,11 @@ class GitManager:
         )
 
     def delete_branch(
-        self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        *,
+        delete_remote: bool = True,
     ) -> None:
         """Delete a branch locally and optionally on the remote."""
         try:
@@ -706,9 +743,7 @@ class GitManager:
 
     def get_changed_files(self, checkout_path: str, base_branch: str = "main") -> list[str]:
         try:
-            output = self._run(
-                ["diff", "--name-only", base_branch], cwd=checkout_path
-            )
+            output = self._run(["diff", "--name-only", base_branch], cwd=checkout_path)
             return output.split("\n") if output else []
         except GitError:
             return []
@@ -757,7 +792,11 @@ class GitManager:
         return True
 
     def create_pr(
-        self, checkout_path: str, branch: str, title: str, body: str,
+        self,
+        checkout_path: str,
+        branch: str,
+        title: str,
+        body: str,
         base: str = "main",
     ) -> str:
         """Create a GitHub PR using the ``gh`` CLI. Returns the PR URL.
@@ -767,8 +806,19 @@ class GitManager:
         """
         try:
             result = subprocess.run(
-                ["gh", "pr", "create", "--title", title, "--body", body,
-                 "--base", base, "--head", branch],
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    title,
+                    "--body",
+                    body,
+                    "--base",
+                    base,
+                    "--head",
+                    branch,
+                ],
                 cwd=checkout_path,
                 capture_output=True,
                 text=True,
@@ -856,8 +906,11 @@ class GitManager:
             # Get diff stat excluding plan files
             stat_output = self._run(
                 [
-                    "diff", "--stat", f"{merge_base}..HEAD",
-                    "--", ".",
+                    "diff",
+                    "--stat",
+                    f"{merge_base}..HEAD",
+                    "--",
+                    ".",
                     ":!.claude/plan.md",
                     ":!plan.md",
                     ":!.claude/plans/",
@@ -899,10 +952,7 @@ class GitManager:
         # Strategy 1: Try to get the default branch from remote HEAD
         try:
             # This works if the remote has a HEAD symbolic ref set
-            remote_head = self._run(
-                ["symbolic-ref", "refs/remotes/origin/HEAD"],
-                cwd=checkout_path
-            )
+            remote_head = self._run(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=checkout_path)
             # Output format: "refs/remotes/origin/main"
             # Extract just the branch name
             if remote_head.startswith("refs/remotes/origin/"):
@@ -920,10 +970,7 @@ class GitManager:
 
         # Strategy 3: Check which common default branches exist on remote
         try:
-            remote_branches = self._run(
-                ["ls-remote", "--heads", "origin"],
-                cwd=checkout_path
-            )
+            remote_branches = self._run(["ls-remote", "--heads", "origin"], cwd=checkout_path)
             for branch in ["main", "master", "develop", "trunk"]:
                 if f"refs/heads/{branch}" in remote_branches:
                     return branch
@@ -937,9 +984,7 @@ class GitManager:
     def get_recent_commits(self, checkout_path: str, count: int = 5) -> str:
         """Return recent commit log (one-line format)."""
         try:
-            return self._run(
-                ["log", f"--oneline", f"-{count}"], cwd=checkout_path
-            )
+            return self._run(["log", f"--oneline", f"-{count}"], cwd=checkout_path)
         except GitError:
             return ""
 
@@ -963,8 +1008,12 @@ class GitManager:
             return False
 
     def create_github_repo(
-        self, name: str, *, private: bool = True,
-        org: str | None = None, description: str = "",
+        self,
+        name: str,
+        *,
+        private: bool = True,
+        org: str | None = None,
+        description: str = "",
     ) -> str:
         """Create a GitHub repository via the ``gh`` CLI.
 
@@ -995,9 +1044,7 @@ class GitManager:
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            raise GitError(
-                f"gh repo create timed out after 60s (possible auth prompt)"
-            )
+            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         # gh repo create prints the repo URL to stdout, but may also include
@@ -1076,20 +1123,20 @@ class GitManager:
             return []
 
     async def apull_latest_main(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         await self._arun(["fetch", "origin"], cwd=checkout_path)
-        await self._arun(
-            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
-        )
+        await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
 
     async def _arebase_onto_default(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         try:
-            await self._arun(
-                ["rebase", f"origin/{default_branch}"], cwd=checkout_path
-            )
+            await self._arun(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
         except GitError:
             try:
                 await self._arun(["rebase", "--abort"], cwd=checkout_path)
@@ -1097,7 +1144,9 @@ class GitManager:
                 pass
 
     async def aprepare_for_task(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> None:
         is_worktree = await self._ais_worktree(checkout_path)
@@ -1133,8 +1182,11 @@ class GitManager:
                 await self._arebase_onto_default(checkout_path, default_branch)
 
     async def aswitch_to_branch(
-        self, checkout_path: str, branch_name: str,
-        default_branch: str = "main", rebase: bool = False,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        default_branch: str = "main",
+        rebase: bool = False,
     ) -> None:
         try:
             await self._arun(["fetch", "origin"], cwd=checkout_path)
@@ -1158,7 +1210,9 @@ class GitManager:
             await self._arebase_onto_default(checkout_path, default_branch)
 
     async def amid_chain_sync(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> bool:
         try:
@@ -1174,7 +1228,8 @@ class GitManager:
         await self._arun(["fetch", "origin"], cwd=checkout_path)
         try:
             await self._arun(
-                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
+                ["rebase", f"origin/{default_branch}"],
+                cwd=checkout_path,
             )
         except GitError:
             try:
@@ -1192,7 +1247,9 @@ class GitManager:
         return True
 
     async def apull_branch(
-        self, checkout_path: str, branch_name: str | None = None,
+        self,
+        checkout_path: str,
+        branch_name: str | None = None,
     ) -> str:
         if not branch_name:
             branch_name = await self.aget_current_branch(checkout_path)
@@ -1202,7 +1259,10 @@ class GitManager:
         return branch_name
 
     async def apush_branch(
-        self, checkout_path: str, branch_name: str, *,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        *,
         force_with_lease: bool = False,
     ) -> None:
         args = ["push", "origin", branch_name]
@@ -1211,11 +1271,14 @@ class GitManager:
         await self._arun(args, cwd=checkout_path)
 
     async def arebase_onto(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         target_branch: str = "main",
     ) -> bool:
         original = await self._arun(
-            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=checkout_path,
         )
         await self._arun(["checkout", branch_name], cwd=checkout_path)
         rebase_target = target_branch
@@ -1235,15 +1298,15 @@ class GitManager:
             return False
 
     async def amerge_branch(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
         default_branch: str = "main",
     ) -> bool:
         await self._arun(["checkout", default_branch], cwd=checkout_path)
         try:
             await self._arun(["fetch", "origin"], cwd=checkout_path)
-            await self._arun(
-                ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
-            )
+            await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
         except GitError:
             pass
         try:
@@ -1254,20 +1317,23 @@ class GitManager:
             return False
 
     async def async_and_merge(
-        self, checkout_path: str, branch_name: str,
-        default_branch: str = "main", max_retries: int = 1,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        default_branch: str = "main",
+        max_retries: int = 1,
     ) -> tuple[bool, str]:
         await self._arun(["fetch", "origin"], cwd=checkout_path)
         await self._arun(["checkout", default_branch], cwd=checkout_path)
-        await self._arun(
-            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
-        )
+        await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
         try:
             await self._arun(["merge", branch_name], cwd=checkout_path)
         except GitError:
             await self._arun(["merge", "--abort"], cwd=checkout_path)
             rebased = await self.arebase_onto(
-                checkout_path, branch_name, default_branch,
+                checkout_path,
+                branch_name,
+                default_branch,
             )
             if not rebased:
                 await self._arun(["checkout", default_branch], cwd=checkout_path)
@@ -1284,9 +1350,7 @@ class GitManager:
                 return (False, "merge_conflict")
         for attempt in range(max_retries + 1):
             try:
-                await self._arun(
-                    ["push", "origin", default_branch], cwd=checkout_path
-                )
+                await self._arun(["push", "origin", default_branch], cwd=checkout_path)
                 return (True, "")
             except GitError as e:
                 if attempt < max_retries:
@@ -1299,7 +1363,9 @@ class GitManager:
         return (False, "push_failed_exhausted")  # pragma: no cover
 
     async def arecover_workspace(
-        self, checkout_path: str, default_branch: str = "main",
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
     ) -> None:
         await self._arun(["checkout", default_branch], cwd=checkout_path)
         await self._arun(
@@ -1308,7 +1374,11 @@ class GitManager:
         )
 
     async def adelete_branch(
-        self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
+        self,
+        checkout_path: str,
+        branch_name: str,
+        *,
+        delete_remote: bool = True,
     ) -> None:
         try:
             await self._arun(["branch", "-d", branch_name], cwd=checkout_path)
@@ -1319,36 +1389,29 @@ class GitManager:
                 pass
         if delete_remote:
             try:
-                await self._arun(
-                    ["push", "origin", "--delete", branch_name], cwd=checkout_path
-                )
+                await self._arun(["push", "origin", "--delete", branch_name], cwd=checkout_path)
             except GitError:
                 pass
 
     async def acreate_worktree(
-        self, source_path: str, worktree_path: str, branch: str,
+        self,
+        source_path: str,
+        worktree_path: str,
+        branch: str,
     ) -> None:
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
-        await self._arun(
-            ["worktree", "add", "-b", branch, worktree_path], cwd=source_path
-        )
+        await self._arun(["worktree", "add", "-b", branch, worktree_path], cwd=source_path)
 
     async def aremove_worktree(self, source_path: str, worktree_path: str) -> None:
         try:
-            await self._arun(
-                ["worktree", "remove", worktree_path], cwd=source_path
-            )
+            await self._arun(["worktree", "remove", worktree_path], cwd=source_path)
         except GitError:
-            await self._arun(
-                ["worktree", "remove", "--force", worktree_path], cwd=source_path
-            )
+            await self._arun(["worktree", "remove", "--force", worktree_path], cwd=source_path)
 
     async def ainit_repo(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         await self._arun(["init"], cwd=path)
-        await self._arun(
-            ["commit", "--allow-empty", "-m", "Initial commit"], cwd=path
-        )
+        await self._arun(["commit", "--allow-empty", "-m", "Initial commit"], cwd=path)
 
     async def aget_diff(self, checkout_path: str, base_branch: str = "main") -> str:
         try:
@@ -1357,12 +1420,12 @@ class GitManager:
             return ""
 
     async def aget_changed_files(
-        self, checkout_path: str, base_branch: str = "main",
+        self,
+        checkout_path: str,
+        base_branch: str = "main",
     ) -> list[str]:
         try:
-            output = await self._arun(
-                ["diff", "--name-only", base_branch], cwd=checkout_path
-            )
+            output = await self._arun(["diff", "--name-only", base_branch], cwd=checkout_path)
             return output.split("\n") if output else []
         except GitError:
             return []
@@ -1386,13 +1449,28 @@ class GitManager:
         return True
 
     async def acreate_pr(
-        self, checkout_path: str, branch: str, title: str, body: str,
+        self,
+        checkout_path: str,
+        branch: str,
+        title: str,
+        body: str,
         base: str = "main",
     ) -> str:
         try:
             result = await self._arun_subprocess(
-                ["gh", "pr", "create", "--title", title, "--body", body,
-                 "--base", base, "--head", branch],
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    title,
+                    "--body",
+                    body,
+                    "--base",
+                    base,
+                    "--head",
+                    branch,
+                ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
@@ -1429,9 +1507,7 @@ class GitManager:
 
     async def aget_current_branch(self, checkout_path: str) -> str:
         try:
-            return await self._arun(
-                ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path
-            )
+            return await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
         except GitError:
             return ""
 
@@ -1448,17 +1524,25 @@ class GitManager:
             return False
 
     async def afind_open_pr(
-        self, checkout_path: str, branch_name: str,
+        self,
+        checkout_path: str,
+        branch_name: str,
     ) -> str | None:
         """Return the URL of an open PR for *branch_name*, or None."""
         try:
             result = await self._arun_subprocess(
                 [
-                    "gh", "pr", "list",
-                    "--head", branch_name,
-                    "--state", "open",
-                    "--json", "url",
-                    "--jq", ".[0].url",
+                    "gh",
+                    "pr",
+                    "list",
+                    "--head",
+                    branch_name,
+                    "--state",
+                    "open",
+                    "--json",
+                    "url",
+                    "--jq",
+                    ".[0].url",
                 ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
@@ -1485,8 +1569,11 @@ class GitManager:
         try:
             stat_output = await self._arun(
                 [
-                    "diff", "--stat", f"{merge_base}..HEAD",
-                    "--", ".",
+                    "diff",
+                    "--stat",
+                    f"{merge_base}..HEAD",
+                    "--",
+                    ".",
                     # Exclude plan files
                     ":!.claude/plan.md",
                     ":!plan.md",
@@ -1528,9 +1615,7 @@ class GitManager:
             pass
         for branch in ["main", "master", "develop", "trunk"]:
             try:
-                await self._arun(
-                    ["rev-parse", "--verify", branch], cwd=checkout_path
-                )
+                await self._arun(["rev-parse", "--verify", branch], cwd=checkout_path)
                 return branch
             except GitError:
                 continue
@@ -1547,27 +1632,32 @@ class GitManager:
         return current if current else "main"
 
     async def aget_recent_commits(
-        self, checkout_path: str, count: int = 5,
+        self,
+        checkout_path: str,
+        count: int = 5,
     ) -> str:
         try:
-            return await self._arun(
-                ["log", "--oneline", f"-{count}"], cwd=checkout_path
-            )
+            return await self._arun(["log", "--oneline", f"-{count}"], cwd=checkout_path)
         except GitError:
             return ""
 
     async def acheck_gh_auth(self) -> bool:
         try:
             result = await self._arun_subprocess(
-                ["gh", "auth", "status"], timeout=30,
+                ["gh", "auth", "status"],
+                timeout=30,
             )
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
     async def acreate_github_repo(
-        self, name: str, *, private: bool = True,
-        org: str | None = None, description: str = "",
+        self,
+        name: str,
+        *,
+        private: bool = True,
+        org: str | None = None,
+        description: str = "",
     ) -> str:
         full_name = f"{org}/{name}" if org else name
         cmd = ["gh", "repo", "create", full_name]
@@ -1578,9 +1668,7 @@ class GitManager:
         try:
             result = await self._arun_subprocess(cmd, timeout=60)
         except subprocess.TimeoutExpired:
-            raise GitError(
-                f"gh repo create timed out after 60s (possible auth prompt)"
-            )
+            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         url = ""
@@ -1629,4 +1717,3 @@ class GitManager:
     #
     # If you need to add a new async method, add it in the block above,
     # alongside the existing async methods.
-

@@ -7,16 +7,24 @@ import pytest
 from src.orchestrator import Orchestrator
 from src.database import Database
 from src.models import (
-    Project, Task, Agent, TaskStatus, AgentState, AgentResult,
-    TaskContext, AgentOutput, RepoConfig, RepoSourceType, Workspace,
+    Project,
+    Task,
+    Agent,
+    TaskStatus,
+    AgentState,
+    AgentResult,
+    TaskContext,
+    AgentOutput,
+    RepoConfig,
+    RepoSourceType,
+    Workspace,
 )
 from src.adapters.base import AgentAdapter, MessageCallback
 from src.config import AppConfig, AutoTaskConfig
 
 
 class MockAdapter(AgentAdapter):
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000,
-                 on_wait=None):
+    def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self._result = result
         self._tokens = tokens
         self._on_wait = on_wait
@@ -28,16 +36,17 @@ class MockAdapter(AgentAdapter):
     async def wait(self, on_message=None):
         if self._on_wait:
             self._on_wait(self._ctx)
-        return AgentOutput(result=self._result, summary="Done",
-                           tokens_used=self._tokens)
+        return AgentOutput(result=self._result, summary="Done", tokens_used=self._tokens)
 
-    async def stop(self): pass
-    async def is_alive(self): return True
+    async def stop(self):
+        pass
+
+    async def is_alive(self):
+        return True
 
 
 class MockAdapterFactory:
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000,
-                 on_wait=None):
+    def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self.result = result
         self.tokens = tokens
         self.on_wait = on_wait
@@ -47,8 +56,7 @@ class MockAdapterFactory:
     def create(self, agent_type: str, profile=None) -> AgentAdapter:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
-        return MockAdapter(result=self.result, tokens=self.tokens,
-                           on_wait=self.on_wait)
+        return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
 
 
 async def _drain_running_tasks(orch: Orchestrator) -> None:
@@ -79,17 +87,21 @@ async def orch(tmp_path):
 
 
 async def _create_project_with_workspace(
-    db, project_id: str = "p-1", name: str = "alpha",
+    db,
+    project_id: str = "p-1",
+    name: str = "alpha",
     workspace_path: str = "/tmp/test-workspace",
 ) -> None:
     """Create a project and an associated workspace so task execution succeeds."""
     await db.create_project(Project(id=project_id, name=name))
-    await db.create_workspace(Workspace(
-        id=f"ws-{project_id}",
-        project_id=project_id,
-        workspace_path=workspace_path,
-        source_type=RepoSourceType.LINK,
-    ))
+    await db.create_workspace(
+        Workspace(
+            id=f"ws-{project_id}",
+            project_id=project_id,
+            workspace_path=workspace_path,
+            source_type=RepoSourceType.LINK,
+        )
+    )
 
 
 async def _run_cycle_and_wait(orch):
@@ -136,12 +148,16 @@ class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
-                                         agent_type="claude"))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Do it", status=TaskStatus.READY,
-        ))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Do it",
+                status=TaskStatus.READY,
+            )
+        )
 
         await _run_cycle_and_wait(orch)
 
@@ -151,13 +167,17 @@ class TestOrchestratorLifecycle:
     async def test_failed_task_retries(self, orch):
         orch._adapter_factory = MockAdapterFactory(result=AgentResult.FAILED)
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
-                                         agent_type="claude"))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Do it", status=TaskStatus.READY,
-            max_retries=2,
-        ))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Do it",
+                status=TaskStatus.READY,
+                max_retries=2,
+            )
+        )
 
         await _run_cycle_and_wait(orch)
 
@@ -167,16 +187,18 @@ class TestOrchestratorLifecycle:
         assert task.retry_count == 1
 
     async def test_paused_on_token_exhaustion(self, orch):
-        orch._adapter_factory = MockAdapterFactory(
-            result=AgentResult.PAUSED_TOKENS
-        )
+        orch._adapter_factory = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
-                                         agent_type="claude"))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Do it", status=TaskStatus.READY,
-        ))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Do it",
+                status=TaskStatus.READY,
+            )
+        )
 
         await _run_cycle_and_wait(orch)
 
@@ -186,16 +208,25 @@ class TestOrchestratorLifecycle:
 
     async def test_dependencies_block_scheduling(self, orch):
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
-                                         agent_type="claude"))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="First",
-            description="Do first", status=TaskStatus.DEFINED,
-        ))
-        await orch.db.create_task(Task(
-            id="t-2", project_id="p-1", title="Second",
-            description="Do second", status=TaskStatus.DEFINED,
-        ))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="First",
+                description="Do first",
+                status=TaskStatus.DEFINED,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="Second",
+                description="Do second",
+                status=TaskStatus.DEFINED,
+            )
+        )
         await orch.db.add_dependency("t-2", depends_on="t-1")
 
         # t-1 has no deps so it gets promoted to READY and executed.
@@ -235,6 +266,8 @@ def _make_plan_toucher(workspace):
             os.utime(root_plan, None)
 
     return _touch_plan_files
+
+
 class TestAwaitingApprovalNopr:
     """Tests for handling AWAITING_APPROVAL tasks without a PR URL."""
 
@@ -242,13 +275,17 @@ class TestAwaitingApprovalNopr:
         """Task without requires_approval and no pr_url gets auto-completed
         after the grace period."""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="No-PR Task",
-            description="This task has no PR",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=False,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="No-PR Task",
+                description="This task has no PR",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=False,
+                pr_url=None,
+            )
+        )
 
         # Backdate updated_at so the grace period has elapsed
         await orch.db._db.execute(
@@ -268,13 +305,17 @@ class TestAwaitingApprovalNopr:
         """Task without requires_approval should NOT be auto-completed while
         still within the grace period."""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Fresh Task",
-            description="Just entered AWAITING_APPROVAL",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=False,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Fresh Task",
+                description="Just entered AWAITING_APPROVAL",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=False,
+                pr_url=None,
+            )
+        )
         # updated_at is set to now by create_task, so grace period hasn't elapsed
 
         orch._last_approval_check = 0.0
@@ -294,13 +335,17 @@ class TestAwaitingApprovalNopr:
         orch.set_notify_callback(capture_notify)
 
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Manual Review",
-            description="Needs manual review",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=True,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Manual Review",
+                description="Needs manual review",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=True,
+                pr_url=None,
+            )
+        )
 
         orch._last_approval_check = 0.0
         await orch._check_awaiting_approval()
@@ -319,13 +364,17 @@ class TestAwaitingApprovalNopr:
         orch.set_notify_callback(capture_notify)
 
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Manual Review",
-            description="Needs manual review",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=True,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Manual Review",
+                description="Needs manual review",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=True,
+                pr_url=None,
+            )
+        )
 
         # First call sends a reminder
         orch._last_approval_check = 0.0
@@ -347,13 +396,17 @@ class TestAwaitingApprovalNopr:
         orch.set_notify_callback(capture_notify)
 
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Old Task",
-            description="Been here a while",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=True,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Old Task",
+                description="Been here a while",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=True,
+                pr_url=None,
+            )
+        )
 
         # Backdate so the task looks like it's been stuck for 25 hours
         await orch.db._db.execute(
@@ -372,16 +425,21 @@ class TestAwaitingApprovalNopr:
     async def test_cleanup_reminder_tracking_on_completion(self, orch):
         """When a task leaves AWAITING_APPROVAL, its reminder entry is removed."""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Manual Review",
-            description="Needs manual review",
-            status=TaskStatus.AWAITING_APPROVAL,
-            requires_approval=True,
-            pr_url=None,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Manual Review",
+                description="Needs manual review",
+                status=TaskStatus.AWAITING_APPROVAL,
+                requires_approval=True,
+                pr_url=None,
+            )
+        )
 
         async def noop_notify(msg, project_id=None):
             pass
+
         orch.set_notify_callback(noop_notify)
 
         orch._last_approval_check = 0.0
@@ -398,19 +456,27 @@ class TestAwaitingApprovalNopr:
     async def test_pr_task_still_checked_normally(self, orch):
         """Tasks WITH a pr_url should still go through the PR-check path."""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_repo(RepoConfig(
-            id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.INIT,
-            url="", default_branch="main",
-            source_path="/tmp/fake-checkout",
-        ))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="PR Task",
-            description="Has a PR",
-            status=TaskStatus.AWAITING_APPROVAL,
-            pr_url="https://github.com/org/repo/pull/1",
-            repo_id="repo-1",
-        ))
+        await orch.db.create_repo(
+            RepoConfig(
+                id="repo-1",
+                project_id="p-1",
+                source_type=RepoSourceType.INIT,
+                url="",
+                default_branch="main",
+                source_path="/tmp/fake-checkout",
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="PR Task",
+                description="Has a PR",
+                status=TaskStatus.AWAITING_APPROVAL,
+                pr_url="https://github.com/org/repo/pull/1",
+                repo_id="repo-1",
+            )
+        )
 
         # The git check will fail (no real checkout) but the task should not
         # be auto-completed or reminded — only the PR path runs.
@@ -420,6 +486,8 @@ class TestAwaitingApprovalNopr:
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.AWAITING_APPROVAL
         assert "t-1" not in orch._no_pr_reminded_at
+
+
 class TestPlanApprovalBlocking:
     """Tests that plan subtasks are NOT promoted until the plan is approved."""
 
@@ -438,9 +506,7 @@ class TestPlanApprovalBlocking:
         await _drain_running_tasks(o)
         await o.shutdown()
 
-    async def test_subtasks_blocked_while_parent_awaiting_plan_approval(
-        self, orch_with_workspace
-    ):
+    async def test_subtasks_blocked_while_parent_awaiting_plan_approval(self, orch_with_workspace):
         """Plan subtasks must stay DEFINED when parent is AWAITING_PLAN_APPROVAL."""
         orch, workspace = orch_with_workspace
 
@@ -448,21 +514,32 @@ class TestPlanApprovalBlocking:
 
         # Create parent task in AWAITING_PLAN_APPROVAL
         parent = Task(
-            id="t-plan", project_id="p-1", title="Plan Task",
-            description="Create plan", status=TaskStatus.AWAITING_PLAN_APPROVAL,
+            id="t-plan",
+            project_id="p-1",
+            title="Plan Task",
+            description="Create plan",
+            status=TaskStatus.AWAITING_PLAN_APPROVAL,
         )
         await orch.db.create_task(parent)
 
         # Create subtasks that would normally be promoted
         sub1 = Task(
-            id="t-sub-1", project_id="p-1", title="Sub 1",
-            description="First subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-plan", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
         )
         sub2 = Task(
-            id="t-sub-2", project_id="p-1", title="Sub 2",
-            description="Second subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-plan", is_plan_subtask=True,
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
@@ -478,9 +555,7 @@ class TestPlanApprovalBlocking:
         assert s1.status == TaskStatus.DEFINED, "Sub 1 should stay DEFINED"
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED"
 
-    async def test_subtasks_promoted_after_plan_approved(
-        self, orch_with_workspace
-    ):
+    async def test_subtasks_promoted_after_plan_approved(self, orch_with_workspace):
         """After parent transitions to COMPLETED, first subtask gets promoted."""
         orch, workspace = orch_with_workspace
 
@@ -488,21 +563,32 @@ class TestPlanApprovalBlocking:
 
         # Create parent in AWAITING_PLAN_APPROVAL
         parent = Task(
-            id="t-plan", project_id="p-1", title="Plan Task",
-            description="Create plan", status=TaskStatus.AWAITING_PLAN_APPROVAL,
+            id="t-plan",
+            project_id="p-1",
+            title="Plan Task",
+            description="Create plan",
+            status=TaskStatus.AWAITING_PLAN_APPROVAL,
         )
         await orch.db.create_task(parent)
 
         # Create chained subtasks with blocking dep on parent
         sub1 = Task(
-            id="t-sub-1", project_id="p-1", title="Sub 1",
-            description="First subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-plan", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
         )
         sub2 = Task(
-            id="t-sub-2", project_id="p-1", title="Sub 2",
-            description="Second subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-plan", is_plan_subtask=True,
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
@@ -510,8 +596,7 @@ class TestPlanApprovalBlocking:
         await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
 
         # Simulate plan approval: transition parent to COMPLETED
-        await orch.db.transition_task("t-plan", TaskStatus.COMPLETED,
-                                       context="plan_approved")
+        await orch.db.transition_task("t-plan", TaskStatus.COMPLETED, context="plan_approved")
 
         # Now run _check_defined_tasks — first subtask should promote
         await orch._check_defined_tasks()
@@ -520,6 +605,7 @@ class TestPlanApprovalBlocking:
         s2 = await orch.db.get_task("t-sub-2")
         assert s1.status == TaskStatus.READY, "Sub 1 should be READY after approval"
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED (deps not met)"
+
 
 class TestIsLastSubtask:
     """Tests for the _is_last_subtask helper."""
@@ -541,14 +627,23 @@ class TestIsLastSubtask:
     async def test_single_subtask_is_last(self, orch_with_workspace):
         orch = orch_with_workspace
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-parent", project_id="p-1", title="Parent",
-            description="Parent task", status=TaskStatus.COMPLETED,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-parent",
+                project_id="p-1",
+                title="Parent",
+                description="Parent task",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         sub = Task(
-            id="t-sub-1", project_id="p-1", title="Only Sub",
-            description="The only subtask", status=TaskStatus.COMPLETED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Only Sub",
+            description="The only subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         await orch.db.create_task(sub)
         assert await orch._is_last_subtask(sub) is True
@@ -556,19 +651,32 @@ class TestIsLastSubtask:
     async def test_not_last_when_sibling_incomplete(self, orch_with_workspace):
         orch = orch_with_workspace
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-parent", project_id="p-1", title="Parent",
-            description="Parent task", status=TaskStatus.COMPLETED,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-parent",
+                project_id="p-1",
+                title="Parent",
+                description="Parent task",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         sub1 = Task(
-            id="t-sub-1", project_id="p-1", title="Sub 1",
-            description="First subtask", status=TaskStatus.COMPLETED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         sub2 = Task(
-            id="t-sub-2", project_id="p-1", title="Sub 2",
-            description="Second subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
@@ -577,24 +685,36 @@ class TestIsLastSubtask:
     async def test_is_last_when_all_siblings_completed(self, orch_with_workspace):
         orch = orch_with_workspace
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_task(Task(
-            id="t-parent", project_id="p-1", title="Parent",
-            description="Parent task", status=TaskStatus.COMPLETED,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-parent",
+                project_id="p-1",
+                title="Parent",
+                description="Parent task",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         sub1 = Task(
-            id="t-sub-1", project_id="p-1", title="Sub 1",
-            description="First subtask", status=TaskStatus.COMPLETED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         sub2 = Task(
-            id="t-sub-2", project_id="p-1", title="Sub 2",
-            description="Second subtask", status=TaskStatus.COMPLETED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
         assert await orch._is_last_subtask(sub2) is True
-
 
 
 class TestPrepareWorkspaceCleanDefault:
@@ -616,27 +736,39 @@ class TestPrepareWorkspaceCleanDefault:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(
-            id="p-1", name="alpha",
-            repo_url="https://github.com/org/myrepo.git",
-            repo_default_branch="develop",
-        ))
-        await orch.db.create_agent(Agent(
-            id="a-1", name="agent-1", agent_type="claude",
-        ))
+        await orch.db.create_project(
+            Project(
+                id="p-1",
+                name="alpha",
+                repo_url="https://github.com/org/myrepo.git",
+                repo_default_branch="develop",
+            )
+        )
+        await orch.db.create_agent(
+            Agent(
+                id="a-1",
+                name="agent-1",
+                agent_type="claude",
+            )
+        )
 
         task = Task(
-            id="t-1", project_id="p-1", title="Regular Task",
+            id="t-1",
+            project_id="p-1",
+            title="Regular Task",
             description="A normal task",
             status=TaskStatus.READY,
         )
         await orch.db.create_task(task)
 
-        await orch.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=str(workspace),
-            source_type=RepoSourceType.CLONE,
-        ))
+        await orch.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=str(workspace),
+                source_type=RepoSourceType.CLONE,
+            )
+        )
 
         agent = await orch.db.get_agent("a-1")
 
@@ -735,11 +867,14 @@ class TestPhaseVerifyNormalTask:
         await o.db.create_project(Project(id="p-1", name="alpha"))
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
-        await o.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await o.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
 
         mock_git = MagicMock()
@@ -757,13 +892,16 @@ class TestPhaseVerifyNormalTask:
 
     def _make_ctx(self, orch, task, ws_path):
         from src.models import PipelineContext
+
         return PipelineContext(
             task=task,
             agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
-            workspace_path=ws_path, workspace_id="ws-1",
-            repo=RepoConfig(id="r-1", project_id="p-1",
-                            source_type=RepoSourceType.LINK, default_branch="main"),
+            workspace_path=ws_path,
+            workspace_id="ws-1",
+            repo=RepoConfig(
+                id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, default_branch="main"
+            ),
             default_branch="main",
         )
 
@@ -772,9 +910,14 @@ class TestPhaseVerifyNormalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-1", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-1",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-1",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
 
         ws = await orch.db.get_workspace("ws-1")
@@ -788,9 +931,14 @@ class TestPhaseVerifyNormalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-2", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-2",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-2",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-2",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
 
         # Agent left workspace on task branch instead of default
@@ -807,9 +955,14 @@ class TestPhaseVerifyNormalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-3", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-3",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-3",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
 
         orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
@@ -825,9 +978,14 @@ class TestPhaseVerifyNormalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-4", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-4",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-4",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-4",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
 
         # First _arun call is for "behind" check (returns "0" = ok),
@@ -857,11 +1015,14 @@ class TestPhaseVerifyApprovalTask:
         await o.db.create_project(Project(id="p-1", name="alpha"))
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
-        await o.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await o.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
 
         mock_git = MagicMock()
@@ -869,9 +1030,7 @@ class TestPhaseVerifyApprovalTask:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
-        mock_git.afind_open_pr = AsyncMock(
-            return_value="https://github.com/org/repo/pull/42"
-        )
+        mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
         mock_git._arun = AsyncMock(return_value="0")
         o.git = mock_git
 
@@ -881,13 +1040,16 @@ class TestPhaseVerifyApprovalTask:
 
     def _make_ctx(self, orch, task, ws_path):
         from src.models import PipelineContext
+
         return PipelineContext(
             task=task,
             agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
-            workspace_path=ws_path, workspace_id="ws-1",
-            repo=RepoConfig(id="r-1", project_id="p-1",
-                            source_type=RepoSourceType.LINK, default_branch="main"),
+            workspace_path=ws_path,
+            workspace_id="ws-1",
+            repo=RepoConfig(
+                id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, default_branch="main"
+            ),
             default_branch="main",
         )
 
@@ -896,9 +1058,15 @@ class TestPhaseVerifyApprovalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-1", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-1",
-                    status=TaskStatus.IN_PROGRESS, requires_approval=True)
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-1",
+            status=TaskStatus.IN_PROGRESS,
+            requires_approval=True,
+        )
         await orch.db.create_task(task)
 
         ws = await orch.db.get_workspace("ws-1")
@@ -913,9 +1081,15 @@ class TestPhaseVerifyApprovalTask:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-2", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-2",
-                    status=TaskStatus.IN_PROGRESS, requires_approval=True)
+        task = Task(
+            id="t-2",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-2",
+            status=TaskStatus.IN_PROGRESS,
+            requires_approval=True,
+        )
         await orch.db.create_task(task)
 
         # On task branch but no PR
@@ -945,32 +1119,46 @@ class TestPhaseVerifyIntermediateSubtask:
         await o.db.create_project(Project(id="p-1", name="alpha"))
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
-        await o.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await o.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
 
         # Parent task
         parent = Task(
-            id="t-parent", project_id="p-1", title="Parent Plan",
-            description="Plan", status=TaskStatus.COMPLETED,
+            id="t-parent",
+            project_id="p-1",
+            title="Parent Plan",
+            description="Plan",
+            status=TaskStatus.COMPLETED,
             branch_name="task/t-parent/parent-plan",
         )
         await o.db.create_task(parent)
 
         # Two subtasks: sub1 is completing (intermediate), sub2 is pending
         sub1 = Task(
-            id="t-sub-1", project_id="p-1", title="Step 1",
-            description="First subtask", status=TaskStatus.IN_PROGRESS,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-1",
+            project_id="p-1",
+            title="Step 1",
+            description="First subtask",
+            status=TaskStatus.IN_PROGRESS,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
             branch_name="task/t-parent/parent-plan",
         )
         sub2 = Task(
-            id="t-sub-2", project_id="p-1", title="Step 2",
-            description="Second subtask", status=TaskStatus.DEFINED,
-            parent_task_id="t-parent", is_plan_subtask=True,
+            id="t-sub-2",
+            project_id="p-1",
+            title="Step 2",
+            description="Second subtask",
+            status=TaskStatus.DEFINED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
         )
         await o.db.create_task(sub1)
         await o.db.create_task(sub2)
@@ -978,9 +1166,7 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
-        mock_git.aget_current_branch = AsyncMock(
-            return_value="task/t-parent/parent-plan"
-        )
+        mock_git.aget_current_branch = AsyncMock(return_value="task/t-parent/parent-plan")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git._arun = AsyncMock(return_value="0")
@@ -992,13 +1178,16 @@ class TestPhaseVerifyIntermediateSubtask:
 
     def _make_ctx(self, orch, task, ws_path):
         from src.models import PipelineContext
+
         return PipelineContext(
             task=task,
             agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
-            workspace_path=ws_path, workspace_id="ws-1",
-            repo=RepoConfig(id="r-1", project_id="p-1",
-                            source_type=RepoSourceType.LINK, default_branch="main"),
+            workspace_path=ws_path,
+            workspace_id="ws-1",
+            repo=RepoConfig(
+                id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, default_branch="main"
+            ),
             default_branch="main",
         )
 
@@ -1044,11 +1233,14 @@ class TestVerificationReopen:
         await o.db.create_project(Project(id="p-1", name="alpha"))
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
-        await o.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await o.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
 
         yield o
@@ -1059,9 +1251,14 @@ class TestVerificationReopen:
         """First failure reopens task to READY and adds verification_feedback context."""
         orch = pipeline_orch
 
-        task = Task(id="t-1", project_id="p-1", title="Test",
-                    description="Original description",
-                    status=TaskStatus.IN_PROGRESS, branch_name="feature-1")
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="Original description",
+            status=TaskStatus.IN_PROGRESS,
+            branch_name="feature-1",
+        )
         await orch.db.create_task(task)
 
         failures = ["You left uncommitted changes."]
@@ -1085,19 +1282,26 @@ class TestVerificationReopen:
         """Returns False after max_verification_retries are exhausted."""
         orch = pipeline_orch
 
-        task = Task(id="t-2", project_id="p-1", title="Test",
-                    description="Original description",
-                    status=TaskStatus.IN_PROGRESS, branch_name="feature-2")
+        task = Task(
+            id="t-2",
+            project_id="p-1",
+            title="Test",
+            description="Original description",
+            status=TaskStatus.IN_PROGRESS,
+            branch_name="feature-2",
+        )
         await orch.db.create_task(task)
 
         # Simulate 2 previous verification_feedback entries (max is 2)
         await orch.db.add_task_context(
-            "t-2", type="verification_feedback",
+            "t-2",
+            type="verification_feedback",
             label="Git Verification Feedback",
             content="attempt 1",
         )
         await orch.db.add_task_context(
-            "t-2", type="verification_feedback",
+            "t-2",
+            type="verification_feedback",
             label="Git Verification Feedback",
             content="attempt 2",
         )
@@ -1132,11 +1336,14 @@ class TestCompletionPipelineVerify:
         await o.db.create_project(Project(id="p-1", name="alpha"))
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
-        await o.db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path=ws_path,
-            source_type=RepoSourceType.LINK,
-        ))
+        await o.db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path=ws_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
 
         # Mock git — default: everything passes verification
@@ -1156,13 +1363,16 @@ class TestCompletionPipelineVerify:
 
     def _make_ctx(self, orch, task, ws_path):
         from src.models import PipelineContext
+
         return PipelineContext(
             task=task,
             agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
-            workspace_path=ws_path, workspace_id="ws-1",
-            repo=RepoConfig(id="r-1", project_id="p-1",
-                            source_type=RepoSourceType.LINK, default_branch="main"),
+            workspace_path=ws_path,
+            workspace_id="ws-1",
+            repo=RepoConfig(
+                id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, default_branch="main"
+            ),
             default_branch="main",
         )
 
@@ -1171,9 +1381,14 @@ class TestCompletionPipelineVerify:
         orch = pipeline_orch
         from src.models import PhaseResult
 
-        task = Task(id="t-1", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-1",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-1",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-1")
 
@@ -1204,9 +1419,14 @@ class TestCompletionPipelineVerify:
         """Pipeline returns completed_ok=False when verify phase returns STOP."""
         orch = pipeline_orch
 
-        task = Task(id="t-2", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-2",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-2",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-2",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-2")
 
@@ -1223,9 +1443,14 @@ class TestCompletionPipelineVerify:
         """Pipeline returns completed_ok=True when verify phase passes."""
         orch = pipeline_orch
 
-        task = Task(id="t-3", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-3",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-3",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-3")
 
@@ -1244,9 +1469,14 @@ class TestCompletionPipelineVerify:
         # Make verify phase raise an exception
         orch._phase_verify = AsyncMock(side_effect=RuntimeError("verify exploded"))
 
-        task = Task(id="t-4", project_id="p-1", title="Test",
-                    description="test", branch_name="feature-4",
-                    status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            id="t-4",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-4",
+            status=TaskStatus.IN_PROGRESS,
+        )
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-4")
 

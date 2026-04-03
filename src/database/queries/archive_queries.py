@@ -30,18 +30,34 @@ class ArchiveQueryMixin:
             "preferred_workspace_id, attachments, auto_approve_plan, "
             "created_at, updated_at, archived_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (task.id, task.project_id, task.parent_task_id, task.repo_id,
-             task.title, task.description, task.priority, task.status.value,
-             task.verification_type.value, task.retry_count, task.max_retries,
-             task.assigned_agent_id, task.branch_name, task.resume_after,
-             int(task.requires_approval), task.pr_url, task.plan_source,
-             int(task.is_plan_subtask),
-             task.task_type.value if task.task_type else None,
-             task.profile_id,
-             task.preferred_workspace_id,
-             json.dumps(task.attachments) if task.attachments else "[]",
-             int(task.auto_approve_plan),
-             0.0, 0.0, now),
+            (
+                task.id,
+                task.project_id,
+                task.parent_task_id,
+                task.repo_id,
+                task.title,
+                task.description,
+                task.priority,
+                task.status.value,
+                task.verification_type.value,
+                task.retry_count,
+                task.max_retries,
+                task.assigned_agent_id,
+                task.branch_name,
+                task.resume_after,
+                int(task.requires_approval),
+                task.pr_url,
+                task.plan_source,
+                int(task.is_plan_subtask),
+                task.task_type.value if task.task_type else None,
+                task.profile_id,
+                task.preferred_workspace_id,
+                json.dumps(task.attachments) if task.attachments else "[]",
+                int(task.auto_approve_plan),
+                0.0,
+                0.0,
+                now,
+            ),
         )
         # Read original timestamps from the tasks row directly.
         cursor = await self._db.execute(
@@ -82,7 +98,8 @@ class ArchiveQueryMixin:
         return True
 
     async def archive_completed_tasks(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> list[str]:
         """Archive all COMPLETED tasks. Returns list of archived task IDs."""
         conditions = ["status = ?"]
@@ -92,7 +109,8 @@ class ArchiveQueryMixin:
             vals.append(project_id)
         where = f"WHERE {' AND '.join(conditions)}"
         cursor = await self._db.execute(
-            f"SELECT id FROM tasks {where}", vals,
+            f"SELECT id FROM tasks {where}",
+            vals,
         )
         rows = await cursor.fetchall()
         task_ids = [r["id"] for r in rows]
@@ -114,8 +132,7 @@ class ArchiveQueryMixin:
         cutoff = time.time() - older_than_seconds
         placeholders = ", ".join("?" for _ in statuses)
         cursor = await self._db.execute(
-            f"SELECT id FROM tasks "
-            f"WHERE status IN ({placeholders}) AND updated_at <= ?",
+            f"SELECT id FROM tasks WHERE status IN ({placeholders}) AND updated_at <= ?",
             [*statuses, cutoff],
         )
         rows = await cursor.fetchall()
@@ -127,7 +144,9 @@ class ArchiveQueryMixin:
         return task_ids
 
     async def list_archived_tasks(
-        self, project_id: str | None = None, limit: int = 50,
+        self,
+        project_id: str | None = None,
+        limit: int = 50,
     ) -> list[dict]:
         """Return archived tasks as dicts, newest archived first."""
         conditions: list[str] = []
@@ -137,8 +156,7 @@ class ArchiveQueryMixin:
             vals.append(project_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = await self._db.execute(
-            f"SELECT * FROM archived_tasks {where} "
-            "ORDER BY archived_at DESC LIMIT ?",
+            f"SELECT * FROM archived_tasks {where} ORDER BY archived_at DESC LIMIT ?",
             vals + [limit],
         )
         rows = await cursor.fetchall()
@@ -146,9 +164,7 @@ class ArchiveQueryMixin:
 
     async def get_archived_task(self, task_id: str) -> dict | None:
         """Return a single archived task as a dict, or *None* if not found."""
-        cursor = await self._db.execute(
-            "SELECT * FROM archived_tasks WHERE id = ?", (task_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM archived_tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -182,28 +198,23 @@ class ArchiveQueryMixin:
             task_type=TaskType(archived["task_type"]) if archived["task_type"] else None,
         )
         await self.create_task(task)
-        await self._db.execute(
-            "DELETE FROM archived_tasks WHERE id = ?", (task_id,)
-        )
+        await self._db.execute("DELETE FROM archived_tasks WHERE id = ?", (task_id,))
         await self._db.commit()
         return True
 
     async def delete_archived_task(self, task_id: str) -> bool:
         """Permanently delete an archived task. Returns *True* if deleted."""
-        cursor = await self._db.execute(
-            "SELECT id FROM archived_tasks WHERE id = ?", (task_id,)
-        )
+        cursor = await self._db.execute("SELECT id FROM archived_tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         if not row:
             return False
-        await self._db.execute(
-            "DELETE FROM archived_tasks WHERE id = ?", (task_id,)
-        )
+        await self._db.execute("DELETE FROM archived_tasks WHERE id = ?", (task_id,))
         await self._db.commit()
         return True
 
     async def count_archived_tasks(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> int:
         """Return the total count of archived tasks."""
         conditions: list[str] = []
@@ -213,7 +224,8 @@ class ArchiveQueryMixin:
             vals.append(project_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = await self._db.execute(
-            f"SELECT COUNT(*) as cnt FROM archived_tasks {where}", vals,
+            f"SELECT COUNT(*) as cnt FROM archived_tasks {where}",
+            vals,
         )
         row = await cursor.fetchone()
         return row["cnt"] if row else 0

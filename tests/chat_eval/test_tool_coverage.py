@@ -32,9 +32,8 @@ def test_all_tools_have_test_cases():
     tested_tools = _all_tested_tool_names()
 
     untested = all_tools - tested_tools
-    assert not untested, (
-        f"{len(untested)} tool(s) have no test cases:\n"
-        + "\n".join(f"  - {name}" for name in sorted(untested))
+    assert not untested, f"{len(untested)} tool(s) have no test cases:\n" + "\n".join(
+        f"  - {name}" for name in sorted(untested)
     )
 
 
@@ -55,9 +54,8 @@ def test_no_duplicate_case_ids():
     cases = load_all_cases()
     ids = [c.id for c in cases]
     duplicates = [id_ for id_ in ids if ids.count(id_) > 1]
-    assert not duplicates, (
-        f"Duplicate test case IDs found:\n"
-        + "\n".join(f"  - {id_}" for id_ in sorted(set(duplicates)))
+    assert not duplicates, f"Duplicate test case IDs found:\n" + "\n".join(
+        f"  - {id_}" for id_ in sorted(set(duplicates))
     )
 
 

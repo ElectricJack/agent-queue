@@ -66,11 +66,11 @@ LIMIT_TOTAL_CHARS = 6000
 class EmbedStyle(Enum):
     """High-level visual styles with associated color and icon."""
 
-    SUCCESS  = (0x2ECC71, "\u2705")   # Green  / white check mark
-    ERROR    = (0xE74C3C, "\u274C")   # Red    / cross mark
-    WARNING  = (0xF39C12, "\u26A0\uFE0F")  # Amber  / warning sign
-    INFO     = (0x3498DB, "\u2139\uFE0F")   # Blue   / information
-    CRITICAL = (0x992D22, "\U0001F6A8")     # Dark red / rotating light
+    SUCCESS = (0x2ECC71, "\u2705")  # Green  / white check mark
+    ERROR = (0xE74C3C, "\u274c")  # Red    / cross mark
+    WARNING = (0xF39C12, "\u26a0\ufe0f")  # Amber  / warning sign
+    INFO = (0x3498DB, "\u2139\ufe0f")  # Blue   / information
+    CRITICAL = (0x992D22, "\U0001f6a8")  # Dark red / rotating light
 
     def __init__(self, color: int, icon: str) -> None:
         self.color = color
@@ -82,31 +82,31 @@ class EmbedStyle(Enum):
 # ---------------------------------------------------------------------------
 
 STATUS_COLORS: dict[str, int] = {
-    TaskStatus.DEFINED.value:            0x95A5A6,  # Gray
-    TaskStatus.READY.value:              0x3498DB,  # Blue
-    TaskStatus.ASSIGNED.value:           0x9B59B6,  # Purple
-    TaskStatus.IN_PROGRESS.value:        0xF39C12,  # Amber
-    TaskStatus.WAITING_INPUT.value:      0x1ABC9C,  # Teal
-    TaskStatus.PAUSED.value:             0x7F8C8D,  # Dark gray
-    TaskStatus.AWAITING_APPROVAL.value:  0xE67E22,  # Orange
+    TaskStatus.DEFINED.value: 0x95A5A6,  # Gray
+    TaskStatus.READY.value: 0x3498DB,  # Blue
+    TaskStatus.ASSIGNED.value: 0x9B59B6,  # Purple
+    TaskStatus.IN_PROGRESS.value: 0xF39C12,  # Amber
+    TaskStatus.WAITING_INPUT.value: 0x1ABC9C,  # Teal
+    TaskStatus.PAUSED.value: 0x7F8C8D,  # Dark gray
+    TaskStatus.AWAITING_APPROVAL.value: 0xE67E22,  # Orange
     TaskStatus.AWAITING_PLAN_APPROVAL.value: 0xF39C12,  # Amber
-    TaskStatus.COMPLETED.value:          0x2ECC71,  # Green
-    TaskStatus.FAILED.value:             0xE74C3C,  # Red
-    TaskStatus.BLOCKED.value:            0x992D22,  # Dark red
+    TaskStatus.COMPLETED.value: 0x2ECC71,  # Green
+    TaskStatus.FAILED.value: 0xE74C3C,  # Red
+    TaskStatus.BLOCKED.value: 0x992D22,  # Dark red
 }
 
 STATUS_EMOJIS: dict[str, str] = {
-    TaskStatus.DEFINED.value:            "\u26AA",       # white circle
-    TaskStatus.READY.value:              "\U0001F535",    # blue circle
-    TaskStatus.ASSIGNED.value:           "\U0001F4CB",    # clipboard
-    TaskStatus.IN_PROGRESS.value:        "\U0001F7E1",    # yellow circle
-    TaskStatus.WAITING_INPUT.value:      "\U0001F4AC",    # speech balloon
-    TaskStatus.PAUSED.value:             "\u23F8\uFE0F",  # pause button
-    TaskStatus.AWAITING_APPROVAL.value:  "\u231B",        # hourglass
-    TaskStatus.AWAITING_PLAN_APPROVAL.value: "\U0001F4CB",  # clipboard
-    TaskStatus.COMPLETED.value:          "\U0001F7E2",    # green circle
-    TaskStatus.FAILED.value:             "\U0001F534",    # red circle
-    TaskStatus.BLOCKED.value:            "\u26D4",        # no entry
+    TaskStatus.DEFINED.value: "\u26aa",  # white circle
+    TaskStatus.READY.value: "\U0001f535",  # blue circle
+    TaskStatus.ASSIGNED.value: "\U0001f4cb",  # clipboard
+    TaskStatus.IN_PROGRESS.value: "\U0001f7e1",  # yellow circle
+    TaskStatus.WAITING_INPUT.value: "\U0001f4ac",  # speech balloon
+    TaskStatus.PAUSED.value: "\u23f8\ufe0f",  # pause button
+    TaskStatus.AWAITING_APPROVAL.value: "\u231b",  # hourglass
+    TaskStatus.AWAITING_PLAN_APPROVAL.value: "\U0001f4cb",  # clipboard
+    TaskStatus.COMPLETED.value: "\U0001f7e2",  # green circle
+    TaskStatus.FAILED.value: "\U0001f534",  # red circle
+    TaskStatus.BLOCKED.value: "\u26d4",  # no entry
 }
 
 _DEFAULT_FOOTER = "AgentQueue"
@@ -119,22 +119,22 @@ _ELLIPSIS = "\u2026"
 # Maps task properties to display tags shown before task titles in list views.
 # These help users quickly identify what kind of work item they're looking at.
 TYPE_TAGS: dict[str, str] = {
-    "plan_subtask": "📋",     # Auto-generated from a plan
-    "has_subtasks": "📦",     # Parent task with children
-    "has_pr": "🔗",           # Has an associated pull request
+    "plan_subtask": "📋",  # Auto-generated from a plan
+    "has_subtasks": "📦",  # Parent task with children
+    "has_pr": "🔗",  # Has an associated pull request
     "approval_required": "🔒",  # Requires human approval
 }
 
 # Maps TaskType enum values to display emojis for visual task categorization.
 TASK_TYPE_EMOJIS: dict[str, str] = {
-    "feature":  "✨",
-    "bugfix":   "🐛",
+    "feature": "✨",
+    "bugfix": "🐛",
     "refactor": "♻️",
-    "test":     "🧪",
-    "docs":     "📝",
-    "chore":    "🔧",
+    "test": "🧪",
+    "docs": "📝",
+    "chore": "🔧",
     "research": "🔍",
-    "plan":     "📋",
+    "plan": "📋",
 }
 
 
@@ -190,10 +190,10 @@ def progress_bar(
 # ---------------------------------------------------------------------------
 
 # Unicode box-drawing characters for tree rendering
-TREE_BRANCH = "├── "   # Non-last child
-TREE_LAST   = "└── "   # Last child
-TREE_PIPE   = "│   "   # Continuation pipe
-TREE_SPACE  = "    "    # No continuation
+TREE_BRANCH = "├── "  # Non-last child
+TREE_LAST = "└── "  # Last child
+TREE_PIPE = "│   "  # Continuation pipe
+TREE_SPACE = "    "  # No continuation
 
 
 def format_tree_task(
@@ -504,12 +504,14 @@ def tree_view_embed(
         fields.append(("Total Tasks", str(total), True))
 
     if hidden_completed > 0:
-        fields.append((
-            "Hidden",
-            f"{hidden_completed} completed task{'s' if hidden_completed != 1 else ''} hidden — "
-            "use `show_completed:True` to include",
-            False,
-        ))
+        fields.append(
+            (
+                "Hidden",
+                f"{hidden_completed} completed task{'s' if hidden_completed != 1 else ''} hidden — "
+                "use `show_completed:True` to include",
+                False,
+            )
+        )
 
     if extra_fields:
         fields.extend(extra_fields)
@@ -633,7 +635,7 @@ def status_embed(
         embed = status_embed("COMPLETED", "Task Finished", description="All done.")
     """
     color = STATUS_COLORS.get(status, 0x95A5A6)
-    emoji = STATUS_EMOJIS.get(status, "\u26AA")
+    emoji = STATUS_EMOJIS.get(status, "\u26aa")
 
     full_title = f"{emoji} {truncate(title, LIMIT_TITLE - 3)}"
 
@@ -768,9 +770,7 @@ def tree_view_embed(
     agg_subtotal = sum(e.get("subtask_total", 0) for e in trees)
     if agg_subtotal > 0:
         pct = agg_completed / agg_subtotal * 100
-        summary_parts.append(
-            f"{agg_completed}/{agg_subtotal} subtasks complete ({pct:.0f}%)"
-        )
+        summary_parts.append(f"{agg_completed}/{agg_subtotal} subtasks complete ({pct:.0f}%)")
 
     # Aggregate subtask status breakdown across all trees for non-completed stats
     agg_by_status: dict[str, int] = {}
@@ -794,7 +794,7 @@ def tree_view_embed(
     for st_val, label in _SUBTASK_STAT_ORDER:
         cnt = agg_by_status.get(st_val, 0)
         if cnt > 0:
-            emoji = STATUS_EMOJIS.get(st_val, "\u26AA")
+            emoji = STATUS_EMOJIS.get(st_val, "\u26aa")
             subtask_stat_parts.append(f"{emoji} {cnt} {label}")
     if subtask_stat_parts:
         summary_parts.append(" \u00b7 ".join(subtask_stat_parts))
@@ -811,7 +811,7 @@ def tree_view_embed(
     if status_counts:
         status_lines: list[str] = []
         for st, count in status_counts.items():
-            emoji = STATUS_EMOJIS.get(st, "\u26AA")
+            emoji = STATUS_EMOJIS.get(st, "\u26aa")
             label = st.replace("_", " ").title()
             status_lines.append(f"{emoji} {label}: **{count}**")
         metadata_value = " \u00b7 ".join(status_lines)

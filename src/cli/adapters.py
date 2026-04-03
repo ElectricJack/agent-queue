@@ -47,6 +47,7 @@ class DictProxy:
 # Enum helpers
 # ---------------------------------------------------------------------------
 
+
 def _to_task_status(value: str | TaskStatus | None) -> TaskStatus | None:
     if value is None:
         return None
@@ -94,6 +95,7 @@ def _to_agent_state(value: str | AgentState | None) -> AgentState | None:
 # ---------------------------------------------------------------------------
 # Typed proxy constructors
 # ---------------------------------------------------------------------------
+
 
 def task_proxy(d: dict[str, Any]) -> DictProxy:
     """Wrap a CommandHandler task dict for formatters.

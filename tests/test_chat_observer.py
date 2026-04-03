@@ -1,4 +1,5 @@
 """Tests for ChatObserver — Stage 1 keyword filter and batching."""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
@@ -7,16 +8,27 @@ import pytest
 def _make_observer(keywords=None, enabled=True):
     from src.config import ObservationConfig
     from src.chat_observer import ChatObserver
+
     config = ObservationConfig(
-        enabled=enabled, batch_window_seconds=60, max_buffer_size=20,
+        enabled=enabled,
+        batch_window_seconds=60,
+        max_buffer_size=20,
         stage1_keywords=keywords or [],
     )
-    return ChatObserver(config, project_profiles={"my-game": {"particle", "renderer", "unity", "shader"}})
+    return ChatObserver(
+        config, project_profiles={"my-game": {"particle", "renderer", "unity", "shader"}}
+    )
 
 
 def _make_message(content, project_id="my-game", author="alice", is_bot=False):
-    return {"channel_id": 12345, "project_id": project_id, "author": author,
-            "content": content, "timestamp": 1000.0, "is_bot": is_bot}
+    return {
+        "channel_id": 12345,
+        "project_id": project_id,
+        "author": author,
+        "content": content,
+        "timestamp": 1000.0,
+        "is_bot": is_bot,
+    }
 
 
 def test_stage1_passes_project_term():
@@ -46,7 +58,10 @@ def test_stage1_rejects_short_generic():
 
 def test_stage1_passes_long_message():
     obs = _make_observer()
-    assert obs.passes_stage1(_make_message("I've been thinking about the architecture and " * 10)) is True
+    assert (
+        obs.passes_stage1(_make_message("I've been thinking about the architecture and " * 10))
+        is True
+    )
 
 
 def test_stage1_rejects_bot_messages():
@@ -61,7 +76,10 @@ def test_stage1_disabled():
 
 def test_stage1_unknown_project():
     obs = _make_observer()
-    assert obs.passes_stage1(_make_message("something about particles", project_id="unknown-proj")) is False
+    assert (
+        obs.passes_stage1(_make_message("something about particles", project_id="unknown-proj"))
+        is False
+    )
 
 
 def test_buffer_message():
@@ -100,6 +118,7 @@ def test_on_message_disabled_drops_all():
 def test_batch_ready_by_count():
     from src.config import ObservationConfig
     from src.chat_observer import ChatObserver
+
     config = ObservationConfig(max_buffer_size=3)
     obs = ChatObserver(config, project_profiles={"my-game": {"particle"}})
     for i in range(3):
@@ -173,6 +192,7 @@ def test_full_flow_filter_buffer_flush():
 def test_observer_config_wired_to_supervisor_config():
     """ObservationConfig is accessible from SupervisorConfig."""
     from src.config import AppConfig
+
     app = AppConfig()
     assert hasattr(app.supervisor, "observation")
     assert app.supervisor.observation.enabled is True
