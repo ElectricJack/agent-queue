@@ -1,17 +1,71 @@
 """Tests for ToolRegistry -- tool categorization and on-demand loading."""
 
 import pytest
+from unittest.mock import MagicMock
 
 from src.tool_registry import ToolRegistry, _TOOL_CATEGORIES
 
 
-def _make_tool(name: str) -> dict:
+def _make_tool(name: str, category: str | None = None) -> dict:
     """Create a minimal tool definition dict."""
-    return {
+    tool = {
         "name": name,
         "description": f"Tool: {name}",
         "input_schema": {"type": "object", "properties": {}},
     }
+    if category:
+        tool["_category"] = category
+    return tool
+
+
+# Plugin-contributed tools (moved from _TOOL_CATEGORIES to internal plugins).
+# These are normally registered by aq-git, aq-files, aq-memory, aq-notes.
+_PLUGIN_TOOLS = [
+    _make_tool("get_git_status", "git"),
+    _make_tool("git_commit", "git"),
+    _make_tool("git_pull", "git"),
+    _make_tool("git_push", "git"),
+    _make_tool("git_create_branch", "git"),
+    _make_tool("git_merge", "git"),
+    _make_tool("git_create_pr", "git"),
+    _make_tool("create_github_repo", "git"),
+    _make_tool("generate_readme", "git"),
+    _make_tool("git_changed_files", "git"),
+    _make_tool("git_log", "git"),
+    _make_tool("git_branch", "git"),
+    _make_tool("git_checkout", "git"),
+    _make_tool("git_diff", "git"),
+    _make_tool("create_branch", "git"),
+    _make_tool("checkout_branch", "git"),
+    _make_tool("commit_changes", "git"),
+    _make_tool("push_branch", "git"),
+    _make_tool("merge_branch", "git"),
+    _make_tool("read_file", "files"),
+    _make_tool("write_file", "files"),
+    _make_tool("edit_file", "files"),
+    _make_tool("glob_files", "files"),
+    _make_tool("grep", "files"),
+    _make_tool("search_files", "files"),
+    _make_tool("list_directory", "files"),
+    _make_tool("run_command", "files"),
+    _make_tool("memory_search", "memory"),
+    _make_tool("memory_reindex", "memory"),
+    _make_tool("memory_compact", "memory"),
+    _make_tool("memory_stats", "memory"),
+    _make_tool("edit_project_profile", "memory"),
+    _make_tool("list_notes", "notes"),
+    _make_tool("write_note", "notes"),
+    _make_tool("read_note", "notes"),
+    _make_tool("append_note", "notes"),
+    _make_tool("delete_note", "notes"),
+]
+
+
+def _mock_plugin_registry():
+    """Create a mock plugin registry that returns plugin-contributed tools."""
+    mock = MagicMock()
+    mock.get_all_tool_definitions.return_value = list(_PLUGIN_TOOLS)
+    return mock
 
 
 def _build_sample_tools() -> list[dict]:
@@ -26,7 +80,6 @@ def _build_sample_tools() -> list[dict]:
         "list_tasks",
         "edit_task",
         "get_task",
-        "memory_search",
     ]:
         tools.append(_make_tool(core_name))
     return tools
@@ -34,8 +87,10 @@ def _build_sample_tools() -> list[dict]:
 
 @pytest.fixture
 def registry():
-    """Registry initialized with sample tools (no chat_agent import)."""
-    return ToolRegistry(tools=_build_sample_tools())
+    """Registry initialized with sample tools + mock plugin registry."""
+    reg = ToolRegistry(tools=_build_sample_tools())
+    reg.set_plugin_registry(_mock_plugin_registry())
+    return reg
 
 
 def test_registry_has_core_tools(registry):
@@ -138,11 +193,12 @@ def _get_command_handler():
 
 
 def _make_handler():
-    """Build a CommandHandler with mocked orchestrator/config."""
+    """Build a CommandHandler with mocked orchestrator/config and plugin registry."""
     CommandHandler = _get_command_handler()
     orch = MagicMock()
     orch.db = AsyncMock()
     orch.config = MagicMock()
+    orch.plugin_registry = _mock_plugin_registry()
     config = MagicMock()
     config.workspace_dir = "/tmp/test"
     return CommandHandler(orch, config)
@@ -261,8 +317,9 @@ def test_load_tools_idempotent(registry):
 
 def test_total_tool_count_preserved():
     """Verify no tools were lost in the split."""
-    registry = ToolRegistry(tools=_build_sample_tools())
-    all_tools = registry.get_all_tools()
+    reg = ToolRegistry(tools=_build_sample_tools())
+    reg.set_plugin_registry(_mock_plugin_registry())
+    all_tools = reg.get_all_tools()
     all_names = {t["name"] for t in all_tools}
 
     # These are the new navigation tools added by the registry
@@ -292,9 +349,12 @@ def test_total_tool_count_preserved():
         "list_tasks",
         "edit_task",
         "get_task",
-        "memory_search",
     ]:
         assert name in all_names, f"Core tool {name} missing"
+
+    # Plugin tools should be present
+    for name in ["git_push", "read_file", "memory_search"]:
+        assert name in all_names, f"Plugin tool {name} missing"
 
 
 # -------------------------------------------------------------------
@@ -319,12 +379,20 @@ def test_core_tools_are_compact(registry):
 # -------------------------------------------------------------------
 
 
-def test_all_tools_have_descriptions():
-    """Every tool should have a non-empty description."""
+def _real_registry():
+    """Create a ToolRegistry with real definitions + mock plugin tools."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
 
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
-    for tool in registry.get_all_tools():
+    reg = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    reg.set_plugin_registry(_mock_plugin_registry())
+    return reg
+
+
+def test_all_tools_have_descriptions():
+    """Every tool in _ALL_TOOL_DEFINITIONS should have a non-empty description."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+    for tool in _ALL_TOOL_DEFINITIONS:
         assert "description" in tool, f"Tool {tool['name']} missing description"
         assert len(tool["description"]) > 10, (
             f"Tool {tool['name']} has too-short description: {tool['description']}"
@@ -332,11 +400,10 @@ def test_all_tools_have_descriptions():
 
 
 def test_all_tools_have_input_schema():
-    """Every tool should have an input_schema."""
+    """Every tool in _ALL_TOOL_DEFINITIONS should have an input_schema."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
 
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
-    for tool in registry.get_all_tools():
+    for tool in _ALL_TOOL_DEFINITIONS:
         assert "input_schema" in tool, f"Tool {tool['name']} missing input_schema"
 
 
@@ -359,63 +426,49 @@ def test_system_prompt_is_compact():
 
 def test_search_relevant_categories_git_query():
     """Git-related queries should return the git category."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("commit and push my changes")
     assert "git" in cats
 
 
 def test_search_relevant_categories_project_query():
     """Project management queries should return the project category."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("create a new project with workspace")
     assert "project" in cats
 
 
 def test_search_relevant_categories_files_query():
     """File-related queries should return the files category."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("read the file and grep for errors")
     assert "files" in cats
 
 
 def test_search_relevant_categories_hooks_query():
     """Hook-related queries should return the hooks category."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("create a hook that fires on schedule")
     assert "hooks" in cats
 
 
 def test_search_relevant_categories_memory_query():
     """Memory-related queries should return the memory category."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("reindex memory and compact notes")
     assert "memory" in cats
 
 
 def test_search_relevant_categories_empty_query():
     """Empty query should return no categories."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("")
     assert cats == []
 
 
 def test_search_relevant_categories_max_limit():
     """Should return at most max_categories results."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories(
         "commit project files hooks memory agent system",
         max_categories=2,
@@ -425,9 +478,7 @@ def test_search_relevant_categories_max_limit():
 
 def test_search_relevant_categories_respects_min_score():
     """Very unrelated queries should return few or no categories."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
-
-    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    registry = _real_registry()
     cats = registry.search_relevant_categories("xyzzy plugh frobozz", min_score=0.5)
     assert len(cats) == 0
 
@@ -526,7 +577,7 @@ class TestCompressToolSchema:
 
     def test_get_core_tools_compressed_with_real_tools(self):
         """Compressed real tools should be significantly smaller."""
-        reg = ToolRegistry()  # uses real _ALL_TOOL_DEFINITIONS
+        reg = _real_registry()
         full = reg.get_core_tools(compressed=False)
         comp = reg.get_core_tools(compressed=True)
         assert len(full) == len(comp)
@@ -540,7 +591,7 @@ class TestCompressToolSchema:
 
     def test_get_category_tools_compressed_with_real_tools(self):
         """Compressed real category tools should be smaller."""
-        reg = ToolRegistry()  # uses real _ALL_TOOL_DEFINITIONS
+        reg = _real_registry()
         full = reg.get_category_tools("git", compressed=False)
         comp = reg.get_category_tools("git", compressed=True)
         assert full is not None and comp is not None

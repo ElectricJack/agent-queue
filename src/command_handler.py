@@ -6090,6 +6090,8 @@ feature work stuck on feature branches across multiple workspaces.
         """List available tool categories with metadata."""
         from src.tool_registry import ToolRegistry
         registry = ToolRegistry()
+        if hasattr(self.orchestrator, "plugin_registry") and self.orchestrator.plugin_registry:
+            registry.set_plugin_registry(self.orchestrator.plugin_registry)
         return {"categories": registry.get_categories()}
 
     async def _cmd_load_tools(self, args: dict) -> dict:
@@ -6102,6 +6104,8 @@ feature work stuck on feature branches across multiple workspaces.
         from src.tool_registry import ToolRegistry
         category = args.get("category", "")
         registry = ToolRegistry()
+        if hasattr(self.orchestrator, "plugin_registry") and self.orchestrator.plugin_registry:
+            registry.set_plugin_registry(self.orchestrator.plugin_registry)
         names = registry.get_category_tool_names(category)
         if names is None:
             available = [c["name"] for c in registry.get_categories()]

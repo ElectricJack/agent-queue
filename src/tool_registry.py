@@ -2636,9 +2636,14 @@ class ToolRegistry:
         # Score each categorized tool, track best and sum per category
         category_best: dict[str, float] = {}
         category_sum: dict[str, float] = {}
-        for tool_name, category in _TOOL_CATEGORIES.items():
-            tool = self._all_tools.get(tool_name)
-            if not tool:
+
+        # Merge built-in categories with plugin tools
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+
+        for tool_name, tool in merged.items():
+            category = self._tool_category(tool_name, tool)
+            if not category:
                 continue
             tool_tokens = self._tokenize(self._tool_search_text(tool))
             if not tool_tokens:

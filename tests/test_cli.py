@@ -535,23 +535,29 @@ class TestAutoCommands:
         assert "cmd" not in cli.commands
 
     def test_category_groups_exist(self):
-        """Each tool_registry category should have a CLI group."""
+        """Categories with static tool definitions should have a CLI group.
+
+        Note: git, memory, file, and notes categories are now provided by
+        internal plugins and are not available at CLI init time (CLI talks
+        directly to DB, no daemon/plugins). Those groups will be added when
+        CLI plugin integration is implemented.
+        """
         from src.cli.app import cli
 
-        expected = {"git", "memory", "file", "system", "task", "hook", "agent", "project", "plugin"}
+        # Categories that still have static _TOOL_CATEGORIES entries
+        expected = {"system", "task", "hook", "agent", "project", "plugin"}
         actual = set(cli.commands.keys())
         for group in expected:
             assert group in actual, f"Missing CLI group: {group}"
 
-    def test_git_group_has_commands(self):
-        """The git group should have auto-generated commands."""
+    def test_system_group_has_commands(self):
+        """The system group should have auto-generated commands."""
         from src.cli.app import cli
 
-        git_group = cli.commands.get("git")
-        assert git_group is not None
-        assert len(git_group.commands) > 10
-        # Prefix should be stripped: git_commit → commit
-        assert "commit" in git_group.commands
+        system_group = cli.commands.get("system")
+        assert system_group is not None
+        assert len(system_group.commands) > 3
+        assert "reload-config" in system_group.commands
 
     def test_task_group_merges_handcrafted_and_auto(self):
         """Task group should contain both hand-crafted and auto-generated commands."""
@@ -596,11 +602,9 @@ class TestAutoCommands:
         """Auto-generated command should have --help from JSON Schema."""
         from src.cli.app import cli
 
-        # memory_search is now under aq memory as "search"
-        result = runner.invoke(cli, ["memory", "search", "--help"])
+        # Use a command that's still in static _ALL_TOOL_DEFINITIONS
+        result = runner.invoke(cli, ["system", "reload-config", "--help"])
         assert result.exit_code == 0
-        assert "--project-id" in result.output
-        assert "--query" in result.output
 
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
