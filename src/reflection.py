@@ -149,7 +149,10 @@ class ReflectionEngine:
             "3. Are there relevant rules I should evaluate now? Use "
             "`browse_rules` to check.\n"
             "4. Did I learn anything that should update memory?\n"
-            "5. Is there follow-up work needed?\n\n"
+            "5. Is there follow-up work needed?\n"
+            "6. Did I modify files directly when I should have created a task? "
+            "An agent with a full context window and isolated workspace would "
+            "do this better. If so, note this for improvement.\n\n"
             "If follow-up is needed, take action. Otherwise, confirm completion.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
@@ -165,7 +168,9 @@ class ReflectionEngine:
             f"**Results:**\n{results_text}\n\n"
             "Quick check:\n"
             "1. Did the action succeed?\n"
-            "2. Any directly relevant rules to check?\n\n"
+            "2. Any directly relevant rules to check?\n"
+            "3. Did I do inline file work (write/edit) that should have been "
+            "delegated as a task? Agents execute code changes more reliably.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
         )
