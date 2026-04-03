@@ -373,7 +373,8 @@ def _build_cli_formatters():
         "git_commit", "git_pull", "git_push", "git_create_branch",
         "git_merge", "git_create_pr", "create_branch", "checkout_branch",
         "commit_changes", "push_branch", "merge_branch", "git_checkout",
-        "create_github_repo", "generate_readme",
+        "create_github_repo", "generate_readme", "git_branch",
+        "git_changed_files",
     ):
         formatters[cmd] = FormatterSpec(render=_fmt_git_action, extract=None, many=False)
     return formatters

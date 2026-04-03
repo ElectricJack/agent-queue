@@ -217,12 +217,27 @@ def _fmt_memory_stats(data: dict):
     )
 
 
+def _fmt_confirmation(data: dict):
+    from src.cli.formatters import format_confirmation
+    return format_confirmation(data)
+
+
+def _fmt_text_content(data: dict):
+    from src.cli.formatters import format_text_content
+    return format_text_content(data)
+
+
 def _build_cli_formatters():
     """Return CLI formatter specs for memory commands."""
     from src.cli.formatter_registry import FormatterSpec
     return {
         "memory_search": FormatterSpec(render=_fmt_memory_search, extract=None, many=False),
         "memory_stats": FormatterSpec(render=_fmt_memory_stats, extract=None, many=False),
+        "compact_memory": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "memory_reindex": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "edit_project_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "regenerate_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "view_profile": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
     }
 
 

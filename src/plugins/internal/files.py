@@ -288,6 +288,7 @@ def _build_cli_formatters():
         "list_directory": FormatterSpec(render=_fmt_directory_listing, extract=None, many=False),
         "glob_files": FormatterSpec(render=_fmt_glob_results, extract=None, many=False),
         "grep": FormatterSpec(render=_fmt_grep_results, extract=None, many=False),
+        "search_files": FormatterSpec(render=_fmt_grep_results, extract=None, many=False),
     }
     for cmd in ("write_file", "edit_file"):
         formatters[cmd] = FormatterSpec(render=_fmt_file_status, extract=None, many=False)

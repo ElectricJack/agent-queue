@@ -240,8 +240,11 @@ def _build_cli_formatters():
         "list_notes": FormatterSpec(render=_fmt_note_list, extract=None, many=False),
         "read_note": FormatterSpec(render=_fmt_note_content, extract=None, many=False),
     }
-    for cmd in ("write_note", "append_note", "delete_note"):
+    for cmd in ("write_note", "append_note", "delete_note", "promote_note"):
         formatters[cmd] = FormatterSpec(render=_fmt_note_status, extract=None, many=False)
+    formatters["compare_specs_notes"] = FormatterSpec(
+        render=_fmt_note_list, extract=None, many=False,
+    )
     return formatters
 
 
