@@ -438,6 +438,9 @@ class AgentQueueBot(commands.Bot):
         print(f"Discord bot connected as {self.user} (guild: {self.config.discord.guild_id})")
         self._boot_time = discord.utils.utcnow().timestamp()
 
+        # Make bot accessible to CommandHandler for tools like send_message
+        self.orchestrator._discord_bot = self
+
         # Cache channels
         if self.config.discord.guild_id:
             guild = self.get_guild(int(self.config.discord.guild_id))
