@@ -41,6 +41,13 @@ ruff check aq_vibecop/
 | `vibecop_check` | Check specific files |
 | `vibecop_status` | Report installation status, version, detectors |
 
+## Auto-Scan & Events
+
+- **Task completion scan:** When `auto_scan_on_complete` is enabled (default), the plugin automatically scans the task workspace when a task completes, diffing against the base branch.
+- **Weekly project scan:** A `@cron` job runs Monday 6 AM (configurable via `weekly_scan_schedule`) and scans all active projects. Creates tasks for error-severity findings.
+- **Custom events:** Emits `vibecop.scan_completed` and `vibecop.findings_detected` for other plugins to consume.
+- **Discord notifications:** Posts findings summaries to the project's Discord channel with error/warning/info counts and top findings.
+
 ## Config
 
 Set via `aq plugin config vibecop key=value`:
@@ -53,3 +60,5 @@ Set via `aq plugin config vibecop key=value`:
 | `auto_install` | bool | false | Auto-install vibecop if missing |
 | `scan_timeout` | int | 60 | Command timeout in seconds |
 | `enforce_vibecop_checkout` | bool | true | Inject rule requiring vibecop scan before task completion |
+| `auto_scan_on_complete` | bool | true | Auto-scan workspace on task completion |
+| `weekly_scan_schedule` | string | 0 6 * * 1 | Cron schedule for weekly full scan |
