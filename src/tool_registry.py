@@ -107,26 +107,7 @@ CATEGORIES: dict[str, CategoryMeta] = {
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
-    # git
-    "get_git_status": "git",
-    "git_commit": "git",
-    "git_pull": "git",
-    "git_push": "git",
-    "git_create_branch": "git",
-    "git_merge": "git",
-    "git_create_pr": "git",
-    "git_changed_files": "git",
-    "git_log": "git",
-    "git_diff": "git",
-    "checkout_branch": "git",
-    "git_branch": "git",
-    "git_checkout": "git",
-    "create_branch": "git",
-    "commit_changes": "git",
-    "push_branch": "git",
-    "merge_branch": "git",
-    "create_github_repo": "git",
-    "generate_readme": "git",
+    # git — migrated to aq-git internal plugin (src/plugins/internal/git.py)
     # project
     "list_projects": "project",
     "create_project": "project",
@@ -184,28 +165,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_rule": "hooks",
     "refresh_hooks": "hooks",
     # memory
-    "memory_search": "memory",
-    "memory_stats": "memory",
-    "memory_reindex": "memory",
-    "view_profile": "memory",
-    "edit_project_profile": "memory",
-    "regenerate_profile": "memory",
-    "compact_memory": "memory",
-    "list_notes": "memory",
-    "write_note": "memory",
-    "delete_note": "memory",
-    "read_note": "memory",
-    "append_note": "memory",
-    "promote_note": "memory",
-    "compare_specs_notes": "memory",
-    # files
-    "read_file": "files",
-    "write_file": "files",
-    "edit_file": "files",
-    "glob_files": "files",
-    "grep": "files",
-    "search_files": "files",
-    "list_directory": "files",
+    # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory.py)
+    # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
+    # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results
     "stop_task": "task",
     "restart_task": "task",
@@ -1177,133 +1139,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["task_id"],
         },
     },
-    {
-        "name": "read_file",
-        "description": "Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
-                "max_lines": {
-                    "type": "integer",
-                    "description": "Max lines to return (default 2000)",
-                    "default": 2000,
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1)",
-                    "default": 1,
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of lines to read. If set, overrides max_lines.",
-                },
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "Write content to a file. Creates the file (and parent directories) if it doesn't exist, or overwrites if it does. Path can be absolute or relative to the workspaces root.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
-                "content": {"type": "string", "description": "Content to write to the file"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "edit_file",
-        "description": (
-            "Perform targeted string replacement in a file. Finds old_string and replaces it with new_string. "
-            "The old_string must be unique in the file (include surrounding context to disambiguate). "
-            "Use replace_all=true to replace every occurrence."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
-                "old_string": {"type": "string", "description": "Exact text to find and replace"},
-                "new_string": {"type": "string", "description": "Replacement text"},
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace all occurrences (default false — requires unique match)",
-                    "default": False,
-                },
-            },
-            "required": ["path", "old_string", "new_string"],
-        },
-    },
-    {
-        "name": "glob_files",
-        "description": (
-            "Find files matching a glob pattern (e.g. '**/*.py', 'src/**/*.ts'). "
-            "Returns matching file paths sorted by modification time."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Glob pattern to match files (e.g. '**/*.py', 'src/components/**/*.tsx')"},
-                "path": {"type": "string", "description": "Directory to search in (absolute or relative to workspaces root)"},
-            },
-            "required": ["pattern", "path"],
-        },
-    },
-    {
-        "name": "grep",
-        "description": (
-            "Search file contents using regex patterns (ripgrep-style). Supports context lines, "
-            "case-insensitive search, file type filtering, and multiple output modes."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                "path": {"type": "string", "description": "File or directory to search in (absolute or relative to workspaces root)"},
-                "context": {
-                    "type": "integer",
-                    "description": "Number of context lines before and after each match",
-                    "default": 0,
-                },
-                "case_insensitive": {
-                    "type": "boolean",
-                    "description": "Case-insensitive search (default false)",
-                    "default": False,
-                },
-                "glob": {
-                    "type": "string",
-                    "description": "Glob pattern to filter files (e.g. '*.py', '*.{ts,tsx}')",
-                },
-                "output_mode": {
-                    "type": "string",
-                    "enum": ["content", "files_with_matches", "count"],
-                    "description": "Output mode: 'content' shows matching lines, 'files_with_matches' shows file paths only, 'count' shows match counts (default 'content')",
-                    "default": "content",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of result lines to return (default 100)",
-                    "default": 100,
-                },
-            },
-            "required": ["pattern", "path"],
-        },
-    },
-    {
-        "name": "list_directory",
-        "description": "List files and directories at a given path within a project workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "path": {"type": "string", "description": "Relative path within the workspace (default: root)"},
-                "workspace": {"type": "string", "description": "Workspace name or ID (default: first workspace)"},
-            },
-            "required": ["project_id"],
-        },
-    },
+    # File tools (read_file, write_file, edit_file, glob_files, grep,
+    # list_directory) migrated to aq-files internal plugin.
+    # Their tool definitions are now registered by FilesPlugin.initialize().
     {
         "name": "run_command",
         "description": "Execute a shell command in a workspace directory. Use when the user asks to run tests, check status, etc.",
@@ -1340,24 +1178,7 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
-    {
-        "name": "search_files",
-        "description": "Search for files or content in a workspace. Use 'grep' mode to search file contents, 'find' mode to search filenames.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Search pattern (regex for grep, glob for find)"},
-                "path": {"type": "string", "description": "Directory to search in (absolute or relative to workspaces root)"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["grep", "find"],
-                    "description": "Search mode: 'grep' for content, 'find' for filenames",
-                    "default": "grep",
-                },
-            },
-            "required": ["pattern", "path"],
-        },
-    },
+    # search_files — migrated to aq-files internal plugin
     {
         "name": "get_token_usage",
         "description": "Get token usage breakdown by project or task.",
@@ -1510,135 +1331,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["hook_id"],
         },
     },
-    {
-        "name": "list_notes",
-        "description": "List all notes for a project. Returns name (filename), title, and size for each note. Use the 'name' field when calling read_note or delete_note.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "write_note",
-        "description": "Create or overwrite a project note. Use to create new notes or to save edits (read with read_file first, modify, then write back).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "title": {"type": "string", "description": "Note title (used as filename)"},
-                "content": {"type": "string", "description": "Full markdown content"},
-            },
-            "required": ["project_id", "title", "content"],
-        },
-    },
-    {
-        "name": "delete_note",
-        "description": (
-            "Delete a project note by title. If the user provides the note name "
-            "directly, call this tool immediately — no need to list notes first."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "title": {
-                    "type": "string",
-                    "description": (
-                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
-                        "or the note title"
-                    ),
-                },
-            },
-            "required": ["project_id", "title"],
-        },
-    },
-    {
-        "name": "read_note",
-        "description": (
-            "Read a note's full contents. Returns the markdown content, path, and size. "
-            "Use the 'name' field from list_notes (e.g. 'my-note.md') as the title parameter."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "title": {
-                    "type": "string",
-                    "description": (
-                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
-                        "or the note title"
-                    ),
-                },
-            },
-            "required": ["project_id", "title"],
-        },
-    },
-    {
-        "name": "append_note",
-        "description": (
-            "Append content to an existing note, or create a new note if it doesn't exist. "
-            "Ideal for stream-of-consciousness input — appends with a blank line separator "
-            "without needing to read and rewrite the entire note."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "title": {"type": "string", "description": "Note title (used as filename)"},
-                "content": {
-                    "type": "string",
-                    "description": "Content to append (or initial content if creating)",
-                },
-            },
-            "required": ["project_id", "title", "content"],
-        },
-    },
-    {
-        "name": "promote_note",
-        "description": (
-            "Explicitly incorporate a note's content into the project profile. "
-            "Uses an LLM to integrate the note's knowledge into the living profile "
-            "rather than simply appending. Use when a note contains important knowledge "
-            "that should be part of the project's core understanding."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "title": {
-                    "type": "string",
-                    "description": (
-                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
-                        "or the note title"
-                    ),
-                },
-            },
-            "required": ["project_id", "title"],
-        },
-    },
-    {
-        "name": "compare_specs_notes",
-        "description": (
-            "List all spec files and note files for a project side by side. "
-            "Returns raw file listings (names, titles, sizes) for gap analysis. "
-            "Use this when the user asks to compare specs with notes or find "
-            "what's missing."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "specs_path": {
-                    "type": "string",
-                    "description": "Override path to specs directory (optional)",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
+    # Notes tools (list_notes, write_note, delete_note, read_note,
+    # append_note, promote_note, compare_specs_notes) migrated to
+    # aq-notes internal plugin.
     {
         "name": "list_prompts",
         "description": (
@@ -1712,201 +1407,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id", "name"],
         },
     },
-    {
-        "name": "get_git_status",
-        "description": (
-            "Get the git status of a project's repository. Shows current branch, "
-            "working tree status, and recent commits. Reports status for all workspaces "
-            "registered to the project, or falls back to the project workspace path. "
-            "Operates on the active project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID (optional — inferred from active project)",
-                },
-            },
-        },
-    },
-    {
-        "name": "git_commit",
-        "description": (
-            "Stage all changes and create a commit in a repository. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string", "description": "Commit message"},
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "git_pull",
-        "description": (
-            "Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not specified. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch": {"type": "string", "description": "Branch name to pull (defaults to current branch)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-        },
-    },
-    {
-        "name": "git_push",
-        "description": (
-            "Push a branch to the remote origin. Defaults to the current branch if not specified. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch": {"type": "string", "description": "Branch name to push (defaults to current branch)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-        },
-    },
-    {
-        "name": "git_create_branch",
-        "description": (
-            "Create and switch to a new git branch in a repository. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "branch_name": {"type": "string", "description": "Name for the new branch"},
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-            "required": ["branch_name"],
-        },
-    },
-    {
-        "name": "git_merge",
-        "description": (
-            "Merge a branch into the default branch. Returns whether the merge "
-            "succeeded or had conflicts (conflicts are automatically aborted). "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "branch_name": {"type": "string", "description": "Branch to merge"},
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "default_branch": {
-                    "type": "string",
-                    "description": "Target branch to merge into (defaults to repo's default branch)",
-                },
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-            "required": ["branch_name"],
-        },
-    },
-    {
-        "name": "git_create_pr",
-        "description": (
-            "Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "PR title"},
-                "body": {"type": "string", "description": "PR description body (optional)", "default": ""},
-                "branch": {"type": "string", "description": "Head branch (defaults to current branch)"},
-                "base": {"type": "string", "description": "Base branch (defaults to repo's default branch)"},
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-            "required": ["title"],
-        },
-    },
-    {
-        "name": "git_changed_files",
-        "description": (
-            "List files changed compared to a base branch. Lighter than a full diff. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "base_branch": {
-                    "type": "string",
-                    "description": "Branch to compare against (defaults to repo's default branch)",
-                },
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-        },
-    },
-    {
-        "name": "git_log",
-        "description": (
-            "Show recent git commits for a project's repository. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "count": {"type": "integer", "description": "Number of commits to show (default 10)", "default": 10},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-        },
-    },
-    {
-        "name": "git_diff",
-        "description": (
-            "Show the git diff for a project's repository. Without base_branch shows working tree changes; "
-            "with base_branch shows diff against that branch. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "base_branch": {"type": "string", "description": "Base branch to diff against (optional — shows working tree diff if omitted)"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-        },
-    },
-    {
-        "name": "checkout_branch",
-        "description": (
-            "Switch to an existing git branch in a project's repository. "
-            "Operates on the active project's repository. "
-            "Use the workspace parameter to target a specific workspace."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch_name": {"type": "string", "description": "Branch name to check out"},
-                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
-            },
-            "required": ["branch_name"],
-        },
-    },
+    # Git tools (get_git_status, git_commit, git_pull, git_push, git_create_branch,
+    # git_merge, git_create_pr, git_changed_files, git_log, git_diff, git_branch,
+    # git_checkout, checkout_branch) migrated to aq-git internal plugin.
     {
         "name": "restart_daemon",
         "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required.",
@@ -2133,149 +1636,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["source"],
         },
     },
-    # --- Memory tools ---
-    {
-        "name": "memory_search",
-        "description": (
-            "Search project memory for relevant context. Returns semantically "
-            "similar past task results, notes, and knowledge-base entries. "
-            "Use this when the user asks about past work, wants to find related "
-            "context, or says 'search memory', 'what do we know about', etc."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to search memory for",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Semantic search query",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 10)",
-                    "default": 10,
-                },
-            },
-            "required": ["project_id", "query"],
-        },
-    },
-    {
-        "name": "memory_stats",
-        "description": (
-            "Get memory index statistics for a project. Shows whether memory "
-            "is enabled, the collection name, embedding provider, and "
-            "auto-recall/auto-remember settings."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to get memory stats for",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "memory_reindex",
-        "description": (
-            "Force a full reindex of a project's memory. Re-scans all markdown "
-            "files in memory/ and notes/ directories, re-embeds changed content, "
-            "and updates the vector index. Use when memory seems stale or after "
-            "bulk file changes."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to reindex memory for",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "view_profile",
-        "description": (
-            "View the project profile — a synthesized understanding of the project's "
-            "architecture, conventions, key decisions, common patterns, and pitfalls. "
-            "The profile evolves automatically as tasks complete."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to view profile for",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "edit_project_profile",
-        "description": (
-            "Replace the project memory profile with new content. Use this to "
-            "manually correct or enhance the project's synthesized understanding."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to edit profile for",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "New profile content (markdown)",
-                },
-            },
-            "required": ["project_id", "content"],
-        },
-    },
-    {
-        "name": "regenerate_profile",
-        "description": (
-            "Force LLM regeneration of the project profile from the full task "
-            "history. Use this when the profile has drifted or you want a fresh "
-            "synthesis of everything the project has learned."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to regenerate profile for",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "compact_memory",
-        "description": (
-            "Trigger memory compaction for a project. Groups task memories "
-            "by age: recent (kept as-is), medium (LLM-summarized into weekly "
-            "digests), old (deleted after digesting). Returns stats on tasks "
-            "inspected, digests created, and files removed."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to compact memory for",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    # analyzer tool definitions removed (Phase 6)
+    # Memory tools (memory_search, memory_stats, memory_reindex, view_profile,
+    # edit_project_profile, regenerate_profile, compact_memory) migrated to
+    # aq-memory internal plugin.
 
     # ------------------------------------------------------------------
     # Rule management tools — primary automation interface exposed via MCP
@@ -2599,299 +1962,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["agent_id"],
         },
     },
-    # --- GitHub operations ---
-    {
-        "name": "create_github_repo",
-        "description": (
-            "Create a new GitHub repository via the gh CLI. "
-            "Supports private/public repos, org or personal."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Repository name"},
-                "private": {
-                    "type": "boolean",
-                    "description": "Create private repo (default true)",
-                    "default": True,
-                },
-                "org": {
-                    "type": "string",
-                    "description": "GitHub org — omit for personal repo",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Optional repo description",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    # --- Plugin management tools ---
-    {
-        "name": "plugin_list",
-        "description": "List all installed plugins with their status.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "plugin_info",
-        "description": "Get detailed information about a specific plugin.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_install",
-        "description": "Install a plugin from a git repository URL.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "Git repository URL for the plugin",
-                },
-                "branch": {
-                    "type": "string",
-                    "description": "Branch to install (optional)",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Override plugin name (optional)",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-    {
-        "name": "plugin_update",
-        "description": "Update an installed plugin to the latest version.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name to update",
-                },
-                "rev": {
-                    "type": "string",
-                    "description": "Specific revision to update to (optional)",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_remove",
-        "description": "Completely remove an installed plugin.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name to remove",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_enable",
-        "description": "Enable a disabled plugin.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name to enable",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_disable",
-        "description": "Disable a plugin without removing it.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name to disable",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_reload",
-        "description": "Reload a plugin (shutdown, reimport, reinitialize).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name to reload",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_config",
-        "description": "Get or set a plugin's configuration.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name",
-                },
-                "config": {
-                    "type": "string",
-                    "description": "New config as JSON string (optional, omit to read current)",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_prompts",
-        "description": "List a plugin's prompt templates.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "plugin_reset_prompts",
-        "description": "Reset a plugin's prompts to defaults from source.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Plugin name",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "generate_readme",
-        "description": (
-            "Generate a README.md from project metadata and commit it "
-            "to the project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {"type": "string", "description": "Human-readable project name"},
-                "description": {"type": "string", "description": "Project description"},
-                "tech_stack": {
-                    "type": "string",
-                    "description": "Comma-separated technologies",
-                },
-            },
-            "required": ["project_id", "name"],
-        },
-    },
-    # --- Git convenience commands ---
-    {
-        "name": "git_branch",
-        "description": (
-            "List branches or create a new branch. If name is provided "
-            "a new branch is created and checked out; otherwise all local "
-            "branches are listed."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {
-                    "type": "string",
-                    "description": "Branch name to create (omit to list branches)",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "git_checkout",
-        "description": "Switch to an existing branch in a project's repo.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "branch": {"type": "string", "description": "Branch name to switch to"},
-            },
-            "required": ["project_id", "branch"],
-        },
-    },
-    {
-        "name": "create_branch",
-        "description": "Create and switch to a new branch in a project's repo.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "branch_name": {"type": "string", "description": "New branch name"},
-            },
-            "required": ["project_id", "branch_name"],
-        },
-    },
-    {
-        "name": "commit_changes",
-        "description": "Stage all changes and commit with a message.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "message": {"type": "string", "description": "Commit message"},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "push_branch",
-        "description": "Push the current (or specified) branch to origin.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "branch_name": {
-                    "type": "string",
-                    "description": "Branch to push (default: current branch)",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "merge_branch",
-        "description": "Merge a branch into the default branch in a project's repo.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "branch_name": {"type": "string", "description": "Branch to merge"},
-            },
-            "required": ["project_id", "branch_name"],
-        },
-    },
+    # GitHub operations + convenience git commands (create_github_repo, generate_readme,
+    # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
+    # migrated to aq-git internal plugin.
     # --- Hook management (direct) ---
     {
         "name": "create_hook",
@@ -3355,6 +2428,26 @@ class ToolRegistry:
         compressed["input_schema"] = compressed_schema
         return compressed
 
+    def _get_plugin_tools(self) -> dict[str, dict]:
+        """Collect plugin-registered tools (keyed by name).
+
+        Plugin tools with ``_category`` are included in category queries.
+        Plugin tools are merged on top of built-in tools (plugin wins on
+        name collision).
+        """
+        if not self._plugin_registry:
+            return {}
+        return {t["name"]: t for t in self._plugin_registry.get_all_tool_definitions()}
+
+    def _tool_category(self, name: str, tool: dict) -> str | None:
+        """Return the category a tool belongs to, or None if core."""
+        # Plugin-declared category takes precedence
+        cat = tool.get("_category")
+        if cat:
+            return cat
+        # Fall back to hardcoded mapping
+        return _TOOL_CATEGORIES.get(name)
+
     def get_core_tools(self, compressed: bool = False) -> list[dict]:
         """Return tool definitions that are always loaded.
 
@@ -3363,11 +2456,14 @@ class ToolRegistry:
 
         Returns:
             List of tool definition dicts for tools not assigned to any
-            category (i.e. not present in ``_TOOL_CATEGORIES``).
+            category (i.e. not present in ``_TOOL_CATEGORIES`` and without
+            a ``_category`` tag from a plugin).
         """
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
         tools = [
-            t for name, t in self._all_tools.items()
-            if name not in _TOOL_CATEGORIES
+            t for name, t in merged.items()
+            if self._tool_category(name, t) is None
         ]
         if compressed:
             return [self.compress_tool_schema(t) for t in tools]
@@ -3395,6 +2491,9 @@ class ToolRegistry:
     ) -> list[dict] | None:
         """Return all tool definitions for a category.
 
+        Includes both hardcoded ``_TOOL_CATEGORIES`` entries and
+        plugin-registered tools with matching ``_category``.
+
         Args:
             category: Category name (e.g. ``"git"``, ``"hooks"``).
             compressed: If True, return minimal schemas for small-context LLMs.
@@ -3405,10 +2504,13 @@ class ToolRegistry:
         """
         if category not in CATEGORIES:
             return None
+
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+
         tools = [
-            self._all_tools[name]
-            for name, cat in _TOOL_CATEGORIES.items()
-            if cat == category and name in self._all_tools
+            t for name, t in merged.items()
+            if self._tool_category(name, t) == category
         ]
         if compressed:
             return [self.compress_tool_schema(t) for t in tools]
@@ -3428,9 +2530,13 @@ class ToolRegistry:
         """
         if category not in CATEGORIES:
             return None
+
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+
         return [
-            name for name, cat in _TOOL_CATEGORIES.items()
-            if cat == category and name in self._all_tools
+            name for name, t in merged.items()
+            if self._tool_category(name, t) == category
         ]
 
     def get_all_tools(self) -> list[dict]:
@@ -3440,10 +2546,9 @@ class ToolRegistry:
             List of every tool definition dict known to the registry,
             including any tools contributed by loaded plugins.
         """
-        tools = list(self._all_tools.values())
-        if self._plugin_registry:
-            tools.extend(self._plugin_registry.get_all_tool_definitions())
-        return tools
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+        return list(merged.values())
 
     # ------------------------------------------------------------------
     # Prompt-based tool search
