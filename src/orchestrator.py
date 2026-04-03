@@ -3852,6 +3852,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 health_server = getattr(self, "_health_server", None)
                 if health_server and self.config.health_check.enabled:
                     plan_url = health_server.get_plan_url(task.id)
+                elif self.config.mcp_server.enabled:
+                    from src.api.health import get_plan_url
+                    plan_url = get_plan_url(task.id)
 
                 # Auto pre-create draft subtasks so approval uses the fast
                 # path (plan_draft_subtasks context exists).  This mirrors

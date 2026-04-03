@@ -88,14 +88,20 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         adapter.platform_name,
     )
 
-    health_server = HealthCheckServer(
-        config=config.health_check,
-        health_provider=lambda: _health_checks(orch, adapter),
-        plan_content_provider=_plan_content,
-    )
-    await health_server.start()
+    # Health check server — use legacy TCP server only when MCP/API server
+    # is disabled (otherwise health endpoints are served by FastAPI).
+    _health_prov = lambda: _health_checks(orch, adapter)  # noqa: E731
+    health_server: HealthCheckServer | None = None
+    if not config.mcp_server.enabled:
+        health_server = HealthCheckServer(
+            config=config.health_check,
+            health_provider=_health_prov,
+            plan_content_provider=_plan_content,
+        )
+        await health_server.start()
 
-    # Make health server accessible to orchestrator for plan URL generation
+    # Make health server accessible to orchestrator for plan URL generation.
+    # When running on FastAPI, the plan URL helper lives in src.api.health.
     orch._health_server = health_server
 
     shutdown_event = asyncio.Event()
@@ -153,7 +159,11 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         async def run_mcp():
             try:
                 from src.embedded_mcp import run_mcp_server
-                await run_mcp_server(orch, config, shutdown_event)
+                await run_mcp_server(
+                    orch, config, shutdown_event,
+                    health_provider=_health_prov,
+                    plan_content_provider=_plan_content,
+                )
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -170,7 +180,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     finally:
         # Shut down adapter, health server, MCP server, and orchestrator
         restart = orch._restart_requested
-        await health_server.stop()
+        if health_server is not None:
+            await health_server.stop()
         await adapter.close()
         if mcp_task is not None:
             mcp_task.cancel()
