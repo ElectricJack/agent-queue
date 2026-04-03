@@ -7,6 +7,7 @@ dependencies = [
     "discord.py>=2.6.0",
     "claude-agent-sdk>=0.1.37",
     "pyyaml>=6.0",
+    "fastapi>=0.135.0",
 ]
 
 [project.optional-dependencies]
@@ -15,12 +16,12 @@ telegram = [
 ]
 mcp = [
     "mcp>=1.0.0",
-    "fastapi>=0.135.0",
 ]
 cli = [
     "click>=8.1",
     "rich>=13.0",
     "prompt-toolkit>=3.0",
+    "agent-queue-api-client",
 ]
 dev = [
     "pytest>=8.0",

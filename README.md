@@ -37,7 +37,8 @@ You:  add a task to add rate limiting to the API
 After cloning, install dev dependencies and set up the pre-commit hooks to enforce formatting:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,cli]"
+pip install -e packages/aq-client      # typed API client (generated)
 pre-commit install
 ```
 
