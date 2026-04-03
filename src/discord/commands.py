@@ -5638,8 +5638,15 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     @bot.tree.command(name="restart", description="Restart the agent-queue daemon")
-    @app_commands.describe(reason="Why are you restarting? (required)")
-    async def restart_command(interaction: discord.Interaction, reason: str):
+    @app_commands.describe(
+        reason="Why are you restarting? (required)",
+        wait_for_tasks="Wait for running tasks to complete before restarting (default: False)",
+    )
+    async def restart_command(
+        interaction: discord.Interaction,
+        reason: str,
+        wait_for_tasks: bool = False,
+    ):
         user_name = interaction.user.display_name
         full_reason = f"User {user_name} requested a restart: {reason}"
 
@@ -5659,12 +5666,22 @@ def setup_commands(bot: commands.Bot) -> None:
         except Exception:
             pass
 
-        desc = f"Agent-queue daemon is restarting…\n**Reason:** {full_reason}"
+        running_count = len(handler.orchestrator._running_tasks)
+
+        if wait_for_tasks and running_count > 0:
+            desc = (
+                f"Agent-queue daemon will restart after {running_count} "
+                f"running task(s) complete…\n**Reason:** {full_reason}"
+            )
+        else:
+            desc = f"Agent-queue daemon is restarting…\n**Reason:** {full_reason}"
         if git_info_parts:
             desc += "\n" + " · ".join(git_info_parts)
 
         await _send_warning(interaction, "Restarting", description=desc)
-        await handler.execute("restart_daemon", {"reason": full_reason})
+        await handler.execute(
+            "restart_daemon", {"reason": full_reason, "wait_for_tasks": wait_for_tasks}
+        )
 
     @bot.tree.command(
         name="shutdown",
@@ -5719,8 +5736,15 @@ def setup_commands(bot: commands.Bot) -> None:
         name="update",
         description="Pull latest source, install deps, and restart the daemon",
     )
-    @app_commands.describe(reason="Why are you updating? (optional, auto-filled if omitted)")
-    async def update_command(interaction: discord.Interaction, reason: str | None = None):
+    @app_commands.describe(
+        reason="Why are you updating? (optional, auto-filled if omitted)",
+        wait_for_tasks="Wait for running tasks to complete before restarting (default: False)",
+    )
+    async def update_command(
+        interaction: discord.Interaction,
+        reason: str | None = None,
+        wait_for_tasks: bool = False,
+    ):
         user_name = interaction.user.display_name
         full_reason = f"User {user_name} requested an update" + (f": {reason}" if reason else "")
 
@@ -5736,7 +5760,10 @@ def setup_commands(bot: commands.Bot) -> None:
         except Exception:
             pass
 
-        result = await handler.execute("update_and_restart", {"reason": full_reason})
+        result = await handler.execute(
+            "update_and_restart",
+            {"reason": full_reason, "wait_for_tasks": wait_for_tasks},
+        )
 
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)

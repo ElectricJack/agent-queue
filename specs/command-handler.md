@@ -1883,12 +1883,15 @@ Pauses, resumes, or checks the status of the orchestrator loop.
 
 Logs a restart notification to the notification channel, then sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal.
 
+When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal.
+
 **Parameters:**
 - `reason` (optional, default `"No reason provided"`): Human-readable reason for the restart. Logged to the notification channel as `"🔄 **Daemon restart initiated** — {reason}"`.
+- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
 
 **Returns on success:**
 ```python
-{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>}
+{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>, "waited_for_tasks": <bool>}
 ```
 
 **Errors:** None expected.
@@ -1899,12 +1902,15 @@ Logs a restart notification to the notification channel, then sends `SIGTERM` to
 
 Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
 
+When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal. The git pull and pip install happen first, so the code is already updated by the time the wait begins.
+
 **Parameters:**
 - `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
+- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
 
 **Returns on success:**
 ```python
-{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>}
+{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>, "waited_for_tasks": <bool>}
 ```
 
 **Errors:**

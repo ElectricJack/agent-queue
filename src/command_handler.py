@@ -6757,17 +6757,39 @@ feature work stuck on feature branches across multiple workspaces.
 
     async def _cmd_restart_daemon(self, args: dict) -> dict:
         reason = args.get("reason", "No reason provided")
+        wait_for_tasks = args.get("wait_for_tasks", False)
+        orch = self.orchestrator
+
+        running_count = len(orch._running_tasks)
+
+        if wait_for_tasks and running_count > 0:
+            # Pause orchestrator so no new tasks are scheduled, then wait
+            orch._paused = True
+            await orch._notify_channel(
+                f"🔄 **Daemon restart pending** — waiting for {running_count} "
+                f"running task(s) to complete\n**Reason:** {reason}"
+            )
+            await orch.wait_for_running_tasks(timeout=300)
+
         # Log the restart reason to the notification channel before restarting
-        await self.orchestrator._notify_channel(
+        await orch._notify_channel(
             f"🔄 **Daemon restart initiated** — {reason}"
         )
-        self.orchestrator._restart_requested = True
+        orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
-        return {"status": "restarting", "message": "Daemon restart initiated", "reason": reason}
+        return {
+            "status": "restarting",
+            "message": "Daemon restart initiated",
+            "reason": reason,
+            "waited_for_tasks": wait_for_tasks and running_count > 0,
+        }
 
     async def _cmd_update_and_restart(self, args: dict) -> dict:
         """Pull the latest source from git and restart the daemon."""
         reason = args.get("reason", "No reason provided")
+        wait_for_tasks = args.get("wait_for_tasks", False)
+        orch = self.orchestrator
+
         # Determine the repo root (where this source lives)
         repo_dir = str(Path(__file__).resolve().parent.parent)
 
@@ -6791,18 +6813,30 @@ feature work stuck on feature branches across multiple workspaces.
             stderr = pip_stderr.strip() or pip_stdout.strip()
             return {"error": f"pip install failed: {stderr}"}
 
+        running_count = len(orch._running_tasks)
+
+        if wait_for_tasks and running_count > 0:
+            # Pause orchestrator so no new tasks are scheduled, then wait
+            orch._paused = True
+            await orch._notify_channel(
+                f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
+                f"running task(s) to complete\n**Reason:** {reason}"
+            )
+            await orch.wait_for_running_tasks(timeout=300)
+
         # Log the update/restart reason to the notification channel
-        await self.orchestrator._notify_channel(
+        await orch._notify_channel(
             f"🔄 **Daemon update & restart initiated** — {reason}"
         )
         # Trigger restart
-        self.orchestrator._restart_requested = True
+        orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
         return {
             "status": "updating",
             "message": "Update pulled and daemon restart initiated",
             "pull_output": pull_output,
             "reason": reason,
+            "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
 
     # -----------------------------------------------------------------------

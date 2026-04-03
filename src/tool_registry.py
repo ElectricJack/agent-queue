@@ -1909,13 +1909,17 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "restart_daemon",
-        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required.",
+        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required. Use wait_for_tasks=true to let running tasks finish before restarting.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
                     "description": "Why the restart is being requested",
+                },
+                "wait_for_tasks": {
+                    "type": "boolean",
+                    "description": "If true, pause orchestrator and wait for running tasks to complete before restarting (up to 5 minutes). Default: false.",
                 },
             },
             "required": ["reason"],
@@ -3014,9 +3018,22 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "update_and_restart",
         "description": (
             "Pull the latest source from git and restart the daemon. "
+            "Use wait_for_tasks=true to let running tasks finish before restarting. "
             "Excluded from MCP by default for safety."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why the update is being requested",
+                },
+                "wait_for_tasks": {
+                    "type": "boolean",
+                    "description": "If true, pause orchestrator and wait for running tasks to complete before restarting (up to 5 minutes). Default: false.",
+                },
+            },
+        },
     },
     {
         "name": "browse_tools",
