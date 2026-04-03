@@ -606,7 +606,7 @@ class RuleManager:
             hook = Hook(
                 id=hook_id,
                 project_id=pid,
-                name=f"Rule: {title or rule_id}",
+                name=title or rule_id,
                 trigger=json.dumps(trigger_config),
                 context_steps="[]",
                 prompt_template=hook_prompt,
