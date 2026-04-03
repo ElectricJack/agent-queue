@@ -571,7 +571,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "create_task",
-        "description": "Create a new task. If no project_id is given, it inherits from the active project; errors if none is set.",
+        "description": "Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces, and can run in parallel. Task descriptions must be completely self-contained with all context the agent needs. If no project_id is given, it inherits from the active project.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -582,7 +582,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Short task title"},
                 "description": {
                     "type": "string",
-                    "description": "Detailed task description for the agent",
+                    "description": "Complete, self-contained instructions for the agent. Include ALL context: file paths, requirements, error messages, expected behavior, relevant code snippets, and design decisions from this conversation. Write as if the agent has never seen this conversation.",
                 },
                 "priority": {
                     "type": "integer",
