@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from .app import cli, console, _run, _get_client
+from .app import cli, console, _run, _get_client, _handle_errors
 
 
 @cli.group()
@@ -27,32 +27,38 @@ def task() -> None:
 )
 @click.option("--active/--all", default=True, help="Show only active tasks (default) or all")
 @click.option("--limit", default=50, help="Maximum number of tasks to display")
+@click.pass_context
+@_handle_errors
 def task_list(
+    ctx: click.Context,
     project: str | None,
     status_filter: str | None,
     active: bool,
     limit: int,
 ) -> None:
     """List tasks with filtering by project, status, and activity."""
-    from src.models import TaskStatus
+    from .adapters import task_proxy
     from .formatters import format_task_table
 
-    async def _run_list():
-        async with _get_client() as client:
-            status = TaskStatus(status_filter) if status_filter else None
-            if status:
-                tasks = await client.list_tasks(project_id=project, status=status)
-            elif active:
-                tasks = await client.list_tasks(project_id=project, active_only=True)
-            else:
-                tasks = await client.list_tasks(project_id=project)
-            return tasks
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    try:
-        tasks = _run(_run_list())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    async def _run_list():
+        async with _get_client(api_url) as client:
+            args = {}
+            if project:
+                args["project_id"] = project
+            if status_filter:
+                args["status"] = status_filter
+            elif active:
+                # Default: hide completed/failed tasks
+                args["include_completed"] = False
+            else:
+                args["include_completed"] = True
+            return await client.execute("list_tasks", args)
+
+    result = _run(_run_list())
+    raw_tasks = result.get("tasks", [])
+    tasks = [task_proxy(t) for t in raw_tasks]
 
     # Sort by priority (highest first), then by status
     status_order = {
@@ -60,7 +66,12 @@ def task_list(
         "AWAITING_APPROVAL": 4, "AWAITING_PLAN_APPROVAL": 5, "VERIFYING": 6,
         "DEFINED": 7, "BLOCKED": 8, "PAUSED": 9, "FAILED": 10, "COMPLETED": 11,
     }
-    tasks.sort(key=lambda t: (status_order.get(t.status.value, 99), -t.priority))
+    tasks.sort(
+        key=lambda t: (
+            status_order.get(t.status.value if t.status else "", 99),
+            -(t.priority or 0),
+        )
+    )
 
     displayed = tasks[:limit]
 
@@ -87,41 +98,33 @@ def task_list(
 
 @task.command("details")
 @click.argument("task_id")
-def task_details(task_id: str) -> None:
+@click.pass_context
+@_handle_errors
+def task_details(ctx: click.Context, task_id: str) -> None:
     """Show complete details for a task."""
+    from .adapters import task_proxy
     from .formatters import format_task_detail
 
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
     async def _run_details():
-        async with _get_client() as client:
-            t = await client.get_task(task_id)
-            if not t:
-                return None, None, None, None
-            deps_on = await client.get_task_dependencies(task_id)
-            dependents = await client.get_task_dependents(task_id)
+        async with _get_client(api_url) as client:
+            return await client.execute("get_task", {"task_id": task_id})
 
-            # Get subtask stats if this is a parent task
-            subtask_stats = None
-            tree = await client.get_task_tree(task_id)
-            if tree and tree.get("children"):
-                children = tree["children"]
-                total = len(children)
-                from src.models import TaskStatus
-                completed = sum(
-                    1 for c in children if c["task"].status == TaskStatus.COMPLETED
-                )
-                subtask_stats = (completed, total)
+    result = _run(_run_details())
+    t = task_proxy(result)
 
-            return t, deps_on, dependents, subtask_stats
+    # Extract dependency info from the get_task response
+    deps_on = [d["id"] for d in result.get("depends_on", [])]
+    dependents = [d["id"] for d in result.get("blocks", [])]
 
-    try:
-        t, deps_on, dependents, subtask_stats = _run(_run_details())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
-
-    if not t:
-        console.print(f"[bold red]Task not found:[/] {task_id}")
-        raise SystemExit(1)
+    # Subtask stats
+    subtask_stats = None
+    subtasks = result.get("subtasks", [])
+    if subtasks:
+        total = len(subtasks)
+        completed = sum(1 for s in subtasks if s.get("status") in ("COMPLETED", "completed"))
+        subtask_stats = (completed, total)
 
     panel = format_task_detail(t, deps_on=deps_on, dependents=dependents, subtask_stats=subtask_stats)
     console.print(panel)
@@ -134,7 +137,10 @@ def task_details(task_id: str) -> None:
 @click.option("--priority", default=None, type=int, help="Priority (1-300)")
 @click.option("--type", "task_type", default=None, help="Task type")
 @click.option("--approval/--no-approval", default=False, help="Require approval")
+@click.pass_context
+@_handle_errors
 def task_create(
+    ctx: click.Context,
     project: str | None,
     title: str | None,
     description: str | None,
@@ -143,7 +149,7 @@ def task_create(
     approval: bool,
 ) -> None:
     """Create a new task (interactive wizard or via flags)."""
-    from .formatters import format_task_detail
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     # If all required fields provided, skip wizard
     if project and title and description:
@@ -156,147 +162,130 @@ def task_create(
             "requires_approval": approval,
         }
     else:
-        # Interactive wizard
+        # Interactive wizard — need project list
         from .menus import task_creation_wizard
 
         async def _get_projects():
-            async with _get_client() as client:
-                projects = await client.list_projects()
-                return [p.id for p in projects]
+            async with _get_client(api_url) as client:
+                result = await client.execute("list_projects")
+                return [p["id"] for p in result.get("projects", [])]
 
-        try:
-            project_ids = _run(_get_projects())
-        except FileNotFoundError as e:
-            console.print(f"[bold red]Error:[/] {e}")
-            raise SystemExit(1)
-
+        project_ids = _run(_get_projects())
         params = task_creation_wizard(project_ids)
         if not params:
             console.print("[dim]Task creation cancelled.[/]")
             return
 
     async def _create():
-        async with _get_client() as client:
-            return await client.create_task(**params)
+        async with _get_client(api_url) as client:
+            return await client.execute("create_task", params)
 
-    try:
-        new_task = _run(_create())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[bold red]Error creating task:[/] {e}")
-        raise SystemExit(1)
-
+    result = _run(_create())
+    task_id = result.get("created", "?")
     console.print()
-    console.print(f"[bold green]Task created:[/] [bold bright_cyan]{new_task.id}[/]")
-    panel = format_task_detail(new_task)
-    console.print(panel)
+    console.print(f"[bold green]Task created:[/] [bold bright_cyan]{task_id}[/]")
+    if result.get("title"):
+        console.print(f"  [dim]{result['title']}[/]")
 
 
 @task.command("approve")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
-def task_approve(task_id: str, yes: bool) -> None:
+@click.pass_context
+@_handle_errors
+def task_approve(ctx: click.Context, task_id: str, yes: bool) -> None:
     """Approve a task for execution."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    if not yes:
+        from .menus import confirm
+        if not confirm(f"Approve task '{task_id}'?"):
+            console.print("[dim]Cancelled.[/]")
+            return
 
     async def _approve():
-        async with _get_client() as client:
-            t = await client.get_task(task_id)
-            if not t:
-                console.print(f"[bold red]Task not found:[/] {task_id}")
-                raise SystemExit(1)
+        async with _get_client(api_url) as client:
+            return await client.execute("approve_task", {"task_id": task_id})
 
-            if not yes:
-                from .menus import confirm
-                if not confirm(f"Approve task '{t.title}' ({task_id})?"):
-                    console.print("[dim]Cancelled.[/]")
-                    return
-
-            await client.approve_task(task_id)
-            console.print(f"[bold green]Task approved:[/] {task_id}")
-
-    try:
-        _run(_approve())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    result = _run(_approve())
+    console.print(f"[bold green]Task approved:[/] {result.get('approved', task_id)}")
 
 
 @task.command("stop")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
-def task_stop(task_id: str, yes: bool) -> None:
+@click.pass_context
+@_handle_errors
+def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
     """Stop a running task."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    async def _stop():
-        async with _get_client() as client:
-            t = await client.get_task(task_id)
-            if not t:
-                console.print(f"[bold red]Task not found:[/] {task_id}")
-                raise SystemExit(1)
+    if not yes:
+        from .menus import confirm
+        if not confirm(f"Stop task '{task_id}'? This will mark it as FAILED."):
+            console.print("[dim]Cancelled.[/]")
+            return
 
-            if not yes:
-                from .menus import confirm
-                if not confirm(f"Stop task '{t.title}' ({task_id})? This will mark it as FAILED."):
-                    console.print("[dim]Cancelled.[/]")
-                    return
+    async def _approve():
+        async with _get_client(api_url) as client:
+            return await client.execute("stop_task", {"task_id": task_id})
 
-            await client.stop_task(task_id)
-            console.print(f"[bold yellow]Task stopped:[/] {task_id}")
-
-    try:
-        _run(_stop())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    result = _run(_approve())
+    console.print(f"[bold yellow]Task stopped:[/] {result.get('stopped', task_id)}")
 
 
 @task.command("restart")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
-def task_restart(task_id: str, yes: bool) -> None:
+@click.pass_context
+@_handle_errors
+def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
     """Restart a failed or stopped task."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    if not yes:
+        from .menus import confirm
+        if not confirm(f"Restart task '{task_id}'?"):
+            console.print("[dim]Cancelled.[/]")
+            return
 
     async def _restart():
-        async with _get_client() as client:
-            t = await client.get_task(task_id)
-            if not t:
-                console.print(f"[bold red]Task not found:[/] {task_id}")
-                raise SystemExit(1)
+        async with _get_client(api_url) as client:
+            return await client.execute("restart_task", {"task_id": task_id})
 
-            if not yes:
-                from .menus import confirm
-                if not confirm(f"Restart task '{t.title}' ({task_id})?"):
-                    console.print("[dim]Cancelled.[/]")
-                    return
-
-            await client.restart_task(task_id)
-            console.print(f"[bold green]Task restarted:[/] {task_id}")
-
-    try:
-        _run(_restart())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    result = _run(_restart())
+    console.print(f"[bold green]Task restarted:[/] {result.get('restarted', task_id)}")
 
 
 @task.command("search")
 @click.argument("query")
 @click.option("-p", "--project", default=None, help="Limit search to project")
-def task_search(query: str, project: str | None) -> None:
+@click.pass_context
+@_handle_errors
+def task_search(ctx: click.Context, query: str, project: str | None) -> None:
     """Search tasks by title or description."""
+    from .adapters import task_proxy
     from .formatters import format_task_table
 
-    async def _search():
-        async with _get_client() as client:
-            return await client.search_tasks(query, project_id=project)
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    try:
-        tasks = _run(_search())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    async def _search():
+        async with _get_client(api_url) as client:
+            args = {"include_completed": True}
+            if project:
+                args["project_id"] = project
+            return await client.execute("list_tasks", args)
+
+    result = _run(_search())
+
+    # Client-side filter on title/description
+    q = query.lower()
+    raw_tasks = result.get("tasks", [])
+    matched = [
+        t for t in raw_tasks
+        if q in (t.get("title", "")).lower() or q in (t.get("description", "")).lower()
+    ]
+    tasks = [task_proxy(t) for t in matched]
 
     title = f"Search results for '{query}'"
     if project:
@@ -311,14 +300,25 @@ def task_search(query: str, project: str | None) -> None:
 
 @task.command("select")
 @click.option("-p", "--project", default=None, help="Filter by project")
-def task_select(project: str | None) -> None:
+@click.pass_context
+@_handle_errors
+def task_select(ctx: click.Context, project: str | None) -> None:
     """Interactively select a task and show its details."""
-    from .menus import fuzzy_select_task
+    from .adapters import task_proxy
     from .formatters import format_task_detail
+    from .menus import fuzzy_select_task
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     async def _select():
-        async with _get_client() as client:
-            tasks = await client.list_tasks(project_id=project, active_only=True)
+        async with _get_client(api_url) as client:
+            args = {}
+            if project:
+                args["project_id"] = project
+            result = await client.execute("list_tasks", args)
+            raw_tasks = result.get("tasks", [])
+            tasks = [task_proxy(t) for t in raw_tasks]
+
             if not tasks:
                 console.print("[dim]No active tasks found.[/]")
                 return
@@ -328,13 +328,12 @@ def task_select(project: str | None) -> None:
                 console.print("[dim]No task selected.[/]")
                 return
 
-            deps_on = await client.get_task_dependencies(selected.id)
-            dependents = await client.get_task_dependents(selected.id)
-            panel = format_task_detail(selected, deps_on=deps_on, dependents=dependents)
+            # Fetch full details for the selected task
+            detail = await client.execute("get_task", {"task_id": selected.id})
+            t = task_proxy(detail)
+            deps_on = [d["id"] for d in detail.get("depends_on", [])]
+            dependents = [d["id"] for d in detail.get("blocks", [])]
+            panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
             console.print(panel)
 
-    try:
-        _run(_select())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    _run(_select())

@@ -1,7 +1,8 @@
 """Main CLI application for AgentQueue.
 
-Provides a modern terminal interface mirroring Discord slash commands.
-Uses Click for command structure and Rich for beautiful output.
+Provides a modern terminal interface that delegates all commands to the
+daemon's CommandHandler via a REST API.  Uses Click for command structure
+and Rich for beautiful output.
 
 Entry point: ``aq`` console script.
 
@@ -11,14 +12,15 @@ Command modules are loaded from sibling files:
 - hooks.py    — aq hook {list,runs,details}
 - projects.py — aq project {list,details,set}
 - plugins.py  — aq plugin {list,info,install,remove,enable,disable,update,...}
+
+Auto-generated commands are registered under ``aq cmd <command-name>``
+for any CommandHandler command without a hand-crafted CLI equivalent.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
-from typing import Any
 
 import click
 from rich.console import Console
@@ -41,7 +43,6 @@ def _run(coro):
         loop = None
 
     if loop and loop.is_running():
-        # We're inside an existing event loop (unlikely for CLI)
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
@@ -49,11 +50,49 @@ def _run(coro):
         return asyncio.run(coro)
 
 
-def _get_client():
+def _get_client(api_url: str | None = None):
     """Create a CLIClient instance."""
     from .client import CLIClient
-    db_path = os.environ.get("AGENT_QUEUE_DB")
-    return CLIClient(db_path=db_path)
+    return CLIClient(base_url=api_url)
+
+
+def _handle_errors(func):
+    """Decorator that catches CLI client errors and prints them nicely.
+
+    When the daemon is not running, offers to start it and retry.
+    """
+    import functools
+    from .exceptions import CommandError, DaemonNotRunningError
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except DaemonNotRunningError:
+            console.print("[bold red]Daemon is not running.[/]")
+            if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in ("", "y", "yes"):
+                from .daemon import start_daemon
+                if start_daemon():
+                    console.print()
+                    # Retry the original command
+                    try:
+                        return func(*args, **kwargs)
+                    except DaemonNotRunningError:
+                        console.print("[bold red]Error:[/] Still cannot connect to daemon.")
+                        raise SystemExit(1)
+                    except CommandError as e:
+                        console.print(f"[bold red]Error:[/] {e}")
+                        raise SystemExit(1)
+                else:
+                    raise SystemExit(1)
+            else:
+                console.print("[dim]Run 'aq start' to start the daemon.[/]")
+                raise SystemExit(1)
+        except CommandError as e:
+            console.print(f"[bold red]Error:[/] {e}")
+            raise SystemExit(1)
+
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -62,20 +101,21 @@ def _get_client():
 
 
 @click.group(invoke_without_command=True)
-@click.option("--db", envvar="AGENT_QUEUE_DB", default=None, help="Path to AgentQueue database")
+@click.option(
+    "--api-url", envvar="AGENT_QUEUE_API_URL", default=None,
+    help="Daemon API URL (default: from config or http://127.0.0.1:8081)",
+)
 @click.version_option(version="0.1.0", prog_name="aq")
 @click.pass_context
-def cli(ctx: click.Context, db: str | None) -> None:
+def cli(ctx: click.Context, api_url: str | None) -> None:
     """AgentQueue CLI — Modern terminal interface for task management.
 
-    Mirrors Discord slash commands with rich formatting and interactive menus.
+    Connects to the agent-queue daemon via its REST API.
     """
     ctx.ensure_object(dict)
-    if db:
-        os.environ["AGENT_QUEUE_DB"] = db
+    ctx.obj["api_url"] = api_url
 
     if ctx.invoked_subcommand is None:
-        # Default: show status
         ctx.invoke(status)
 
 
@@ -85,31 +125,47 @@ def cli(ctx: click.Context, db: str | None) -> None:
 
 
 @cli.command()
-def status() -> None:
+@click.pass_context
+@_handle_errors
+def status(ctx: click.Context) -> None:
     """Show system status overview."""
-    from .formatters import format_status_overview, format_agent_table
+    from .adapters import agent_proxy, project_proxy
+    from .formatters import format_agent_table, format_status_overview
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     async def _run_status():
-        async with _get_client() as client:
-            projects = await client.list_projects()
-            agents = await client.list_agents()
-            task_counts = await client.count_tasks_by_status()
-            return projects, agents, task_counts
+        async with _get_client(api_url) as client:
+            result = await client.execute("get_status")
+            return result
 
-    try:
-        projects, agents, task_counts = _run(_run_status())
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
+    result = _run(_run_status())
+
+    # Adapt get_status response for format_status_overview.
+    # The formatter expects (projects: list, agents: list, task_counts: dict).
+    # get_status returns {"agents": [...], "tasks": {"by_status": {...}}, ...}
+    agents = [agent_proxy(a) for a in result.get("agents", [])]
+    task_counts = result.get("tasks", {}).get("by_status", {})
+    # Formatter expects uppercase status keys
+    task_counts = {k.upper(): v for k, v in task_counts.items()}
+
+    # format_status_overview needs project list — but get_status only returns
+    # a count.  We'll create minimal proxies from the agent data.
+    project_ids = {a.get("project_id") for a in result.get("agents", []) if a.get("project_id")}
+    projects = [project_proxy({"id": pid, "name": pid, "status": "ACTIVE"}) for pid in project_ids]
 
     panel = format_status_overview(projects, agents, task_counts)
     console.print(panel)
+
+    if agents:
+        console.print(format_agent_table(agents))
 
 
 # ---------------------------------------------------------------------------
 # Register command modules — importing them triggers @cli.group() decorators
 # ---------------------------------------------------------------------------
 
+from . import daemon   # noqa: E402, F401
 from . import tasks    # noqa: E402, F401
 from . import agents   # noqa: E402, F401
 from . import hooks    # noqa: E402, F401
@@ -118,21 +174,20 @@ from . import plugins  # noqa: E402, F401
 
 
 # ---------------------------------------------------------------------------
+# Auto-generated commands for all other CommandHandler commands
+# ---------------------------------------------------------------------------
+
+from .auto_commands import register_auto_commands  # noqa: E402
+register_auto_commands(cli, console)
+
+
+# ---------------------------------------------------------------------------
 # Plugin CLI extensions
 # ---------------------------------------------------------------------------
 
 
 def _load_plugin_cli_groups() -> None:
-    """Dynamically register CLI groups from installed aq.plugins entry points.
-
-    Iterates over all ``aq.plugins`` entry points, instantiates each Plugin
-    class, and calls ``cli_group()`` to get a Click group.  If the plugin
-    provides one, it is mounted on the main ``cli`` group as
-    ``aq <entry-point-name> ...``.
-
-    Failures are silently ignored so that a broken plugin never prevents the
-    CLI from starting.
-    """
+    """Dynamically register CLI groups from installed aq.plugins entry points."""
     try:
         from importlib.metadata import entry_points
         for ep in entry_points(group="aq.plugins"):
@@ -143,7 +198,7 @@ def _load_plugin_cli_groups() -> None:
                 if group is not None:
                     cli.add_command(group, ep.name)
             except Exception:
-                pass  # Plugin CLI failure must not break the CLI
+                pass
     except Exception:
         pass
 

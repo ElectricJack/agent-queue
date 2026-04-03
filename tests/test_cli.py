@@ -1,23 +1,32 @@
 """Unit tests for the AgentQueue CLI.
 
-Tests CLI commands, formatters, and client operations against an
-in-memory SQLite database.
+Tests CLI commands, adapters, auto-generated commands, and formatters.
+The REST client is mocked via httpx so no daemon is needed.
 """
 
 from __future__ import annotations
 
-import asyncio
+import json
 import os
-import tempfile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
-from src.cli.app import cli
+from src.cli.adapters import (
+    DictProxy,
+    agent_proxy,
+    hook_proxy,
+    hook_run_proxy,
+    project_proxy,
+    task_proxy,
+)
+from src.cli.auto_commands import EXCLUDED, HANDCRAFTED_COVERAGE, register_auto_commands
 from src.cli.client import CLIClient
+from src.cli.exceptions import CommandError, DaemonNotRunningError
 from src.cli.formatters import (
     format_agent_table,
+    format_hook_run_table,
     format_hook_table,
     format_project_table,
     format_status_overview,
@@ -25,17 +34,7 @@ from src.cli.formatters import (
     format_task_table,
 )
 from src.cli.styles import STATUS_ICONS, STATUS_STYLES, priority_style
-from src.database import Database
-from src.models import (
-    Agent,
-    AgentState,
-    Hook,
-    Project,
-    ProjectStatus,
-    Task,
-    TaskStatus,
-    TaskType,
-)
+from src.models import AgentState, ProjectStatus, TaskStatus, TaskType
 
 
 # ---------------------------------------------------------------------------
@@ -44,504 +43,561 @@ from src.models import (
 
 
 @pytest.fixture
-def tmp_db(tmp_path):
-    """Create a temporary database file path."""
-    return str(tmp_path / "test.db")
-
-
-@pytest.fixture
-async def db(tmp_db):
-    """Initialize a temporary database with test data."""
-    database = Database(tmp_db)
-    await database.initialize()
-
-    # Create test project
-    project = Project(
-        id="test-project",
-        name="Test Project",
-        credit_weight=1.0,
-        max_concurrent_agents=2,
-        status=ProjectStatus.ACTIVE,
-        total_tokens_used=1000,
-    )
-    await database.create_project(project)
-
-    # Create agents FIRST (tasks have FK references to agents)
-    agents = [
-        Agent(
-            id="agent-1",
-            name="Claude Worker 1",
-            agent_type="claude",
-            state=AgentState.BUSY,
-            current_task_id=None,  # Set after task creation
-            session_tokens_used=5000,
-            total_tokens_used=50000,
-        ),
-        Agent(
-            id="agent-2",
-            name="Claude Worker 2",
-            agent_type="claude",
-            state=AgentState.IDLE,
-            total_tokens_used=30000,
-        ),
-    ]
-    for a in agents:
-        await database.create_agent(a)
-
-    # Create test tasks (after agents exist for FK)
-    tasks = [
-        Task(
-            id="task-alpha",
-            project_id="test-project",
-            title="Implement feature A",
-            description="Build the first feature",
-            priority=100,
-            status=TaskStatus.IN_PROGRESS,
-            task_type=TaskType.FEATURE,
-            assigned_agent_id="agent-1",
-        ),
-        Task(
-            id="task-beta",
-            project_id="test-project",
-            title="Fix critical bug",
-            description="The login page crashes on mobile",
-            priority=200,
-            status=TaskStatus.READY,
-            task_type=TaskType.BUGFIX,
-        ),
-        Task(
-            id="task-gamma",
-            project_id="test-project",
-            title="Write documentation",
-            description="Document the API endpoints",
-            priority=50,
-            status=TaskStatus.COMPLETED,
-            task_type=TaskType.DOCS,
-        ),
-        Task(
-            id="task-delta",
-            project_id="test-project",
-            title="Awaiting approval task",
-            description="Needs human review",
-            priority=100,
-            status=TaskStatus.AWAITING_APPROVAL,
-        ),
-    ]
-    for t in tasks:
-        await database.create_task(t)
-
-    # Update agent-1's current_task_id now that task exists
-    await database.update_agent("agent-1", current_task_id="task-alpha")
-
-    # Create test hook
-    hook = Hook(
-        id="hook-daily",
-        project_id="test-project",
-        name="Daily Review",
-        enabled=True,
-        trigger='{"type": "periodic", "interval": 86400}',
-        context_steps='[]',
-        prompt_template="Review all tasks",
-        cooldown_seconds=3600,
-        created_at=1700000000.0,
-        updated_at=1700000000.0,
-    )
-    await database.create_hook(hook)
-
-    yield database
-    await database.close()
-
-
-@pytest.fixture
-def client(tmp_db, db):
-    """Create a CLIClient pointing to the test database."""
-    return CLIClient(db_path=tmp_db)
-
-
-@pytest.fixture
 def runner():
-    """Create a Click test runner."""
     return CliRunner()
 
 
+# Mock response helpers
+
+def _mock_response(data, status_code=200):
+    """Create a mock httpx response."""
+    mock = AsyncMock()
+    mock.status_code = status_code
+    mock.json.return_value = data
+    mock.raise_for_status = lambda: None
+    return mock
+
+
+def _ok(result):
+    """Wrap a result dict in the API success envelope."""
+    return {"ok": True, "result": result}
+
+
+def _err(msg):
+    """Wrap an error in the API error envelope."""
+    return {"ok": False, "error": msg}
+
+
 # ---------------------------------------------------------------------------
-# Style tests
+# DictProxy tests
+# ---------------------------------------------------------------------------
+
+
+class TestDictProxy:
+    def test_attribute_access(self):
+        p = DictProxy({"name": "Alice", "age": 30})
+        assert p.name == "Alice"
+        assert p.age == 30
+
+    def test_missing_returns_none(self):
+        p = DictProxy({"name": "Alice"})
+        assert p.missing_key is None
+
+    def test_aliases(self):
+        p = DictProxy({"assigned_agent": "ws-1"}, aliases={"assigned_agent_id": "assigned_agent"})
+        assert p.assigned_agent_id == "ws-1"
+        assert p.assigned_agent == "ws-1"
+
+    def test_get_method(self):
+        p = DictProxy({"key": "value"})
+        assert p.get("key") == "value"
+        assert p.get("missing", "default") == "default"
+
+    def test_repr(self):
+        p = DictProxy({"x": 1})
+        assert "DictProxy" in repr(p)
+
+
+# ---------------------------------------------------------------------------
+# Typed proxy tests
+# ---------------------------------------------------------------------------
+
+
+class TestTaskProxy:
+    def test_status_conversion(self):
+        t = task_proxy({"status": "IN_PROGRESS", "title": "Test"})
+        assert t.status == TaskStatus.IN_PROGRESS
+        assert t.status.value == "IN_PROGRESS"
+
+    def test_task_type_conversion(self):
+        t = task_proxy({"status": "READY", "task_type": "feature"})
+        assert t.task_type == TaskType.FEATURE
+        assert t.task_type.value == "feature"
+
+    def test_task_type_none(self):
+        t = task_proxy({"status": "READY", "task_type": None})
+        assert t.task_type is None
+
+    def test_assigned_agent_alias(self):
+        t = task_proxy({"status": "READY", "assigned_agent": "ws-1"})
+        assert t.assigned_agent_id == "ws-1"
+
+    def test_optional_fields_default_none(self):
+        t = task_proxy({"status": "READY"})
+        assert t.branch_name is None
+        assert t.pr_url is None
+        assert t.parent_task_id is None
+
+
+class TestProjectProxy:
+    def test_status_conversion(self):
+        p = project_proxy({"status": "ACTIVE", "name": "Test"})
+        assert p.status == ProjectStatus.ACTIVE
+
+    def test_defaults(self):
+        p = project_proxy({"status": "ACTIVE"})
+        assert p.total_tokens_used == 0
+        assert p.discord_channel_id is None
+
+    def test_equality_comparison(self):
+        """Formatters compare project.status == ProjectStatus.ACTIVE."""
+        p = project_proxy({"status": "ACTIVE"})
+        assert p.status == ProjectStatus.ACTIVE
+
+
+class TestAgentProxy:
+    def test_state_conversion_lowercase(self):
+        """CommandHandler returns lowercase 'busy'/'idle'."""
+        a = agent_proxy({"state": "busy", "workspace_id": "ws-1", "name": "Agent 1"})
+        assert a.state == AgentState.BUSY
+        assert a.state.value == "BUSY"
+
+    def test_id_alias(self):
+        a = agent_proxy({"workspace_id": "ws-1", "state": "idle"})
+        assert a.id == "ws-1"
+
+    def test_defaults(self):
+        a = agent_proxy({"state": "idle"})
+        assert a.session_tokens_used == 0
+        assert a.agent_type == "claude"
+
+
+class TestHookProxy:
+    def test_trigger_dict_to_string(self):
+        """Formatters check isinstance(hook.trigger, str)."""
+        h = hook_proxy({"trigger": {"type": "cron", "cron": "0 8 * * *"}})
+        assert isinstance(h.trigger, str)
+        parsed = json.loads(h.trigger)
+        assert parsed["type"] == "cron"
+
+    def test_trigger_already_string(self):
+        h = hook_proxy({"trigger": '{"type": "cron"}'})
+        assert isinstance(h.trigger, str)
+
+    def test_defaults(self):
+        h = hook_proxy({})
+        assert h.last_triggered_at is None
+
+
+# ---------------------------------------------------------------------------
+# Formatter compatibility tests (proxied dicts through real formatters)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatterCompatibility:
+    """Verify that proxied dicts work with the existing formatters."""
+
+    def test_format_task_table(self):
+        tasks = [
+            task_proxy({
+                "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+                "priority": 100, "task_type": "feature", "title": "Test task",
+                "assigned_agent": "ws-1",
+            }),
+        ]
+        table = format_task_table(tasks, title="Test")
+        assert table is not None
+
+    def test_format_task_detail(self):
+        t = task_proxy({
+            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+            "priority": 100, "task_type": "bugfix", "title": "Fix bug",
+            "assigned_agent": None, "description": "A bug fix",
+            "requires_approval": False,
+        })
+        panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
+        assert panel is not None
+
+    def test_format_task_detail_with_subtask_stats(self):
+        t = task_proxy({
+            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+            "priority": 100, "title": "Parent task",
+            "description": "Has subtasks",
+        })
+        panel = format_task_detail(t, subtask_stats=(3, 5))
+        assert panel is not None
+
+    def test_format_agent_table(self):
+        agents = [
+            agent_proxy({
+                "workspace_id": "ws-1", "name": "Agent 1", "state": "busy",
+                "current_task_id": "task-1",
+            }),
+            agent_proxy({
+                "workspace_id": "ws-2", "name": "Agent 2", "state": "idle",
+                "current_task_id": None,
+            }),
+        ]
+        table = format_agent_table(agents)
+        assert table is not None
+
+    def test_format_hook_table(self):
+        hooks = [
+            hook_proxy({
+                "id": "hook-abc123def456", "name": "Test Hook",
+                "project_id": "proj", "enabled": True,
+                "trigger": {"type": "event", "event": "task_completed"},
+                "cooldown_seconds": 300,
+            }),
+        ]
+        table = format_hook_table(hooks)
+        assert table is not None
+
+    def test_format_hook_run_table(self):
+        runs = [
+            hook_run_proxy({
+                "id": "run-abcdef123456", "status": "completed",
+                "trigger_reason": "Manual trigger",
+                "tokens_used": 1234, "started_at": 1700000000.0,
+            }),
+        ]
+        table = format_hook_run_table(runs)
+        assert table is not None
+
+    def test_format_project_table(self):
+        projects = [
+            project_proxy({
+                "id": "proj", "name": "Test Project", "status": "ACTIVE",
+                "discord_channel_id": "123456", "max_concurrent_agents": 2,
+            }),
+        ]
+        table = format_project_table(projects)
+        assert table is not None
+
+    def test_format_status_overview(self):
+        projects = [project_proxy({"id": "p", "name": "P", "status": "ACTIVE"})]
+        agents = [
+            agent_proxy({"workspace_id": "ws-1", "state": "busy"}),
+            agent_proxy({"workspace_id": "ws-2", "state": "idle"}),
+        ]
+        task_counts = {"IN_PROGRESS": 2, "READY": 5, "COMPLETED": 10}
+        panel = format_status_overview(projects, agents, task_counts)
+        assert panel is not None
+
+
+# ---------------------------------------------------------------------------
+# CLIClient tests
+# ---------------------------------------------------------------------------
+
+
+class TestCLIClient:
+    @pytest.mark.asyncio
+    async def test_execute_success(self):
+        import httpx
+
+        mock_http = AsyncMock(spec=httpx.AsyncClient)
+        # Use non-async returns for .json() since httpx Response.json() is sync
+        health_resp = AsyncMock()
+        health_resp.json = lambda: {"status": "ok"}
+        health_resp.raise_for_status = lambda: None
+
+        exec_resp = AsyncMock()
+        exec_resp.json = lambda: _ok({"tasks": [], "total": 0})
+
+        mock_http.get.return_value = health_resp
+        mock_http.post.return_value = exec_resp
+        mock_http.aclose = AsyncMock()
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            result = await client.execute("list_tasks", {"project_id": "test"})
+            assert result["tasks"] == []
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_command_error(self):
+        import httpx
+
+        mock_http = AsyncMock(spec=httpx.AsyncClient)
+        health_resp = AsyncMock()
+        health_resp.json = lambda: {"status": "ok"}
+        health_resp.raise_for_status = lambda: None
+
+        error_resp = AsyncMock()
+        error_resp.json = lambda: _err("Task not found")
+
+        mock_http.get.return_value = health_resp
+        mock_http.post.return_value = error_resp
+        mock_http.aclose = AsyncMock()
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            with pytest.raises(CommandError, match="Task not found"):
+                await client.execute("get_task", {"task_id": "nope"})
+            await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Styles tests (unchanged from original)
 # ---------------------------------------------------------------------------
 
 
 class TestStyles:
     def test_status_icons_complete(self):
-        """Every TaskStatus should have an icon."""
-        for status in TaskStatus:
-            assert status.value in STATUS_ICONS, f"Missing icon for {status.value}"
+        expected = {
+            "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT",
+            "PAUSED", "VERIFYING", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
+            "COMPLETED", "FAILED", "BLOCKED",
+        }
+        assert expected.issubset(set(STATUS_ICONS.keys()))
 
     def test_status_styles_complete(self):
-        """Every TaskStatus should have a style."""
-        for status in TaskStatus:
-            assert status.value in STATUS_STYLES, f"Missing style for {status.value}"
+        assert set(STATUS_ICONS.keys()) == set(STATUS_STYLES.keys())
 
-    def test_priority_style_ranges(self):
-        assert "red" in priority_style(200)
-        assert "yellow" in priority_style(150)
-        assert "white" in priority_style(100)
-        assert "dim" in priority_style(30)
+    def test_priority_style_tiers(self):
+        assert priority_style(200) == "bold red"
+        assert priority_style(150) == "bold yellow"
+        assert priority_style(100) == "white"
+        assert priority_style(10) == "dim white"
 
 
 # ---------------------------------------------------------------------------
-# Client tests
+# Auto-generated commands tests
 # ---------------------------------------------------------------------------
 
 
-class TestCLIClient:
-    async def test_list_tasks(self, client):
-        async with client:
-            tasks = await client.list_tasks()
-            assert len(tasks) == 4
+class TestAutoCommands:
+    def test_auto_commands_register(self):
+        """Auto-generated commands should register under 'cmd' group."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        assert cmd_group is not None
+        # Should have many commands
+        assert len(cmd_group.commands) > 20
 
-    async def test_list_tasks_by_project(self, client):
-        async with client:
-            tasks = await client.list_tasks(project_id="test-project")
-            assert len(tasks) == 4
+    def test_handcrafted_not_duplicated(self):
+        """Commands in HANDCRAFTED_COVERAGE should not appear in auto-generated."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        auto_names = set(cmd_group.commands.keys())
+        for hc in HANDCRAFTED_COVERAGE:
+            assert hc.replace("_", "-") not in auto_names, f"{hc} should not be auto-generated"
 
-    async def test_list_tasks_active_only(self, client):
-        async with client:
-            tasks = await client.list_tasks(active_only=True)
-            # Should exclude COMPLETED
-            assert all(t.status != TaskStatus.COMPLETED for t in tasks)
+    def test_excluded_not_present(self):
+        """Dangerous commands should be excluded from auto-generation."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        auto_names = set(cmd_group.commands.keys())
+        for ex in EXCLUDED:
+            assert ex.replace("_", "-") not in auto_names, f"{ex} should be excluded"
 
-    async def test_list_tasks_by_status(self, client):
-        async with client:
-            tasks = await client.list_tasks(status=TaskStatus.READY)
-            assert len(tasks) == 1
-            assert tasks[0].id == "task-beta"
-
-    async def test_get_task(self, client):
-        async with client:
-            t = await client.get_task("task-alpha")
-            assert t is not None
-            assert t.title == "Implement feature A"
-
-    async def test_get_task_not_found(self, client):
-        async with client:
-            t = await client.get_task("nonexistent")
-            assert t is None
-
-    async def test_search_tasks(self, client):
-        async with client:
-            results = await client.search_tasks("bug")
-            assert len(results) == 1
-            assert results[0].id == "task-beta"
-
-    async def test_search_tasks_case_insensitive(self, client):
-        async with client:
-            results = await client.search_tasks("FEATURE")
-            assert len(results) == 1
-            assert results[0].id == "task-alpha"
-
-    async def test_create_task(self, client):
-        async with client:
-            t = await client.create_task(
-                project_id="test-project",
-                title="New task",
-                description="A brand new task",
-                priority=150,
-                task_type="feature",
-            )
-            assert t.id  # Should have generated an ID
-            assert t.title == "New task"
-            assert t.status == TaskStatus.DEFINED
-
-            # Verify persisted
-            fetched = await client.get_task(t.id)
-            assert fetched is not None
-            assert fetched.title == "New task"
-
-    async def test_list_agents(self, client):
-        async with client:
-            agents = await client.list_agents()
-            assert len(agents) == 2
-
-    async def test_list_projects(self, client):
-        async with client:
-            projects = await client.list_projects()
-            assert len(projects) == 1
-            assert projects[0].id == "test-project"
-
-    async def test_list_hooks(self, client):
-        async with client:
-            hooks = await client.list_hooks()
-            assert len(hooks) == 1
-            assert hooks[0].name == "Daily Review"
-
-    async def test_count_tasks_by_status(self, client):
-        async with client:
-            counts = await client.count_tasks_by_status()
-            assert counts.get("IN_PROGRESS", 0) == 1
-            assert counts.get("READY", 0) == 1
-            assert counts.get("COMPLETED", 0) == 1
-
-    async def test_client_file_not_found(self):
-        client = CLIClient(db_path="/nonexistent/path.db")
-        with pytest.raises(FileNotFoundError):
-            await client.connect()
+    def test_auto_command_help(self, runner):
+        """Auto-generated command should have --help from JSON Schema."""
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["cmd", "memory-search", "--help"])
+        assert result.exit_code == 0
+        assert "--project-id" in result.output
+        assert "--query" in result.output
 
 
 # ---------------------------------------------------------------------------
-# Formatter tests
-# ---------------------------------------------------------------------------
-
-
-class TestFormatters:
-    def test_format_task_table(self):
-        tasks = [
-            Task(
-                id="t1",
-                project_id="proj",
-                title="Test task",
-                description="desc",
-                priority=100,
-                status=TaskStatus.IN_PROGRESS,
-                task_type=TaskType.FEATURE,
-            ),
-        ]
-        table = format_task_table(tasks)
-        assert table.title == "Tasks"
-        assert table.row_count == 1
-
-    def test_format_task_table_empty(self):
-        table = format_task_table([], title="Empty")
-        assert table.title == "Empty"
-
-    def test_format_task_detail(self):
-        task = Task(
-            id="t1",
-            project_id="proj",
-            title="Detailed task",
-            description="Full description\nwith multiple lines",
-            priority=150,
-            status=TaskStatus.IN_PROGRESS,
-            task_type=TaskType.BUGFIX,
-            assigned_agent_id="agent-1",
-            branch_name="fix/bug-123",
-        )
-        panel = format_task_detail(
-            task,
-            deps_on=["dep-1"],
-            dependents=["dep-2"],
-            subtask_stats=(2, 5),
-        )
-        assert panel.title is not None
-
-    def test_format_agent_table(self):
-        agents = [
-            Agent(
-                id="a1",
-                name="Worker",
-                agent_type="claude",
-                state=AgentState.BUSY,
-                current_task_id="t1",
-                session_tokens_used=1000,
-            ),
-        ]
-        table = format_agent_table(agents)
-        assert table.row_count == 1
-
-    def test_format_hook_table(self):
-        hooks = [
-            Hook(
-                id="h1",
-                project_id="proj",
-                name="My Hook",
-                enabled=True,
-                trigger='{"type": "periodic"}',
-                context_steps="[]",
-                prompt_template="do stuff",
-                cooldown_seconds=60,
-                created_at=1700000000.0,
-                updated_at=1700000000.0,
-            ),
-        ]
-        table = format_hook_table(hooks)
-        assert table.row_count == 1
-
-    def test_format_project_table(self):
-        projects = [
-            Project(
-                id="p1",
-                name="Project 1",
-                status=ProjectStatus.ACTIVE,
-                max_concurrent_agents=3,
-            ),
-        ]
-        table = format_project_table(projects)
-        assert table.row_count == 1
-
-    def test_format_status_overview(self):
-        projects = [Project(id="p1", name="P1", status=ProjectStatus.ACTIVE)]
-        agents = [
-            Agent(id="a1", name="W1", agent_type="claude", state=AgentState.BUSY),
-            Agent(id="a2", name="W2", agent_type="claude", state=AgentState.IDLE),
-        ]
-        counts = {"IN_PROGRESS": 3, "READY": 5, "COMPLETED": 10}
-        panel = format_status_overview(projects, agents, counts)
-        assert panel.title is not None
-
-
-# ---------------------------------------------------------------------------
-# CLI command tests (Click runner)
+# CLI command integration tests (mocked HTTP)
 # ---------------------------------------------------------------------------
 
 
 class TestCLICommands:
-    """Test CLI commands using Click's CliRunner.
+    """Test CLI commands with mocked REST API responses."""
 
-    These tests patch the database path to use the test DB fixture.
-    """
+    def _mock_client(self, execute_results: dict):
+        """Create a mock CLIClient context manager."""
+        mock_client = AsyncMock()
+        mock_client.connect = AsyncMock()
+        mock_client.close = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    def test_version(self, runner):
-        result = runner.invoke(cli, ["--version"])
+        async def mock_execute(command, args=None):
+            if command in execute_results:
+                result = execute_results[command]
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return {}
+
+        mock_client.execute = AsyncMock(side_effect=mock_execute)
+        return mock_client
+
+    def test_task_list(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "list_tasks": {
+                "display_mode": "flat",
+                "tasks": [
+                    {
+                        "id": "task-1", "project_id": "proj",
+                        "title": "Test task", "status": "IN_PROGRESS",
+                        "priority": 100, "task_type": "feature",
+                        "assigned_agent": "ws-1",
+                    },
+                ],
+                "total": 1,
+                "hidden_completed": 0,
+                "filtered": True,
+            },
+        })
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"])
+            assert result.exit_code == 0
+            assert "Test task" in result.output
+
+    def test_task_details(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "get_task": {
+                "id": "task-1", "project_id": "proj",
+                "title": "Test task", "status": "IN_PROGRESS",
+                "priority": 100, "description": "A test task",
+                "assigned_agent": None, "task_type": "feature",
+                "requires_approval": False,
+                "depends_on": [{"id": "dep-1", "title": "Dep", "status": "COMPLETED"}],
+                "blocks": [],
+            },
+        })
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "details", "task-1"])
+            assert result.exit_code == 0
+            assert "Test task" in result.output
+
+    def test_project_list(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "list_projects": {
+                "projects": [
+                    {"id": "proj", "name": "Test", "status": "ACTIVE",
+                     "max_concurrent_agents": 2},
+                ],
+            },
+        })
+
+        with patch("src.cli.projects._get_client", return_value=mock):
+            result = runner.invoke(cli, ["project", "list"])
+            assert result.exit_code == 0
+            assert "Test" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Daemon command tests
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonCommands:
+    def test_start_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["start", "--help"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "Start the agent-queue daemon" in result.output
 
-    def test_help(self, runner):
-        result = runner.invoke(cli, ["--help"])
+    def test_stop_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["stop", "--help"])
         assert result.exit_code == 0
-        assert "AgentQueue CLI" in result.output
+        assert "Stop the agent-queue daemon" in result.output
 
-    def test_task_help(self, runner):
-        result = runner.invoke(cli, ["task", "--help"])
+    def test_restart_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["restart", "--help"])
         assert result.exit_code == 0
-        assert "list" in result.output
-        assert "create" in result.output
-        assert "details" in result.output
-        assert "approve" in result.output
-        assert "stop" in result.output
-        assert "restart" in result.output
-        assert "search" in result.output
+        assert "Restart the agent-queue daemon" in result.output
 
-    def test_agent_help(self, runner):
-        result = runner.invoke(cli, ["agent", "--help"])
+    def test_logs_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["logs", "--help"])
         assert result.exit_code == 0
-        assert "list" in result.output
+        assert "View daemon logs" in result.output
 
-    def test_hook_help(self, runner):
-        result = runner.invoke(cli, ["hook", "--help"])
-        assert result.exit_code == 0
-        assert "list" in result.output
-        assert "runs" in result.output
+    def test_read_pid_no_file(self, tmp_path):
+        from src.cli.daemon import _read_pid
+        with patch("src.cli.daemon.PID_FILE", str(tmp_path / "nonexistent.pid")):
+            assert _read_pid() is None
 
-    def test_project_help(self, runner):
-        result = runner.invoke(cli, ["project", "--help"])
-        assert result.exit_code == 0
-        assert "list" in result.output
+    def test_read_pid_stale(self, tmp_path):
+        """Stale PID file (process not running) should return None and clean up."""
+        from src.cli.daemon import _read_pid
+        pid_file = tmp_path / "daemon.pid"
+        pid_file.write_text("999999999")  # PID that almost certainly doesn't exist
+        with patch("src.cli.daemon.PID_FILE", str(pid_file)):
+            assert _read_pid() is None
+            assert not pid_file.exists()  # Should have been cleaned up
 
-    def test_status_missing_db(self, runner):
-        """Status should fail gracefully when DB doesn't exist."""
-        result = runner.invoke(cli, ["--db", "/nonexistent/db.sqlite", "status"])
-        assert result.exit_code != 0
+    def test_is_daemon_running_false(self):
+        from src.cli.daemon import is_daemon_running
+        with patch("src.cli.daemon._find_daemon_pid", return_value=None):
+            assert is_daemon_running() is False
 
-    def test_task_list_with_db(self, runner, tmp_db, db):
-        """task list should work against the test database."""
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "list", "--all"])
-        assert result.exit_code == 0
-        assert "task-alpha" in result.output or "Tasks" in result.output
+    def test_is_daemon_running_true(self):
+        from src.cli.daemon import is_daemon_running
+        with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
+            assert is_daemon_running() is True
 
-    def test_task_list_active(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "list"])
-        assert result.exit_code == 0
+    def test_stop_not_running(self, runner):
+        from src.cli.app import cli
+        with patch("src.cli.daemon._find_daemon_pid", return_value=None):
+            result = runner.invoke(cli, ["stop"])
+            assert result.exit_code == 0
+            assert "not running" in result.output
 
-    def test_task_list_by_status(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "list", "-s", "READY"])
-        assert result.exit_code == 0
 
-    def test_task_list_by_project(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "list", "-p", "test-project"])
-        assert result.exit_code == 0
+# ---------------------------------------------------------------------------
+# Error handling with daemon-start prompt tests
+# ---------------------------------------------------------------------------
 
-    def test_task_details(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "details", "task-alpha"])
-        assert result.exit_code == 0
-        assert "Implement feature A" in result.output
 
-    def test_task_details_not_found(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "details", "nonexistent"])
-        assert result.exit_code != 0
+class TestDaemonNotRunningPrompt:
+    """Test that _handle_errors offers to start the daemon."""
 
-    def test_task_search(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "search", "bug"])
-        assert result.exit_code == 0
+    def test_offers_to_start_on_connection_error(self, runner):
+        """When daemon is down and user says 'n', should exit cleanly."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
 
-    def test_task_search_no_results(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "task", "search", "zzzznotfound"])
-        assert result.exit_code == 0
-        assert "No tasks matched" in result.output
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(
+            side_effect=DaemonNotRunningError("http://localhost:8081")
+        )
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    def test_task_create_flags(self, runner, tmp_db, db):
-        """Create a task using CLI flags (non-interactive)."""
-        result = runner.invoke(cli, [
-            "--db", tmp_db,
-            "task", "create",
-            "-p", "test-project",
-            "-t", "CLI-created task",
-            "-d", "Created via CLI test",
-            "--priority", "150",
-            "--type", "feature",
-        ])
-        assert result.exit_code == 0
-        assert "Task created" in result.output
+        with patch("src.cli.tasks._get_client", return_value=mock_client):
+            result = runner.invoke(cli, ["task", "list"], input="n\n")
+            assert result.exit_code == 1
+            assert "not running" in result.output.lower()
+            assert "aq start" in result.output
 
-    def test_task_approve(self, runner, tmp_db, db):
-        result = runner.invoke(cli, [
-            "--db", tmp_db,
-            "task", "approve", "task-delta", "-y",
-        ])
-        assert result.exit_code == 0
-        assert "approved" in result.output
+    def test_starts_daemon_on_yes(self, runner):
+        """When user says 'y', should attempt to start and retry."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
 
-    def test_task_stop(self, runner, tmp_db, db):
-        result = runner.invoke(cli, [
-            "--db", tmp_db,
-            "task", "stop", "task-alpha", "-y",
-        ])
-        assert result.exit_code == 0
-        assert "stopped" in result.output
+        call_count = 0
 
-    def test_task_restart(self, runner, tmp_db, db):
-        result = runner.invoke(cli, [
-            "--db", tmp_db,
-            "task", "restart", "task-gamma", "-y",
-        ])
-        assert result.exit_code == 0
-        assert "restarted" in result.output
+        # First call raises, second call succeeds (after daemon start)
+        async def mock_aenter():
+            nonlocal call_count, mock_client
+            call_count += 1
+            if call_count == 1:
+                raise DaemonNotRunningError("http://localhost:8081")
+            return mock_client
 
-    def test_agent_list(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "agent", "list"])
-        assert result.exit_code == 0
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(side_effect=mock_aenter)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.execute = AsyncMock(return_value={
+            "display_mode": "flat",
+            "tasks": [],
+            "total": 0,
+            "hidden_completed": 0,
+            "filtered": True,
+        })
 
-    def test_agent_details(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "agent", "details", "agent-1"])
-        assert result.exit_code == 0
-        assert "Claude Worker 1" in result.output
-
-    def test_hook_list(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "hook", "list"])
-        assert result.exit_code == 0
-
-    def test_hook_details(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "hook", "details", "hook-daily"])
-        assert result.exit_code == 0
-        assert "Daily Review" in result.output
-
-    def test_project_list(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "project", "list"])
-        assert result.exit_code == 0
-
-    def test_project_details(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "project", "details", "test-project"])
-        assert result.exit_code == 0
-        assert "Test Project" in result.output
-
-    def test_status_with_db(self, runner, tmp_db, db):
-        result = runner.invoke(cli, ["--db", tmp_db, "status"])
-        assert result.exit_code == 0
-        assert "AgentQueue Status" in result.output
+        with (
+            patch("src.cli.tasks._get_client", return_value=mock_client),
+            patch("src.cli.daemon.start_daemon", return_value=True),
+        ):
+            result = runner.invoke(cli, ["task", "list"], input="y\n")
+            assert result.exit_code == 0

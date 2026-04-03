@@ -3,6 +3,9 @@
 Shares the daemon's Orchestrator, Database, EventBus, and CommandHandler
 instead of creating its own.  Serves on streamable-http transport via uvicorn.
 
+Also exposes a lightweight REST API (``/api/execute``, ``/api/tools``,
+``/api/health``) on the same port for the ``aq`` CLI and other clients.
+
 This module must be imported lazily (after orchestrator initialization)
 because importing the ``mcp`` SDK takes ~3 seconds.
 """
@@ -10,6 +13,7 @@ because importing the ``mcp`` SDK takes ~3 seconds.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -27,6 +31,85 @@ if TYPE_CHECKING:
     from src.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# REST API routes for the CLI (mounted alongside the MCP Starlette app)
+# ---------------------------------------------------------------------------
+
+def _build_api_routes(orchestrator: "Orchestrator", config: "AppConfig"):
+    """Build Starlette routes for the lightweight CLI REST API.
+
+    Returns a list of ``Route`` objects that get mounted on the parent
+    Starlette app alongside the MCP streamable-http handler.
+    """
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from src.command_handler import CommandHandler
+
+    async def api_execute(request: Request) -> JSONResponse:
+        """POST /api/execute — run a CommandHandler command."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"},
+                status_code=400,
+            )
+
+        command = body.get("command")
+        if not command or not isinstance(command, str):
+            return JSONResponse(
+                {"ok": False, "error": "Missing or invalid 'command' field"},
+                status_code=400,
+            )
+
+        args = body.get("args") or {}
+        if not isinstance(args, dict):
+            return JSONResponse(
+                {"ok": False, "error": "'args' must be an object"},
+                status_code=400,
+            )
+
+        ch = orchestrator._command_handler
+        if ch is None:
+            ch = CommandHandler(orchestrator, config)
+            orchestrator.set_command_handler(ch)
+
+        result = await ch.execute(command, args)
+
+        if "error" in result:
+            return JSONResponse(
+                {"ok": False, "error": result["error"]},
+                status_code=200,
+            )
+        return JSONResponse(
+            {"ok": True, "result": json.loads(json.dumps(result, default=str))},
+            status_code=200,
+        )
+
+    async def api_tools(request: Request) -> JSONResponse:
+        """GET /api/tools — return all tool definitions for CLI auto-generation."""
+        from src.mcp_registration import _discover_all_commands
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        # Merge explicit definitions with auto-discovered ones
+        explicit = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
+        discovered = _discover_all_commands()
+        merged = {**discovered, **explicit}  # explicit wins on collision
+        return JSONResponse(list(merged.values()))
+
+    async def api_health(request: Request) -> JSONResponse:
+        """GET /api/health — simple liveness check."""
+        return JSONResponse({"status": "ok"})
+
+    return [
+        Route("/api/execute", api_execute, methods=["POST"]),
+        Route("/api/tools", api_tools, methods=["GET"]),
+        Route("/api/health", api_health, methods=["GET"]),
+    ]
 
 
 async def run_mcp_server(
@@ -97,6 +180,10 @@ async def run_mcp_server(
         mcp_config.port,
     )
 
+    # --- Build the combined Starlette app (MCP + REST API) ----------------
+
+    api_routes = _build_api_routes(orchestrator, config)
+
     # --- Supervised uvicorn loop -------------------------------------------
 
     restart_delay = 1.0
@@ -104,7 +191,18 @@ async def run_mcp_server(
 
     while not shutdown_event.is_set():
         try:
-            starlette_app = mcp.streamable_http_app()
+            mcp_app = mcp.streamable_http_app()
+
+            # Combine: API routes at /api/* and MCP app at root (serves /mcp)
+            from starlette.applications import Starlette
+            from starlette.routing import Mount
+
+            starlette_app = Starlette(
+                routes=[
+                    *api_routes,
+                    Mount("/", app=mcp_app),
+                ],
+            )
             uv_config = uvicorn.Config(
                 starlette_app,
                 host=mcp_config.host,

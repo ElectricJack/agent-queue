@@ -6,7 +6,14 @@ import os
 
 import click
 
-from .app import cli, console, _run, _get_client
+from .app import cli, console, _run
+
+
+def _get_plugin_client():
+    """Create a PluginClient for direct-DB plugin operations."""
+    from .client import PluginClient
+    db_path = os.environ.get("AGENT_QUEUE_DB")
+    return PluginClient(db_path=db_path)
 
 
 @cli.group()
@@ -21,7 +28,7 @@ def plugin_list() -> None:
     from rich.table import Table
 
     async def _run_list():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             return await client.list_plugins()
 
     try:
@@ -67,7 +74,7 @@ def plugin_info(name: str) -> None:
     from rich.panel import Panel
 
     async def _run_info():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             return await client.get_plugin(name)
 
     try:
@@ -102,7 +109,7 @@ def plugin_install(url: str, branch: str | None, name: str | None) -> None:
     console.print(f"[bold]Installing plugin from {url}...[/]")
 
     async def _run_install():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             from src.plugins.loader import install_plugin_from_url
             from pathlib import Path
             import json
@@ -146,7 +153,7 @@ def plugin_remove(name: str) -> None:
     import shutil
 
     async def _run_remove():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 return None, False
@@ -189,7 +196,7 @@ def plugin_remove(name: str) -> None:
 def plugin_enable(name: str) -> None:
     """Enable a disabled plugin."""
     async def _run_enable():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             await client.update_plugin(name, status="installed")
 
     try:
@@ -206,7 +213,7 @@ def plugin_enable(name: str) -> None:
 def plugin_disable(name: str) -> None:
     """Disable a plugin without removing it."""
     async def _run_disable():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             await client.update_plugin(name, status="disabled")
 
     try:
@@ -227,7 +234,7 @@ def plugin_update(name: str) -> None:
     )
 
     async def _run_update():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -267,7 +274,7 @@ def plugin_reload(name: str) -> None:
     from src.plugins.loader import parse_plugin_yaml, import_plugin_module
 
     async def _run_reload():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -300,14 +307,14 @@ def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
     import json
 
     async def _run_config():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
             return p
 
     async def _set_config(updates: dict):
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -361,7 +368,7 @@ def plugin_logs(name: str, limit: int) -> None:
     from .formatters import format_hook_run_table
 
     async def _run_logs():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -400,7 +407,7 @@ def plugin_prompts(name: str) -> None:
     from pathlib import Path
 
     async def _run_prompts():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -456,7 +463,7 @@ def plugin_diff_prompts(name: str) -> None:
     from pathlib import Path
 
     async def _run_diff():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
@@ -521,7 +528,7 @@ def plugin_reset_prompts(name: str) -> None:
     from src.plugins.loader import reset_prompts
 
     async def _run_reset():
-        async with _get_client() as client:
+        async with _get_plugin_client() as client:
             p = await client.get_plugin(name)
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
