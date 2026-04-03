@@ -7,7 +7,8 @@ Vibecop static analysis plugin for Agent Queue. Wraps the vibecop CLI to provide
 - `aq_vibecop/plugin.py` — Plugin class, tool/command registration, handlers
 - `aq_vibecop/runner.py` — Async subprocess wrapper for vibecop CLI
 - `aq_vibecop/formatter.py` — JSON-to-text output formatting
-- `prompts/findings-summary.md` — Template for summarizing scan results
+- `prompts/findings-summary.md` — Template for summarizing scan results (uses `$var` substitution)
+- `prompts/pre-complete-check.md` — Agent guidance for running vibecop before task completion
 
 ## Development
 
@@ -29,6 +30,8 @@ ruff check aq_vibecop/
 - Runner uses fallback chain: configured path -> npx -> global vibecop
 - Findings are normalized in `runner._normalize_finding()` to handle format variations
 - Formatter respects context window limits (`_MAX_DETAIL_CHARS`, `_MAX_SUMMARY_CHARS`)
+- Rule injection via `execute_command("save_rule", ...)` — passive rule for prompt injection
+- Rule is created on `initialize()` and removed on `shutdown()`, controlled by `enforce_vibecop_checkout`
 
 ## Tools Provided
 
@@ -49,3 +52,4 @@ Set via `aq plugin config vibecop key=value`:
 | `default_severity` | string | warning | Severity threshold |
 | `auto_install` | bool | false | Auto-install vibecop if missing |
 | `scan_timeout` | int | 60 | Command timeout in seconds |
+| `enforce_vibecop_checkout` | bool | true | Inject rule requiring vibecop scan before task completion |
