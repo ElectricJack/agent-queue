@@ -11,6 +11,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+postgresql = [
+    "asyncpg>=0.29.0",
+]
 telegram = [
     "python-telegram-bot[ext]>=20.0",
 ]

@@ -599,6 +599,51 @@ class HealthCheckConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Database backend configuration via a single URL/DSN.
+
+    The ``url`` field determines the backend automatically:
+
+    - Starts with ``postgresql://`` or ``postgres://`` → PostgreSQL (asyncpg)
+    - Anything else (file path or empty) → SQLite (aiosqlite)
+
+    Examples::
+
+        # SQLite (default — same as the legacy database_path field):
+        database:
+          url: ~/.agent-queue/agent-queue.db
+
+        # PostgreSQL:
+        database:
+          url: postgresql://user:pass@localhost:5432/agent_queue
+
+    Pool settings are only used for PostgreSQL.
+    """
+
+    url: str = ""  # DSN or file path — backend is inferred
+    pool_min_size: int = 2
+    pool_max_size: int = 10
+
+    @property
+    def backend(self) -> str:
+        """Infer backend from the URL scheme."""
+        if self.url.startswith(("postgresql://", "postgres://")):
+            return "postgresql"
+        return "sqlite"
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not self.url:
+            errors.append(ConfigError("database", "url", "database url/path is required"))
+        if self.backend == "postgresql":
+            if self.pool_min_size < 1:
+                errors.append(ConfigError("database", "pool_min_size", "must be >= 1"))
+            if self.pool_max_size < self.pool_min_size:
+                errors.append(ConfigError("database", "pool_max_size", "must be >= pool_min_size"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -622,6 +667,7 @@ class AppConfig:
     database_path: str = field(
         default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
     )
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
     messaging_platform: str = "discord"  # "discord" or "telegram"
@@ -671,26 +717,34 @@ class AppConfig:
                     )
                 )
 
-        if not self.database_path:
-            errors.append(ConfigError("app", "database_path", "database_path is required"))
-        else:
-            db_parent = os.path.dirname(self.database_path)
-            if db_parent and not os.path.exists(db_parent):
-                # Check if we can create the parent
-                grandparent = os.path.dirname(db_parent)
-                if (
-                    grandparent
-                    and os.path.exists(grandparent)
-                    and not os.access(grandparent, os.W_OK)
-                ):
-                    errors.append(
-                        ConfigError(
-                            "app",
-                            "database_path",
-                            f"parent directory '{db_parent}' does not exist and cannot be created",
-                            severity="warning",
+        # Sync legacy database_path into database.url for backward compat
+        if not self.database.url:
+            self.database.url = self.database_path
+
+        # Validate database config
+        errors.extend(self.database.validate())
+        if self.database.backend == "sqlite":
+            db_path = self.database.url
+            if not db_path:
+                errors.append(ConfigError("database", "url", "database path is required"))
+            else:
+                db_parent = os.path.dirname(db_path)
+                if db_parent and not os.path.exists(db_parent):
+                    grandparent = os.path.dirname(db_parent)
+                    if (
+                        grandparent
+                        and os.path.exists(grandparent)
+                        and not os.access(grandparent, os.W_OK)
+                    ):
+                        errors.append(
+                            ConfigError(
+                                "database",
+                                "url",
+                                f"parent directory '{db_parent}' does not exist "
+                                "and cannot be created",
+                                severity="warning",
+                            )
                         )
-                    )
 
         # Validate messaging_platform field
         valid_platforms = {"discord", "telegram"}
@@ -1149,6 +1203,16 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.workspace_dir = raw["workspace_dir"]
     if "database_path" in raw:
         config.database_path = raw["database_path"]
+    if "database" in raw and isinstance(raw["database"], dict):
+        d = raw["database"]
+        config.database = DatabaseConfig(
+            url=d.get("url", ""),
+            pool_min_size=d.get("pool_min_size", 2),
+            pool_max_size=d.get("pool_max_size", 10),
+        )
+    # Backward compat: if no explicit database section, populate from database_path
+    if not config.database.url:
+        config.database.url = config.database_path
     if "global_token_budget_daily" in raw:
         config.global_token_budget_daily = raw["global_token_budget_daily"]
     if "messaging_platform" in raw:

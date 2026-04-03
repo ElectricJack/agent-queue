@@ -76,13 +76,12 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Callable, Awaitable
+from typing import Any
 
-from src.adapters.base import MessageCallback
 from src.logging_config import CorrelationContext
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
-from src.database import Database
+from src.database import create_database
 from src.discord.notifications import (
     format_task_started,
     format_task_failed,
@@ -117,7 +116,6 @@ from src.messaging.types import (
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
-    AgentOutput,
     AgentProfile,
     AgentResult,
     AgentState,
@@ -130,12 +128,10 @@ from src.models import (
     TaskStatus,
     TaskContext,
     TaskType,
-    Workspace,
 )
 from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
 from src.scheduler import AssignAction, Scheduler, SchedulerState
-from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
 
 logger = logging.getLogger(__name__)
@@ -190,7 +186,7 @@ class Orchestrator:
         cycles.
         """
         self.config = config
-        self.db = Database(config.database_path)
+        self.db = create_database(config)
         self.bus = EventBus()
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
@@ -1147,7 +1143,7 @@ class Orchestrator:
             # 11. Periodic memory compaction — age out old task memories
             # into weekly digests.  Rate-limited by compact_interval_hours.
             await self._periodic_memory_compact()
-        except Exception as e:
+        except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
@@ -3618,7 +3614,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     logger.debug("Created thread for task %s", task.id)
                 else:
                     logger.warning("Thread creation returned None for task %s", task.id)
-            except Exception as e:
+            except Exception:
                 logger.error("Failed to create thread for task %s", task.id, exc_info=True)
         else:
             logger.debug("No thread callback set for task %s", task.id)
@@ -4501,14 +4497,3 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     "error": str(e),
                 },
             )
-
-        # Update the thread-root message ("Agent working: ..." → final status).
-        if _final_root_content is not None and self._edit_thread_root:
-            try:
-                await self._edit_thread_root(
-                    action.task_id,
-                    _final_root_content,
-                    None,
-                )
-            except Exception as e:
-                logger.debug("Could not edit thread root for %s: %s", action.task_id, e)

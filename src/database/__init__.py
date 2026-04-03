@@ -30,14 +30,40 @@ Adding a New Backend
 See ``adapters/postgresql.py`` for a skeleton example.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from src.database.adapters.sqlite import SQLiteDatabaseAdapter
 from src.database.base import DatabaseBackend
 
+if TYPE_CHECKING:
+    from src.config import AppConfig
+
 # Backward-compatible alias: existing code does `from src.database import Database`
 Database = SQLiteDatabaseAdapter
+
+
+def create_database(config: AppConfig) -> DatabaseBackend:
+    """Create the appropriate database backend from application config.
+
+    Returns a :class:`SQLiteDatabaseAdapter` (default) or
+    :class:`PostgreSQLDatabaseAdapter` based on the ``database.backend``
+    config setting.  The returned object is not yet initialized — callers
+    must ``await db.initialize()`` before use.
+    """
+    db_url = config.database.url or config.database_path
+    if config.database.backend == "postgresql":
+        raise NotImplementedError(
+            "PostgreSQL backend is not yet implemented. Use a SQLite database path for now."
+        )
+    # Default: SQLite
+    return SQLiteDatabaseAdapter(db_url)
+
 
 __all__ = [
     "Database",
     "DatabaseBackend",
     "SQLiteDatabaseAdapter",
+    "create_database",
 ]
