@@ -70,8 +70,12 @@ def create_app(
         else ""
     )
 
-    # Register routers
+    # Register routers — backward-compat and health first
     app.include_router(execute_router)
     app.include_router(health_router)
+
+    # Auto-generated typed command routes (POST /api/{category}/{command})
+    from src.api.routers import register_all_routers
+    register_all_routers(app)
 
     return app
