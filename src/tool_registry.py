@@ -533,7 +533,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "create_task",
-        "description": "Create a new task. If no project_id is given, it inherits from the active project; errors if none is set.",
+        "description": "Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces, and can run in parallel. Task descriptions must be completely self-contained with all context the agent needs. If no project_id is given, it inherits from the active project.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -544,7 +544,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Short task title"},
                 "description": {
                     "type": "string",
-                    "description": "Detailed task description for the agent",
+                    "description": "Complete, self-contained instructions for the agent. Include ALL context: file paths, requirements, error messages, expected behavior, relevant code snippets, and design decisions from this conversation. Write as if the agent has never seen this conversation.",
                 },
                 "priority": {
                     "type": "integer",
@@ -1412,13 +1412,17 @@ _ALL_TOOL_DEFINITIONS = [
     # git_checkout, checkout_branch) migrated to aq-git internal plugin.
     {
         "name": "restart_daemon",
-        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required.",
+        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required. Use wait_for_tasks=true to let running tasks finish before restarting.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
                     "description": "Why the restart is being requested",
+                },
+                "wait_for_tasks": {
+                    "type": "boolean",
+                    "description": "If true, pause orchestrator and wait for running tasks to complete before restarting (up to 5 minutes). Default: false.",
                 },
             },
             "required": ["reason"],
@@ -2087,9 +2091,22 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "update_and_restart",
         "description": (
             "Pull the latest source from git and restart the daemon. "
+            "Use wait_for_tasks=true to let running tasks finish before restarting. "
             "Excluded from MCP by default for safety."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why the update/restart is being requested",
+                },
+                "wait_for_tasks": {
+                    "type": "boolean",
+                    "description": "If true, pause orchestrator and wait for running tasks to complete before restarting (up to 5 minutes). Default: false.",
+                },
+            },
+        },
     },
     {
         "name": "browse_tools",

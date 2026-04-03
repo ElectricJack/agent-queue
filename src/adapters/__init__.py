@@ -29,31 +29,26 @@ class AdapterFactory:
     in the profile fall through to the base config defaults.
     """
 
-    def __init__(self, claude_config: ClaudeAdapterConfig | None = None,
-                 llm_logger=None):
+    def __init__(self, claude_config: ClaudeAdapterConfig | None = None, llm_logger=None):
         self._claude_config = claude_config or ClaudeAdapterConfig()
         self._llm_logger = llm_logger
 
-    def create(self, agent_type: str,
-               profile: AgentProfile | None = None) -> AgentAdapter:
+    def create(self, agent_type: str, profile: AgentProfile | None = None) -> AgentAdapter:
         if agent_type == "claude":
             config = self._config_for_profile(profile)
             return ClaudeAdapter(config, llm_logger=self._llm_logger)
         raise ValueError(f"Unknown agent type: {agent_type}")
 
     def _config_for_profile(
-        self, profile: AgentProfile | None,
+        self,
+        profile: AgentProfile | None,
     ) -> ClaudeAdapterConfig:
         """Merge profile overrides into the base ClaudeAdapterConfig."""
         if profile is None:
             return self._claude_config
         return ClaudeAdapterConfig(
             model=profile.model or self._claude_config.model,
-            permission_mode=(
-                profile.permission_mode or self._claude_config.permission_mode
-            ),
-            allowed_tools=(
-                profile.allowed_tools or self._claude_config.allowed_tools
-            ),
+            permission_mode=(profile.permission_mode or self._claude_config.permission_mode),
+            allowed_tools=(profile.allowed_tools or self._claude_config.allowed_tools),
             max_turns=self._claude_config.max_turns,
         )

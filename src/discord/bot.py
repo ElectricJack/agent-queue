@@ -19,6 +19,7 @@ Message flow::
 
 See specs/discord/discord.md for the full specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,23 +46,24 @@ from src.chat_observer import ChatObserver
 
 
 MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
-COMPACT_THRESHOLD = 20     # Compact older messages beyond this count
-RECENT_KEEP = 14           # Keep this many recent messages as-is after compaction
+COMPACT_THRESHOLD = 20  # Compact older messages beyond this count
+RECENT_KEEP = 14  # Keep this many recent messages as-is after compaction
 BUFFER_IDLE_TIMEOUT = 3600  # Drop idle channel buffers after 1 hour
 
 
 @dataclass(slots=True)
 class CachedMessage:
     """Lightweight representation of a Discord message for local buffering."""
-    id: int              # Discord snowflake (0 for synthetic summary messages)
-    author_name: str     # display_name or "AgentQueue"
+
+    id: int  # Discord snowflake (0 for synthetic summary messages)
+    author_name: str  # display_name or "AgentQueue"
     is_bot: bool
     content: str
-    created_at: float    # UTC timestamp
+    created_at: float  # UTC timestamp
     attachment_paths: list[str] | None = None  # local paths to downloaded attachments
-    reference_id: int | None = None        # message ID this is replying to (Discord reply)
-    reference_author: str | None = None    # author of the referenced message
-    reference_snippet: str | None = None   # first ~120 chars of the referenced message
+    reference_id: int | None = None  # message ID this is replying to (Discord reply)
+    reference_author: str | None = None  # author of the referenced message
+    reference_snippet: str | None = None  # first ~120 chars of the referenced message
 
 
 class AgentQueueBot(commands.Bot):
@@ -74,6 +76,7 @@ class AgentQueueBot(commands.Bot):
     - Handles incoming messages: routes them through Supervisor for LLM responses,
       serializing concurrent requests per channel to avoid duplicate processing
     """
+
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -85,11 +88,12 @@ class AgentQueueBot(commands.Bot):
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
         # Wire Supervisor into HookEngine for LLM invocations
-        if hasattr(self.orchestrator, 'hooks') and self.orchestrator.hooks:
+        if hasattr(self.orchestrator, "hooks") and self.orchestrator.hooks:
             self.orchestrator.hooks.set_supervisor(self.agent)
         # Discord invalid-request rate guard — tracks 401/403/429 responses
         # in a 10-minute sliding window to prevent Cloudflare IP bans.
         from src.discord.rate_guard import configure_tracker
+
         self._rate_tracker = configure_tracker(
             warn=config.discord.rate_guard_warn,
             critical=config.discord.rate_guard_critical,
@@ -101,8 +105,12 @@ class AgentQueueBot(commands.Bot):
         # Reverse lookup: channel_id -> project_id
         self._channel_to_project: dict[int, str] = {}
         self._processed_messages: set[int] = set()
-        self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
-        self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
+        self._channel_summaries: dict[
+            int, tuple[int, str]
+        ] = {}  # channel_id -> (up_to_message_id, summary)
+        self._channel_locks: dict[
+            int, asyncio.Lock
+        ] = {}  # prevent concurrent LLM calls per channel
         # Local message buffer — caches messages as they arrive via on_message
         self._channel_buffers: dict[int, collections.deque[CachedMessage]] = {}
         self._buffer_last_access: dict[int, float] = {}  # channel_id -> last access timestamp
@@ -175,7 +183,10 @@ class AgentQueueBot(commands.Bot):
         await self._save_notes_threads()
 
     async def _handle_note_written(
-        self, project_id: str, note_filename: str, note_path: str,
+        self,
+        project_id: str,
+        note_filename: str,
+        note_path: str,
     ) -> None:
         """Auto-refresh viewed notes when a note is written or appended.
 
@@ -203,10 +214,13 @@ class AgentQueueBot(commands.Bot):
                         if thread is None:
                             continue
                         # Read updated content
-                        result = await self.agent.handler.execute("read_note", {
-                            "project_id": project_id,
-                            "title": note_filename[:-3].replace("-", " ").title(),
-                        })
+                        result = await self.agent.handler.execute(
+                            "read_note",
+                            {
+                                "project_id": project_id,
+                                "title": note_filename[:-3].replace("-", " ").title(),
+                            },
+                        )
                         if "error" in result:
                             continue
                         # Delete old message
@@ -217,20 +231,23 @@ class AgentQueueBot(commands.Bot):
                             pass
                         # Send updated content
                         from src.discord.commands import NoteContentView
+
                         content = result["content"]
                         slug = note_filename[:-3]
                         view = NoteContentView(
-                            project_id, slug,
-                            handler=self.agent.handler, bot=self,
+                            project_id,
+                            slug,
+                            handler=self.agent.handler,
+                            bot=self,
                         )
                         if len(content) <= 1900:
                             msg = await thread.send(
-                                f"### 📄 {result['title']} *(updated)*\n"
-                                f"```md\n{content}\n```",
+                                f"### 📄 {result['title']} *(updated)*\n```md\n{content}\n```",
                                 view=view,
                             )
                         else:
                             import io as _io
+
                             file = discord.File(
                                 fp=_io.BytesIO(content.encode("utf-8")),
                                 filename=note_filename,
@@ -249,14 +266,13 @@ class AgentQueueBot(commands.Bot):
 
         # Schedule with 2-second debounce
         loop = asyncio.get_event_loop()
-        handle = loop.call_later(
-            2.0, lambda: asyncio.ensure_future(_do_refresh())
-        )
+        handle = loop.call_later(2.0, lambda: asyncio.ensure_future(_do_refresh()))
         self._note_refresh_timers[debounce_key] = handle
 
     async def _reattach_notes_views(self) -> None:
         """Reattach NotesView buttons to existing TOC messages after bot restart."""
         from src.discord.commands import NotesView
+
         if not self._notes_toc_messages:
             return
         reattached = 0
@@ -265,15 +281,15 @@ class AgentQueueBot(commands.Bot):
             if not project_id:
                 continue
             try:
-                result = await self.agent.handler.execute(
-                    "list_notes", {"project_id": project_id}
-                )
+                result = await self.agent.handler.execute("list_notes", {"project_id": project_id})
                 if "error" in result:
                     continue
                 notes = result.get("notes", [])
                 view = NotesView(
-                    project_id, notes,
-                    handler=self.agent.handler, bot=self,
+                    project_id,
+                    notes,
+                    handler=self.agent.handler,
+                    bot=self,
                 )
                 self.add_view(view, message_id=toc_msg_id)
                 reattached += 1
@@ -282,9 +298,7 @@ class AgentQueueBot(commands.Bot):
         if reattached:
             print(f"Reattached {reattached} notes view(s)")
 
-    def update_project_channel(
-        self, project_id: str, channel: discord.TextChannel
-    ) -> None:
+    def update_project_channel(self, project_id: str, channel: discord.TextChannel) -> None:
         """Update the cached channel for a project at runtime.
 
         Called after ``/set-channel`` or ``/create-channel`` commands so the
@@ -318,9 +332,7 @@ class AgentQueueBot(commands.Bot):
 
         # Remove notes-thread mappings that point to the deleted project.
         # These are also persisted to disk, so we re-save afterwards.
-        stale_thread_ids = [
-            tid for tid, pid in self._notes_threads.items() if pid == project_id
-        ]
+        stale_thread_ids = [tid for tid, pid in self._notes_threads.items() if pid == project_id]
         if stale_thread_ids:
             for tid in stale_thread_ids:
                 stale_channel_ids.add(tid)
@@ -359,6 +371,7 @@ class AgentQueueBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
+
         setup_commands(self)
 
         # Register Discord commands from loaded plugins.
@@ -401,8 +414,10 @@ class AgentQueueBot(commands.Bot):
             error: app_commands.AppCommandError,
         ) -> None:
             original = getattr(error, "original", error)
-            print(f"Slash command error in /{interaction.command.name if interaction.command else '?'}: "
-                  f"{original!r}\n{traceback.format_exc()}")
+            print(
+                f"Slash command error in /{interaction.command.name if interaction.command else '?'}: "
+                f"{original!r}\n{traceback.format_exc()}"
+            )
             try:
                 msg = f"An unexpected error occurred: {original}"
                 if interaction.response.is_done():
@@ -421,7 +436,9 @@ class AgentQueueBot(commands.Bot):
             self.tree.copy_global_to(guild=guild)
             try:
                 synced = await self.tree.sync(guild=guild)
-                print(f"Synced {len(synced)} slash commands to guild {self.config.discord.guild_id}")
+                print(
+                    f"Synced {len(synced)} slash commands to guild {self.config.discord.guild_id}"
+                )
             except Exception as e:
                 print(f"ERROR: Failed to sync commands to guild: {e}")
                 print("Commands will NOT appear in Discord until sync succeeds.")
@@ -437,6 +454,9 @@ class AgentQueueBot(commands.Bot):
     async def on_ready(self) -> None:
         print(f"Discord bot connected as {self.user} (guild: {self.config.discord.guild_id})")
         self._boot_time = discord.utils.utcnow().timestamp()
+
+        # Make bot accessible to CommandHandler for tools like send_message
+        self.orchestrator._discord_bot = self
 
         # Cache channels
         if self.config.discord.guild_id:
@@ -468,8 +488,12 @@ class AgentQueueBot(commands.Bot):
                     if self.orchestrator._notify is None:
                         self.orchestrator.set_notify_callback(self._send_message)
                         self.orchestrator.set_create_thread_callback(self._create_task_thread)
-                        self.orchestrator.set_get_thread_url_callback(self.get_thread_last_message_url)
-                        self.orchestrator.set_edit_thread_root_callback(self.edit_thread_root_message)
+                        self.orchestrator.set_get_thread_url_callback(
+                            self.get_thread_last_message_url
+                        )
+                        self.orchestrator.set_edit_thread_root_callback(
+                            self.edit_thread_root_message
+                        )
                         # Pass command handler ref so interactive views
                         # (Retry/Skip/Approve buttons) can execute commands.
                         self.orchestrator.set_command_handler(self.agent.handler)
@@ -478,9 +502,7 @@ class AgentQueueBot(commands.Bot):
 
                     # Start ChatObserver for passive channel observation
                     if self._chat_observer and self._chat_observer.enabled:
-                        self._chat_observer.set_project_profiles(
-                            self._build_project_profiles()
-                        )
+                        self._chat_observer.set_project_profiles(self._build_project_profiles())
                         await self._chat_observer.start()
 
         # Initialize LLM client via Supervisor
@@ -488,7 +510,9 @@ class AgentQueueBot(commands.Bot):
             if self.agent.initialize():
                 print(f"Chat agent ready (model: {self.agent.model})")
             else:
-                print("Warning: No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`")
+                print(
+                    "Warning: No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`"
+                )
         except Exception as e:
             print(f"Warning: Could not initialize LLM client: {e}")
 
@@ -522,14 +546,19 @@ class AgentQueueBot(commands.Bot):
             self._cancelled = False
 
         @discord.ui.button(
-            label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️",
+            label="Cancel",
+            style=discord.ButtonStyle.danger,
+            emoji="✖️",
         )
         async def cancel_button(
-            self, interaction: discord.Interaction, button: discord.ui.Button,
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button,
         ) -> None:
             if self._cancelled:
                 await interaction.response.send_message(
-                    "Already cancelled.", ephemeral=True,
+                    "Already cancelled.",
+                    ephemeral=True,
                 )
                 return
             self._cancelled = True
@@ -538,12 +567,14 @@ class AgentQueueBot(commands.Bot):
             button.label = "Cancelled"
             try:
                 await interaction.response.edit_message(
-                    content="🚫 Cancelling...", view=self,
+                    content="🚫 Cancelling...",
+                    view=self,
                 )
             except Exception:
                 try:
                     await interaction.response.send_message(
-                        "Cancelling...", ephemeral=True,
+                        "Cancelling...",
+                        ephemeral=True,
                     )
                 except Exception:
                     pass
@@ -588,7 +619,9 @@ class AgentQueueBot(commands.Bot):
                 logging.getLogger(__name__).debug(
                     "Rate guard blocked %s API call: %s (state=%s, count=%d)",
                     "critical" if critical else "non-critical",
-                    context, tracker.state, tracker.count,
+                    context,
+                    tracker.state,
+                    tracker.count,
                 )
             return None
         try:
@@ -599,7 +632,8 @@ class AgentQueueBot(commands.Bot):
             tracker.record(403)
             logging.getLogger(__name__).warning(
                 "Discord 403 Forbidden%s: %s",
-                f" ({context})" if context else "", exc,
+                f" ({context})" if context else "",
+                exc,
             )
             return None
         except discord.HTTPException as exc:
@@ -608,7 +642,8 @@ class AgentQueueBot(commands.Bot):
             logging.getLogger(__name__).warning(
                 "Discord HTTP %d%s: %s",
                 exc.status,
-                f" ({context})" if context else "", exc,
+                f" ({context})" if context else "",
+                exc,
             )
             return None
 
@@ -629,11 +664,15 @@ class AgentQueueBot(commands.Bot):
         if len(text) <= 2000:
             if reply_to:
                 await self._safe_api_call(
-                    reply_to.reply(text), critical=False, context="send_long_message reply",
+                    reply_to.reply(text),
+                    critical=False,
+                    context="send_long_message reply",
                 )
             else:
                 await self._safe_api_call(
-                    channel.send(text), critical=False, context="send_long_message",
+                    channel.send(text),
+                    critical=False,
+                    context="send_long_message",
                 )
             return
 
@@ -653,12 +692,14 @@ class AgentQueueBot(commands.Bot):
             if reply_to:
                 await self._safe_api_call(
                     reply_to.reply(msg, file=file),
-                    critical=False, context="send_long_message file reply",
+                    critical=False,
+                    context="send_long_message file reply",
                 )
             else:
                 await self._safe_api_call(
                     channel.send(msg, file=file),
-                    critical=False, context="send_long_message file",
+                    critical=False,
+                    context="send_long_message file",
                 )
             return
 
@@ -683,11 +724,15 @@ class AgentQueueBot(commands.Bot):
         for i, chunk in enumerate(chunks):
             if i == 0 and reply_to:
                 await self._safe_api_call(
-                    reply_to.reply(chunk), critical=False, context="send_long_message chunk",
+                    reply_to.reply(chunk),
+                    critical=False,
+                    context="send_long_message chunk",
                 )
             else:
                 await self._safe_api_call(
-                    channel.send(chunk), critical=False, context="send_long_message chunk",
+                    channel.send(chunk),
+                    critical=False,
+                    context="send_long_message chunk",
                 )
 
     async def _resolve_project_channels(self) -> None:
@@ -717,21 +762,15 @@ class AgentQueueBot(commands.Bot):
                         f"Warning: project '{project.id}' channel "
                         f"{project.discord_channel_id} not found in guild — clearing stale ID"
                     )
-                    await self.orchestrator.db.update_project(
-                        project.id, discord_channel_id=None
-                    )
+                    await self.orchestrator.db.update_project(project.id, discord_channel_id=None)
 
-    def _get_channel(
-        self, project_id: str | None = None
-    ) -> discord.TextChannel | None:
+    def _get_channel(self, project_id: str | None = None) -> discord.TextChannel | None:
         """Return the channel for a project, falling back to the global channel."""
         if project_id and project_id in self._project_channels:
             return self._project_channels[project_id]
         return self._channel
 
-    def _is_global_channel(
-        self, channel: discord.TextChannel, project_id: str | None
-    ) -> bool:
+    def _is_global_channel(self, channel: discord.TextChannel, project_id: str | None) -> bool:
         """Return True if *channel* is the global fallback (not a per-project channel)."""
         return (
             project_id is not None
@@ -774,15 +813,14 @@ class AgentQueueBot(commands.Bot):
                     kwargs["view"] = view
                 return await self._safe_api_call(
                     channel.send(**kwargs),
-                    critical=True, context="send_message embed",
+                    critical=True,
+                    context="send_message embed",
                 )
             else:
                 return await self._send_long_message(channel, text)
         return None
 
-    async def _process_observation_batch(
-        self, channel_id: int, messages: list[dict]
-    ) -> None:
+    async def _process_observation_batch(self, channel_id: int, messages: list[dict]) -> None:
         """Process a batch of observations from the ChatObserver.
 
         This is the callback invoked when the observer has a ready batch.
@@ -872,14 +910,12 @@ class AgentQueueBot(commands.Bot):
         )
         await channel.send(embed=embed, view=view)
 
-    async def _store_observation_memory(
-        self, project_id: str, content: str
-    ) -> None:
+    async def _store_observation_memory(self, project_id: str, content: str) -> None:
         """Store observation content in project memory."""
         if not content:
             return
         try:
-            if hasattr(self.orchestrator, 'memory_manager') and self.orchestrator.memory_manager:
+            if hasattr(self.orchestrator, "memory_manager") and self.orchestrator.memory_manager:
                 await self.orchestrator.memory_manager.add_memory(
                     project_id=project_id,
                     content=f"[Observed] {content}",
@@ -898,8 +934,11 @@ class AgentQueueBot(commands.Bot):
         return profiles
 
     async def _create_task_thread(
-        self, thread_name: str, initial_message: str,
-        project_id: str | None = None, task_id: str | None = None,
+        self,
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
     ):
         """Create a Discord thread for streaming agent output.
 
@@ -931,7 +970,9 @@ class AgentQueueBot(commands.Bot):
         if existing_thread:
             try:
                 # Verify the thread is still accessible
-                await existing_thread.send(f"🔄 **Task resumed** — agent is working on your feedback.\n{initial_message}")
+                await existing_thread.send(
+                    f"🔄 **Task resumed** — agent is working on your feedback.\n{initial_message}"
+                )
                 print(f"Reusing existing thread {existing_thread.id} for task {task_id}")
                 thread = existing_thread
 
@@ -975,13 +1016,15 @@ class AgentQueueBot(commands.Bot):
         try:
             msg = await self._safe_api_call(
                 channel.send(f"**Agent working:** {display_name}"),
-                critical=True, context="create_task_thread root",
+                critical=True,
+                context="create_task_thread root",
             )
             if msg is None:
                 return None
             thread = await self._safe_api_call(
                 msg.create_thread(name=display_name[:100]),
-                critical=True, context="create_task_thread thread",
+                critical=True,
+                context="create_task_thread thread",
             )
             if thread is None:
                 return None
@@ -1002,9 +1045,7 @@ class AgentQueueBot(commands.Bot):
             except Exception as e:
                 print(f"Thread send error: {e}")
 
-        async def notify_main_channel(
-            text: str, *, embed: discord.Embed | None = None
-        ) -> None:
+        async def notify_main_channel(text: str, *, embed: discord.Embed | None = None) -> None:
             """Reply to the thread-root message with a brief notification.
 
             When an embed is provided, only the embed is sent to avoid
@@ -1087,9 +1128,7 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             print(f"Could not edit thread root for task {task_id}: {e}")
 
-    async def _handle_task_thread_message(
-        self, message: discord.Message, task_id: str
-    ) -> None:
+    async def _handle_task_thread_message(self, message: discord.Message, task_id: str) -> None:
         """Handle a user message posted in a task's Discord thread.
 
         When a user types into a task thread:
@@ -1115,8 +1154,11 @@ class AgentQueueBot(commands.Bot):
             return
 
         terminal_statuses = {
-            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED,
-            TaskStatus.AWAITING_APPROVAL, TaskStatus.AWAITING_PLAN_APPROVAL,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.BLOCKED,
+            TaskStatus.AWAITING_APPROVAL,
+            TaskStatus.AWAITING_PLAN_APPROVAL,
         }
 
         if task.status in terminal_statuses:
@@ -1144,9 +1186,7 @@ class AgentQueueBot(commands.Bot):
             try:
                 separator = "\n\n---\n**Thread Feedback:**\n"
                 updated_desc = task.description + separator + feedback
-                await self.orchestrator.db.update_task(
-                    task_id, description=updated_desc
-                )
+                await self.orchestrator.db.update_task(task_id, description=updated_desc)
                 await self.orchestrator.db.add_task_context(
                     task_id,
                     type="thread_feedback",
@@ -1168,9 +1208,7 @@ class AgentQueueBot(commands.Bot):
             try:
                 separator = "\n\n---\n**Thread Feedback:**\n"
                 updated_desc = task.description + separator + feedback
-                await self.orchestrator.db.update_task(
-                    task_id, description=updated_desc
-                )
+                await self.orchestrator.db.update_task(task_id, description=updated_desc)
                 await self.orchestrator.db.add_task_context(
                     task_id,
                     type="thread_feedback",
@@ -1178,8 +1216,7 @@ class AgentQueueBot(commands.Bot):
                     content=feedback,
                 )
                 await message.reply(
-                    "💬 Feedback saved — the agent will see this when "
-                    "the task runs."
+                    "💬 Feedback saved — the agent will see this when the task runs."
                 )
             except Exception as e:
                 print(f"Task thread context save failed for {task_id}: {e}")
@@ -1208,7 +1245,10 @@ class AgentQueueBot(commands.Bot):
 
         for att in message.attachments:
             # Only download images — skip other file types
-            if att.content_type and att.content_type.split(";")[0].strip() not in IMAGE_CONTENT_TYPES:
+            if (
+                att.content_type
+                and att.content_type.split(";")[0].strip() not in IMAGE_CONTENT_TYPES
+            ):
                 continue
             # Even if content_type is missing, allow common image extensions
             if not att.content_type:
@@ -1217,10 +1257,7 @@ class AgentQueueBot(commands.Bot):
                     continue
 
             # Sanitize filename: keep only alphanumeric, dots, dashes, underscores
-            safe_name = "".join(
-                c if c.isalnum() or c in ".-_" else "_"
-                for c in att.filename
-            )
+            safe_name = "".join(c if c.isalnum() or c in ".-_" else "_" for c in att.filename)
             dest = attachments_dir / safe_name
             try:
                 await att.save(dest)
@@ -1312,7 +1349,7 @@ class AgentQueueBot(commands.Bot):
         for m in older:
             prefix = ""
             if m.reference_author and m.reference_snippet:
-                prefix = f"(replying to {m.reference_author}: \"{m.reference_snippet[:60]}\") "
+                prefix = f'(replying to {m.reference_author}: "{m.reference_snippet[:60]}") '
             lines.append(f"{m.author_name}: {prefix}{m.content}")
         transcript = "\n".join(lines)
 
@@ -1359,22 +1396,33 @@ class AgentQueueBot(commands.Bot):
                 if ref_msg:
                     ref_author = ref_msg.author_name
                     ref_snippet = ref_msg.content[:120]
-                elif message.reference.resolved and isinstance(message.reference.resolved, discord.Message):
+                elif message.reference.resolved and isinstance(
+                    message.reference.resolved, discord.Message
+                ):
                     # Discord sometimes pre-resolves the reference
                     resolved = message.reference.resolved
-                    ref_author = "AgentQueue" if resolved.author == self.user else resolved.author.display_name
+                    ref_author = (
+                        "AgentQueue"
+                        if resolved.author == self.user
+                        else resolved.author.display_name
+                    )
                     ref_snippet = resolved.content[:120] if resolved.content else None
-            self._append_to_buffer(channel_id, CachedMessage(
-                id=message.id,
-                author_name="AgentQueue" if message.author == self.user else message.author.display_name,
-                is_bot=message.author == self.user,
-                content=message.content,
-                created_at=message.created_at.timestamp(),
-                attachment_paths=downloaded_paths or None,
-                reference_id=ref_id,
-                reference_author=ref_author,
-                reference_snippet=ref_snippet,
-            ))
+            self._append_to_buffer(
+                channel_id,
+                CachedMessage(
+                    id=message.id,
+                    author_name="AgentQueue"
+                    if message.author == self.user
+                    else message.author.display_name,
+                    is_bot=message.author == self.user,
+                    content=message.content,
+                    created_at=message.created_at.timestamp(),
+                    attachment_paths=downloaded_paths or None,
+                    reference_id=ref_id,
+                    reference_author=ref_author,
+                    reference_snippet=ref_snippet,
+                ),
+            )
 
         # Emit chat.message event for the chat observer (before any guards).
         # This fires for ALL messages in project channels (including bot
@@ -1382,31 +1430,36 @@ class AgentQueueBot(commands.Bot):
         # can understand context, not just user messages in isolation.
         project_id_for_event = self._channel_to_project.get(channel_id)
         if project_id_for_event and message.content:
-            await self.orchestrator.bus.emit("chat.message", {
-                "channel_id": channel_id,
-                "project_id": project_id_for_event,
-                "author": (
-                    "AgentQueue" if message.author == self.user
-                    else message.author.display_name
-                ),
-                "content": message.content,
-                "timestamp": message.created_at.timestamp(),
-                "is_bot": message.author == self.user,
-            })
-
-            # Feed to ChatObserver for Stage 1 filtering
-            if self._chat_observer:
-                self._chat_observer.on_message({
+            await self.orchestrator.bus.emit(
+                "chat.message",
+                {
                     "channel_id": channel_id,
                     "project_id": project_id_for_event,
                     "author": (
-                        "AgentQueue" if message.author == self.user
-                        else message.author.display_name
+                        "AgentQueue" if message.author == self.user else message.author.display_name
                     ),
                     "content": message.content,
                     "timestamp": message.created_at.timestamp(),
                     "is_bot": message.author == self.user,
-                })
+                },
+            )
+
+            # Feed to ChatObserver for Stage 1 filtering
+            if self._chat_observer:
+                self._chat_observer.on_message(
+                    {
+                        "channel_id": channel_id,
+                        "project_id": project_id_for_event,
+                        "author": (
+                            "AgentQueue"
+                            if message.author == self.user
+                            else message.author.display_name
+                        ),
+                        "content": message.content,
+                        "timestamp": message.created_at.timestamp(),
+                        "is_bot": message.author == self.user,
+                    }
+                )
 
         # Ignore own messages
         if message.author == self.user:
@@ -1437,10 +1490,7 @@ class AgentQueueBot(commands.Bot):
 
         # Only respond in the global bot channel, per-project channels
         # (when mentioned), when mentioned elsewhere, or in a notes thread
-        is_bot_channel = (
-            self._channel
-            and message.channel.id == self._channel.id
-        )
+        is_bot_channel = self._channel and message.channel.id == self._channel.id
         # Check if this is a per-project channel (O(1) reverse lookup)
         project_channel_id: str | None = self._channel_to_project.get(message.channel.id)
 
@@ -1448,7 +1498,12 @@ class AgentQueueBot(commands.Bot):
         notes_project_id = self._notes_threads.get(message.channel.id)
         is_notes_thread = notes_project_id is not None
 
-        if not is_bot_channel and project_channel_id is None and not is_mentioned and not is_notes_thread:
+        if (
+            not is_bot_channel
+            and project_channel_id is None
+            and not is_mentioned
+            and not is_notes_thread
+        ):
             return
 
         # In project channels, require an @mention so collaborators can
@@ -1475,9 +1530,7 @@ class AgentQueueBot(commands.Bot):
             if downloaded_paths:
                 text = (
                     f"[User sent {len(downloaded_paths)} image(s) with no text. "
-                    f"Downloaded to:\n"
-                    + "\n".join(f"  - `{p}`" for p in downloaded_paths)
-                    + "\n"
+                    f"Downloaded to:\n" + "\n".join(f"  - `{p}`" for p in downloaded_paths) + "\n"
                     f"Ask the user what they'd like to do with these images.]"
                 )
             else:
@@ -1490,9 +1543,7 @@ class AgentQueueBot(commands.Bot):
             # Notify on cold model loads (Ollama first-call latency)
             try:
                 if not await self.agent.is_model_loaded():
-                    await message.channel.send(
-                        "\u23f3 Loading model, this may take a moment..."
-                    )
+                    await message.channel.send("\u23f3 Loading model, this may take a moment...")
             except Exception:
                 pass  # fail-open — skip notification silently
 
@@ -1514,8 +1565,7 @@ class AgentQueueBot(commands.Bot):
                         # to the correct project when the user's request
                         # is about a different project than the channel's.
                         other_projects = [
-                            pid for pid in self._project_channels
-                            if pid != project_channel_id
+                            pid for pid in self._project_channels if pid != project_channel_id
                         ]
                         cross_project_hint = ""
                         if other_projects:
@@ -1562,7 +1612,8 @@ class AgentQueueBot(commands.Bot):
                     # Includes a Cancel button to abort the supervisor mid-thought.
                     thinking_view = self.ThinkingView(self.agent)
                     thinking_msg = await message.reply(
-                        "💭 Thinking...", view=thinking_view,
+                        "💭 Thinking...",
+                        view=thinking_view,
                     )
                     tool_names_used: list[str] = []
 
@@ -1583,7 +1634,8 @@ class AgentQueueBot(commands.Bot):
                             if event == "cancelled":
                                 thinking_view.stop()
                                 await thinking_msg.edit(
-                                    content="🚫 Cancelled.", view=None,
+                                    content="🚫 Cancelled.",
+                                    view=None,
                                 )
                                 return
                             elif event == "thinking" and not detail:
@@ -1592,15 +1644,11 @@ class AgentQueueBot(commands.Bot):
                             elif event == "thinking" and detail:
                                 # Subsequent LLM round after tool use
                                 steps = " → ".join(f"`{t}`" for t in tool_names_used)
-                                await thinking_msg.edit(
-                                    content=f"💭 Thinking... {steps} → 💭"
-                                )
+                                await thinking_msg.edit(content=f"💭 Thinking... {steps} → 💭")
                             elif event == "tool_use" and detail:
                                 tool_names_used.append(detail)
                                 steps = " → ".join(f"`{t}`" for t in tool_names_used)
-                                await thinking_msg.edit(
-                                    content=f"🔧 Working... {steps}"
-                                )
+                                await thinking_msg.edit(content=f"🔧 Working... {steps}")
                             elif event == "responding":
                                 steps = " → ".join(f"`{t}`" for t in tool_names_used)
                                 if steps:
@@ -1616,18 +1664,23 @@ class AgentQueueBot(commands.Bot):
 
                     try:
                         response = await self.agent.chat(
-                            user_text, message.author.display_name,
-                            history=history, on_progress=_on_progress,
+                            user_text,
+                            message.author.display_name,
+                            history=history,
+                            on_progress=_on_progress,
                         )
                     except Exception as e:
                         import anthropic
+
                         if isinstance(e, anthropic.AuthenticationError):
                             # Token may have been refreshed — reload and retry once
                             print(f"Auth error — reloading credentials: {e}")
                             if self.agent.reload_credentials():
                                 response = await self.agent.chat(
-                                    user_text, message.author.display_name,
-                                    history=history, on_progress=_on_progress,
+                                    user_text,
+                                    message.author.display_name,
+                                    history=history,
+                                    on_progress=_on_progress,
                                 )
                             else:
                                 response = (
@@ -1646,7 +1699,8 @@ class AgentQueueBot(commands.Bot):
                         if thinking_msg:
                             try:
                                 await thinking_msg.edit(
-                                    content="🚫 Cancelled.", view=None,
+                                    content="🚫 Cancelled.",
+                                    view=None,
                                 )
                             except Exception:
                                 await self._delete_thinking_msg(thinking_msg)
@@ -1656,9 +1710,7 @@ class AgentQueueBot(commands.Bot):
                         await self._delete_thinking_msg(thinking_msg)
                         thinking_msg = None
 
-                        await self._send_long_message(
-                            message.channel, response, reply_to=message
-                        )
+                        await self._send_long_message(message.channel, response, reply_to=message)
                 except Exception as e:
                     if thinking_view is not None:
                         thinking_view.stop()
@@ -1724,14 +1776,18 @@ class AgentQueueBot(commands.Bot):
         if older:
             summary = await self._get_or_create_summary_from_cache(channel_id, older)
             if summary:
-                messages.append({
-                    "role": "user",
-                    "content": f"[CONVERSATION SUMMARY — earlier messages]\n{summary}",
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": "Understood, I have the conversation context.",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"[CONVERSATION SUMMARY — earlier messages]\n{summary}",
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "Understood, I have the conversation context.",
+                    }
+                )
 
         # Add recent messages verbatim, with reply-chain annotations
         for msg in recent:
@@ -1740,17 +1796,13 @@ class AgentQueueBot(commands.Bot):
             if msg.reference_id:
                 if msg.reference_author and msg.reference_snippet:
                     reply_prefix = (
-                        f"[replying to {msg.reference_author}: "
-                        f"\"{msg.reference_snippet}\"]\n"
+                        f'[replying to {msg.reference_author}: "{msg.reference_snippet}"]\n'
                     )
                 else:
                     # Reference exists but content not cached — try buffer lookup
                     ref = self._find_cached_message(channel_id, msg.reference_id)
                     if ref:
-                        reply_prefix = (
-                            f"[replying to {ref.author_name}: "
-                            f"\"{ref.content[:120]}\"]\n"
-                        )
+                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content[:120]}"]\n'
                     else:
                         reply_prefix = "[replying to an earlier message]\n"
 
@@ -1758,10 +1810,12 @@ class AgentQueueBot(commands.Bot):
                 content = f"{reply_prefix}{msg.content}" if reply_prefix else msg.content
                 messages.append({"role": "assistant", "content": content})
             else:
-                messages.append({
-                    "role": "user",
-                    "content": f"{reply_prefix}[from {msg.author_name}]: {msg.content}",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"{reply_prefix}[from {msg.author_name}]: {msg.content}",
+                    }
+                )
 
         # Merge consecutive same-role messages (Anthropic API requirement)
         merged: list[dict] = []
@@ -1779,14 +1833,13 @@ class AgentQueueBot(commands.Bot):
         """Cold-start fallback: fetch from Discord API and populate the buffer."""
         raw: list[discord.Message] = []
         try:
-            async for msg in channel.history(
-                limit=MAX_HISTORY_MESSAGES, before=before
-            ):
+            async for msg in channel.history(limit=MAX_HISTORY_MESSAGES, before=before):
                 raw.append(msg)
         except discord.Forbidden:
             self._rate_tracker.record(403)
             logging.getLogger(__name__).warning(
-                "Cold-start history fetch forbidden for channel %s", channel.id,
+                "Cold-start history fetch forbidden for channel %s",
+                channel.id,
             )
             return
         except discord.HTTPException as exc:
@@ -1794,7 +1847,8 @@ class AgentQueueBot(commands.Bot):
                 self._rate_tracker.record(exc.status)
             logging.getLogger(__name__).warning(
                 "Cold-start history fetch failed (HTTP %d) for channel %s",
-                exc.status, channel.id,
+                exc.status,
+                channel.id,
             )
             return
         raw.reverse()  # oldest first
@@ -1808,14 +1862,18 @@ class AgentQueueBot(commands.Bot):
             ref_id = None
             if msg.reference and msg.reference.message_id:
                 ref_id = msg.reference.message_id
-            buf.append(CachedMessage(
-                id=msg.id,
-                author_name="AgentQueue" if msg.author == self.user else msg.author.display_name,
-                is_bot=msg.author == self.user,
-                content=msg.content,
-                created_at=msg.created_at.timestamp(),
-                reference_id=ref_id,
-            ))
+            buf.append(
+                CachedMessage(
+                    id=msg.id,
+                    author_name="AgentQueue"
+                    if msg.author == self.user
+                    else msg.author.display_name,
+                    is_bot=msg.author == self.user,
+                    content=msg.content,
+                    created_at=msg.created_at.timestamp(),
+                    reference_id=ref_id,
+                )
+            )
         self._channel_buffers[channel.id] = buf
         self._buffer_last_access[channel.id] = time.monotonic()
         # Second pass: resolve reference authors/snippets from the buffer
@@ -1847,7 +1905,7 @@ class AgentQueueBot(commands.Bot):
         for msg in older_messages:
             prefix = ""
             if msg.reference_author and msg.reference_snippet:
-                prefix = f"(replying to {msg.reference_author}: \"{msg.reference_snippet[:60]}\") "
+                prefix = f'(replying to {msg.reference_author}: "{msg.reference_snippet[:60]}") '
             lines.append(f"{msg.author_name}: {prefix}{msg.content}")
         transcript = "\n".join(lines)
 
@@ -1874,10 +1932,7 @@ class AgentQueueBot(commands.Bot):
             scanned = stats.get("rules_scanned", 0)
             regen = stats.get("hooks_regenerated", 0)
             if scanned > 0:
-                print(
-                    f"Rule reconciliation: {scanned} rules scanned, "
-                    f"{regen} hooks regenerated"
-                )
+                print(f"Rule reconciliation: {scanned} rules scanned, {regen} hooks regenerated")
         except Exception as e:
             print(f"Rule reconciliation failed: {e}")
 
@@ -1896,7 +1951,8 @@ class AgentQueueBot(commands.Bot):
         """Drop buffers for channels idle longer than ``BUFFER_IDLE_TIMEOUT``."""
         now = time.monotonic()
         stale = [
-            cid for cid, last in self._buffer_last_access.items()
+            cid
+            for cid, last in self._buffer_last_access.items()
             if now - last > BUFFER_IDLE_TIMEOUT
         ]
         for cid in stale:

@@ -133,7 +133,7 @@ async def test_task_deps_both_directions(handler, db):
     await db.create_task(_task("last", title="Last"))
 
     await db.add_dependency("middle", "first")  # middle depends on first
-    await db.add_dependency("last", "middle")    # last depends on middle
+    await db.add_dependency("last", "middle")  # last depends on middle
 
     result = await handler.execute("task_deps", {"task_id": "middle"})
     assert "error" not in result
@@ -231,10 +231,13 @@ async def test_list_tasks_show_dependencies(handler, db):
     await db.create_task(_task("child", title="Child"))
     await db.add_dependency("child", "parent")
 
-    result = await handler.execute("list_tasks", {
-        "project_id": PROJECT_ID,
-        "show_dependencies": True,
-    })
+    result = await handler.execute(
+        "list_tasks",
+        {
+            "project_id": PROJECT_ID,
+            "show_dependencies": True,
+        },
+    )
     assert "error" not in result
     tasks_by_id = {t["id"]: t for t in result["tasks"]}
 
@@ -250,9 +253,12 @@ async def test_list_tasks_no_dependencies_flag(handler, db):
     """list_tasks without show_dependencies should not include dep data."""
     await db.create_task(_task("t1", title="Task 1"))
 
-    result = await handler.execute("list_tasks", {
-        "project_id": PROJECT_ID,
-    })
+    result = await handler.execute(
+        "list_tasks",
+        {
+            "project_id": PROJECT_ID,
+        },
+    )
     assert "error" not in result
     task = result["tasks"][0]
     assert "depends_on" not in task
@@ -280,10 +286,13 @@ async def test_add_dependency_success(handler, db):
     await db.create_task(_task("task-a", title="Task A"))
     await db.create_task(_task("task-b", title="Task B"))
 
-    result = await handler.execute("add_dependency", {
-        "task_id": "task-b",
-        "depends_on": "task-a",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "task-b",
+            "depends_on": "task-a",
+        },
+    )
     assert "error" not in result
     assert result["ok"] is True
     assert result["task_id"] == "task-b"
@@ -299,10 +308,13 @@ async def test_add_dependency_success(handler, db):
 @pytest.mark.asyncio
 async def test_add_dependency_missing_task_id(handler):
     """Should error when task_id is empty."""
-    result = await handler.execute("add_dependency", {
-        "task_id": "",
-        "depends_on": "something",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "",
+            "depends_on": "something",
+        },
+    )
     assert "error" in result
     assert "task_id" in result["error"]
 
@@ -310,10 +322,13 @@ async def test_add_dependency_missing_task_id(handler):
 @pytest.mark.asyncio
 async def test_add_dependency_missing_depends_on(handler):
     """Should error when depends_on is empty."""
-    result = await handler.execute("add_dependency", {
-        "task_id": "something",
-        "depends_on": "",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "something",
+            "depends_on": "",
+        },
+    )
     assert "error" in result
     assert "depends_on" in result["error"]
 
@@ -323,10 +338,13 @@ async def test_add_dependency_self_reference(handler, db):
     """Should reject a task depending on itself."""
     await db.create_task(_task("task-a", title="Task A"))
 
-    result = await handler.execute("add_dependency", {
-        "task_id": "task-a",
-        "depends_on": "task-a",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "task-a",
+            "depends_on": "task-a",
+        },
+    )
     assert "error" in result
     assert "itself" in result["error"]
 
@@ -336,10 +354,13 @@ async def test_add_dependency_task_not_found(handler, db):
     """Should error when the main task does not exist."""
     await db.create_task(_task("task-a", title="Task A"))
 
-    result = await handler.execute("add_dependency", {
-        "task_id": "nonexistent",
-        "depends_on": "task-a",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "nonexistent",
+            "depends_on": "task-a",
+        },
+    )
     assert "error" in result
     assert "not found" in result["error"]
 
@@ -349,10 +370,13 @@ async def test_add_dependency_depends_on_not_found(handler, db):
     """Should error when the dependency target does not exist."""
     await db.create_task(_task("task-a", title="Task A"))
 
-    result = await handler.execute("add_dependency", {
-        "task_id": "task-a",
-        "depends_on": "nonexistent",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "task-a",
+            "depends_on": "nonexistent",
+        },
+    )
     assert "error" in result
     assert "not found" in result["error"]
 
@@ -365,10 +389,13 @@ async def test_add_dependency_duplicate(handler, db):
 
     await db.add_dependency("task-b", "task-a")
 
-    result = await handler.execute("add_dependency", {
-        "task_id": "task-b",
-        "depends_on": "task-a",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "task-b",
+            "depends_on": "task-a",
+        },
+    )
     assert "error" in result
     assert "already" in result["error"]
 
@@ -385,10 +412,13 @@ async def test_add_dependency_cycle_detection(handler, db):
     await db.add_dependency("task-c", "task-b")
 
     # Trying to make a depend on c would create a cycle: a -> b -> c -> a
-    result = await handler.execute("add_dependency", {
-        "task_id": "task-a",
-        "depends_on": "task-c",
-    })
+    result = await handler.execute(
+        "add_dependency",
+        {
+            "task_id": "task-a",
+            "depends_on": "task-c",
+        },
+    )
     assert "error" in result
     assert "cycle" in result["error"].lower() or "Cyclic" in result["error"]
 
@@ -405,10 +435,13 @@ async def test_remove_dependency_success(handler, db):
     await db.create_task(_task("task-b", title="Task B"))
     await db.add_dependency("task-b", "task-a")
 
-    result = await handler.execute("remove_dependency", {
-        "task_id": "task-b",
-        "depends_on": "task-a",
-    })
+    result = await handler.execute(
+        "remove_dependency",
+        {
+            "task_id": "task-b",
+            "depends_on": "task-a",
+        },
+    )
     assert "error" not in result
     assert result["ok"] is True
     assert result["task_id"] == "task-b"
@@ -422,20 +455,26 @@ async def test_remove_dependency_success(handler, db):
 @pytest.mark.asyncio
 async def test_remove_dependency_missing_task_id(handler):
     """Should error when task_id is empty."""
-    result = await handler.execute("remove_dependency", {
-        "task_id": "",
-        "depends_on": "something",
-    })
+    result = await handler.execute(
+        "remove_dependency",
+        {
+            "task_id": "",
+            "depends_on": "something",
+        },
+    )
     assert "error" in result
 
 
 @pytest.mark.asyncio
 async def test_remove_dependency_task_not_found(handler, db):
     """Should error when the task does not exist."""
-    result = await handler.execute("remove_dependency", {
-        "task_id": "nonexistent",
-        "depends_on": "something",
-    })
+    result = await handler.execute(
+        "remove_dependency",
+        {
+            "task_id": "nonexistent",
+            "depends_on": "something",
+        },
+    )
     assert "error" in result
     assert "not found" in result["error"]
 
@@ -446,10 +485,13 @@ async def test_remove_dependency_edge_not_found(handler, db):
     await db.create_task(_task("task-a", title="Task A"))
     await db.create_task(_task("task-b", title="Task B"))
 
-    result = await handler.execute("remove_dependency", {
-        "task_id": "task-a",
-        "depends_on": "task-b",
-    })
+    result = await handler.execute(
+        "remove_dependency",
+        {
+            "task_id": "task-a",
+            "depends_on": "task-b",
+        },
+    )
     assert "error" in result
     assert "does not depend" in result["error"]
 

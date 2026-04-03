@@ -66,19 +66,33 @@ MAX_CONSECUTIVE_FAILURES = 5
 
 # Names reserved by built-in CLI groups and Discord commands.  Plugins must
 # not use these because they would collide with core functionality.
-RESERVED_PLUGIN_NAMES: frozenset[str] = frozenset({
-    # CLI groups
-    "status", "task", "agent", "hook", "project", "plugin",
-    # Discord commands that read as top-level groups
-    "tasks", "projects", "agents", "events", "hooks",
-    # Meta
-    "aq", "help", "version",
-})
+RESERVED_PLUGIN_NAMES: frozenset[str] = frozenset(
+    {
+        # CLI groups
+        "status",
+        "task",
+        "agent",
+        "hook",
+        "project",
+        "plugin",
+        # Discord commands that read as top-level groups
+        "tasks",
+        "projects",
+        "agents",
+        "events",
+        "hooks",
+        # Meta
+        "aq",
+        "help",
+        "version",
+    }
+)
 
 
 @dataclass
 class _CronJob:
     """A cron-scheduled plugin method."""
+
     plugin_name: str
     method: Callable
     expression: str
@@ -207,7 +221,7 @@ class PluginRegistry:
                     info = parse_plugin_yaml(str(entry))
                     logger.warning(
                         "Plugin '%s' uses legacy plugin.yaml — migrate to "
-                        "pyproject.toml with [project.entry-points.\"aq.plugins\"]",
+                        'pyproject.toml with [project.entry-points."aq.plugins"]',
                         info.name,
                     )
                     plugin_name = info.name
@@ -233,7 +247,9 @@ class PluginRegistry:
                     logger.info("Discovered plugin: %s v%s", plugin_name, version)
             except Exception as e:
                 logger.warning(
-                    "Skipping invalid plugin directory %s: %s", entry.name, e,
+                    "Skipping invalid plugin directory %s: %s",
+                    entry.name,
+                    e,
                 )
 
         return discovered
@@ -339,7 +355,9 @@ class PluginRegistry:
                 loaded += 1
             except Exception as e:
                 logger.error(
-                    "Failed to load plugin '%s': %s", plugin_row["id"], e,
+                    "Failed to load plugin '%s': %s",
+                    plugin_row["id"],
+                    e,
                     exc_info=True,
                 )
                 await self._db.update_plugin(
@@ -380,32 +398,34 @@ class PluginRegistry:
             if source_url:
                 logger.info(
                     "Plugin '%s' missing at %s — re-cloning from %s",
-                    name, install_path, source_url,
+                    name,
+                    install_path,
+                    source_url,
                 )
                 Path(install_path).mkdir(parents=True, exist_ok=True)
                 branch = plugin_row.get("source_branch") or None
                 rev = plugin_row.get("source_rev") or None
                 try:
                     new_rev = await clone_plugin_repo(
-                        source_url, install_path, branch=branch, rev=rev,
+                        source_url,
+                        install_path,
+                        branch=branch,
+                        rev=rev,
                     )
                     if not install_plugin_package(install_path):
-                        raise RuntimeError(
-                            f"Failed to install plugin at '{install_path}'"
-                        )
+                        raise RuntimeError(f"Failed to install plugin at '{install_path}'")
                     await self._db.update_plugin(
-                        name, source_rev=new_rev, status=PluginStatus.INSTALLED.value,
+                        name,
+                        source_rev=new_rev,
+                        status=PluginStatus.INSTALLED.value,
                         error_message=None,
                     )
                 except Exception as e:
                     raise FileNotFoundError(
-                        f"Plugin '{name}' missing at {install_path} and "
-                        f"re-clone failed: {e}"
+                        f"Plugin '{name}' missing at {install_path} and re-clone failed: {e}"
                     ) from e
             else:
-                raise FileNotFoundError(
-                    f"Plugin '{name}' not found at {install_path}"
-                )
+                raise FileNotFoundError(f"Plugin '{name}' not found at {install_path}")
 
         # Load plugin class: try entry point first, fall back to plugin.py import
         use_pyproject = has_pyproject(install_path)
@@ -483,16 +503,21 @@ class PluginRegistry:
                 continue
             if callable(method) and hasattr(method, "_cron_expression"):
                 config_key = getattr(method, "_cron_config_key", None)
-                self._cron_jobs.append(_CronJob(
-                    plugin_name=name,
-                    method=method,
-                    expression=method._cron_expression,
-                    config_key=config_key,
-                ))
+                self._cron_jobs.append(
+                    _CronJob(
+                        plugin_name=name,
+                        method=method,
+                        expression=method._cron_expression,
+                        config_key=config_key,
+                    )
+                )
                 extra = f" (configurable via '{config_key}')" if config_key else ""
                 logger.info(
                     "Plugin '%s' registered cron job: %s [%s]%s",
-                    name, attr_name, method._cron_expression, extra,
+                    name,
+                    attr_name,
+                    method._cron_expression,
+                    extra,
                 )
 
         # Update DB status
@@ -509,10 +534,13 @@ class PluginRegistry:
         logger.info("Loaded plugin: %s v%s", name, info.version)
 
         # Emit event
-        await self._bus.emit("plugin.loaded", {
-            "plugin": name,
-            "version": info.version,
-        })
+        await self._bus.emit(
+            "plugin.loaded",
+            {
+                "plugin": name,
+                "version": info.version,
+            },
+        )
 
     async def unload_plugin(self, name: str) -> None:
         """Unload a plugin, calling its shutdown method.
@@ -531,12 +559,8 @@ class PluginRegistry:
 
         # Remove registered commands — find prefixed commands first,
         # then remove any short-name aliases that share the same handler.
-        prefixed_cmds = {
-            k for k in self._commands if k.startswith(f"{name}.")
-        }
-        plugin_handlers = {
-            id(self._commands[k]) for k in prefixed_cmds if k in self._commands
-        }
+        prefixed_cmds = {k for k in self._commands if k.startswith(f"{name}.")}
+        plugin_handlers = {id(self._commands[k]) for k in prefixed_cmds if k in self._commands}
         to_remove_cmds = set(prefixed_cmds)
         for k, v in list(self._commands.items()):
             if id(v) in plugin_handlers:
@@ -545,10 +569,7 @@ class PluginRegistry:
             self._commands.pop(key, None)
 
         # Remove registered tools
-        to_remove_tools = [
-            k for k, v in self._tools.items()
-            if v.get("_plugin") == name
-        ]
+        to_remove_tools = [k for k, v in self._tools.items() if v.get("_plugin") == name]
         for key in to_remove_tools:
             self._tools.pop(key, None)
 
@@ -640,14 +661,19 @@ class PluginRegistry:
 
         logger.info(
             "Installed plugin '%s' v%s from %s",
-            plugin_name, result["version"], url,
+            plugin_name,
+            result["version"],
+            url,
         )
 
-        await self._bus.emit("plugin.installed", {
-            "plugin": plugin_name,
-            "version": result["version"],
-            "source": url,
-        })
+        await self._bus.emit(
+            "plugin.installed",
+            {
+                "plugin": plugin_name,
+                "version": result["version"],
+                "source": url,
+            },
+        )
 
         return plugin_name
 
@@ -670,24 +696,22 @@ class PluginRegistry:
         pyproject_path = source / "pyproject.toml"
         if pyproject_path.exists():
             import tomllib
+
             with open(pyproject_path, "rb") as f:
                 data = tomllib.load(f)
             # Prefer entry-point name over project.name (dist name)
-            ep_names = list(
-                data.get("project", {})
-                .get("entry-points", {})
-                .get("aq.plugins", {})
+            ep_names = list(data.get("project", {}).get("entry-points", {}).get("aq.plugins", {}))
+            plugin_name = (
+                name or (ep_names[0] if ep_names else None) or data.get("project", {}).get("name")
             )
-            plugin_name = name or (ep_names[0] if ep_names else None) or data.get("project", {}).get("name")
         else:
             temp_info_path = source / "plugin.yaml"
             if not temp_info_path.exists():
                 temp_info_path = source / "plugin.yml"
             if not temp_info_path.exists():
-                raise ValueError(
-                    f"No pyproject.toml or plugin.yaml in {source_path}"
-                )
+                raise ValueError(f"No pyproject.toml or plugin.yaml in {source_path}")
             import yaml
+
             with open(temp_info_path) as f:
                 data = yaml.safe_load(f)
             plugin_name = name or data.get("name")
@@ -711,6 +735,7 @@ class PluginRegistry:
                 src_dir.unlink()
             else:
                 import shutil
+
                 shutil.rmtree(src_dir)
 
         # Use symlink for development mode
@@ -806,11 +831,14 @@ class PluginRegistry:
 
         logger.info("Updated plugin '%s' to rev %s", name, new_rev[:8])
 
-        await self._bus.emit("plugin.updated", {
-            "plugin": name,
-            "version": info.version,
-            "rev": new_rev,
-        })
+        await self._bus.emit(
+            "plugin.updated",
+            {
+                "plugin": name,
+                "version": info.version,
+                "rev": new_rev,
+            },
+        )
 
         return new_rev
 
@@ -846,9 +874,7 @@ class PluginRegistry:
         # records exist under different names).
         if install_path and Path(install_path).exists():
             other_plugins = await self._db.list_plugins()
-            shared = any(
-                p.get("install_path") == install_path for p in other_plugins
-            )
+            shared = any(p.get("install_path") == install_path for p in other_plugins)
             if shared:
                 logger.warning(
                     "Not deleting %s — another plugin record shares this path",
@@ -856,6 +882,7 @@ class PluginRegistry:
                 )
             else:
                 import shutil
+
                 shutil.rmtree(install_path)
                 logger.info("Removed plugin directory: %s", install_path)
 
@@ -885,7 +912,8 @@ class PluginRegistry:
         if name in self._plugins:
             await self.unload_plugin(name)
         await self._db.update_plugin(
-            name, status=PluginStatus.DISABLED.value,
+            name,
+            status=PluginStatus.DISABLED.value,
         )
 
     # ------------------------------------------------------------------
@@ -937,23 +965,19 @@ class PluginRegistry:
         """
         result = []
         for name, loaded in self._plugins.items():
-            result.append({
-                "name": name,
-                "version": loaded.info.version,
-                "description": loaded.info.description,
-                "author": loaded.info.author,
-                "status": loaded.status.value,
-                "install_path": loaded.install_path,
-                "commands": list(
-                    k for k in self._commands
-                    if k.startswith(f"{name}.")
-                ),
-                "tools": [
-                    k for k, v in self._tools.items()
-                    if v.get("_plugin") == name
-                ],
-                "loaded_at": loaded.loaded_at,
-            })
+            result.append(
+                {
+                    "name": name,
+                    "version": loaded.info.version,
+                    "description": loaded.info.description,
+                    "author": loaded.info.author,
+                    "status": loaded.status.value,
+                    "install_path": loaded.install_path,
+                    "commands": list(k for k in self._commands if k.startswith(f"{name}.")),
+                    "tools": [k for k, v in self._tools.items() if v.get("_plugin") == name],
+                    "loaded_at": loaded.loaded_at,
+                }
+            )
         return result
 
     def get_plugin(self, name: str) -> dict | None:
@@ -978,14 +1002,8 @@ class PluginRegistry:
             "status": loaded.status.value,
             "install_path": loaded.install_path,
             "permissions": [p.value for p in loaded.info.permissions],
-            "commands": list(
-                k for k in self._commands
-                if k.startswith(f"{name}.") or k == name
-            ),
-            "tools": [
-                k for k, v in self._tools.items()
-                if v.get("_plugin") == name
-            ],
+            "commands": list(k for k in self._commands if k.startswith(f"{name}.") or k == name),
+            "tools": [k for k, v in self._tools.items() if v.get("_plugin") == name],
             "event_types": loaded.info.event_types,
             "hooks": loaded.info.hooks,
             "loaded_at": loaded.loaded_at,
@@ -1016,13 +1034,17 @@ class PluginRegistry:
         loaded.consecutive_failures += 1
         logger.warning(
             "Plugin '%s' failure %d/%d: %s",
-            name, loaded.consecutive_failures, MAX_CONSECUTIVE_FAILURES, error,
+            name,
+            loaded.consecutive_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            error,
         )
 
         if loaded.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             logger.error(
                 "Plugin '%s' exceeded failure threshold (%d), auto-disabling",
-                name, MAX_CONSECUTIVE_FAILURES,
+                name,
+                MAX_CONSECUTIVE_FAILURES,
             )
             await self.disable_plugin(name)
             await self._db.update_plugin(
@@ -1030,11 +1052,14 @@ class PluginRegistry:
                 status=PluginStatus.ERROR.value,
                 error_message=f"Auto-disabled after {MAX_CONSECUTIVE_FAILURES} consecutive failures. Last: {error}",
             )
-            await self._bus.emit("plugin.auto_disabled", {
-                "plugin": name,
-                "reason": error,
-                "failures": loaded.consecutive_failures,
-            })
+            await self._bus.emit(
+                "plugin.auto_disabled",
+                {
+                    "plugin": name,
+                    "reason": error,
+                    "failures": loaded.consecutive_failures,
+                },
+            )
 
     def record_success(self, name: str) -> None:
         """Record a successful plugin operation, resetting the failure counter.
@@ -1104,6 +1129,7 @@ class PluginRegistry:
             self._cron_tasks.pop(k, None)
 
         from datetime import datetime, timezone
+
         now_dt = datetime.now(timezone.utc)
         for job in self._cron_jobs:
             # Skip if plugin is no longer loaded
@@ -1125,8 +1151,7 @@ class PluginRegistry:
                     expression = override
 
             last_run_dt = (
-                datetime.fromtimestamp(job.last_run, tz=timezone.utc)
-                if job.last_run else None
+                datetime.fromtimestamp(job.last_run, tz=timezone.utc) if job.last_run else None
             )
             schedule = {"cron": expression}
             if matches_schedule(schedule, now=now_dt, last_run=last_run_dt):
@@ -1185,6 +1210,8 @@ class PluginRegistry:
                     result.append(group)
             except Exception as e:
                 logger.warning(
-                    "Plugin '%s' discord_commands() failed: %s", name, e,
+                    "Plugin '%s' discord_commands() failed: %s",
+                    name,
+                    e,
                 )
         return result

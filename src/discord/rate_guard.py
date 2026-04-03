@@ -173,7 +173,8 @@ class InvalidRequestTracker:
                 "Discord rate guard HALT: %d invalid requests in 10 min "
                 "(threshold %d). ALL Discord API calls blocked until "
                 "window expires.",
-                c, self._halt,
+                c,
+                self._halt,
             )
         elif c >= self._critical and not self._alerted_critical:
             self._alerted_critical = True
@@ -181,14 +182,16 @@ class InvalidRequestTracker:
                 "Discord rate guard CRITICAL: %d invalid requests in 10 min "
                 "(threshold %d). Non-critical Discord API calls will be "
                 "dropped.",
-                c, self._critical,
+                c,
+                self._critical,
             )
         elif c >= self._warn and not self._alerted_warn:
             self._alerted_warn = True
             logger.warning(
                 "Discord rate guard WARNING: %d invalid requests in 10 min "
                 "(threshold %d). Approaching Discord's 10,000 limit.",
-                c, self._warn,
+                c,
+                self._warn,
             )
 
 

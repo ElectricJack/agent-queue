@@ -187,9 +187,7 @@ class TestReopenWithFeedback:
         assert result["previous_status"] == "FAILED"
         assert result["status"] == "READY"
 
-    async def test_multiple_reopens_accumulate_feedback(
-        self, handler, completed_task, db
-    ):
+    async def test_multiple_reopens_accumulate_feedback(self, handler, completed_task, db):
         """Multiple reopens append feedback each time."""
         await handler.execute(
             "reopen_with_feedback",
@@ -218,8 +216,7 @@ class TestReopenWithFeedback:
         )
         # Verify event was logged by checking the events table
         cursor = await db._db.execute(
-            "SELECT * FROM events WHERE event_type = 'reopen_with_feedback' "
-            "AND task_id = 't-1'"
+            "SELECT * FROM events WHERE event_type = 'reopen_with_feedback' AND task_id = 't-1'"
         )
         rows = await cursor.fetchall()
         assert len(rows) == 1
@@ -275,9 +272,7 @@ class TestReopenWithFeedback:
         assert task.requires_approval is True
         assert task.pr_url is None
 
-    async def test_requires_approval_false_stays_false(
-        self, handler, completed_task, db
-    ):
+    async def test_requires_approval_false_stays_false(self, handler, completed_task, db):
         """A task without requires_approval keeps it as False after reopen."""
         result = await handler.execute(
             "reopen_with_feedback",

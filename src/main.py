@@ -32,7 +32,6 @@ import time
 
 from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
-from src.health import HealthCheckServer
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
 from src.messaging.base import MessagingAdapter
@@ -88,15 +87,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         adapter.platform_name,
     )
 
-    health_server = HealthCheckServer(
-        config=config.health_check,
-        health_provider=lambda: _health_checks(orch, adapter),
-        plan_content_provider=_plan_content,
-    )
-    await health_server.start()
-
-    # Make health server accessible to orchestrator for plan URL generation
-    orch._health_server = health_server
+    # Health provider callback — used by the FastAPI health endpoints.
+    _health_prov = lambda: _health_checks(orch, adapter)  # noqa: E731
 
     shutdown_event = asyncio.Event()
 
@@ -150,10 +142,18 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     # (~3s) inside the task so it never blocks orchestrator startup.
     mcp_task: asyncio.Task | None = None
     if config.mcp_server.enabled:
+
         async def run_mcp():
             try:
                 from src.embedded_mcp import run_mcp_server
-                await run_mcp_server(orch, config, shutdown_event)
+
+                await run_mcp_server(
+                    orch,
+                    config,
+                    shutdown_event,
+                    health_provider=_health_prov,
+                    plan_content_provider=_plan_content,
+                )
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -168,9 +168,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # Wait until shutdown is signaled
         await shutdown_event.wait()
     finally:
-        # Shut down adapter, health server, MCP server, and orchestrator
+        # Shut down adapter, MCP/API server, and orchestrator
         restart = orch._restart_requested
-        await health_server.stop()
         await adapter.close()
         if mcp_task is not None:
             mcp_task.cancel()

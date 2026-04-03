@@ -1,4 +1,5 @@
 """Tests for the merge conflict detection hook and script."""
+
 from __future__ import annotations
 
 import json

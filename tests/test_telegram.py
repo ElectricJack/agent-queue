@@ -311,7 +311,9 @@ class TestTelegramAdapterABC:
         mock_bot_cls.return_value = mock_bot
 
         adapter = TelegramMessagingAdapter(_make_config(), _make_orchestrator())
-        result = await adapter.create_task_thread("Test task", "Agent working on: Test task", "proj1", "t1")
+        result = await adapter.create_task_thread(
+            "Test task", "Agent working on: Test task", "proj1", "t1"
+        )
         assert result is not None
         assert len(result) == 2
 
@@ -454,8 +456,12 @@ class TestTelegramBotMessageHistory:
 
         bot = self._make_bot()
         msg = CachedMessage(
-            message_id=1, author_name="Alice", is_bot=False,
-            content="Hello", created_at=1000.0, chat_id=100,
+            message_id=1,
+            author_name="Alice",
+            is_bot=False,
+            content="Hello",
+            created_at=1000.0,
+            chat_id=100,
         )
         bot._append_to_buffer(100, msg)
         assert 100 in bot._chat_buffers
@@ -465,14 +471,28 @@ class TestTelegramBotMessageHistory:
         from src.telegram.bot import CachedMessage
 
         bot = self._make_bot()
-        bot._append_to_buffer(100, CachedMessage(
-            message_id=1, author_name="Alice", is_bot=False,
-            content="What's the status?", created_at=1000.0, chat_id=100,
-        ))
-        bot._append_to_buffer(100, CachedMessage(
-            message_id=0, author_name="AgentQueue", is_bot=True,
-            content="All systems running.", created_at=1001.0, chat_id=100,
-        ))
+        bot._append_to_buffer(
+            100,
+            CachedMessage(
+                message_id=1,
+                author_name="Alice",
+                is_bot=False,
+                content="What's the status?",
+                created_at=1000.0,
+                chat_id=100,
+            ),
+        )
+        bot._append_to_buffer(
+            100,
+            CachedMessage(
+                message_id=0,
+                author_name="AgentQueue",
+                is_bot=True,
+                content="All systems running.",
+                created_at=1001.0,
+                chat_id=100,
+            ),
+        )
         history = bot._build_message_history(100)
         assert len(history) == 2
         assert history[0]["role"] == "user"
@@ -588,14 +608,19 @@ class TestTelegramBotIntegration:
             bot._supervisor.chat = AsyncMock(return_value="I'm on it!")
 
             # Seed buffer with a user message
-            bot._append_to_buffer(100, CachedMessage(
-                message_id=1, author_name="Alice", is_bot=False,
-                content="What is the status?", created_at=1000.0, chat_id=100,
-            ))
-
-            await bot._process_chat_message(
-                chat_id=100, project_id="proj1", user_name="Alice"
+            bot._append_to_buffer(
+                100,
+                CachedMessage(
+                    message_id=1,
+                    author_name="Alice",
+                    is_bot=False,
+                    content="What is the status?",
+                    created_at=1000.0,
+                    chat_id=100,
+                ),
             )
+
+            await bot._process_chat_message(chat_id=100, project_id="proj1", user_name="Alice")
 
             bot._supervisor.chat.assert_awaited_once()
             # Bot should have sent the response
@@ -615,9 +640,7 @@ class TestTelegramBotIntegration:
             bot._supervisor = MagicMock()
             bot._supervisor._provider = None  # No provider
 
-            await bot._process_chat_message(
-                chat_id=100, project_id=None, user_name="Alice"
-            )
+            await bot._process_chat_message(chat_id=100, project_id=None, user_name="Alice")
 
             bot._application.bot.send_message.assert_awaited()
             call_text = bot._application.bot.send_message.call_args[1]["text"]
@@ -815,10 +838,7 @@ class TestNotificationActionsKeyboard:
     def test_multiple_actions_row_grouping(self):
         from src.telegram.views import notification_actions_keyboard
 
-        actions = [
-            MagicMock(label=f"Action {i}", action_id=f"act_{i}", args={})
-            for i in range(5)
-        ]
+        actions = [MagicMock(label=f"Action {i}", action_id=f"act_{i}", args={}) for i in range(5)]
         kb = notification_actions_keyboard(actions)
         # 5 actions -> 2 rows of 3 + 1 row of 2
         assert len(kb.inline_keyboard) == 2

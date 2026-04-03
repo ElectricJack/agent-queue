@@ -48,8 +48,7 @@ class _VerboseProviderWrapper:
         self.call_count += 1
         if self.call_count > 1:
             elapsed = time.monotonic() - self._start
-            print(f" call {self.call_count} ({elapsed:.0f}s) ...",
-                  end="", flush=True)
+            print(f" call {self.call_count} ({elapsed:.0f}s) ...", end="", flush=True)
         return await self._inner.create_message(*a, **kw)
 
     def __getattr__(self, name):
@@ -106,20 +105,20 @@ async def run_single_case(
 
             if verbose:
                 turn_label = f"turn {ti}/{len(case.turns)} " if len(case.turns) > 1 else ""
-                print(f"          {turn_label}LLM call 1 ...",
-                      end="", flush=True)
+                print(f"          {turn_label}LLM call 1 ...", end="", flush=True)
                 wrapper.reset(start)
 
             response = await agent.chat(
-                turn.user_message, user_name="test_user", history=history,
+                turn.user_message,
+                user_name="test_user",
+                history=history,
             )
 
             elapsed = time.monotonic() - start
 
             if verbose:
                 tools_used = [c.name for c in recorder.calls] if recorder.calls else ["(none)"]
-                print(f" done ({elapsed:.1f}s, tools: {', '.join(tools_used)})",
-                      flush=True)
+                print(f" done ({elapsed:.1f}s, tools: {', '.join(tools_used)})", flush=True)
 
             # Evaluate this turn
             turn_result = evaluate_turn(turn, recorder.calls)
@@ -187,13 +186,19 @@ async def run_eval(
             n_turns = len(case.turns)
             msg_preview = case.turns[0].user_message[:60] if case.turns else ""
             async with print_lock:
-                print(f"  [{i}/{total}] {case.id} ({n_turns} "
-                      f"turn{'s' if n_turns != 1 else ''}) "
-                      f"— \"{msg_preview}\" ...", flush=True)
+                print(
+                    f"  [{i}/{total}] {case.id} ({n_turns} "
+                    f"turn{'s' if n_turns != 1 else ''}) "
+                    f'— "{msg_preview}" ...',
+                    flush=True,
+                )
 
             case_start = time.monotonic()
             result = await run_single_case(
-                orchestrator, config, provider, case,
+                orchestrator,
+                config,
+                provider,
+                case,
                 verbose=verbose,
             )
             case_elapsed = time.monotonic() - case_start
@@ -204,9 +209,12 @@ async def run_eval(
                 status = "PASS" if result.passed else "FAIL"
                 rate = passed / completed * 100
                 elapsed_total = time.monotonic() - eval_start
-                print(f"          {status}  {case_elapsed:.1f}s  "
-                      f"({rate:.0f}% passing, {completed}/{total} done, "
-                      f"{elapsed_total:.0f}s elapsed)", flush=True)
+                print(
+                    f"          {status}  {case_elapsed:.1f}s  "
+                    f"({rate:.0f}% passing, {completed}/{total} done, "
+                    f"{elapsed_total:.0f}s elapsed)",
+                    flush=True,
+                )
 
             return result
 
@@ -292,14 +300,21 @@ async def _main(args: argparse.Namespace) -> None:
                 cases = [c for c in cases if c.difficulty.value == args.difficulty]
 
             if args.limit:
-                cases = cases[:args.limit]
+                cases = cases[: args.limit]
 
-            print(f"Running {len(cases)} test cases with {provider.model_name} "
-                  f"(concurrency={args.concurrency})...")
-            run_result = await run_eval(orch, config, cases, provider,
-                                        verbose=args.verbose,
-                                        output_dir=args.output,
-                                        concurrency=args.concurrency)
+            print(
+                f"Running {len(cases)} test cases with {provider.model_name} "
+                f"(concurrency={args.concurrency})..."
+            )
+            run_result = await run_eval(
+                orch,
+                config,
+                cases,
+                provider,
+                verbose=args.verbose,
+                output_dir=args.output,
+                concurrency=args.concurrency,
+            )
 
             # Save results
             output_dir = Path(args.output)
@@ -312,8 +327,10 @@ async def _main(args: argparse.Namespace) -> None:
             report_path.write_text(report)
             print(f"Report saved to {report_path}")
 
-            print(f"\nPass rate: {run_result.pass_rate:.1%} "
-                  f"({run_result.passed_cases}/{run_result.total_cases})")
+            print(
+                f"\nPass rate: {run_result.pass_rate:.1%} "
+                f"({run_result.passed_cases}/{run_result.total_cases})"
+            )
 
         finally:
             await orch.shutdown()
@@ -321,19 +338,28 @@ async def _main(args: argparse.Namespace) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run chat agent evaluation")
-    parser.add_argument("--output", default="tests/chat_eval/results/",
-                        help="Output directory for results")
-    parser.add_argument("--provider", default="",
-                        help="Chat provider (anthropic, ollama); default: from config.yaml")
-    parser.add_argument("--model", default="", help="Model name override; default: from config.yaml")
+    parser.add_argument(
+        "--output", default="tests/chat_eval/results/", help="Output directory for results"
+    )
+    parser.add_argument(
+        "--provider",
+        default="",
+        help="Chat provider (anthropic, ollama); default: from config.yaml",
+    )
+    parser.add_argument(
+        "--model", default="", help="Model name override; default: from config.yaml"
+    )
     parser.add_argument("--category", default="", help="Filter by category")
     parser.add_argument("--difficulty", default="", help="Filter by difficulty")
-    parser.add_argument("--limit", "-n", type=int, default=0,
-                        help="Run only the first N cases (0 = all)")
-    parser.add_argument("--concurrency", "-j", type=int, default=1,
-                        help="Run N cases in parallel (default: 1)")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Show per-turn LLM call progress")
+    parser.add_argument(
+        "--limit", "-n", type=int, default=0, help="Run only the first N cases (0 = all)"
+    )
+    parser.add_argument(
+        "--concurrency", "-j", type=int, default=1, help="Run N cases in parallel (default: 1)"
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show per-turn LLM call progress"
+    )
     args = parser.parse_args()
     asyncio.run(_main(args))
 

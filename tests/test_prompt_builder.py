@@ -12,7 +12,8 @@ _DEFAULT_PROMPTS_DIR = Path(__file__).parent.parent / "src" / "prompts"
 def prompts_dir(tmp_path):
     """Create a temp prompts directory with test templates."""
     tpl = tmp_path / "test_identity.md"
-    tpl.write_text(textwrap.dedent("""\
+    tpl.write_text(
+        textwrap.dedent("""\
         ---
         name: test-identity
         category: system
@@ -22,16 +23,19 @@ def prompts_dir(tmp_path):
         ---
         You are a test agent.
         Workspace: {{workspace_dir}}
-    """))
+    """)
+    )
 
     no_vars = tmp_path / "simple.md"
-    no_vars.write_text(textwrap.dedent("""\
+    no_vars.write_text(
+        textwrap.dedent("""\
         ---
         name: simple
         category: task
         ---
         No variables here.
-    """))
+    """)
+    )
 
     return tmp_path
 
@@ -161,7 +165,8 @@ def test_add_context_section(prompts_dir):
 @pytest.fixture
 def task_prompts_dir(tmp_path):
     """Create temp prompts dir with task-related templates."""
-    (tmp_path / "plan_structure_guide.md").write_text(textwrap.dedent("""\
+    (tmp_path / "plan_structure_guide.md").write_text(
+        textwrap.dedent("""\
         ---
         name: plan-structure-guide
         category: task
@@ -170,9 +175,11 @@ def task_prompts_dir(tmp_path):
             required: true
         ---
         Write a plan with at most {{max_steps}} steps.
-    """))
+    """)
+    )
 
-    (tmp_path / "controlled_splitting.md").write_text(textwrap.dedent("""\
+    (tmp_path / "controlled_splitting.md").write_text(
+        textwrap.dedent("""\
         ---
         name: controlled-splitting
         category: task
@@ -183,15 +190,18 @@ def task_prompts_dir(tmp_path):
             required: true
         ---
         You are at depth {{current_depth}} of {{max_depth}}. You may split further.
-    """))
+    """)
+    )
 
-    (tmp_path / "execution_focus.md").write_text(textwrap.dedent("""\
+    (tmp_path / "execution_focus.md").write_text(
+        textwrap.dedent("""\
         ---
         name: execution-focus
         category: task
         ---
         Execute directly. Do not create plans.
-    """))
+    """)
+    )
 
     return tmp_path
 
@@ -275,8 +285,8 @@ def test_supervisor_identity_with_active_project():
     builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
     builder.add_context(
         "active_project",
-        'ACTIVE PROJECT: `my-game`. Use this as the default project_id for all tools '
-        'unless the user explicitly specifies a different project.',
+        "ACTIVE PROJECT: `my-game`. Use this as the default project_id for all tools "
+        "unless the user explicitly specifies a different project.",
     )
     system_prompt, _ = builder.build()
 
@@ -301,16 +311,19 @@ def test_hook_executor_identity():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity("hook-context", {
-        "hook_name": "tunnel-monitor",
-        "project_id": "my-game",
-        "project_name": "My Game Server",
-        "workspace_dir": "- **Workspace:** `/home/user/game`\n",
-        "repo_url": "",
-        "default_branch": "",
-        "trigger_reason": "periodic (every 300s)",
-        "timing_context": "",
-    })
+    builder.set_identity(
+        "hook-context",
+        {
+            "hook_name": "tunnel-monitor",
+            "project_id": "my-game",
+            "project_name": "My Game Server",
+            "workspace_dir": "- **Workspace:** `/home/user/game`\n",
+            "repo_url": "",
+            "default_branch": "",
+            "trigger_reason": "periodic (every 300s)",
+            "timing_context": "",
+        },
+    )
     system_prompt, _ = builder.build()
 
     assert "tunnel-monitor" in system_prompt
@@ -327,39 +340,41 @@ def test_task_agent_assembly_ordering(prompts_dir):
     builder.set_identity("simple")
 
     # Layer 4: system metadata
-    builder.add_context("system_context", (
-        "## System Context\n"
-        "- Workspace directory: /home/user/project\n"
-        "- Project: my-game (id: game-001)\n"
-        "- Git branch: feat/login"
-    ))
+    builder.add_context(
+        "system_context",
+        (
+            "## System Context\n"
+            "- Workspace directory: /home/user/project\n"
+            "- Project: my-game (id: game-001)\n"
+            "- Git branch: feat/login"
+        ),
+    )
 
     # Layer 4: execution rules
-    builder.add_context("execution_rules", (
-        "## Execution Rules\n"
-        "- Do not use plan mode\n"
-        "- Commit your changes when done"
-    ))
+    builder.add_context(
+        "execution_rules",
+        ("## Execution Rules\n- Do not use plan mode\n- Commit your changes when done"),
+    )
 
     # Layer 4: upstream work
-    builder.add_context("upstream_work", (
-        "## Completed Upstream Work\n"
-        "### Auth Module\n"
-        "**Summary:** Implemented JWT tokens.\n"
-        "**Files changed:**\n- `src/auth.py`"
-    ))
+    builder.add_context(
+        "upstream_work",
+        (
+            "## Completed Upstream Work\n"
+            "### Auth Module\n"
+            "**Summary:** Implemented JWT tokens.\n"
+            "**Files changed:**\n- `src/auth.py`"
+        ),
+    )
 
     # Layer 4: role instructions
-    builder.add_context("role_instructions", (
-        "## Agent Role Instructions\n"
-        "You are a backend developer specializing in security."
-    ))
+    builder.add_context(
+        "role_instructions",
+        ("## Agent Role Instructions\nYou are a backend developer specializing in security."),
+    )
 
     # Layer 4: task description
-    builder.add_context("task", (
-        "## Task\n"
-        "Fix the login endpoint to validate JWT expiration."
-    ))
+    builder.add_context("task", ("## Task\nFix the login endpoint to validate JWT expiration."))
 
     prompt = builder.build_task_prompt()
 
@@ -391,11 +406,15 @@ def test_load_relevant_rules_from_rule_manager(tmp_path, prompts_dir):
 
     rm = RuleManager(storage_root=str(tmp_path))
     rm.save_rule(
-        "rule-style", "proj", "passive",
+        "rule-style",
+        "proj",
+        "passive",
         "# Code Style\n\n## Intent\nUse black formatter.",
     )
     rm.save_rule(
-        "rule-global", None, "passive",
+        "rule-global",
+        None,
+        "passive",
         "# Global\n\n## Intent\nBe nice.",
     )
 
@@ -405,9 +424,7 @@ def test_load_relevant_rules_from_rule_manager(tmp_path, prompts_dir):
         prompts_dir=prompts_dir,
     )
     builder.set_identity("simple")
-    asyncio.run(
-        builder.load_relevant_rules("code formatting")
-    )
+    asyncio.run(builder.load_relevant_rules("code formatting"))
     system_prompt, _ = builder.build()
 
     assert "Code Style" in system_prompt
@@ -428,9 +445,7 @@ def test_load_relevant_rules_empty_when_no_rules(prompts_dir):
         prompts_dir=prompts_dir,
     )
     builder.set_identity("simple")
-    asyncio.run(
-        builder.load_relevant_rules("anything")
-    )
+    asyncio.run(builder.load_relevant_rules("anything"))
     system_prompt, _ = builder.build()
 
     assert "Applicable Rules" not in system_prompt

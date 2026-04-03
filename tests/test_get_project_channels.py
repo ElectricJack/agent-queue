@@ -69,9 +69,12 @@ class TestGetProjectChannelsErrors:
     """Error conditions for get_project_channels."""
 
     async def test_project_not_found(self, handler):
-        result = await handler.execute("get_project_channels", {
-            "project_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "get_project_channels",
+            {
+                "project_id": "nonexistent",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"].lower()

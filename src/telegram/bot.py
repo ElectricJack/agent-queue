@@ -85,17 +85,13 @@ class TelegramBot:
         from telegram.ext import Application
 
         self._application: Application = (
-            Application.builder()
-            .token(config.telegram.bot_token)
-            .build()
+            Application.builder().token(config.telegram.bot_token).build()
         )
 
         # Supervisor and CommandHandler (created lazily after start)
         from src.supervisor import Supervisor
 
-        self._supervisor = Supervisor(
-            orchestrator, config, llm_logger=orchestrator.llm_logger
-        )
+        self._supervisor = Supervisor(orchestrator, config, llm_logger=orchestrator.llm_logger)
         self.handler = self._supervisor.handler
         self.supervisor = self._supervisor
 
@@ -145,9 +141,7 @@ class TelegramBot:
         # Register callback query handler for inline keyboard buttons
         from telegram.ext import CallbackQueryHandler
 
-        self._application.add_handler(
-            CallbackQueryHandler(self._handle_callback_query)
-        )
+        self._application.add_handler(CallbackQueryHandler(self._handle_callback_query))
 
     # -------------------------------------------------------------------
     # Lifecycle
@@ -374,9 +368,7 @@ class TelegramBot:
 
     def _append_to_buffer(self, chat_id: int, msg: CachedMessage) -> None:
         """Add a message to the per-chat buffer."""
-        buf = self._chat_buffers.setdefault(
-            chat_id, collections.deque(maxlen=MAX_HISTORY_MESSAGES)
-        )
+        buf = self._chat_buffers.setdefault(chat_id, collections.deque(maxlen=MAX_HISTORY_MESSAGES))
         buf.append(msg)
         self._buffer_last_access[chat_id] = time.time()
 
@@ -421,9 +413,7 @@ class TelegramBot:
         # to avoid MarkdownV2 escaping issues with LLM output
         chunks = split_message(text)
         for chunk in chunks:
-            await self._application.bot.send_message(
-                chat_id=chat_id, text=chunk
-            )
+            await self._application.bot.send_message(chat_id=chat_id, text=chunk)
 
     # -------------------------------------------------------------------
     # Notification sending (orchestrator callback)
@@ -468,7 +458,8 @@ class TelegramBot:
             reply_markup = self._convert_view_to_keyboard(view)
 
         return await self._send_text(
-            chat_id, text or escape_markdown("(empty notification)"),
+            chat_id,
+            text or escape_markdown("(empty notification)"),
             reply_markup=reply_markup,
         )
 
@@ -505,9 +496,7 @@ class TelegramBot:
         fields = getattr(notification, "fields", None) or []
         footer = getattr(notification, "footer", "")
         url = getattr(notification, "url", "")
-        return format_embed_as_text(
-            title, description, [(f[0], f[1]) for f in fields], footer, url
-        )
+        return format_embed_as_text(title, description, [(f[0], f[1]) for f in fields], footer, url)
 
     def _convert_notification_actions(self, notification: Any) -> Any:
         """Convert RichNotification actions to an InlineKeyboardMarkup."""
@@ -531,10 +520,12 @@ class TelegramBot:
         for child in view.children:
             if hasattr(child, "label") and hasattr(child, "custom_id"):
                 buttons.append(
-                    [InlineKeyboardButton(
-                        text=child.label or "Action",
-                        callback_data=child.custom_id or "unknown",
-                    )]
+                    [
+                        InlineKeyboardButton(
+                            text=child.label or "Action",
+                            callback_data=child.custom_id or "unknown",
+                        )
+                    ]
                 )
         return InlineKeyboardMarkup(buttons) if buttons else None
 
@@ -676,9 +667,7 @@ class TelegramBot:
 
         return self._make_reply_callbacks(chat_id, root_msg.message_id)
 
-    def _make_topic_callbacks(
-        self, chat_id: int, topic_id: int
-    ) -> tuple:
+    def _make_topic_callbacks(self, chat_id: int, topic_id: int) -> tuple:
         """Create send callbacks for a forum topic.
 
         Returns ``(send_to_thread, notify_main_channel)``.
@@ -712,9 +701,7 @@ class TelegramBot:
 
         return send_to_thread, notify_main_channel
 
-    def _make_reply_callbacks(
-        self, chat_id: int, root_message_id: int
-    ) -> tuple:
+    def _make_reply_callbacks(self, chat_id: int, root_message_id: int) -> tuple:
         """Create send callbacks for a reply chain (non-topic fallback).
 
         Returns ``(send_to_thread, notify_main_channel)``.

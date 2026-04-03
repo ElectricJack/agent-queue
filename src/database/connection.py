@@ -72,7 +72,9 @@ async def _migrate_repos_to_projects(db: aiosqlite.Connection) -> None:
             )
             logger.info(
                 "Migration: project '%s' repo_url='%s', default_branch='%s'",
-                row["id"], row["url"], row["default_branch"],
+                row["id"],
+                row["url"],
+                row["default_branch"],
             )
     except Exception as e:
         logger.debug("Repos-to-projects migration (benign): %s", e)
@@ -113,7 +115,9 @@ async def _normalize_workspace_paths(db: aiosqlite.Connection) -> None:
                 )
                 logger.info(
                     "Normalized workspace %s path: %r -> %r",
-                    row["id"], raw, resolved,
+                    row["id"],
+                    raw,
+                    resolved,
                 )
                 updated += 1
         if updated:
@@ -133,13 +137,14 @@ async def _normalize_workspace_paths(db: aiosqlite.Connection) -> None:
             ws_path = os.path.realpath(row["workspace_path"])
             owner = path_owners.get(ws_path)
             if owner and owner != row["project_id"]:
-                await db.execute(
-                    "DELETE FROM workspaces WHERE id = ?", (row["id"],)
-                )
+                await db.execute("DELETE FROM workspaces WHERE id = ?", (row["id"],))
                 logger.warning(
                     "Removed bogus workspace %s: path %s belongs to project "
                     "'%s' but was linked to project '%s'",
-                    row["id"], ws_path, owner, row["project_id"],
+                    row["id"],
+                    ws_path,
+                    owner,
+                    row["project_id"],
                 )
                 removed += 1
         if removed:

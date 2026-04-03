@@ -7,7 +7,11 @@ from src.git.manager import GitManager, GitError
 def _git(args: list[str], cwd: str) -> str:
     """Run a git command in the given directory, returning stdout."""
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -16,8 +20,7 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
     """Create/overwrite a file, commit it, and return the new commit SHA."""
     pathlib.Path(clone, filename).write_text(content)
     _git(["add", filename], cwd=clone)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=clone)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=clone)
     return _git(["rev-parse", "HEAD"], cwd=clone)
 
 
@@ -25,8 +28,7 @@ def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     """Create/update a file, commit it, and return the commit SHA."""
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -42,20 +44,23 @@ def _head_sha(cwd: str) -> str:
 def git_repo(tmp_path):
     """Create a bare remote + working clone for testing."""
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)],
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+        check=True,
+        capture_output=True,
+    )
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
-                   capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
     # Create initial commit
     (clone / "README.md").write_text("init")
-    subprocess.run(["git", "add", "."], cwd=str(clone), check=True,
-                   capture_output=True)
-    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=t@t.com",
-                     "commit", "-m", "init"], cwd=str(clone), check=True,
-                   capture_output=True)
-    subprocess.run(["git", "push"], cwd=str(clone), check=True,
-                   capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init"],
+        cwd=str(clone),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "push"], cwd=str(clone), check=True, capture_output=True)
     return {"remote": str(remote), "clone": str(clone)}
 
 
@@ -71,7 +76,9 @@ class TestGitManager:
         mgr.create_branch(git_repo["clone"], "task-1/do-thing")
         result = subprocess.run(
             ["git", "branch", "--show-current"],
-            cwd=git_repo["clone"], capture_output=True, text=True,
+            cwd=git_repo["clone"],
+            capture_output=True,
+            text=True,
         )
         assert result.stdout.strip() == "task-1/do-thing"
 
@@ -80,7 +87,9 @@ class TestGitManager:
         mgr.prepare_for_task(git_repo["clone"], "task-1/new-feature")
         result = subprocess.run(
             ["git", "branch", "--show-current"],
-            cwd=git_repo["clone"], capture_output=True, text=True,
+            cwd=git_repo["clone"],
+            capture_output=True,
+            text=True,
         )
         assert result.stdout.strip() == "task-1/new-feature"
 
@@ -118,7 +127,9 @@ class TestGitManager:
         # Verify the worktree was created and is on the initial branch
         result = subprocess.run(
             ["git", "branch", "--show-current"],
-            cwd=worktree_path, capture_output=True, text=True,
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
         )
         assert result.stdout.strip() == "initial-branch"
 
@@ -129,7 +140,9 @@ class TestGitManager:
         # Verify we're now on the new task branch
         result = subprocess.run(
             ["git", "branch", "--show-current"],
-            cwd=worktree_path, capture_output=True, text=True,
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
         )
         assert result.stdout.strip() == "task-2/another-feature"
 
@@ -178,15 +191,25 @@ class TestPushBranchForceWithLease:
         # Amend the commit (simulates agent retry with modified work)
         pathlib.Path(clone, "file.txt").write_text("v2")
         _git(["add", "file.txt"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "--amend", "-m", "amended"], cwd=clone)
+        _git(
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=t@t.com",
+                "commit",
+                "--amend",
+                "-m",
+                "amended",
+            ],
+            cwd=clone,
+        )
 
         # Plain push would fail here; force_with_lease succeeds
         mgr.push_branch(clone, "feature/fwl-retry", force_with_lease=True)
 
         # Verify the amended commit is on the remote
-        remote_log = _git(["log", "--oneline", "origin/feature/fwl-retry", "-1"],
-                          cwd=clone)
+        remote_log = _git(["log", "--oneline", "origin/feature/fwl-retry", "-1"], cwd=clone)
         assert "amended" in remote_log
 
     def test_plain_push_fails_on_amend(self, git_repo):
@@ -202,8 +225,19 @@ class TestPushBranchForceWithLease:
         # Amend
         pathlib.Path(clone, "file.txt").write_text("v2")
         _git(["add", "file.txt"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "--amend", "-m", "amended"], cwd=clone)
+        _git(
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=t@t.com",
+                "commit",
+                "--amend",
+                "-m",
+                "amended",
+            ],
+            cwd=clone,
+        )
 
         # Plain push should fail with non-fast-forward
         with pytest.raises(GitError, match="failed"):
@@ -231,8 +265,19 @@ class TestPushBranchForceWithLease:
         # Agent amends their commit locally (without fetching)
         pathlib.Path(clone, "file.txt").write_text("v2")
         _git(["add", "file.txt"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "--amend", "-m", "amended"], cwd=clone)
+        _git(
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=t@t.com",
+                "commit",
+                "--amend",
+                "-m",
+                "amended",
+            ],
+            cwd=clone,
+        )
 
         # force_with_lease should reject because remote was updated by someone else
         with pytest.raises(GitError):
@@ -252,8 +297,7 @@ class TestPushBranchForceWithLease:
         mgr.push_branch(clone, "feature/fwl-extra", force_with_lease=True)
 
         # Verify both commits exist on remote
-        remote_log = _git(["log", "--oneline", "origin/feature/fwl-extra"],
-                          cwd=clone)
+        remote_log = _git(["log", "--oneline", "origin/feature/fwl-extra"], cwd=clone)
         assert "first commit" in remote_log
         assert "second commit" in remote_log
 
@@ -294,8 +338,9 @@ class TestPrepareForTaskHardReset:
         # Push a new commit to remote via a second clone so the first clone's
         # local main is behind origin/main.
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "new-file.txt", "from clone2", "advance main")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -339,8 +384,9 @@ class TestPrepareForTaskHardReset:
 
         # Make a second clone to push a new commit to origin/main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_sha = _commit_file(pusher, "new-file.txt", "from pusher", "advance main")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -376,8 +422,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main via a second clone
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -402,8 +449,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main with a conflicting change to README.md
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "README.md", "upstream version", "upstream changes README")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -436,8 +484,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main via a second clone
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -463,8 +512,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main via a second clone
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "upstream.txt", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -493,8 +543,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main with a conflicting change to the same file
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -521,8 +572,9 @@ class TestPrepareForTaskRebaseOnRetry:
 
         # Advance origin/main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "upstream2.txt", "upstream", "upstream advance")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -547,8 +599,9 @@ class TestPullLatestMain:
 
         # Advance origin/main via a second clone
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         new_sha = _git_commit(clone2, "new.txt", "new", "advance main")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -604,8 +657,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main via a second clone
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -631,8 +685,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main via a second clone
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -660,8 +715,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main with conflicting change
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "README.md", "upstream version", "upstream changes README")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -692,8 +748,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "upstream.txt", "upstream", "advance main")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -720,8 +777,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main with conflicting README.md change
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -744,8 +802,9 @@ class TestSwitchToBranchRebase:
 
         # Advance origin/main so there's something to rebase onto
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "upstream.txt", "upstream", "advance main")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -779,8 +838,9 @@ class TestMidChainSync:
 
         # Advance origin/main from another clone (simulates concurrent work)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "other.txt", "concurrent work", "other agent")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -814,8 +874,9 @@ class TestMidChainSync:
 
         # Advance origin/main with a conflicting change to README.md
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -837,8 +898,9 @@ class TestMidChainSync:
 
         # Advance origin/main with a conflicting change
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "work.txt", "conflicting", "conflict on work.txt")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -852,8 +914,9 @@ class TestMidChainSync:
 
         # Verify the pushed commit matches what we had pre-rebase
         verifier = str(tmp_path / "verifier")
-        subprocess.run(["git", "clone", git_repo["remote"], verifier],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], verifier], check=True, capture_output=True
+        )
         _git(["checkout", "chain/push-test"], cwd=verifier)
         assert _head_sha(verifier) == subtask_sha
 
@@ -869,8 +932,9 @@ class TestMidChainSync:
 
         # Advance main concurrently
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream1.txt", "u1", "upstream advance")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -882,7 +946,8 @@ class TestMidChainSync:
 
         # The branch should be cleanly ahead of origin/main
         behind_count = _git(
-            ["rev-list", "--count", "HEAD..origin/main"], cwd=clone,
+            ["rev-list", "--count", "HEAD..origin/main"],
+            cwd=clone,
         )
         assert behind_count == "0", "Branch should not be behind main after sync"
 
@@ -898,8 +963,9 @@ class TestMidChainSync:
 
         # Second subtask (advance main between syncs)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "upstream.txt", "u", "upstream work")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -953,8 +1019,9 @@ class TestMergeBranchPullsBeforeMerge:
 
         # Advance origin/main via a second clone (simulating another agent)
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         other_sha = _git_commit(clone2, "other-agent.txt", "other work", "other agent commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -1002,8 +1069,9 @@ class TestMergeBranchPullsBeforeMerge:
 
         # Advance origin/main with a conflicting change
         clone2 = str(tmp_path / "clone2")
-        subprocess.run(["git", "clone", git_repo["remote"], clone2],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
+        )
         _git_commit(clone2, "README.md", "other version", "other changes README")
         _git(["push", "origin", "main"], cwd=clone2)
 
@@ -1052,8 +1120,9 @@ class TestMergeBranchPullBeforeMerge:
 
         # Advance origin/main via a second clone (simulates another agent)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main_sha = _commit_file(pusher, "other.txt", "other work", "other agent")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1080,8 +1149,9 @@ class TestMergeBranchPullBeforeMerge:
 
         # Advance origin/main with a conflicting change to same file
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "remote version", "remote edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1142,8 +1212,9 @@ class TestSyncAndMerge:
 
         # Advance origin/main via another clone
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "other work", "other agent push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1167,8 +1238,9 @@ class TestSyncAndMerge:
 
         # Advance origin/main with a conflicting change
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "remote version", "remote edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1199,8 +1271,9 @@ class TestSyncAndMerge:
 
         # First: advance remote so our push will fail (remote has diverged)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "other work", "other agent push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1239,8 +1312,9 @@ class TestSyncAndMerge:
 
         # Advance origin/main so push will be rejected (non-fast-forward)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "other work", "other push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1254,7 +1328,9 @@ class TestSyncAndMerge:
         # fetch inside sync_and_merge, which requires mocking. Instead, let's
         # verify that with max_retries=0 the method still works for normal cases.
         success, err = mgr.sync_and_merge(
-            clone, "task-sync/no-retry", max_retries=0,
+            clone,
+            "task-sync/no-retry",
+            max_retries=0,
         )
         assert success is True
 
@@ -1264,11 +1340,11 @@ class TestSyncAndMerge:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         clone = str(tmp_path / "clone")
-        subprocess.run(["git", "clone", str(remote), clone],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), clone], check=True, capture_output=True)
         _commit_file(clone, "README.md", "init", "init")
         _git(["push", "origin", "develop"], cwd=clone)
 
@@ -1277,7 +1353,9 @@ class TestSyncAndMerge:
         _commit_file(clone, "feature.txt", "feature", "add feature")
 
         success, err = mgr.sync_and_merge(
-            clone, "task-sync/develop", default_branch="develop",
+            clone,
+            "task-sync/develop",
+            default_branch="develop",
         )
         assert success is True
         assert err == ""
@@ -1301,8 +1379,10 @@ class TestRecoverWorkspace:
         _git(["checkout", "-b", "task/failed-push"], cwd=clone)
         _commit_file(clone, "work.txt", "agent work", "agent commit")
         _git(["checkout", "main"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "merge", "task/failed-push"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "merge", "task/failed-push"],
+            cwd=clone,
+        )
 
         # Local main now has a merge commit ahead of origin
         assert _head_sha(clone) != remote_sha
@@ -1335,8 +1415,9 @@ class TestRecoverWorkspace:
 
         # Advance origin/main via another clone
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_sha = _commit_file(pusher, "new.txt", "new", "advance main")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1351,11 +1432,11 @@ class TestRecoverWorkspace:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         clone = str(tmp_path / "clone")
-        subprocess.run(["git", "clone", str(remote), clone],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), clone], check=True, capture_output=True)
         _commit_file(clone, "README.md", "init", "init")
         _git(["push", "origin", "develop"], cwd=clone)
         remote_sha = _head_sha(clone)
@@ -1398,18 +1479,17 @@ class TestConcurrentAgentPush:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         agent_a = str(tmp_path / "agent-a")
-        subprocess.run(["git", "clone", str(remote), agent_a],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), agent_a], check=True, capture_output=True)
         _commit_file(agent_a, "README.md", "init", "init")
         _git(["push", "origin", "main"], cwd=agent_a)
 
         agent_b = str(tmp_path / "agent-b")
-        subprocess.run(["git", "clone", str(remote), agent_b],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), agent_b], check=True, capture_output=True)
 
         return {"remote": str(remote), "agent_a": agent_a, "agent_b": agent_b}
 
@@ -1479,14 +1559,14 @@ class TestConcurrentAgentPush:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         agents = []
         for name in ["agent-1", "agent-2", "agent-3"]:
             path = str(tmp_path / name)
-            subprocess.run(["git", "clone", str(remote), path],
-                           check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(remote), path], check=True, capture_output=True)
             agents.append(path)
 
         # Initial commit from agent-1
@@ -1550,8 +1630,7 @@ class TestConcurrentAgentPush:
         assert success_c is True
 
         # Verify the new task's work made it to remote
-        remote_log = _git(["log", "--oneline", "main"],
-                          cwd=two_agent_setup["remote"])
+        remote_log = _git(["log", "--oneline", "main"], cwd=two_agent_setup["remote"])
         assert "post-recovery commit" in remote_log
 
     def test_workspace_clean_after_failed_push_and_recovery(self, two_agent_setup, tmp_path):
@@ -1575,8 +1654,9 @@ class TestConcurrentAgentPush:
         _git(["checkout", "main"], cwd=b)
         _git(["fetch", "origin"], cwd=b)
         _git(["reset", "--hard", "origin/main"], cwd=b)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "merge", "task-b/push-test"], cwd=b)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "merge", "task-b/push-test"], cwd=b
+        )
 
         # Local main now has a merge commit not on remote
         local_sha = _head_sha(b)
@@ -1620,8 +1700,9 @@ class TestRebaseBeforeMerge:
 
         # Advance origin/main with a different file (no conflict)
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream.txt", "upstream work", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1649,8 +1730,9 @@ class TestRebaseBeforeMerge:
 
         # Advance origin/main significantly via another clone
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "file-a.txt", "a", "add file a")
         _commit_file(pusher, "file-b.txt", "b", "add file b")
         _commit_file(pusher, "file-c.txt", "c", "add file c")
@@ -1681,8 +1763,9 @@ class TestRebaseBeforeMerge:
 
         # Upstream also modifies README.md differently
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version of README", "upstream edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1706,8 +1789,9 @@ class TestRebaseBeforeMerge:
         _commit_file(clone, "README.md", "task version", "task README")
 
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version", "upstream README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1728,11 +1812,11 @@ class TestRebaseBeforeMerge:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         clone = str(tmp_path / "clone")
-        subprocess.run(["git", "clone", str(remote), clone],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), clone], check=True, capture_output=True)
         _commit_file(clone, "README.md", "init", "init")
         _git(["push", "origin", "develop"], cwd=clone)
 
@@ -1742,13 +1826,14 @@ class TestRebaseBeforeMerge:
 
         # Advance origin/develop
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", str(remote), pusher],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), pusher], check=True, capture_output=True)
         _commit_file(pusher, "upstream.txt", "upstream", "upstream on develop")
         _git(["push", "origin", "develop"], cwd=pusher)
 
         success, err = mgr.sync_and_merge(
-            clone, "task-rebase/develop", default_branch="develop",
+            clone,
+            "task-rebase/develop",
+            default_branch="develop",
         )
         assert success is True
         assert err == ""
@@ -1770,8 +1855,9 @@ class TestRebaseBeforeMerge:
 
         # Advance origin/main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "other", "other agent work")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1791,18 +1877,17 @@ class TestRebaseBeforeMerge:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         agent_a = str(tmp_path / "agent-a")
-        subprocess.run(["git", "clone", str(remote), agent_a],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), agent_a], check=True, capture_output=True)
         _commit_file(agent_a, "README.md", "init", "init")
         _git(["push", "origin", "main"], cwd=agent_a)
 
         agent_b = str(tmp_path / "agent-b")
-        subprocess.run(["git", "clone", str(remote), agent_b],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), agent_b], check=True, capture_output=True)
 
         mgr = GitManager()
 
@@ -1838,7 +1923,10 @@ class TestSyncAndMergeRebaseRecovery:
     """
 
     def test_rebase_recovery_succeeds_with_monkeypatch(
-        self, git_repo, tmp_path, monkeypatch,
+        self,
+        git_repo,
+        tmp_path,
+        monkeypatch,
     ):
         """When the first merge fails but the rebase succeeds, the retry
         merge should complete and the push should go through."""
@@ -1850,8 +1938,9 @@ class TestSyncAndMergeRebaseRecovery:
 
         # Advance origin/main with a non-conflicting change
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "upstream work", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1902,8 +1991,9 @@ class TestSyncAndMergeRebaseRecovery:
 
         # Upstream also modifies README.md — true conflict
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "remote version", "remote edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1930,8 +2020,9 @@ class TestSyncAndMergeRebaseRecovery:
         _commit_file(clone, "README.md", "task edit", "task commit")
 
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream edit", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -1947,7 +2038,10 @@ class TestSyncAndMergeRebaseRecovery:
         assert not merge_head.exists()
 
     def test_rebase_recovery_with_multiple_task_commits(
-        self, git_repo, tmp_path, monkeypatch,
+        self,
+        git_repo,
+        tmp_path,
+        monkeypatch,
     ):
         """The rebase-recovery path should work when the task branch has
         multiple commits that all need to be replayed."""
@@ -1961,8 +2055,9 @@ class TestSyncAndMergeRebaseRecovery:
 
         # Advance origin/main with non-conflicting work
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream.txt", "upstream", "upstream push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2009,8 +2104,9 @@ class TestRebaseOnto:
 
         # Push a non-conflicting upstream commit to main via another clone
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "upstream change", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2040,8 +2136,9 @@ class TestRebaseOnto:
 
         # Push a conflicting upstream commit
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream version", "upstream edit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2061,23 +2158,23 @@ class TestRebaseOnto:
         """rebase_onto should work with a non-default target branch."""
         # Set up a repo with 'develop' as the branch to rebase onto
         remote = tmp_path / "remote.git"
-        subprocess.run(["git", "init", "--bare", "--initial-branch=develop",
-                        str(remote)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
+            check=True,
+            capture_output=True,
+        )
         clone = str(tmp_path / "clone")
-        subprocess.run(["git", "clone", str(remote), clone],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), clone], check=True, capture_output=True)
         _commit_file(clone, "README.md", "init", "initial commit")
         _git(["push", "origin", "develop"], cwd=clone)
 
         mgr = GitManager()
-        mgr.prepare_for_task(clone, "task-rebase-onto/develop",
-                             default_branch="develop")
+        mgr.prepare_for_task(clone, "task-rebase-onto/develop", default_branch="develop")
         _commit_file(clone, "feature.txt", "feature", "add feature")
 
         # Push an upstream commit on develop
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", str(remote), pusher],
-                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), pusher], check=True, capture_output=True)
         _commit_file(pusher, "other.txt", "upstream", "upstream on develop")
         _git(["push", "origin", "develop"], cwd=pusher)
 
@@ -2101,8 +2198,9 @@ class TestRebaseOnto:
         _commit_file(clone, "README.md", "task", "task commit")
 
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream", "upstream commit")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2131,13 +2229,13 @@ class TestConcurrentPushRaceConditions:
         remote = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         agents = []
         for name in ["agent-a", "agent-b", "agent-c"]:
             path = str(tmp_path / name)
-            subprocess.run(["git", "clone", str(remote), path],
-                           check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(remote), path], check=True, capture_output=True)
             agents.append(path)
 
         # Initial commit from first agent
@@ -2159,8 +2257,9 @@ class TestConcurrentPushRaceConditions:
         # All three prepare branches before any pushes
         for i, agent in enumerate(agents):
             mgr.prepare_for_task(agent, f"task-{i}/feature")
-            _commit_file(agent, f"feature-{i}.txt", f"agent {i} work",
-                         f"agent {i} concurrent commit")
+            _commit_file(
+                agent, f"feature-{i}.txt", f"agent {i} work", f"agent {i} concurrent commit"
+            )
 
         # Sync and merge sequentially (simulating near-concurrent completion)
         for i, agent in enumerate(agents):
@@ -2173,7 +2272,8 @@ class TestConcurrentPushRaceConditions:
             assert f"agent {i} concurrent commit" in remote_log
 
     def test_concurrent_push_race_with_conflicting_file_second_fails(
-        self, three_agent_setup,
+        self,
+        three_agent_setup,
     ):
         """When two agents modify the same file, the second agent's merge
         should report merge_conflict (after rebase also fails)."""
@@ -2263,8 +2363,9 @@ class TestMergeConflictDetectionAndRecovery:
 
         # Advance origin/main with multiple non-conflicting commits
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream1.txt", "u1", "upstream 1")
         _commit_file(pusher, "upstream2.txt", "u2", "upstream 2")
         _commit_file(pusher, "upstream3.txt", "u3", "upstream 3")
@@ -2292,8 +2393,9 @@ class TestMergeConflictDetectionAndRecovery:
         _commit_file(clone, "README.md", "task edit", "task conflict")
 
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "README.md", "upstream edit", "upstream conflict")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2325,8 +2427,9 @@ class TestMergeConflictDetectionAndRecovery:
 
         # Advance main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream.txt", "upstream", "upstream work")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2360,10 +2463,12 @@ class TestSubtaskChainDriftAndMidChainRebase:
             if step < 2:
                 # Advance main between subtasks (simulates concurrent agent work)
                 pusher = str(tmp_path / f"pusher-{step}")
-                subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                               check=True, capture_output=True)
-                _commit_file(pusher, f"concurrent-{step}.txt", f"c{step}",
-                             f"concurrent work {step}")
+                subprocess.run(
+                    ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+                )
+                _commit_file(
+                    pusher, f"concurrent-{step}.txt", f"c{step}", f"concurrent work {step}"
+                )
                 _git(["push", "origin", "main"], cwd=pusher)
 
                 # Mid-chain sync
@@ -2398,8 +2503,9 @@ class TestSubtaskChainDriftAndMidChainRebase:
 
         # Advance main concurrently
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main = _commit_file(pusher, "concurrent.txt", "c", "concurrent push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2430,8 +2536,9 @@ class TestSubtaskChainDriftAndMidChainRebase:
 
         # Advance main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "other.txt", "other", "concurrent no-sync")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2453,8 +2560,9 @@ class TestSubtaskChainDriftAndMidChainRebase:
 
         # Advance main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         _commit_file(pusher, "upstream.txt", "u", "upstream push")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2512,8 +2620,9 @@ class TestRetryBranchRebaseComprehensive:
 
         # Advance main
         pusher = str(tmp_path / "pusher")
-        subprocess.run(["git", "clone", git_repo["remote"], pusher],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
+        )
         new_main = _commit_file(pusher, "upstream.txt", "u", "upstream")
         _git(["push", "origin", "main"], cwd=pusher)
 
@@ -2558,7 +2667,10 @@ class TestCheckGhAuth:
     def test_authenticated(self, monkeypatch):
         mgr = GitManager()
         mock_result = subprocess.CompletedProcess(
-            args=["gh", "auth", "status"], returncode=0, stdout="", stderr="",
+            args=["gh", "auth", "status"],
+            returncode=0,
+            stdout="",
+            stderr="",
         )
         monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
         assert mgr.check_gh_auth() is True
@@ -2566,8 +2678,10 @@ class TestCheckGhAuth:
     def test_not_authenticated(self, monkeypatch):
         mgr = GitManager()
         mock_result = subprocess.CompletedProcess(
-            args=["gh", "auth", "status"], returncode=1,
-            stdout="", stderr="not logged in",
+            args=["gh", "auth", "status"],
+            returncode=1,
+            stdout="",
+            stderr="not logged in",
         )
         monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
         assert mgr.check_gh_auth() is False
@@ -2601,8 +2715,10 @@ class TestCreateGithubRepo:
         def mock_run(cmd, **kwargs):
             captured_args["cmd"] = cmd
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="https://github.com/user/my-app\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/user/my-app\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2619,8 +2735,10 @@ class TestCreateGithubRepo:
         def mock_run(cmd, **kwargs):
             captured_args["cmd"] = cmd
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="https://github.com/user/my-app\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/user/my-app\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2637,8 +2755,10 @@ class TestCreateGithubRepo:
         def mock_run(cmd, **kwargs):
             captured_args["cmd"] = cmd
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="https://github.com/my-org/my-app\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/my-org/my-app\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2654,8 +2774,10 @@ class TestCreateGithubRepo:
         def mock_run(cmd, **kwargs):
             captured_args["cmd"] = cmd
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="https://github.com/user/my-app\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/user/my-app\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2670,8 +2792,10 @@ class TestCreateGithubRepo:
 
         def mock_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
-                args=cmd, returncode=1,
-                stdout="", stderr="Name already exists on this account",
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr="Name already exists on this account",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2696,8 +2820,10 @@ class TestCreateGithubRepo:
 
         def mock_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="", stderr="https://github.com/user/my-app",
+                args=cmd,
+                returncode=0,
+                stdout="",
+                stderr="https://github.com/user/my-app",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2711,7 +2837,8 @@ class TestCreateGithubRepo:
 
         def mock_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
+                args=cmd,
+                returncode=0,
                 stdout=(
                     "Flag --confirm has been deprecated, "
                     "Pass any argument to skip confirmation prompt\n"
@@ -2731,8 +2858,10 @@ class TestCreateGithubRepo:
 
         def mock_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="some random output\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="some random output\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2748,8 +2877,10 @@ class TestCreateGithubRepo:
         def mock_run(cmd, **kwargs):
             captured_args["cmd"] = cmd
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0,
-                stdout="https://github.com/user/my-app\n", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="https://github.com/user/my-app\n",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -2777,11 +2908,13 @@ class TestGetDefaultBranch:
 
         # Create a repo with master as default
         remote = tmp_path / "remote.git"
-        subprocess.run(["git", "init", "--bare", "--initial-branch=master", str(remote)],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=master", str(remote)],
+            check=True,
+            capture_output=True,
+        )
         clone = tmp_path / "clone"
-        subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
-                       capture_output=True)
+        subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
         _commit_file(str(clone), "README.md", "test", "Initial commit")
         _git(["push", "origin", "master"], cwd=str(clone))
 
@@ -2805,8 +2938,9 @@ class TestGetDefaultBranch:
 
         # Create a second clone without checking out main locally
         clone2 = tmp_path / "clone2"
-        subprocess.run(["git", "clone", "--no-checkout", remote, str(clone2)],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", "--no-checkout", remote, str(clone2)], check=True, capture_output=True
+        )
 
         default_branch = mgr.get_default_branch(str(clone2))
         assert default_branch == "main"
@@ -2817,11 +2951,13 @@ class TestGetDefaultBranch:
 
         # Create a repo with develop as default
         remote = tmp_path / "remote.git"
-        subprocess.run(["git", "init", "--bare", "--initial-branch=develop", str(remote)],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
+            check=True,
+            capture_output=True,
+        )
         clone = tmp_path / "clone"
-        subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
-                       capture_output=True)
+        subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
         _commit_file(str(clone), "README.md", "test", "Initial commit")
         _git(["push", "origin", "develop"], cwd=str(clone))
 

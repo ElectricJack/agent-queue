@@ -147,7 +147,7 @@ async def test_eval_case(eval_setup, case: TestCase):
                 failures.append(f"UNEXPECTED tool: {u}")
 
             pytest.fail(
-                f"Turn failed: \"{turn.user_message}\"\n"
+                f'Turn failed: "{turn.user_message}"\n'
                 f"Actual tools: {recorder.tool_names_called}\n"
                 f"Failures: {failures}"
             )

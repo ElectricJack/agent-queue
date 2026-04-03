@@ -311,6 +311,7 @@ class TestAppConfigValidation:
 
     def test_health_check_port_invalid(self):
         from src.config import HealthCheckConfig
+
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
             health_check=HealthCheckConfig(enabled=True, port=99999),
@@ -345,18 +346,26 @@ class TestLoadConfigValidation:
     def test_load_config_raises_on_fatal_errors(self, tmp_path):
         """load_config() should still raise ConfigValidationError for backward compat."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "scheduling": {"rolling_window_hours": -1},
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "scheduling": {"rolling_window_hours": -1},
+                }
+            )
+        )
         with pytest.raises(ConfigValidationError) as exc_info:
             load_config(str(config_file))
         assert len(exc_info.value.errors) >= 1
 
     def test_load_config_succeeds_with_valid(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {"bot_token": "tok", "guild_id": "123"},
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "tok", "guild_id": "123"},
+                }
+            )
+        )
         config = load_config(str(config_file))
         assert config.discord.bot_token == "tok"
 
@@ -367,11 +376,13 @@ class TestLoadConfigValidation:
 class TestParseArgs:
     def test_validate_config_flag(self):
         from src.main import _parse_args
+
         config_path, profile, validate_only = _parse_args(["--validate-config"])
         assert validate_only is True
 
     def test_validate_config_with_path(self):
         from src.main import _parse_args
+
         config_path, profile, validate_only = _parse_args(
             ["--validate-config", "/some/config.yaml"]
         )
@@ -380,11 +391,13 @@ class TestParseArgs:
 
     def test_no_validate_flag(self):
         from src.main import _parse_args
+
         _, _, validate_only = _parse_args(["/some/config.yaml"])
         assert validate_only is False
 
     def test_profile_and_validate(self):
         from src.main import _parse_args
+
         config_path, profile, validate_only = _parse_args(
             ["--profile", "dev", "--validate-config", "/cfg.yaml"]
         )
@@ -396,22 +409,33 @@ class TestParseArgs:
 class TestValidateConfigOnly:
     def test_valid_config_returns_zero(self, tmp_path):
         from src.main import _validate_config_only
+
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {"bot_token": "tok", "guild_id": "123"},
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "tok", "guild_id": "123"},
+                }
+            )
+        )
         assert _validate_config_only(str(config_file)) == 0
 
     def test_invalid_config_returns_one(self, tmp_path):
         from src.main import _validate_config_only
+
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "scheduling": {"rolling_window_hours": -1},
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "scheduling": {"rolling_window_hours": -1},
+                }
+            )
+        )
         assert _validate_config_only(str(config_file)) == 1
 
     def test_missing_file_returns_one(self):
         from src.main import _validate_config_only
+
         assert _validate_config_only("/nonexistent/config.yaml") == 1
 
 
@@ -462,14 +486,18 @@ class TestMcpServerConfigInjection:
 
     def test_inject_into_tasks_loaded_from_yaml(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {"bot_token": "tok", "guild_id": "123"},
-            "mcp_server": {
-                "enabled": True,
-                "port": 8082,
-                "inject_into_tasks": False,
-            },
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "mcp_server": {
+                        "enabled": True,
+                        "port": 8082,
+                        "inject_into_tasks": False,
+                    },
+                }
+            )
+        )
         cfg = load_config(str(config_file))
         assert cfg.mcp_server.enabled is True
         assert cfg.mcp_server.inject_into_tasks is False

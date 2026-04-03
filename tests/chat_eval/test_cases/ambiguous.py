@@ -82,7 +82,6 @@ CASES: list[TestCase] = [
         tags=["status", "vague", "broad"],
         difficulty=Difficulty.HARD,
     ),
-
     # --- Checking on specific things ---
     TestCase(
         id="ambiguous-check-on-project",
@@ -127,7 +126,6 @@ CASES: list[TestCase] = [
         tags=["debugging", "failures"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Action-oriented ambiguity ---
     TestCase(
         id="ambiguous-set-up-new-thing",
@@ -157,7 +155,6 @@ CASES: list[TestCase] = [
         tags=["archive", "vague", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Role/resource queries ---
     TestCase(
         id="ambiguous-whos-doing-what",
@@ -166,8 +163,13 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="who's doing what?",
                 # Both agents and tasks are valid interpretations of "who's doing what"
-                not_expected_tools=["create_agent", "delete_agent", "create_task",
-                                    "delete_task", "delete_project"],
+                not_expected_tools=[
+                    "create_agent",
+                    "delete_agent",
+                    "create_task",
+                    "delete_task",
+                    "delete_project",
+                ],
             ),
         ],
         category="ambiguous",
@@ -188,7 +190,6 @@ CASES: list[TestCase] = [
         tags=["agents", "status", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Deployment / safety queries ---
     TestCase(
         id="ambiguous-safe-to-deploy",
@@ -197,8 +198,12 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="is it safe to deploy?",
                 # get_chain_health, get_status, list_tasks all valid responses
-                not_expected_tools=["create_task", "delete_project", "archive_tasks",
-                                    "delete_task"],
+                not_expected_tools=[
+                    "create_task",
+                    "delete_project",
+                    "archive_tasks",
+                    "delete_task",
+                ],
             ),
         ],
         category="ambiguous",
@@ -218,7 +223,6 @@ CASES: list[TestCase] = [
         tags=["deployment", "health", "slang"],
         difficulty=Difficulty.HARD,
     ),
-
     # --- Change / diff queries ---
     TestCase(
         id="ambiguous-what-changed",
@@ -227,8 +231,12 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="what changed?",
                 # Genuinely ambiguous: events, git status, git changes all reasonable
-                not_expected_tools=["create_task", "delete_task", "delete_project",
-                                    "archive_tasks"],
+                not_expected_tools=[
+                    "create_task",
+                    "delete_task",
+                    "delete_project",
+                    "archive_tasks",
+                ],
             ),
         ],
         category="ambiguous",
@@ -242,15 +250,18 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="what changed in the code?",
                 # git_changed_files, get_git_status, git_diff all valid for code changes
-                not_expected_tools=["create_task", "delete_task", "archive_tasks",
-                                    "delete_project"],
+                not_expected_tools=[
+                    "create_task",
+                    "delete_task",
+                    "archive_tasks",
+                    "delete_project",
+                ],
             ),
         ],
         category="ambiguous",
         tags=["changes", "git", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Cost / resource queries ---
     TestCase(
         id="ambiguous-whats-the-damage",
@@ -294,7 +305,6 @@ CASES: list[TestCase] = [
         tags=["tokens", "cost", "slang"],
         difficulty=Difficulty.HARD,
     ),
-
     # --- Adversarial / very vague ---
     TestCase(
         id="ambiguous-do-the-thing",
@@ -304,8 +314,11 @@ CASES: list[TestCase] = [
                 user_message="do the thing",
                 # LLM should ask for clarification, not pick a destructive tool
                 not_expected_tools=[
-                    "delete_project", "delete_task", "delete_agent",
-                    "stop_task", "archive_tasks",
+                    "delete_project",
+                    "delete_task",
+                    "delete_agent",
+                    "stop_task",
+                    "archive_tasks",
                 ],
             ),
         ],
@@ -321,7 +334,9 @@ CASES: list[TestCase] = [
                 user_message="fix it",
                 # Should not pick destructive actions without context
                 not_expected_tools=[
-                    "delete_project", "delete_task", "delete_agent",
+                    "delete_project",
+                    "delete_task",
+                    "delete_agent",
                     "archive_tasks",
                 ],
             ),
@@ -337,7 +352,9 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="make it work",
                 not_expected_tools=[
-                    "delete_project", "delete_task", "delete_agent",
+                    "delete_project",
+                    "delete_task",
+                    "delete_agent",
                 ],
             ),
         ],
@@ -353,7 +370,9 @@ CASES: list[TestCase] = [
                 user_message="nuke everything",
                 # Should NOT blindly delete; should ask for confirmation
                 not_expected_tools=[
-                    "delete_project", "delete_task", "delete_agent",
+                    "delete_project",
+                    "delete_task",
+                    "delete_agent",
                 ],
             ),
         ],
@@ -389,11 +408,9 @@ CASES: list[TestCase] = [
         tags=["tasks", "status", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # -----------------------------------------------------------------------
     # Supervisor-specific ambiguous phrasings (post-refactor additions)
     # -----------------------------------------------------------------------
-
     TestCase(
         id="ambiguous-supervisor-handle-it",
         description="Vague delegation — 'handle it' should check status",

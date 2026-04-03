@@ -171,9 +171,7 @@ class RuleManager:
         Returns:
             Complete file content string with ``---`` delimiters.
         """
-        frontmatter = yaml.dump(
-            meta, default_flow_style=False, sort_keys=False
-        ).strip()
+        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
         return f"---\n{frontmatter}\n---\n\n{body}\n"
 
     @staticmethod
@@ -246,9 +244,7 @@ class RuleManager:
         hooks: list[str] = []
         if existing:
             path, old_pid = existing
-            old_meta, _ = self._split_frontmatter(
-                open(path).read()
-            )
+            old_meta, _ = self._split_frontmatter(open(path).read())
             created = old_meta.get("created", now)
             hooks = old_meta.get("hooks", [])
             # If project scope changed, delete old file
@@ -368,25 +364,23 @@ class RuleManager:
                         continue
                     seen_ids.add(rid)
                     title = self._extract_title(body)
-                    results.append({
-                        "id": rid,
-                        "name": title or rid,
-                        "type": meta.get("type", "passive"),
-                        "project_id": meta.get("project_id"),
-                        "summary": self._extract_summary(body),
-                        "hook_count": len(meta.get("hooks", [])),
-                        "updated": meta.get("updated", ""),
-                    })
-                except Exception as e:
-                    logger.warning(
-                        "Failed to read rule file %s: %s", filepath, e
+                    results.append(
+                        {
+                            "id": rid,
+                            "name": title or rid,
+                            "type": meta.get("type", "passive"),
+                            "project_id": meta.get("project_id"),
+                            "summary": self._extract_summary(body),
+                            "hook_count": len(meta.get("hooks", [])),
+                            "updated": meta.get("updated", ""),
+                        }
                     )
+                except Exception as e:
+                    logger.warning("Failed to read rule file %s: %s", filepath, e)
 
         return results
 
-    def get_rules_for_prompt(
-        self, project_id: str | None, query: str | None = None
-    ) -> str:
+    def get_rules_for_prompt(self, project_id: str | None, query: str | None = None) -> str:
         """Load rules as formatted text for PromptBuilder Layer 3.
 
         Without memsearch: returns ALL rules for the project + globals.
@@ -402,9 +396,7 @@ class RuleManager:
             if loaded:
                 rule_type = loaded["type"]
                 prefix = "[Active]" if rule_type == "active" else "[Passive]"
-                sections.append(
-                    f"### {prefix} {rule_info['name']}\n{loaded['content']}"
-                )
+                sections.append(f"### {prefix} {rule_info['name']}\n{loaded['content']}")
 
         if not sections:
             return ""
@@ -447,9 +439,7 @@ class RuleManager:
 
         # For active rules, generate hooks
         if rule_type == "active" and self._db:
-            hooks = await self._generate_hooks_for_rule(
-                result["id"], project_id, content
-            )
+            hooks = await self._generate_hooks_for_rule(result["id"], project_id, content)
             result["hooks_generated"] = hooks
 
         return result
@@ -514,7 +504,9 @@ class RuleManager:
                         preserved_timestamps[old_hook.project_id] = old_hook.last_triggered_at
         except Exception as e:
             logger.debug(
-                "Could not read old hooks for rule %s: %s", rule_id, e,
+                "Could not read old hooks for rule %s: %s",
+                rule_id,
+                e,
             )
 
         # Content-hash check: skip regeneration if all existing hooks match
@@ -523,7 +515,8 @@ class RuleManager:
             if all_match:
                 logger.debug(
                     "Rule %s unchanged (hash=%s), skipping hook regeneration",
-                    rule_id, new_hash,
+                    rule_id,
+                    new_hash,
                 )
                 return []
 
@@ -535,18 +528,21 @@ class RuleManager:
         if supervisor is not None:
             try:
                 expanded = await supervisor.expand_rule_prompt(
-                    content, project_id,
+                    content,
+                    project_id,
                 )
                 if expanded:
                     prompt_template = expanded
                     logger.info(
                         "LLM-expanded prompt for rule %s (%d chars)",
-                        rule_id, len(expanded),
+                        rule_id,
+                        len(expanded),
                     )
             except Exception as e:
                 logger.warning(
                     "LLM expansion failed for rule %s, using static template: %s",
-                    rule_id, e,
+                    rule_id,
+                    e,
                 )
 
         # Fall back to static template
@@ -606,7 +602,7 @@ class RuleManager:
             hook = Hook(
                 id=hook_id,
                 project_id=pid,
-                name=f"Rule: {title or rule_id}",
+                name=title or rule_id,
                 trigger=json.dumps(trigger_config),
                 context_steps="[]",
                 prompt_template=hook_prompt,
@@ -620,7 +616,9 @@ class RuleManager:
             except Exception as e:
                 logger.error(
                     "Failed to create hook %s for rule %s: %s",
-                    hook_id, rule_id, e,
+                    hook_id,
+                    rule_id,
+                    e,
                 )
                 creation_succeeded = False
                 break
@@ -646,13 +644,15 @@ class RuleManager:
             except Exception as e:
                 logger.warning(
                     "Failed to delete old hook %s during atomic replacement: %s",
-                    hid, e,
+                    hid,
+                    e,
                 )
 
         if not project_id and len(new_hook_ids) > 1:
             logger.info(
                 "Global rule %s: created %d hooks (one per project)",
-                rule_id, len(new_hook_ids),
+                rule_id,
+                len(new_hook_ids),
             )
 
         # Update rule frontmatter with new hook references atomically
@@ -696,9 +696,7 @@ class RuleManager:
         text = trigger_section.lower().strip()
 
         # Parse "every N minutes/hours/days" (with explicit number)
-        match = re.search(
-            r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
-        )
+        match = re.search(r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text)
         if match:
             value = int(match.group(1))
             unit = match.group(2)
@@ -713,9 +711,7 @@ class RuleManager:
             return {"type": "periodic", "interval_seconds": seconds}
 
         # Parse "every hour/minute/day" (no number — implies 1)
-        match = re.search(
-            r"every\s+(hour|hr|minute|min|second|sec|day)s?", text
-        )
+        match = re.search(r"every\s+(hour|hr|minute|min|second|sec|day)s?", text)
         if match:
             unit = match.group(1)
             if unit.startswith("day"):
@@ -737,9 +733,7 @@ class RuleManager:
             return {"type": "periodic", "interval_seconds": 3600}
 
         # Check N hours/minutes/seconds (without "every")
-        match = re.search(
-            r"(?:check\s+)?(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
-        )
+        match = re.search(r"(?:check\s+)?(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text)
         if match:
             value = int(match.group(1))
             unit = match.group(2)
@@ -754,22 +748,16 @@ class RuleManager:
             return {"type": "periodic", "interval_seconds": seconds}
 
         # Parse event-based triggers — broad pattern matching
-        event_match = re.search(
-            r"when\s+(?:a\s+)?task\s+(?:is\s+)?completed", text
-        )
+        event_match = re.search(r"when\s+(?:a\s+)?task\s+(?:is\s+)?completed", text)
         if event_match:
             return {"type": "event", "event_type": "task.completed"}
 
-        event_match = re.search(
-            r"when\s+(?:a\s+)?task\s+(?:is\s+)?(?:failed|fails)", text
-        )
+        event_match = re.search(r"when\s+(?:a\s+)?task\s+(?:is\s+)?(?:failed|fails)", text)
         if event_match:
             return {"type": "event", "event_type": "task.failed"}
 
         # Match "when error", "when agent crash", "error.X" event references
-        event_match = re.search(
-            r"when\s+(?:an?\s+)?(?:agent\s+)?(?:crash|error)", text
-        )
+        event_match = re.search(r"when\s+(?:an?\s+)?(?:agent\s+)?(?:crash|error)", text)
         if event_match:
             return {"type": "event", "event_type": "error.agent_crash"}
 
@@ -850,7 +838,8 @@ class RuleManager:
                 if self.load_rule(rule_id):
                     logger.info(
                         "Rule %s already exists for orphan hook %s, deleting hook only",
-                        rule_id, hook.id,
+                        rule_id,
+                        hook.id,
                     )
                 else:
                     # Save the rule file
@@ -863,14 +852,16 @@ class RuleManager:
                     if not result.get("success"):
                         logger.warning(
                             "Failed to save rule for orphan hook %s: %s",
-                            hook.id, result,
+                            hook.id,
+                            result,
                         )
                         stats["errors"] += 1
                         continue
 
                     logger.info(
                         "Migrated orphan hook %s → rule %s",
-                        hook.id, rule_id,
+                        hook.id,
+                        rule_id,
                     )
 
                 # Delete the original orphan hook
@@ -879,14 +870,18 @@ class RuleManager:
 
             except Exception as e:
                 logger.warning(
-                    "Failed to migrate orphan hook %s: %s", hook.id, e,
+                    "Failed to migrate orphan hook %s: %s",
+                    hook.id,
+                    e,
                 )
                 stats["errors"] += 1
 
         if stats["migrated"]:
             logger.info(
                 "Orphan hook migration complete: %d migrated, %d skipped, %d errors",
-                stats["migrated"], stats["skipped"], stats["errors"],
+                stats["migrated"],
+                stats["skipped"],
+                stats["errors"],
             )
 
         return stats
@@ -985,7 +980,8 @@ class RuleManager:
                 duplicate_path = os.path.join(rules_dir, filename)
                 logger.info(
                     "Removing duplicate rule file %s (canonical: %s)",
-                    filename, f"{canonical_id}.md",
+                    filename,
+                    f"{canonical_id}.md",
                 )
 
                 # Read duplicate's hook IDs before deleting
@@ -1003,7 +999,8 @@ class RuleManager:
                 except Exception as e:
                     logger.warning(
                         "Failed to remove duplicate rule %s: %s",
-                        duplicate_path, e,
+                        duplicate_path,
+                        e,
                     )
                     continue
 
@@ -1015,7 +1012,8 @@ class RuleManager:
                         except Exception as e:
                             logger.warning(
                                 "Failed to delete hook %s from duplicate rule: %s",
-                                hid, e,
+                                hid,
+                                e,
                             )
 
                     # Also delete any orphan hooks by prefix that weren't
@@ -1025,7 +1023,9 @@ class RuleManager:
                         await self._db.delete_hooks_by_id_prefix(prefix)
                     except Exception as e:
                         logger.debug(
-                            "Prefix cleanup for %s: %s", prefix, e,
+                            "Prefix cleanup for %s: %s",
+                            prefix,
+                            e,
                         )
 
         return removed
@@ -1122,23 +1122,20 @@ class RuleManager:
                             # Count existing unchanged hooks for this rule
                             prefix = f"rule-{meta.get('id', filename[:-3])}-"
                             try:
-                                existing = await self._db.list_hooks_by_id_prefix(
-                                    prefix
-                                )
+                                existing = await self._db.list_hooks_by_id_prefix(prefix)
                                 stats["hooks_unchanged"] += len(existing)
                             except Exception:
                                 pass
                     except Exception as e:
                         logger.warning(
                             "Hook regen failed for %s: %s",
-                            filename, e,
+                            filename,
+                            e,
                         )
                         stats["errors"] += 1
 
                 except Exception as e:
-                    logger.warning(
-                        "Failed to process rule %s: %s", filepath, e
-                    )
+                    logger.warning("Failed to process rule %s: %s", filepath, e)
                     stats["errors"] += 1
 
         return stats
@@ -1153,9 +1150,7 @@ class RuleManager:
         Reads markdown files from src/prompts/default_rules/ and saves
         them as global rules. Skips rules that already exist (idempotent).
         """
-        defaults_dir = os.path.join(
-            os.path.dirname(__file__), "prompts", "default_rules"
-        )
+        defaults_dir = os.path.join(os.path.dirname(__file__), "prompts", "default_rules")
         if not os.path.isdir(defaults_dir):
             return []
 
@@ -1238,17 +1233,20 @@ class RuleManager:
         # Register a folder watch for each rule directory
         for rules_dir, pid in self._get_all_rule_dirs():
             watch_id = f"rule-watcher-{pid or _GLOBAL_SCOPE}"
-            self._rule_file_watcher.add_watch(WatchRule(
-                watch_id=watch_id,
-                project_id=pid or _GLOBAL_SCOPE,
-                paths=[rules_dir],
-                recursive=False,
-                extensions=[".md"],
-                watch_type="folder",
-            ))
+            self._rule_file_watcher.add_watch(
+                WatchRule(
+                    watch_id=watch_id,
+                    project_id=pid or _GLOBAL_SCOPE,
+                    paths=[rules_dir],
+                    recursive=False,
+                    extensions=[".md"],
+                    watch_type="folder",
+                )
+            )
             logger.info(
                 "Rule file watcher: monitoring %s (scope=%s)",
-                rules_dir, pid or _GLOBAL_SCOPE,
+                rules_dir,
+                pid or _GLOBAL_SCOPE,
             )
 
         # Subscribe to folder.changed events for rule directory changes
@@ -1319,9 +1317,7 @@ class RuleManager:
             rule_id = rel_path[:-3]  # strip .md extension
 
             if operation in ("created", "modified"):
-                await self._reconcile_single_rule(
-                    rule_id, project_id, watch_dir
-                )
+                await self._reconcile_single_rule(rule_id, project_id, watch_dir)
             elif operation == "deleted":
                 await self._cleanup_deleted_rule(rule_id)
 
@@ -1356,18 +1352,18 @@ class RuleManager:
                 return
 
             rid = meta.get("id", rule_id)
-            new_hooks = await self._generate_hooks_for_rule(
-                rid, project_id, body
-            )
+            new_hooks = await self._generate_hooks_for_rule(rid, project_id, body)
             if new_hooks:
                 logger.info(
                     "Rule file watcher: reconciled rule %s → %d hooks",
-                    rid, len(new_hooks),
+                    rid,
+                    len(new_hooks),
                 )
         except Exception as e:
             logger.warning(
                 "Rule file watcher: failed to reconcile rule %s: %s",
-                rule_id, e,
+                rule_id,
+                e,
             )
 
     async def _cleanup_deleted_rule(self, rule_id: str) -> None:
@@ -1383,13 +1379,13 @@ class RuleManager:
             deleted = await self._db.delete_hooks_by_id_prefix(prefix)
             if deleted:
                 logger.info(
-                    "Rule file watcher: deleted %d orphan hooks for "
-                    "removed rule %s",
-                    deleted, rule_id,
+                    "Rule file watcher: deleted %d orphan hooks for removed rule %s",
+                    deleted,
+                    rule_id,
                 )
         except Exception as e:
             logger.warning(
-                "Rule file watcher: hook cleanup failed for deleted "
-                "rule %s: %s",
-                rule_id, e,
+                "Rule file watcher: hook cleanup failed for deleted rule %s: %s",
+                rule_id,
+                e,
             )

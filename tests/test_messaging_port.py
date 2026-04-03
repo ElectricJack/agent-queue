@@ -154,7 +154,9 @@ class TestMessagingPortABC:
             async def send_message(self, text, project_id=None, *, notification=None):
                 return None
 
-            async def create_thread(self, thread_name, initial_message=None, project_id=None, task_id=None):
+            async def create_thread(
+                self, thread_name, initial_message=None, project_id=None, task_id=None
+            ):
                 return None
 
             def set_command_handler(self, handler):
@@ -202,14 +204,17 @@ class TestOrchestratorTypeAliasCompat:
     def test_orchestrator_exports_notify_callback(self):
         from src.orchestrator import NotifyCallback as OrcNotify
         from src.messaging.types import NotifyCallback as MsgNotify
+
         assert OrcNotify is MsgNotify
 
     def test_orchestrator_exports_thread_send_callback(self):
         from src.orchestrator import ThreadSendCallback as OrcThread
         from src.messaging.types import ThreadSendCallback as MsgThread
+
         assert OrcThread is MsgThread
 
     def test_orchestrator_exports_create_thread_callback(self):
         from src.orchestrator import CreateThreadCallback as OrcCreate
         from src.messaging.types import CreateThreadCallback as MsgCreate
+
         assert OrcCreate is MsgCreate

@@ -92,18 +92,20 @@ def task_started_keyboard(task_id: str) -> Any:
     Mirrors ``TaskStartedView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\U0001f4cb View Context",
-                callback_data=_make_callback_data("view_context", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\u23f9 Stop Task",
-                callback_data=_make_callback_data("stop_task", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\U0001f4cb View Context",
+                    callback_data=_make_callback_data("view_context", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\u23f9 Stop Task",
+                    callback_data=_make_callback_data("stop_task", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 def task_failed_keyboard(task_id: str) -> Any:
@@ -114,24 +116,26 @@ def task_failed_keyboard(task_id: str) -> Any:
     Mirrors ``TaskFailedView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\U0001f504 Retry",
-                callback_data=_make_callback_data("restart_task", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\u23ed Skip",
-                callback_data=_make_callback_data("skip_task", task_id=task_id),
-            ),
-        ],
-        [
-            _InlineKeyboardButton(
-                text="\U0001f50d View Error",
-                callback_data=_make_callback_data("get_agent_error", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\U0001f504 Retry",
+                    callback_data=_make_callback_data("restart_task", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\u23ed Skip",
+                    callback_data=_make_callback_data("skip_task", task_id=task_id),
+                ),
+            ],
+            [
+                _InlineKeyboardButton(
+                    text="\U0001f50d View Error",
+                    callback_data=_make_callback_data("get_agent_error", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 def task_approval_keyboard(task_id: str) -> Any:
@@ -142,18 +146,20 @@ def task_approval_keyboard(task_id: str) -> Any:
     Mirrors ``TaskApprovalView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\u2705 Approve",
-                callback_data=_make_callback_data("approve_task", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\U0001f504 Restart",
-                callback_data=_make_callback_data("restart_task", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\u2705 Approve",
+                    callback_data=_make_callback_data("approve_task", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\U0001f504 Restart",
+                    callback_data=_make_callback_data("restart_task", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 def task_blocked_keyboard(task_id: str) -> Any:
@@ -164,18 +170,20 @@ def task_blocked_keyboard(task_id: str) -> Any:
     Mirrors ``TaskBlockedView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\U0001f504 Restart",
-                callback_data=_make_callback_data("restart_task", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\u23ed Skip",
-                callback_data=_make_callback_data("skip_task", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\U0001f504 Restart",
+                    callback_data=_make_callback_data("restart_task", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\u23ed Skip",
+                    callback_data=_make_callback_data("skip_task", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 def agent_question_keyboard(task_id: str) -> Any:
@@ -190,18 +198,20 @@ def agent_question_keyboard(task_id: str) -> Any:
     Mirrors ``AgentQuestionView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\U0001f4ac Reply",
-                callback_data=_make_callback_data("agent_reply_prompt", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\u23ed Skip",
-                callback_data=_make_callback_data("skip_task", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\U0001f4ac Reply",
+                    callback_data=_make_callback_data("agent_reply_prompt", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\u23ed Skip",
+                    callback_data=_make_callback_data("skip_task", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 def plan_approval_keyboard(task_id: str) -> Any:
@@ -212,18 +222,20 @@ def plan_approval_keyboard(task_id: str) -> Any:
     Mirrors ``PlanApprovalView`` from Discord.
     """
     _ensure_imports()
-    return _InlineKeyboardMarkup([
+    return _InlineKeyboardMarkup(
         [
-            _InlineKeyboardButton(
-                text="\u2705 Approve Plan",
-                callback_data=_make_callback_data("approve_plan", task_id=task_id),
-            ),
-            _InlineKeyboardButton(
-                text="\U0001f5d1 Delete Plan",
-                callback_data=_make_callback_data("delete_plan", task_id=task_id),
-            ),
-        ],
-    ])
+            [
+                _InlineKeyboardButton(
+                    text="\u2705 Approve Plan",
+                    callback_data=_make_callback_data("approve_plan", task_id=task_id),
+                ),
+                _InlineKeyboardButton(
+                    text="\U0001f5d1 Delete Plan",
+                    callback_data=_make_callback_data("delete_plan", task_id=task_id),
+                ),
+            ],
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -22,11 +22,13 @@ from src.messaging.factory import create_messaging_adapter
 # DiscordMessagingAdapter ABC conformance
 # ---------------------------------------------------------------------------
 
+
 class TestDiscordAdapterABC:
     """DiscordMessagingAdapter satisfies the MessagingAdapter interface."""
 
     def test_is_subclass_of_messaging_adapter(self):
         from src.discord.adapter import DiscordMessagingAdapter
+
         assert issubclass(DiscordMessagingAdapter, MessagingAdapter)
 
     @patch("src.discord.bot.AgentQueueBot")
@@ -46,6 +48,7 @@ class TestDiscordAdapterABC:
 # Method delegation
 # ---------------------------------------------------------------------------
 
+
 class TestDiscordAdapterDelegation:
     """Each adapter method delegates to the correct bot method."""
 
@@ -56,6 +59,7 @@ class TestDiscordAdapterDelegation:
             config.discord.bot_token = "test-token"
             orch = MagicMock()
             from src.discord.adapter import DiscordMessagingAdapter
+
             adapter = DiscordMessagingAdapter(config, orch)
             # Replace bot methods with AsyncMocks for coroutine testing
             adapter._bot.start = AsyncMock()
@@ -97,14 +101,14 @@ class TestDiscordAdapterDelegation:
     async def test_send_message_minimal(self, adapter):
         """send_message works with just text."""
         await adapter.send_message("hello")
-        adapter._bot._send_message.assert_awaited_once_with(
-            "hello", None, embed=None, view=None
-        )
+        adapter._bot._send_message.assert_awaited_once_with("hello", None, embed=None, view=None)
 
     @pytest.mark.asyncio
     async def test_create_task_thread_delegates(self, adapter):
         # create_task_thread accepts (thread_name, initial_message, project_id, task_id)
-        result = await adapter.create_task_thread("thread-name", "Agent working on: thread-name", "proj1", "task1")
+        result = await adapter.create_task_thread(
+            "thread-name", "Agent working on: thread-name", "proj1", "task1"
+        )
         adapter._bot._create_task_thread.assert_awaited_once_with(
             "thread-name", "Agent working on: thread-name", "proj1", "task1"
         )
@@ -123,6 +127,7 @@ class TestDiscordAdapterDelegation:
 # Factory integration
 # ---------------------------------------------------------------------------
 
+
 class TestFactoryCreatesDiscordAdapter:
     """create_messaging_adapter returns a DiscordMessagingAdapter for 'discord'."""
 
@@ -136,6 +141,7 @@ class TestFactoryCreatesDiscordAdapter:
         result = create_messaging_adapter(config, orch)
 
         from src.discord.adapter import DiscordMessagingAdapter
+
         assert isinstance(result, DiscordMessagingAdapter)
         mock_bot_cls.assert_called_once_with(config, orch)
 
@@ -172,6 +178,7 @@ class TestFactoryCreatesDiscordAdapter:
 # ABC enforcement
 # ---------------------------------------------------------------------------
 
+
 class TestMessagingAdapterABCEnforcement:
     """Cannot instantiate MessagingAdapter directly or with missing methods."""
 
@@ -182,6 +189,7 @@ class TestMessagingAdapterABCEnforcement:
     def test_incomplete_subclass_raises(self):
         class Incomplete(MessagingAdapter):
             async def start(self): ...
+
             # Missing the rest
 
         with pytest.raises(TypeError):
@@ -191,6 +199,7 @@ class TestMessagingAdapterABCEnforcement:
 # ---------------------------------------------------------------------------
 # Callback registration (main.py adapter path)
 # ---------------------------------------------------------------------------
+
 
 class TestCallbackRegistration:
     """Orchestrator callbacks are registered through the adapter path."""

@@ -5,6 +5,7 @@
 format into these types so that ChatAgent and HookEngine can process responses
 uniformly regardless of which LLM backend produced them.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

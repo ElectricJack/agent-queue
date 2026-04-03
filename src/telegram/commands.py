@@ -54,9 +54,7 @@ async def _send_result(
         text = "\n".join(lines)
 
     for chunk in split_message(text):
-        await update.effective_message.reply_text(
-            chunk, parse_mode="MarkdownV2"
-        )
+        await update.effective_message.reply_text(chunk, parse_mode="MarkdownV2")
 
 
 async def cmd_create_task(update, context, handler: "CommandHandler") -> None:
@@ -164,6 +162,7 @@ def register_commands(application, handler: "CommandHandler") -> None:
         async def make_handler(f=func, h=handler):
             async def wrapped(update, context):
                 await f(update, context, h)
+
             return wrapped
 
         # python-telegram-bot expects (update, context) signature

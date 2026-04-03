@@ -12,12 +12,14 @@ NOTE: These tests target the old mid_chain_rebase API which has been replaced
 by mid_chain_sync. The functionality is now covered by tests in
 test_git_manager.py (TestMidChainSync, TestSubtaskChainDriftAndMidChainRebase).
 """
+
 from __future__ import annotations
 
 import pytest
+
 pytestmark = pytest.mark.skip(
     reason="mid_chain_rebase API replaced by mid_chain_sync; "
-           "see test_git_manager.py for current coverage"
+    "see test_git_manager.py for current coverage"
 )
 
 import pathlib
@@ -35,9 +37,14 @@ from src.models import RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(args: list[str], cwd: str) -> str:
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -45,8 +52,7 @@ def _git(args: list[str], cwd: str) -> str:
 def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -88,30 +94,40 @@ def _make_repo(source_type=RepoSourceType.CLONE, **overrides) -> RepoConfig:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def git_repo(tmp_path):
     """Create a bare remote + working clone with initial commit."""
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (clone / "README.md").write_text("init")
     subprocess.run(
-        ["git", "add", "."], cwd=str(clone), check=True, capture_output=True,
+        ["git", "add", "."],
+        cwd=str(clone),
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "-c", "user.name=Test", "-c", "user.email=t@t.com",
-         "commit", "-m", "init"],
-        cwd=str(clone), check=True, capture_output=True,
+        ["git", "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init"],
+        cwd=str(clone),
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "push"], cwd=str(clone), check=True, capture_output=True,
+        ["git", "push"],
+        cwd=str(clone),
+        check=True,
+        capture_output=True,
     )
     return {"remote": str(remote), "clone": str(clone)}
 
@@ -122,23 +138,36 @@ def two_agent_clones(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     agent1 = str(tmp_path / "agent1")
     subprocess.run(
         ["git", "clone", str(remote), agent1],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(agent1) / "README.md").write_text("init")
     _git(["add", "."], cwd=agent1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=agent1,
+    )
     _git(["push", "origin", "main"], cwd=agent1)
 
     agent2 = str(tmp_path / "agent2")
     subprocess.run(
         ["git", "clone", str(remote), agent2],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
 
@@ -146,6 +175,7 @@ def two_agent_clones(tmp_path):
 # ===========================================================================
 # Unit tests: GitManager.mid_chain_rebase()
 # ===========================================================================
+
 
 class TestMidChainRebase:
     """Test mid_chain_rebase() method on GitManager."""
@@ -229,13 +259,17 @@ class TestMidChainRebase:
 
         # Rebase with push
         result = mgr.mid_chain_rebase(
-            clone, "task/push-test", "main", push=True,
+            clone,
+            "task/push-test",
+            "main",
+            push=True,
         )
 
         assert result is True
         # Verify remote branch was updated
         remote_sha = _git(
-            ["rev-parse", "origin/task/push-test"], cwd=clone,
+            ["rev-parse", "origin/task/push-test"],
+            cwd=clone,
         )
         _git(["checkout", "task/push-test"], cwd=clone)
         local_sha = _head_sha(clone)
@@ -250,7 +284,8 @@ class TestMidChainRebase:
         _git_commit(clone, "file.py", "v1", "initial work")
         _git(["push", "origin", "task/no-push"], cwd=clone)
         original_remote_sha = _git(
-            ["rev-parse", "origin/task/no-push"], cwd=clone,
+            ["rev-parse", "origin/task/no-push"],
+            cwd=clone,
         )
 
         # Advance main
@@ -264,7 +299,8 @@ class TestMidChainRebase:
         assert result is True
         # Remote should still have the old SHA (not updated)
         remote_sha_after = _git(
-            ["rev-parse", "origin/task/no-push"], cwd=clone,
+            ["rev-parse", "origin/task/no-push"],
+            cwd=clone,
         )
         assert remote_sha_after == original_remote_sha
 
@@ -279,6 +315,7 @@ class TestMidChainRebase:
     def test_push_keyword_only(self):
         """The push parameter must be keyword-only."""
         import inspect
+
         sig = inspect.signature(GitManager.mid_chain_rebase)
         param = sig.parameters["push"]
         assert param.kind == inspect.Parameter.KEYWORD_ONLY
@@ -357,6 +394,7 @@ class TestMidChainRebaseMultiAgent:
 # ===========================================================================
 # Orchestrator: _mid_chain_rebase integration
 # ===========================================================================
+
 
 class _FakeConfig:
     """Minimal config for testing _mid_chain_rebase."""
@@ -503,6 +541,7 @@ class TestOrchestratorMidChainRebase:
 # intermediate subtasks
 # ===========================================================================
 
+
 class TestCompleteWorkspaceMidChainRebase:
     """Verify _complete_workspace calls _mid_chain_rebase for non-last subtasks."""
 
@@ -519,14 +558,19 @@ class TestCompleteWorkspaceMidChainRebase:
         db = MagicMock()
         # Simulate: task is a subtask, siblings still pending
         sibling_pending = _make_task(id="subtask-3", status=TaskStatus.DEFINED)
-        db.get_subtasks = MagicMock(return_value=[
-            _make_task(id="subtask-1", status=TaskStatus.COMPLETED),
-            _make_task(id="subtask-2", status=TaskStatus.IN_PROGRESS),
-            sibling_pending,
-        ])
-        db.get_agent_workspace = MagicMock(return_value=MagicMock(
-            workspace_path="/workspace", repo_id="repo-1",
-        ))
+        db.get_subtasks = MagicMock(
+            return_value=[
+                _make_task(id="subtask-1", status=TaskStatus.COMPLETED),
+                _make_task(id="subtask-2", status=TaskStatus.IN_PROGRESS),
+                sibling_pending,
+            ]
+        )
+        db.get_agent_workspace = MagicMock(
+            return_value=MagicMock(
+                workspace_path="/workspace",
+                repo_id="repo-1",
+            )
+        )
         db.get_repo = MagicMock(return_value=_make_repo())
 
         # Use the _FakeOrchestrator pattern to isolate _complete_workspace
@@ -547,6 +591,7 @@ class TestCompleteWorkspaceMidChainRebase:
 # ===========================================================================
 # Config loading
 # ===========================================================================
+
 
 class TestMidChainRebaseConfig:
     """Verify config loading for mid_chain_rebase options."""
@@ -572,12 +617,16 @@ class TestMidChainRebaseConfig:
         from src.config import load_config
 
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump({
-            "auto_task": {
-                "mid_chain_rebase": False,
-                "mid_chain_rebase_push": True,
-            }
-        }))
+        config_path.write_text(
+            yaml.dump(
+                {
+                    "auto_task": {
+                        "mid_chain_rebase": False,
+                        "mid_chain_rebase_push": True,
+                    }
+                }
+            )
+        )
 
         config = load_config(str(config_path))
         assert config.auto_task.mid_chain_rebase is False
@@ -599,6 +648,7 @@ class TestMidChainRebaseConfig:
 # ===========================================================================
 # _prepare_workspace: rebase_between_subtasks wiring
 # ===========================================================================
+
 
 class _FakePrepareOrchestrator:
     """Minimal stand-in for testing _prepare_workspace rebase wiring.
@@ -623,6 +673,7 @@ class _FakePrepareOrchestrator:
         return "/workspace"
 
     from src.orchestrator import Orchestrator as _Orch
+
     _prepare_workspace = _Orch._prepare_workspace
 
 
@@ -638,8 +689,10 @@ class TestPrepareWorkspaceRebaseWiring:
     def _setup_db(self, orch, parent_task, repo):
         """Wire up async DB stubs so _prepare_workspace can resolve workspace/repo."""
         ws = Workspace(
-            id="ws-1", project_id="proj-1",
-            workspace_path="/workspace", source_type=repo.source_type,
+            id="ws-1",
+            project_id="proj-1",
+            workspace_path="/workspace",
+            source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)
@@ -716,8 +769,10 @@ class TestPrepareWorkspaceRebaseWiring:
         )
         repo = _make_repo(source_type=RepoSourceType.CLONE)
         ws = Workspace(
-            id="ws-1", project_id="proj-1",
-            workspace_path="/workspace", source_type=repo.source_type,
+            id="ws-1",
+            project_id="proj-1",
+            workspace_path="/workspace",
+            source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)
@@ -746,8 +801,10 @@ class TestPrepareWorkspaceRebaseWiring:
         )
         repo = _make_repo(source_type=RepoSourceType.LINK)
         ws = Workspace(
-            id="ws-1", project_id="proj-1",
-            workspace_path="/workspace", source_type=repo.source_type,
+            id="ws-1",
+            project_id="proj-1",
+            workspace_path="/workspace",
+            source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)
@@ -798,6 +855,7 @@ class TestPrepareWorkspaceRebaseWiring:
 # Integration: subtask chain with switch_to_branch rebase
 # ===========================================================================
 
+
 class TestSubtaskChainWithSwitchRebase:
     """Integration tests: subtask chain using switch_to_branch(rebase=True)
     between steps to keep up with origin/main.
@@ -847,8 +905,13 @@ class TestSubtaskChainWithSwitchRebase:
 
         # Final log should have all commits in a clean linear history
         log = _git(["log", "--oneline"], cwd=agent1)
-        for expected in ("subtask 1 work", "subtask 2 work", "subtask 3 work",
-                         "concurrent work 1", "concurrent work 2"):
+        for expected in (
+            "subtask 1 work",
+            "subtask 2 work",
+            "subtask 3 work",
+            "concurrent work 1",
+            "concurrent work 2",
+        ):
             assert expected in log
 
     def test_three_step_chain_without_rebase(self, two_agent_clones):

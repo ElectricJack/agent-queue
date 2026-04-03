@@ -3,6 +3,7 @@
 Validates _count_subtree_by_status, _format_status_summary, and the updated
 _format_task_tree summary line that shows all non-completed task stats.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -69,10 +70,13 @@ class TestCountSubtreeByStatus:
 
     def test_nested_children(self):
         children = [
-            _make_tree_node(TaskStatus.COMPLETED, children=[
-                _make_tree_node(TaskStatus.IN_PROGRESS),
-                _make_tree_node(TaskStatus.COMPLETED),
-            ]),
+            _make_tree_node(
+                TaskStatus.COMPLETED,
+                children=[
+                    _make_tree_node(TaskStatus.IN_PROGRESS),
+                    _make_tree_node(TaskStatus.COMPLETED),
+                ],
+            ),
             _make_tree_node(TaskStatus.BLOCKED),
         ]
         result = _count_subtree_by_status(children)
@@ -94,10 +98,13 @@ class TestCountSubtreeByStatus:
         """_count_subtree_by_status totals should match _count_subtree."""
         children = [
             _make_tree_node(TaskStatus.COMPLETED),
-            _make_tree_node(TaskStatus.IN_PROGRESS, children=[
-                _make_tree_node(TaskStatus.COMPLETED),
-                _make_tree_node(TaskStatus.DEFINED),
-            ]),
+            _make_tree_node(
+                TaskStatus.IN_PROGRESS,
+                children=[
+                    _make_tree_node(TaskStatus.COMPLETED),
+                    _make_tree_node(TaskStatus.DEFINED),
+                ],
+            ),
             _make_tree_node(TaskStatus.FAILED),
         ]
         completed, total = _count_subtree(children)

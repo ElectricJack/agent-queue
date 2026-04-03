@@ -3,6 +3,7 @@
 This module contains reusable Discord UI components that can be imported
 and used across the application without circular dependencies.
 """
+
 from __future__ import annotations
 
 import discord
@@ -12,15 +13,15 @@ import discord
 # ---------------------------------------------------------------------------
 
 _SUGGESTION_TYPE_EMOJIS = {
-    "answer": "\U0001f4a1",    # 💡
-    "task": "\U0001f4cb",      # 📋
-    "context": "\U0001f4ce",   # 📎
-    "warning": "\u26a0\ufe0f", # ⚠️
+    "answer": "\U0001f4a1",  # 💡
+    "task": "\U0001f4cb",  # 📋
+    "context": "\U0001f4ce",  # 📎
+    "warning": "\u26a0\ufe0f",  # ⚠️
 }
 
 _SUGGESTION_TYPE_COLORS = {
-    "answer": 0x2ECC71,   # green
-    "task": 0x3498DB,     # blue
+    "answer": 0x2ECC71,  # green
+    "task": 0x3498DB,  # blue
     "context": 0xF1C40F,  # yellow
     "warning": 0xE74C3C,  # red
 }
@@ -36,7 +37,7 @@ def truncate(text: str, max_len: int) -> str:
     """Truncate text to max_len, adding ellipsis if needed."""
     if len(text) <= max_len:
         return text
-    return text[:max_len - 3] + "..."
+    return text[: max_len - 3] + "..."
 
 
 def format_suggestion_embed(
@@ -65,10 +66,7 @@ def format_suggestion_embed(
     filled = round(confidence * 5)
     bar = "\u2588" * filled + "\u2591" * (5 - filled)
     embed.set_footer(
-        text=(
-            f"Chat Analyzer \u2022 {project_id} \u2022 "
-            f"Confidence: {bar} {confidence:.0%}"
-        )
+        text=(f"Chat Analyzer \u2022 {project_id} \u2022 Confidence: {bar} {confidence:.0%}")
     )
     return embed
 
@@ -138,9 +136,7 @@ class SuggestionView(discord.ui.View):
         # Record acceptance in the database
         if self._db:
             try:
-                await self._db.resolve_chat_analyzer_suggestion(
-                    self.suggestion_id, "accepted"
-                )
+                await self._db.resolve_chat_analyzer_suggestion(self.suggestion_id, "accepted")
             except Exception:
                 pass
 
@@ -154,11 +150,14 @@ class SuggestionView(discord.ui.View):
 
             elif self.suggestion_type == "task" and self._handler:
                 title = self.task_title or self.suggestion_text[:80]
-                result = await self._handler.execute("create_task", {
-                    "project_id": self.project_id,
-                    "title": title,
-                    "description": self.suggestion_text,
-                })
+                result = await self._handler.execute(
+                    "create_task",
+                    {
+                        "project_id": self.project_id,
+                        "title": title,
+                        "description": self.suggestion_text,
+                    },
+                )
                 if "error" in result:
                     await interaction.followup.send(
                         f"Could not create task: {result['error']}", ephemeral=True
@@ -194,7 +193,8 @@ class SuggestionView(discord.ui.View):
                 await interaction.followup.send("Suggestion accepted.", ephemeral=True)
         except (discord.Forbidden, discord.HTTPException):
             await interaction.followup.send(
-                "Could not post suggestion (Discord error).", ephemeral=True,
+                "Could not post suggestion (Discord error).",
+                ephemeral=True,
             )
 
         # Update embed to show accepted state and disable buttons
@@ -219,9 +219,7 @@ class SuggestionView(discord.ui.View):
         # Record dismissal in the database (timestamp used for cooldown logic)
         if self._db:
             try:
-                await self._db.resolve_chat_analyzer_suggestion(
-                    self.suggestion_id, "dismissed"
-                )
+                await self._db.resolve_chat_analyzer_suggestion(self.suggestion_id, "dismissed")
             except Exception:
                 pass
 

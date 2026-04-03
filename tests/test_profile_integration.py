@@ -11,6 +11,7 @@ Two gaps the unit tests don't cover:
 Uses CapturingMockAdapter + CapturingAdapterFactory to capture the merged
 ClaudeAdapterConfig and the TaskContext at each stage of execution.
 """
+
 import pytest
 
 from src.adapters import AdapterFactory
@@ -19,8 +20,17 @@ from src.adapters.claude import ClaudeAdapterConfig
 from src.config import AppConfig
 from src.database import Database
 from src.models import (
-    Agent, AgentOutput, AgentProfile, AgentResult, AgentState,
-    Project, RepoSourceType, Task, TaskContext, TaskStatus, Workspace,
+    Agent,
+    AgentOutput,
+    AgentProfile,
+    AgentResult,
+    AgentState,
+    Project,
+    RepoSourceType,
+    Task,
+    TaskContext,
+    TaskStatus,
+    Workspace,
 )
 from src.orchestrator import Orchestrator
 
@@ -28,6 +38,7 @@ from src.orchestrator import Orchestrator
 # ---------------------------------------------------------------------------
 # Capturing test doubles
 # ---------------------------------------------------------------------------
+
 
 class CapturingMockAdapter(AgentAdapter):
     """Records the TaskContext passed to start() for later assertions."""
@@ -40,8 +51,7 @@ class CapturingMockAdapter(AgentAdapter):
         self.task_context = task
 
     async def wait(self, on_message=None) -> AgentOutput:
-        return AgentOutput(result=AgentResult.COMPLETED, summary="Done",
-                           tokens_used=100)
+        return AgentOutput(result=AgentResult.COMPLETED, summary="Done", tokens_used=100)
 
     async def stop(self) -> None:
         pass
@@ -63,8 +73,7 @@ class CapturingAdapterFactory:
         self.configs_created: list[ClaudeAdapterConfig] = []
         self.profiles_received: list[AgentProfile | None] = []
 
-    def create(self, agent_type: str,
-               profile: AgentProfile | None = None) -> AgentAdapter:
+    def create(self, agent_type: str, profile: AgentProfile | None = None) -> AgentAdapter:
         merged = self._real_factory._config_for_profile(profile)
         self.profiles_received.append(profile)
         self.configs_created.append(merged)
@@ -77,6 +86,7 @@ class CapturingAdapterFactory:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 async def _setup_project_and_agent(
     db: Database,
     project_id: str = "p-1",
@@ -86,19 +96,28 @@ async def _setup_project_and_agent(
     agent_id: str = "a-1",
 ) -> None:
     """Create project, workspace, and agent so task execution succeeds."""
-    await db.create_project(Project(
-        id=project_id, name=project_name,
-        default_profile_id=default_profile_id,
-    ))
-    await db.create_workspace(Workspace(
-        id=f"ws-{project_id}",
-        project_id=project_id,
-        workspace_path=workspace_path,
-        source_type=RepoSourceType.LINK,
-    ))
-    await db.create_agent(Agent(
-        id=agent_id, name="claude-1", agent_type="claude",
-    ))
+    await db.create_project(
+        Project(
+            id=project_id,
+            name=project_name,
+            default_profile_id=default_profile_id,
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id=f"ws-{project_id}",
+            project_id=project_id,
+            workspace_path=workspace_path,
+            source_type=RepoSourceType.LINK,
+        )
+    )
+    await db.create_agent(
+        Agent(
+            id=agent_id,
+            name="claude-1",
+            agent_type="claude",
+        )
+    )
 
 
 BASE_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
@@ -107,6 +126,7 @@ BASE_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 # ---------------------------------------------------------------------------
 # 1. Tool enforcement
 # ---------------------------------------------------------------------------
+
 
 class TestToolEnforcement:
     """Verify allowed_tools flows from profile → merged config correctly."""
@@ -126,16 +146,24 @@ class TestToolEnforcement:
 
     async def test_profile_tools_override_base_defaults(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Review",
-            description="Review code", status=TaskStatus.READY,
-            profile_id="reviewer",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Review",
+                description="Review code",
+                status=TaskStatus.READY,
+                profile_id="reviewer",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -145,10 +173,15 @@ class TestToolEnforcement:
     async def test_no_profile_uses_base_defaults(self, env):
         orch, factory = env
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -157,16 +190,24 @@ class TestToolEnforcement:
 
     async def test_profile_empty_tools_falls_through_to_base(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="empty-tools", name="Empty Tools",
-            allowed_tools=[],
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="empty-tools",
+                name="Empty Tools",
+                allowed_tools=[],
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Details", status=TaskStatus.READY,
-            profile_id="empty-tools",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Details",
+                status=TaskStatus.READY,
+                profile_id="empty-tools",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -177,6 +218,7 @@ class TestToolEnforcement:
 # ---------------------------------------------------------------------------
 # 2. MCP enforcement
 # ---------------------------------------------------------------------------
+
 
 class TestMCPEnforcement:
     """Verify mcp_servers flows from profile → TaskContext correctly."""
@@ -199,16 +241,24 @@ class TestMCPEnforcement:
         mcp_config = {
             "playwright": {"command": "npx", "args": ["@anthropic/mcp-playwright"]},
         }
-        await orch.db.create_profile(AgentProfile(
-            id="web-dev", name="Web Dev",
-            mcp_servers=mcp_config,
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="web-dev",
+                name="Web Dev",
+                mcp_servers=mcp_config,
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Build page",
-            description="Build a page", status=TaskStatus.READY,
-            profile_id="web-dev",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Build page",
+                description="Build a page",
+                status=TaskStatus.READY,
+                profile_id="web-dev",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -223,10 +273,15 @@ class TestMCPEnforcement:
     async def test_no_profile_has_empty_mcp_servers(self, env):
         orch, factory = env
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -239,16 +294,24 @@ class TestMCPEnforcement:
         mcp_config = {
             "linter": {"command": "node", "args": ["./server.js", "--port", "3000"]},
         }
-        await orch.db.create_profile(AgentProfile(
-            id="lint-prof", name="Linter",
-            mcp_servers=mcp_config,
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="lint-prof",
+                name="Linter",
+                mcp_servers=mcp_config,
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Lint",
-            description="Lint code", status=TaskStatus.READY,
-            profile_id="lint-prof",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Lint",
+                description="Lint code",
+                status=TaskStatus.READY,
+                profile_id="lint-prof",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -260,6 +323,7 @@ class TestMCPEnforcement:
 # ---------------------------------------------------------------------------
 # 3. Profile isolation (profiled vs. un-profiled)
 # ---------------------------------------------------------------------------
+
 
 class TestProfileIsolation:
     """Two sequential tasks: one with a profile, one without.
@@ -280,27 +344,40 @@ class TestProfileIsolation:
 
     async def test_profiled_then_unprofiled_isolation(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-            mcp_servers={"linter": {"command": "npx", "args": ["eslint-mcp"]}},
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+                mcp_servers={"linter": {"command": "npx", "args": ["eslint-mcp"]}},
+            )
+        )
         await _setup_project_and_agent(orch.db)
 
         # Task A: with profile
-        await orch.db.create_task(Task(
-            id="t-a", project_id="p-1", title="Review code",
-            description="Review", status=TaskStatus.READY,
-            profile_id="reviewer",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-a",
+                project_id="p-1",
+                title="Review code",
+                description="Review",
+                status=TaskStatus.READY,
+                profile_id="reviewer",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
         # Task B: no profile — agent is now idle again
-        await orch.db.create_task(Task(
-            id="t-b", project_id="p-1", title="Implement feature",
-            description="Build it", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-b",
+                project_id="p-1",
+                title="Implement feature",
+                description="Build it",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -323,6 +400,7 @@ class TestProfileIsolation:
 # 4. Multi-profile isolation
 # ---------------------------------------------------------------------------
 
+
 class TestMultiProfileIsolation:
     """Two different profiles: verify each task gets its own config."""
 
@@ -341,32 +419,48 @@ class TestMultiProfileIsolation:
 
     async def test_two_profiles_no_cross_contamination(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-        ))
-        await orch.db.create_profile(AgentProfile(
-            id="web-dev", name="Web Dev",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-            mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+            )
+        )
+        await orch.db.create_profile(
+            AgentProfile(
+                id="web-dev",
+                name="Web Dev",
+                allowed_tools=["Read", "Write", "Edit", "Bash"],
+                mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
+            )
+        )
         await _setup_project_and_agent(orch.db)
 
         # Task 1: reviewer profile
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Review",
-            description="Review code", status=TaskStatus.READY,
-            profile_id="reviewer",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Review",
+                description="Review code",
+                status=TaskStatus.READY,
+                profile_id="reviewer",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
         # Task 2: web-dev profile
-        await orch.db.create_task(Task(
-            id="t-2", project_id="p-1", title="Build UI",
-            description="Build", status=TaskStatus.READY,
-            profile_id="web-dev",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="Build UI",
+                description="Build",
+                status=TaskStatus.READY,
+                profile_id="web-dev",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -390,12 +484,14 @@ class TestMultiProfileIsolation:
 # 5. Install check integration
 # ---------------------------------------------------------------------------
 
+
 class TestInstallCheckIntegration:
     """Full install check → task flow through CommandHandler."""
 
     @pytest.fixture
     async def handler(self, tmp_path):
         from src.command_handler import CommandHandler
+
         factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -413,22 +509,31 @@ class TestInstallCheckIntegration:
         orch = handler.orchestrator
 
         # Create profile with python3 (should exist on any test runner)
-        await handler.execute("create_profile", {
-            "id": "py-dev", "name": "Python Dev",
-            "allowed_tools": ["Read", "Write", "Edit", "Bash"],
-            "install": {"commands": ["python3"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "py-dev",
+                "name": "Python Dev",
+                "allowed_tools": ["Read", "Write", "Edit", "Bash"],
+                "install": {"commands": ["python3"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "py-dev"})
         assert result["valid"] is True
         assert result["issues"] == []
 
         # Now execute a task with that profile
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Python task",
-            description="Write python", status=TaskStatus.READY,
-            profile_id="py-dev",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Python task",
+                description="Write python",
+                status=TaskStatus.READY,
+                profile_id="py-dev",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -439,10 +544,14 @@ class TestInstallCheckIntegration:
     async def test_invalid_install_check(self, handler):
         handler, _ = handler
 
-        await handler.execute("create_profile", {
-            "id": "docker-user", "name": "Docker User",
-            "install": {"commands": ["definitely-not-installed-xyz"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "docker-user",
+                "name": "Docker User",
+                "install": {"commands": ["definitely-not-installed-xyz"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "docker-user"})
         assert result["valid"] is False
         assert any("definitely-not-installed-xyz" in i for i in result["issues"])
@@ -451,6 +560,7 @@ class TestInstallCheckIntegration:
 # ---------------------------------------------------------------------------
 # 6. Project default profile enforcement
 # ---------------------------------------------------------------------------
+
 
 class TestProjectDefaultProfileEnforcement:
     """Project with default_profile_id → tasks without explicit profile get it."""
@@ -470,19 +580,28 @@ class TestProjectDefaultProfileEnforcement:
 
     async def test_project_default_profile_produces_correct_config(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-            permission_mode="plan",
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+                permission_mode="plan",
+            )
+        )
         await _setup_project_and_agent(
-            orch.db, default_profile_id="reviewer",
+            orch.db,
+            default_profile_id="reviewer",
         )
         # Task has no explicit profile_id — should inherit project default
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Review task",
-            description="Review it", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Review task",
+                description="Review it",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -494,23 +613,35 @@ class TestProjectDefaultProfileEnforcement:
 
     async def test_task_profile_overrides_project_default(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-        ))
-        await orch.db.create_profile(AgentProfile(
-            id="developer", name="Developer",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+            )
+        )
+        await orch.db.create_profile(
+            AgentProfile(
+                id="developer",
+                name="Developer",
+                allowed_tools=["Read", "Write", "Edit", "Bash"],
+            )
+        )
         await _setup_project_and_agent(
-            orch.db, default_profile_id="reviewer",
+            orch.db,
+            default_profile_id="reviewer",
         )
         # Task explicitly sets developer profile — overrides project default
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Dev task",
-            description="Develop it", status=TaskStatus.READY,
-            profile_id="developer",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Dev task",
+                description="Develop it",
+                status=TaskStatus.READY,
+                profile_id="developer",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -520,17 +651,26 @@ class TestProjectDefaultProfileEnforcement:
 
     async def test_project_default_with_mcp_reaches_task_context(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="mcp-profile", name="MCP Profile",
-            mcp_servers={"sentry": {"command": "npx", "args": ["sentry-mcp"]}},
-        ))
-        await _setup_project_and_agent(
-            orch.db, default_profile_id="mcp-profile",
+        await orch.db.create_profile(
+            AgentProfile(
+                id="mcp-profile",
+                name="MCP Profile",
+                mcp_servers={"sentry": {"command": "npx", "args": ["sentry-mcp"]}},
+            )
         )
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Debug task",
-            description="Debug", status=TaskStatus.READY,
-        ))
+        await _setup_project_and_agent(
+            orch.db,
+            default_profile_id="mcp-profile",
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Debug task",
+                description="Debug",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -543,6 +683,7 @@ class TestProjectDefaultProfileEnforcement:
 # 7. MCP auto-injection from daemon server config
 # ---------------------------------------------------------------------------
 
+
 class TestMCPAutoInjection:
     """Verify the daemon's own MCP server is auto-injected into task contexts
     when mcp_server.enabled is True (inject_into_tasks defaults to True)."""
@@ -550,6 +691,7 @@ class TestMCPAutoInjection:
     @pytest.fixture
     async def env_with_mcp(self, tmp_path):
         from src.config import McpServerConfig
+
         factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -565,6 +707,7 @@ class TestMCPAutoInjection:
     @pytest.fixture
     async def env_mcp_disabled(self, tmp_path):
         from src.config import McpServerConfig
+
         factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -580,12 +723,15 @@ class TestMCPAutoInjection:
     @pytest.fixture
     async def env_inject_disabled(self, tmp_path):
         from src.config import McpServerConfig
+
         factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             mcp_server=McpServerConfig(
-                enabled=True, host="127.0.0.1", port=8082,
+                enabled=True,
+                host="127.0.0.1",
+                port=8082,
                 inject_into_tasks=False,
             ),
         )
@@ -599,10 +745,15 @@ class TestMCPAutoInjection:
         """When mcp_server.enabled=True, every task gets agent-queue MCP."""
         orch, factory = env_with_mcp
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -616,10 +767,15 @@ class TestMCPAutoInjection:
         """When mcp_server.enabled=False, no auto-injection."""
         orch, factory = env_mcp_disabled
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -630,10 +786,15 @@ class TestMCPAutoInjection:
         """When inject_into_tasks=False, no auto-injection even if enabled."""
         orch, factory = env_inject_disabled
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -643,16 +804,24 @@ class TestMCPAutoInjection:
     async def test_profile_mcp_merged_with_daemon_mcp(self, env_with_mcp):
         """Profile MCP servers are layered on top of the daemon's MCP server."""
         orch, factory = env_with_mcp
-        await orch.db.create_profile(AgentProfile(
-            id="web-dev", name="Web Dev",
-            mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="web-dev",
+                name="Web Dev",
+                mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Build page",
-            description="Build", status=TaskStatus.READY,
-            profile_id="web-dev",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Build page",
+                description="Build",
+                status=TaskStatus.READY,
+                profile_id="web-dev",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -666,16 +835,24 @@ class TestMCPAutoInjection:
     async def test_profile_can_override_daemon_mcp_name(self, env_with_mcp):
         """A profile that defines an 'agent-queue' MCP server overrides the daemon's."""
         orch, factory = env_with_mcp
-        await orch.db.create_profile(AgentProfile(
-            id="custom", name="Custom",
-            mcp_servers={"agent-queue": {"type": "http", "url": "http://other:9999/mcp"}},
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="custom",
+                name="Custom",
+                mcp_servers={"agent-queue": {"type": "http", "url": "http://other:9999/mcp"}},
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Custom",
-            description="Custom task", status=TaskStatus.READY,
-            profile_id="custom",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Custom",
+                description="Custom task",
+                status=TaskStatus.READY,
+                profile_id="custom",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -686,6 +863,7 @@ class TestMCPAutoInjection:
 # ---------------------------------------------------------------------------
 # 8. Model override enforcement
 # ---------------------------------------------------------------------------
+
 
 class TestModelOverrideEnforcement:
     """Verify model overrides flow from profile → merged config."""
@@ -706,16 +884,24 @@ class TestModelOverrideEnforcement:
 
     async def test_profile_model_overrides_base(self, env):
         orch, factory = env
-        await orch.db.create_profile(AgentProfile(
-            id="heavy", name="Heavy",
-            model="claude-opus-4-20250514",
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="heavy",
+                name="Heavy",
+                model="claude-opus-4-20250514",
+            )
+        )
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Hard task",
-            description="Complex work", status=TaskStatus.READY,
-            profile_id="heavy",
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Hard task",
+                description="Complex work",
+                status=TaskStatus.READY,
+                profile_id="heavy",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -724,10 +910,15 @@ class TestModelOverrideEnforcement:
     async def test_no_profile_keeps_base_model(self, env):
         orch, factory = env
         await _setup_project_and_agent(orch.db)
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Simple",
-            description="Simple", status=TaskStatus.READY,
-        ))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Simple",
+                description="Simple",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
@@ -737,6 +928,7 @@ class TestModelOverrideEnforcement:
 # ---------------------------------------------------------------------------
 # 9. MCP tool auto-approval in allowed_tools
 # ---------------------------------------------------------------------------
+
 
 class TestMCPToolAutoApproval:
     """Verify that MCP server tool patterns are added to allowed_tools.

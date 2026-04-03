@@ -1,4 +1,5 @@
 """Tests for the hook engine."""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +50,7 @@ async def engine(db, bus, config):
 
 async def _create_project(db, project_id="test-project"):
     from src.models import Project
+
     project = Project(id=project_id, name="Test Project")
     await db.create_project(project)
     return project
@@ -61,7 +63,7 @@ async def _create_hook(db, **overrides) -> Hook:
         name="test-hook",
         enabled=True,
         trigger='{"type": "periodic", "interval_seconds": 3600}',
-        context_steps='[]',
+        context_steps="[]",
         prompt_template="Test prompt",
         cooldown_seconds=60,
     )
@@ -331,10 +333,12 @@ class TestFullPipeline:
             prompt_template="Check the tunnel for {{event.project_id}}",
         )
 
-        with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
+        with patch.object(engine, "_invoke_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = ("Tunnel is running.", 150)
             await engine._execute_hook(
-                hook, "manual", event_data={"project_id": "test-project"},
+                hook,
+                "manual",
+                event_data={"project_id": "test-project"},
             )
 
         runs = await db.list_hook_runs(hook.id)
@@ -350,7 +354,7 @@ class TestFullPipeline:
         await _create_project(db)
         hook = await _create_hook(db)
 
-        with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
+        with patch.object(engine, "_invoke_llm", new_callable=AsyncMock) as mock_llm:
             mock_llm.side_effect = RuntimeError("LLM provider down")
             await engine._execute_hook(hook, "manual")
 
@@ -401,8 +405,11 @@ class TestHookCRUD:
 
         # Add a run
         run = HookRun(
-            id="run1", hook_id=hook.id, project_id="test-project",
-            trigger_reason="manual", started_at=time.time(),
+            id="run1",
+            hook_id=hook.id,
+            project_id="test-project",
+            trigger_reason="manual",
+            started_at=time.time(),
         )
         await db.create_hook_run(run)
 
@@ -417,8 +424,11 @@ class TestHookCRUD:
         hook = await _create_hook(db)
 
         run = HookRun(
-            id="run1", hook_id=hook.id, project_id="test-project",
-            trigger_reason="periodic", started_at=time.time(),
+            id="run1",
+            hook_id=hook.id,
+            project_id="test-project",
+            trigger_reason="periodic",
+            started_at=time.time(),
         )
         await db.create_hook_run(run)
 
@@ -443,13 +453,17 @@ class TestMaxConcurrent:
         engine.config.hook_engine.max_concurrent_hooks = 1
 
         await _create_hook(
-            db, id="h1", name="h1",
+            db,
+            id="h1",
+            name="h1",
             trigger='{"type": "periodic", "interval_seconds": 1}',
             cooldown_seconds=0,
             context_steps='[{"type": "shell", "command": "sleep 10"}]',
         )
         await _create_hook(
-            db, id="h2", name="h2",
+            db,
+            id="h2",
+            name="h2",
             trigger='{"type": "periodic", "interval_seconds": 1}',
             cooldown_seconds=0,
             context_steps='[{"type": "shell", "command": "sleep 10"}]',
@@ -636,8 +650,11 @@ class TestLastTriggeredAtPersistence:
         # Don't set last_triggered_at, but create a hook_run
         run_time = time.time() - 100
         run = HookRun(
-            id="run-fallback", hook_id=hook.id, project_id="test-project",
-            trigger_reason="periodic", started_at=run_time,
+            id="run-fallback",
+            hook_id=hook.id,
+            project_id="test-project",
+            trigger_reason="periodic",
+            started_at=run_time,
         )
         await db.create_hook_run(run)
 
@@ -673,9 +690,7 @@ class TestReconciliationResilience:
     """Verify hooks don't re-fire after rule reconciliation regenerates hook IDs."""
 
     @pytest.mark.asyncio
-    async def test_resolve_last_run_uses_db_timestamp_for_new_hook_id(
-        self, db, engine
-    ):
+    async def test_resolve_last_run_uses_db_timestamp_for_new_hook_id(self, db, engine):
         """After reconciliation creates a hook with a new UUID, _resolve_last_run
         should use the DB-persisted last_triggered_at instead of defaulting to 0."""
         await _create_project(db)
@@ -695,9 +710,7 @@ class TestReconciliationResilience:
         assert engine._last_run_time[hook.id] == recent
 
     @pytest.mark.asyncio
-    async def test_periodic_hook_respects_db_timestamp_after_reconciliation(
-        self, db, engine
-    ):
+    async def test_periodic_hook_respects_db_timestamp_after_reconciliation(self, db, engine):
         """A periodic hook with a recent last_triggered_at in the DB should NOT
         fire if its interval hasn't elapsed, even when the in-memory cache has
         no entry (simulating post-reconciliation state)."""
@@ -720,9 +733,7 @@ class TestReconciliationResilience:
         assert hook.id not in engine._running
 
     @pytest.mark.asyncio
-    async def test_orphaned_running_hook_cancelled_after_reconciliation(
-        self, db, engine
-    ):
+    async def test_orphaned_running_hook_cancelled_after_reconciliation(self, db, engine):
         """When reconciliation deletes a hook from the DB, its in-flight asyncio
         task should be cancelled and removed from _running."""
         await _create_project(db)

@@ -1,10 +1,14 @@
-"""Adapter layer: make CommandHandler dicts look like model objects.
+"""Adapter layer: normalise API responses for CLI formatters.
 
-The CLI formatters (``formatters.py``) access data via attribute access on
-model objects (``task.status.value``, ``agent.state.value``, etc.).
-CommandHandler returns plain dicts with slightly different key names and
-string enum values.  The proxies here bridge that gap so formatters work
-unchanged.
+The CLI formatters access data via attribute access (``task.status``,
+``agent.state``, etc.).  Responses can arrive as either:
+
+- **Typed models** from the generated API client (attrs-based, may contain
+  ``Unset`` sentinel values)
+- **Plain dicts** from the generic ``/api/execute`` fallback
+
+The proxies here bridge that gap so formatters work unchanged regardless of
+which path returned the data.
 """
 
 from __future__ import annotations
@@ -12,7 +16,20 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src.models import AgentState, ProjectStatus, TaskStatus, TaskType
+
+# ---------------------------------------------------------------------------
+# Unset detection — avoid importing the generated client's ``Unset`` class
+# ---------------------------------------------------------------------------
+
+
+def _is_unset(value: Any) -> bool:
+    """Check if a value is an ``Unset`` sentinel from the generated client."""
+    return type(value).__name__ == "Unset"
+
+
+# ---------------------------------------------------------------------------
+# Proxy classes
+# ---------------------------------------------------------------------------
 
 
 class DictProxy:
@@ -43,118 +60,115 @@ class DictProxy:
         return data.get(key, default)
 
 
-# ---------------------------------------------------------------------------
-# Enum helpers
-# ---------------------------------------------------------------------------
+class TypedProxy:
+    """Wrap a typed (attrs) response model to normalise for formatters.
 
-def _to_task_status(value: str | TaskStatus | None) -> TaskStatus | None:
-    if value is None:
-        return None
-    if isinstance(value, TaskStatus):
+    - Resolves field aliases (e.g. ``id`` → ``workspace_id``)
+    - Converts ``Unset`` sentinel values to ``None``
+    - Returns ``None`` for missing attributes instead of ``AttributeError``
+    """
+
+    def __init__(self, obj: Any, aliases: dict[str, str] | None = None):
+        object.__setattr__(self, "_obj", obj)
+        object.__setattr__(self, "_aliases", aliases or {})
+
+    def __getattr__(self, name: str) -> Any:
+        aliases = object.__getattribute__(self, "_aliases")
+        obj = object.__getattribute__(self, "_obj")
+        key = aliases.get(name, name)
+        try:
+            value = getattr(obj, key)
+        except AttributeError:
+            return None
+        if _is_unset(value):
+            return None
         return value
-    try:
-        return TaskStatus(value)
-    except ValueError:
-        return TaskStatus(value.upper())
 
+    def __repr__(self) -> str:
+        obj = object.__getattribute__(self, "_obj")
+        return f"TypedProxy({obj!r})"
 
-def _to_task_type(value: str | TaskType | None) -> TaskType | None:
-    if value is None:
-        return None
-    if isinstance(value, TaskType):
-        return value
-    try:
-        return TaskType(value)
-    except ValueError:
-        return None
-
-
-def _to_project_status(value: str | ProjectStatus | None) -> ProjectStatus | None:
-    if value is None:
-        return None
-    if isinstance(value, ProjectStatus):
-        return value
-    try:
-        return ProjectStatus(value)
-    except ValueError:
-        return ProjectStatus(value.upper())
-
-
-def _to_agent_state(value: str | AgentState | None) -> AgentState | None:
-    if value is None:
-        return None
-    if isinstance(value, AgentState):
-        return value
-    try:
-        return AgentState(value)
-    except ValueError:
-        return AgentState(value.upper())
+    def get(self, key: str, default: Any = None) -> Any:
+        value = self.__getattr__(key)
+        return value if value is not None else default
 
 
 # ---------------------------------------------------------------------------
 # Typed proxy constructors
 # ---------------------------------------------------------------------------
 
-def task_proxy(d: dict[str, Any]) -> DictProxy:
-    """Wrap a CommandHandler task dict for formatters.
+
+def _wrap(obj: Any, aliases: dict[str, str] | None = None) -> DictProxy | TypedProxy:
+    """Choose the right proxy for the given object."""
+    if isinstance(obj, dict):
+        return DictProxy(obj, aliases=aliases)
+    return TypedProxy(obj, aliases=aliases)
+
+
+def task_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap a task response for formatters.
 
     Handles:
     - ``assigned_agent`` → ``assigned_agent_id`` alias
-    - String status → ``TaskStatus`` enum
-    - String task_type → ``TaskType`` enum or None
-    - Missing optional fields default to None
+    - Dict or typed model input
     """
-    patched = dict(d)
-    patched["status"] = _to_task_status(d.get("status"))
-    patched["task_type"] = _to_task_type(d.get("task_type"))
-    return DictProxy(patched, aliases={"assigned_agent_id": "assigned_agent"})
+    if isinstance(d, dict):
+        # Normalise status/task_type to uppercase strings for consistency
+        patched = dict(d)
+        status = d.get("status")
+        if isinstance(status, str) and status:
+            patched["status"] = status.upper()
+        task_type = d.get("task_type")
+        if isinstance(task_type, str) and task_type:
+            patched["task_type"] = task_type.lower()
+        return DictProxy(patched, aliases={"assigned_agent_id": "assigned_agent"})
+    return TypedProxy(d, aliases={"assigned_agent_id": "assigned_agent"})
 
 
-def project_proxy(d: dict[str, Any]) -> DictProxy:
-    """Wrap a CommandHandler project dict for formatters.
+def project_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap a project response for formatters."""
+    if isinstance(d, dict):
+        patched = dict(d)
+        status = d.get("status")
+        if isinstance(status, str) and status:
+            patched["status"] = status.upper()
+        patched.setdefault("total_tokens_used", 0)
+        patched.setdefault("discord_channel_id", None)
+        return DictProxy(patched)
+    return TypedProxy(d)
 
-    Handles:
-    - String status → ``ProjectStatus`` enum
-    - Missing ``total_tokens_used`` defaults to 0
-    - Missing ``discord_channel_id`` defaults to None
+
+def agent_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap an agent/workspace response for formatters.
+
+    Aliases ``workspace_id`` → ``id`` for formatters that use ``agent.id``.
     """
-    patched = dict(d)
-    patched["status"] = _to_project_status(d.get("status"))
-    patched.setdefault("total_tokens_used", 0)
-    patched.setdefault("discord_channel_id", None)
-    return DictProxy(patched)
+    if isinstance(d, dict):
+        patched = dict(d)
+        state = d.get("state")
+        if isinstance(state, str) and state:
+            patched["state"] = state.upper()
+        patched.setdefault("session_tokens_used", 0)
+        patched.setdefault("agent_type", "claude")
+        patched.setdefault("last_heartbeat", None)
+        return DictProxy(patched, aliases={"id": "workspace_id"})
+    return TypedProxy(d, aliases={"id": "workspace_id"})
 
 
-def agent_proxy(d: dict[str, Any]) -> DictProxy:
-    """Wrap a CommandHandler agent/workspace dict for formatters.
-
-    CommandHandler returns workspace-as-agent dicts with ``workspace_id``,
-    ``state`` as lowercase "busy"/"idle".  Formatters expect ``agent.id``,
-    ``agent.state`` as ``AgentState`` enum (uppercase), etc.
-    """
-    patched = dict(d)
-    patched["state"] = _to_agent_state(d.get("state"))
-    patched.setdefault("session_tokens_used", 0)
-    patched.setdefault("agent_type", "claude")
-    patched.setdefault("last_heartbeat", None)
-    return DictProxy(patched, aliases={"id": "workspace_id"})
-
-
-def hook_proxy(d: dict[str, Any]) -> DictProxy:
-    """Wrap a CommandHandler hook dict for formatters.
-
-    The formatter checks ``isinstance(hook.trigger, str)`` and tries to
-    JSON-parse it.  CommandHandler already parses trigger to a dict, so
-    we convert it back to a JSON string for the formatter.
-    """
-    patched = dict(d)
-    trigger = d.get("trigger")
-    if isinstance(trigger, dict):
-        patched["trigger"] = json.dumps(trigger)
-    patched.setdefault("last_triggered_at", None)
-    return DictProxy(patched)
+def hook_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap a hook response for formatters."""
+    if isinstance(d, dict):
+        patched = dict(d)
+        trigger = d.get("trigger")
+        if isinstance(trigger, dict):
+            patched["trigger"] = json.dumps(trigger)
+        patched.setdefault("last_triggered_at", None)
+        return DictProxy(patched)
+    # For typed models, trigger may be a nested object — convert to JSON string
+    proxy = TypedProxy(d)
+    return proxy
 
 
-def hook_run_proxy(d: dict[str, Any]) -> DictProxy:
-    """Wrap a CommandHandler hook-run dict for formatters."""
-    return DictProxy(dict(d))
+def hook_run_proxy(d: Any) -> DictProxy | TypedProxy:
+    """Wrap a hook-run response for formatters."""
+    return _wrap(d)

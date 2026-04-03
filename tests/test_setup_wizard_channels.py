@@ -66,12 +66,14 @@ class TestStepPerProjectChannelsAccept:
 
     def test_accept_with_custom_naming(self):
         """User provides custom naming convention."""
-        inputs = iter([
-            "y",                      # Enable auto-create
-            "aq-{project_id}",        # Custom convention
-            "Bot Channels",           # Category name
-            "",                       # Private (default)
-        ])
+        inputs = iter(
+            [
+                "y",  # Enable auto-create
+                "aq-{project_id}",  # Custom convention
+                "Bot Channels",  # Category name
+                "",  # Private (default)
+            ]
+        )
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
 
@@ -94,12 +96,14 @@ class TestStepPerProjectChannelsValidation:
 
     def test_missing_project_id_in_convention_resets(self):
         """If naming convention lacks {project_id}, it resets to default."""
-        inputs = iter([
-            "y",
-            "invalid-pattern",          # Missing {project_id}
-            "",                         # No category
-            "",                         # Private (default)
-        ])
+        inputs = iter(
+            [
+                "y",
+                "invalid-pattern",  # Missing {project_id}
+                "",  # No category
+                "",  # Private (default)
+            ]
+        )
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
 

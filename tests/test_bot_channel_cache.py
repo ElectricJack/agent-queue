@@ -19,6 +19,7 @@ from dataclasses import dataclass
 @dataclass
 class FakeChannel:
     """Minimal mock for discord.TextChannel with just an id and name."""
+
     id: int
     name: str = "fake-channel"
 
@@ -81,9 +82,13 @@ class TestGetProjectForChannel:
     def test_finds_project_by_channel(self):
         from src.discord.bot import AgentQueueBot
 
-        caches = type("C", (), {
-            "_channel_to_project": {100: "proj-1", 200: "proj-2"},
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_channel_to_project": {100: "proj-1", 200: "proj-2"},
+            },
+        )()
 
         assert AgentQueueBot.get_project_for_channel(caches, 100) == "proj-1"
         assert AgentQueueBot.get_project_for_channel(caches, 200) == "proj-2"
@@ -91,9 +96,13 @@ class TestGetProjectForChannel:
     def test_returns_none_for_unknown_channel(self):
         from src.discord.bot import AgentQueueBot
 
-        caches = type("C", (), {
-            "_channel_to_project": {100: "proj-1"},
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_channel_to_project": {100: "proj-1"},
+            },
+        )()
 
         assert AgentQueueBot.get_project_for_channel(caches, 999) is None
 
@@ -198,10 +207,14 @@ class TestGetChannel:
         global_ch = FakeChannel(id=1, name="global")
         proj_ch = FakeChannel(id=100, name="proj-channel")
 
-        caches = type("C", (), {
-            "_project_channels": {"proj-1": proj_ch},
-            "_channel": global_ch,
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_project_channels": {"proj-1": proj_ch},
+                "_channel": global_ch,
+            },
+        )()
 
         result = AgentQueueBot._get_channel(caches, "proj-1")
         assert result is proj_ch
@@ -211,10 +224,14 @@ class TestGetChannel:
 
         global_ch = FakeChannel(id=1, name="global")
 
-        caches = type("C", (), {
-            "_project_channels": {},
-            "_channel": global_ch,
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_project_channels": {},
+                "_channel": global_ch,
+            },
+        )()
 
         result = AgentQueueBot._get_channel(caches, "proj-1")
         assert result is global_ch
@@ -224,10 +241,14 @@ class TestGetChannel:
 
         global_ch = FakeChannel(id=1, name="global")
 
-        caches = type("C", (), {
-            "_project_channels": {},
-            "_channel": global_ch,
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_project_channels": {},
+                "_channel": global_ch,
+            },
+        )()
 
         result = AgentQueueBot._get_channel(caches, None)
         assert result is global_ch
@@ -241,10 +262,14 @@ class TestIsGlobalChannel:
 
         global_ch = FakeChannel(id=1, name="global")
 
-        caches = type("C", (), {
-            "_channel": global_ch,
-            "_project_channels": {},
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_channel": global_ch,
+                "_project_channels": {},
+            },
+        )()
 
         assert AgentQueueBot._is_global_channel(caches, global_ch, "proj-1") is True
 
@@ -254,10 +279,14 @@ class TestIsGlobalChannel:
         global_ch = FakeChannel(id=1, name="global")
         proj_ch = FakeChannel(id=100, name="proj-channel")
 
-        caches = type("C", (), {
-            "_channel": global_ch,
-            "_project_channels": {"proj-1": proj_ch},
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_channel": global_ch,
+                "_project_channels": {"proj-1": proj_ch},
+            },
+        )()
 
         assert AgentQueueBot._is_global_channel(caches, global_ch, "proj-1") is False
 
@@ -266,10 +295,14 @@ class TestIsGlobalChannel:
 
         global_ch = FakeChannel(id=1, name="global")
 
-        caches = type("C", (), {
-            "_channel": global_ch,
-            "_project_channels": {},
-        })()
+        caches = type(
+            "C",
+            (),
+            {
+                "_channel": global_ch,
+                "_project_channels": {},
+            },
+        )()
 
         assert AgentQueueBot._is_global_channel(caches, global_ch, None) is False
 
@@ -295,11 +328,19 @@ class TestIsAuthorized:
 
     def _make_bot_with_auth(self, authorized_users: list[str]):
         """Return a minimal namespace mimicking the bot's config for auth."""
-        config = type("C", (), {
-            "discord": type("D", (), {
-                "authorized_users": authorized_users,
-            })(),
-        })()
+        config = type(
+            "C",
+            (),
+            {
+                "discord": type(
+                    "D",
+                    (),
+                    {
+                        "authorized_users": authorized_users,
+                    },
+                )(),
+            },
+        )()
         return type("B", (), {"config": config})()
 
     def test_empty_list_allows_everyone(self):

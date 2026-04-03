@@ -16,8 +16,10 @@ from typing import Any
 # Resource URI schemes
 # ---------------------------------------------------------------------------
 
+
 class ResourceScheme(str, Enum):
     """URI scheme prefixes for agent-queue MCP resources."""
+
     TASK = "agentqueue://tasks"
     PROJECT = "agentqueue://projects"
     AGENT = "agentqueue://agents"
@@ -30,6 +32,7 @@ class ResourceScheme(str, Enum):
 # Serialization helpers — convert domain models to MCP-friendly dicts
 # ---------------------------------------------------------------------------
 
+
 def task_to_dict(task: Any) -> dict[str, Any]:
     """Serialize a Task dataclass to a JSON-serializable dict."""
     return {
@@ -39,7 +42,11 @@ def task_to_dict(task: Any) -> dict[str, Any]:
         "description": task.description,
         "priority": task.priority,
         "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-        "task_type": task.task_type.value if task.task_type and hasattr(task.task_type, "value") else str(task.task_type) if task.task_type else None,
+        "task_type": task.task_type.value
+        if task.task_type and hasattr(task.task_type, "value")
+        else str(task.task_type)
+        if task.task_type
+        else None,
         "retry_count": task.retry_count,
         "max_retries": task.max_retries,
         "parent_task_id": task.parent_task_id,
@@ -103,7 +110,9 @@ def workspace_to_dict(workspace: Any) -> dict[str, Any]:
         "id": workspace.id,
         "project_id": workspace.project_id,
         "workspace_path": workspace.workspace_path,
-        "source_type": workspace.source_type.value if hasattr(workspace.source_type, "value") else str(workspace.source_type),
+        "source_type": workspace.source_type.value
+        if hasattr(workspace.source_type, "value")
+        else str(workspace.source_type),
         "name": workspace.name,
         "locked_by_agent_id": workspace.locked_by_agent_id,
         "locked_by_task_id": workspace.locked_by_task_id,
@@ -114,9 +123,11 @@ def workspace_to_dict(workspace: Any) -> dict[str, Any]:
 # Tool argument schemas (for documentation / validation)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ToolArgSpec:
     """Describes a single argument for an MCP tool."""
+
     name: str
     type: str  # "string", "integer", "boolean", "array", "object"
     description: str
@@ -127,6 +138,7 @@ class ToolArgSpec:
 @dataclass
 class ToolSpec:
     """Full specification of an MCP tool exposed by this server."""
+
     name: str
     description: str
     args: list[ToolArgSpec] = field(default_factory=list)
@@ -137,9 +149,11 @@ class ToolSpec:
 # Prompt template definitions
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PromptTemplate:
     """A reusable prompt template exposed via MCP prompts/list."""
+
     name: str
     description: str
     template: str

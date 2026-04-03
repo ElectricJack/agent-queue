@@ -62,9 +62,14 @@ async def _make_agent(db, aid="a-1"):
 
 
 async def _make_task(db, tid="t-1", pid="p-1"):
-    await db.create_task(Task(
-        id=tid, project_id=pid, title="Test Task", description="desc",
-    ))
+    await db.create_task(
+        Task(
+            id=tid,
+            project_id=pid,
+            title="Test Task",
+            description="desc",
+        )
+    )
 
 
 # ── Protocol / Structural Tests ──────────────────────────────────────────
@@ -177,8 +182,11 @@ class TestRepoQueries:
     async def test_create_get_repo(self, db):
         await _make_project(db)
         repo = RepoConfig(
-            id="r-1", project_id="p-1", url="https://example.com/repo.git",
-            checkout_base_path="/tmp/repos", source_type=RepoSourceType.CLONE,
+            id="r-1",
+            project_id="p-1",
+            url="https://example.com/repo.git",
+            checkout_base_path="/tmp/repos",
+            source_type=RepoSourceType.CLONE,
         )
         await db.create_repo(repo)
         r = await db.get_repo("r-1")
@@ -188,14 +196,38 @@ class TestRepoQueries:
     async def test_list_repos_by_project(self, db):
         await _make_project(db, "p-1")
         await _make_project(db, "p-2")
-        await db.create_repo(RepoConfig(id="r-1", project_id="p-1", url="u1", checkout_base_path="/t", source_type=RepoSourceType.CLONE))
-        await db.create_repo(RepoConfig(id="r-2", project_id="p-2", url="u2", checkout_base_path="/t", source_type=RepoSourceType.CLONE))
+        await db.create_repo(
+            RepoConfig(
+                id="r-1",
+                project_id="p-1",
+                url="u1",
+                checkout_base_path="/t",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+        await db.create_repo(
+            RepoConfig(
+                id="r-2",
+                project_id="p-2",
+                url="u2",
+                checkout_base_path="/t",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
         repos = await db.list_repos(project_id="p-1")
         assert len(repos) == 1
 
     async def test_delete_repo(self, db):
         await _make_project(db)
-        await db.create_repo(RepoConfig(id="r-1", project_id="p-1", url="u", checkout_base_path="/t", source_type=RepoSourceType.CLONE))
+        await db.create_repo(
+            RepoConfig(
+                id="r-1",
+                project_id="p-1",
+                url="u",
+                checkout_base_path="/t",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
         await db.delete_repo("r-1")
         assert await db.get_repo("r-1") is None
 
@@ -216,10 +248,15 @@ class TestTaskQueries:
     async def test_list_active_tasks(self, db):
         await _make_project(db)
         await db.create_task(Task(id="t-1", project_id="p-1", title="a", description="d"))
-        await db.create_task(Task(
-            id="t-2", project_id="p-1", title="b", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="b",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         active = await db.list_active_tasks(project_id="p-1")
         assert len(active) == 1
         assert active[0].id == "t-1"
@@ -227,20 +264,30 @@ class TestTaskQueries:
     async def test_count_tasks_by_status(self, db):
         await _make_project(db)
         await db.create_task(Task(id="t-1", project_id="p-1", title="a", description="d"))
-        await db.create_task(Task(
-            id="t-2", project_id="p-1", title="b", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="b",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         counts = await db.count_tasks_by_status(project_id="p-1")
         assert counts.get("DEFINED") == 1
         assert counts.get("COMPLETED") == 1
 
     async def test_transition_task(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="a", description="d",
-            status=TaskStatus.READY,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="a",
+                description="d",
+                status=TaskStatus.READY,
+            )
+        )
         await db.transition_task("t-1", TaskStatus.ASSIGNED)
         t = await db.get_task("t-1")
         assert t.status == TaskStatus.ASSIGNED
@@ -262,10 +309,15 @@ class TestTaskQueries:
     async def test_subtasks(self, db):
         await _make_project(db)
         await _make_task(db, "t-parent")
-        await db.create_task(Task(
-            id="t-child", project_id="p-1", parent_task_id="t-parent",
-            title="child", description="d",
-        ))
+        await db.create_task(
+            Task(
+                id="t-child",
+                project_id="p-1",
+                parent_task_id="t-parent",
+                title="child",
+                description="d",
+            )
+        )
         subs = await db.get_subtasks("t-parent")
         assert len(subs) == 1
         assert subs[0].id == "t-child"
@@ -273,10 +325,15 @@ class TestTaskQueries:
     async def test_task_tree(self, db):
         await _make_project(db)
         await _make_task(db, "root")
-        await db.create_task(Task(
-            id="child", project_id="p-1", parent_task_id="root",
-            title="child", description="d",
-        ))
+        await db.create_task(
+            Task(
+                id="child",
+                project_id="p-1",
+                parent_task_id="root",
+                title="child",
+                description="d",
+            )
+        )
         tree = await db.get_task_tree("root")
         assert tree is not None
         assert tree["task"].id == "root"
@@ -285,10 +342,15 @@ class TestTaskQueries:
     async def test_get_parent_tasks(self, db):
         await _make_project(db)
         await _make_task(db, "root")
-        await db.create_task(Task(
-            id="child", project_id="p-1", parent_task_id="root",
-            title="child", description="d",
-        ))
+        await db.create_task(
+            Task(
+                id="child",
+                project_id="p-1",
+                parent_task_id="root",
+                title="child",
+                description="d",
+            )
+        )
         parents = await db.get_parent_tasks("p-1")
         assert len(parents) == 1
         assert parents[0].id == "root"
@@ -308,10 +370,15 @@ class TestDependencyQueries:
 
     async def test_are_dependencies_met(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="a", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="a",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         await _make_task(db, "t-2")
         await db.add_dependency("t-2", "t-1")
         assert await db.are_dependencies_met("t-2") is True
@@ -364,9 +431,14 @@ class TestAgentQueries:
 
     async def test_list_agents_by_state(self, db):
         await db.create_agent(Agent(id="a-1", name="a", agent_type="claude"))
-        await db.create_agent(Agent(
-            id="a-2", name="b", agent_type="claude", state=AgentState.BUSY,
-        ))
+        await db.create_agent(
+            Agent(
+                id="a-2",
+                name="b",
+                agent_type="claude",
+                state=AgentState.BUSY,
+            )
+        )
         idle = await db.list_agents(state=AgentState.IDLE)
         assert len(idle) == 1
 
@@ -389,7 +461,9 @@ class TestWorkspaceQueries:
     async def test_create_get_workspace(self, db):
         await _make_project(db)
         ws = Workspace(
-            id="ws-1", project_id="p-1", workspace_path="/tmp/ws",
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/tmp/ws",
             source_type=RepoSourceType.CLONE,
         )
         await db.create_workspace(ws)
@@ -402,7 +476,9 @@ class TestWorkspaceQueries:
         await _make_agent(db)
         await _make_task(db)
         ws = Workspace(
-            id="ws-1", project_id="p-1", workspace_path="/tmp/ws",
+            id="ws-1",
+            project_id="p-1",
+            workspace_path="/tmp/ws",
             source_type=RepoSourceType.CLONE,
         )
         await db.create_workspace(ws)
@@ -417,24 +493,36 @@ class TestWorkspaceQueries:
 
     async def test_count_available_workspaces(self, db):
         await _make_project(db)
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1", workspace_path="/tmp/ws1",
-            source_type=RepoSourceType.CLONE,
-        ))
-        await db.create_workspace(Workspace(
-            id="ws-2", project_id="p-1", workspace_path="/tmp/ws2",
-            source_type=RepoSourceType.CLONE,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-1",
+                workspace_path="/tmp/ws2",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
         assert await db.count_available_workspaces("p-1") == 2
 
     async def test_workspace_for_task(self, db):
         await _make_project(db)
         await _make_agent(db)
         await _make_task(db)
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1", workspace_path="/tmp/ws",
-            source_type=RepoSourceType.CLONE,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
         await db.acquire_workspace("p-1", "a-1", "t-1")
         ws = await db.get_workspace_for_task("t-1")
         assert ws is not None
@@ -473,8 +561,11 @@ class TestHookQueries:
     async def test_create_get_hook(self, db):
         await _make_project(db)
         hook = Hook(
-            id="h-1", project_id="p-1", name="test-hook",
-            trigger="task_completed", prompt_template="Do stuff",
+            id="h-1",
+            project_id="p-1",
+            name="test-hook",
+            trigger="task_completed",
+            prompt_template="Do stuff",
         )
         await db.create_hook(hook)
         h = await db.get_hook("h-1")
@@ -484,35 +575,58 @@ class TestHookQueries:
     async def test_list_hooks_by_project(self, db):
         await _make_project(db, "p-1")
         await _make_project(db, "p-2")
-        await db.create_hook(Hook(
-            id="h-1", project_id="p-1", name="a",
-            trigger="t", prompt_template="p",
-        ))
-        await db.create_hook(Hook(
-            id="h-2", project_id="p-2", name="b",
-            trigger="t", prompt_template="p",
-        ))
+        await db.create_hook(
+            Hook(
+                id="h-1",
+                project_id="p-1",
+                name="a",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
+        await db.create_hook(
+            Hook(
+                id="h-2",
+                project_id="p-2",
+                name="b",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
         hooks = await db.list_hooks(project_id="p-1")
         assert len(hooks) == 1
 
     async def test_delete_hook(self, db):
         await _make_project(db)
-        await db.create_hook(Hook(
-            id="h-1", project_id="p-1", name="a",
-            trigger="t", prompt_template="p",
-        ))
+        await db.create_hook(
+            Hook(
+                id="h-1",
+                project_id="p-1",
+                name="a",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
         await db.delete_hook("h-1")
         assert await db.get_hook("h-1") is None
 
     async def test_hook_run_lifecycle(self, db):
         await _make_project(db)
-        await db.create_hook(Hook(
-            id="h-1", project_id="p-1", name="a",
-            trigger="t", prompt_template="p",
-        ))
+        await db.create_hook(
+            Hook(
+                id="h-1",
+                project_id="p-1",
+                name="a",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
         run = HookRun(
-            id="hr-1", hook_id="h-1", project_id="p-1",
-            trigger_reason="manual", status="running",
+            id="hr-1",
+            hook_id="h-1",
+            project_id="p-1",
+            trigger_reason="manual",
+            status="running",
             started_at=time.time(),
         )
         await db.create_hook_run(run)
@@ -526,14 +640,24 @@ class TestHookQueries:
 
     async def test_hooks_by_prefix(self, db):
         await _make_project(db)
-        await db.create_hook(Hook(
-            id="rule-abc-1", project_id="p-1", name="a",
-            trigger="t", prompt_template="p",
-        ))
-        await db.create_hook(Hook(
-            id="rule-abc-2", project_id="p-1", name="b",
-            trigger="t", prompt_template="p",
-        ))
+        await db.create_hook(
+            Hook(
+                id="rule-abc-1",
+                project_id="p-1",
+                name="a",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
+        await db.create_hook(
+            Hook(
+                id="rule-abc-2",
+                project_id="p-1",
+                name="b",
+                trigger="t",
+                prompt_template="p",
+            )
+        )
         hooks = await db.list_hooks_by_id_prefix("rule-abc")
         assert len(hooks) == 2
 
@@ -547,10 +671,15 @@ class TestHookQueries:
 class TestArchiveQueries:
     async def test_archive_and_list(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="done", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="done",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         result = await db.archive_task("t-1")
         assert result is True
         assert await db.get_task("t-1") is None
@@ -561,10 +690,15 @@ class TestArchiveQueries:
 
     async def test_restore_archived_task(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="done", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="done",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         await db.archive_task("t-1")
         result = await db.restore_archived_task("t-1")
         assert result is True
@@ -574,19 +708,29 @@ class TestArchiveQueries:
 
     async def test_count_archived(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="done", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="done",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         await db.archive_task("t-1")
         assert await db.count_archived_tasks() == 1
 
     async def test_delete_archived(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="done", description="d",
-            status=TaskStatus.COMPLETED,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="done",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
         await db.archive_task("t-1")
         assert await db.delete_archived_task("t-1") is True
         assert await db.count_archived_tasks() == 0
@@ -598,7 +742,8 @@ class TestArchiveQueries:
 class TestChatQueries:
     async def test_create_and_get_suggestion(self, db):
         row_id = await db.create_chat_analyzer_suggestion(
-            project_id="p-1", channel_id=123,
+            project_id="p-1",
+            channel_id=123,
             suggestion_type="improvement",
             suggestion_text="Do better",
             suggestion_hash="abc123",
@@ -610,7 +755,8 @@ class TestChatQueries:
 
     async def test_dedup_hash(self, db):
         await db.create_chat_analyzer_suggestion(
-            project_id="p-1", channel_id=123,
+            project_id="p-1",
+            channel_id=123,
             suggestion_type="improvement",
             suggestion_text="Do better",
             suggestion_hash="abc123",
@@ -620,7 +766,8 @@ class TestChatQueries:
 
     async def test_resolve_suggestion(self, db):
         row_id = await db.create_chat_analyzer_suggestion(
-            project_id="p-1", channel_id=123,
+            project_id="p-1",
+            channel_id=123,
             suggestion_type="improvement",
             suggestion_text="text",
             suggestion_hash="hash1",
@@ -631,8 +778,11 @@ class TestChatQueries:
 
     async def test_suggestion_stats(self, db):
         await db.create_chat_analyzer_suggestion(
-            project_id="p-1", channel_id=123,
-            suggestion_type="t", suggestion_text="a", suggestion_hash="h1",
+            project_id="p-1",
+            channel_id=123,
+            suggestion_type="t",
+            suggestion_text="a",
+            suggestion_hash="h1",
         )
         stats = await db.get_analyzer_suggestion_stats(project_id="p-1")
         assert stats["total"] == 1
@@ -645,10 +795,15 @@ class TestChatQueries:
 class TestAtomicOperations:
     async def test_assign_task_to_agent(self, db):
         await _make_project(db)
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="a", description="d",
-            status=TaskStatus.READY,
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="a",
+                description="d",
+                status=TaskStatus.READY,
+            )
+        )
         await db.create_agent(Agent(id="a-1", name="bot", agent_type="claude"))
 
         await db.assign_task_to_agent("t-1", "a-1")

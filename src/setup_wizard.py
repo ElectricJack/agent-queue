@@ -250,9 +250,8 @@ def step_directories(existing: dict) -> tuple[str, str]:
     # Skip step if values are saved, or if defaults already exist on disk
     has_workspace = existing.get("WORKSPACE_DIR") or yaml_cfg.get("workspace_dir")
     has_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
-    defaults_exist = (
-        os.path.isdir(os.path.expanduser(default_workspace))
-        and os.path.isdir(os.path.dirname(os.path.expanduser(default_db)))
+    defaults_exist = os.path.isdir(os.path.expanduser(default_workspace)) and os.path.isdir(
+        os.path.dirname(os.path.expanduser(default_db))
     )
     if (has_workspace and has_db) or defaults_exist:
         workspace = os.path.expanduser(default_workspace)
@@ -362,7 +361,9 @@ def step_discord(existing: dict) -> dict:
             print()
             if prompt_yes_no("Update channel names?", default=True):
                 channels["control"] = prompt("Control channel", channels["control"])
-                channels["notifications"] = prompt("Notifications channel", channels["notifications"])
+                channels["notifications"] = prompt(
+                    "Notifications channel", channels["notifications"]
+                )
                 channels["agent_questions"] = prompt(
                     "Agent questions channel", channels["agent_questions"]
                 )
@@ -450,9 +451,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
 
     defaults = {
         "auto_create": existing_ppc.get("auto_create", False),
-        "naming_convention": existing_ppc.get(
-            "naming_convention", "{project_id}"
-        ),
+        "naming_convention": existing_ppc.get("naming_convention", "{project_id}"),
         "category_name": existing_ppc.get("category_name", ""),
         "private": existing_ppc.get("private", True),
     }
@@ -713,6 +712,7 @@ def step_agents(existing: dict) -> dict:
                     info("Launching 'claude login' — follow the prompts in your browser...")
                     try:
                         import subprocess
+
                         subprocess.run(["claude", "login"], check=True)
                         _, claude_logged_in = _check_claude_cli()
                         if claude_logged_in:
@@ -802,9 +802,8 @@ def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
     try:
         from anthropic import AnthropicVertex
 
-        project_id = (
-            os.environ.get("GOOGLE_CLOUD_PROJECT")
-            or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get(
+            "ANTHROPIC_VERTEX_PROJECT_ID"
         )
         region = (
             os.environ.get("GOOGLE_CLOUD_LOCATION")
@@ -1102,6 +1101,7 @@ def step_chat_provider(existing: dict) -> dict:
     print()
     try:
         import openai  # noqa: F401
+
         success("openai package is installed (required for Ollama provider)")
     except ImportError:
         warn("openai Python package is not installed (required for Ollama provider)")
@@ -1145,16 +1145,16 @@ def step_scheduling(existing: dict) -> dict:
         },
     }
 
-    if prompt_yes_no("Set a daily token budget?", default=bool(config["global_token_budget_daily"])):
+    if prompt_yes_no(
+        "Set a daily token budget?", default=bool(config["global_token_budget_daily"])
+    ):
         default_budget = str(config["global_token_budget_daily"] or "")
         budget = prompt("Daily token budget (e.g. 1000000)", default_budget)
         if budget.isdigit():
             config["global_token_budget_daily"] = int(budget)
 
     if prompt_yes_no("Customize scheduling/retry defaults?", default=False):
-        val = prompt(
-            "Rolling window hours", str(config["scheduling"]["rolling_window_hours"])
-        )
+        val = prompt("Rolling window hours", str(config["scheduling"]["rolling_window_hours"]))
         config["scheduling"]["rolling_window_hours"] = int(val) if val.isdigit() else 24
 
         val = prompt(
@@ -1167,9 +1167,7 @@ def step_scheduling(existing: dict) -> dict:
             "Token-exhaustion retry seconds",
             str(config["pause_retry"]["token_exhaustion_retry_seconds"]),
         )
-        config["pause_retry"]["token_exhaustion_retry_seconds"] = (
-            int(val) if val.isdigit() else 300
-        )
+        config["pause_retry"]["token_exhaustion_retry_seconds"] = int(val) if val.isdigit() else 300
     else:
         info(
             f"Using defaults: {config['scheduling']['rolling_window_hours']}h window, "
@@ -1218,7 +1216,7 @@ def step_write_config(
         "",
         "discord:",
         "  bot_token: ${DISCORD_BOT_TOKEN}",
-        f"  guild_id: \"{discord_cfg['guild_id']}\"",
+        f'  guild_id: "{discord_cfg["guild_id"]}"',
         "  channels:",
         f"    control: {channels['control']}",
         f"    notifications: {channels['notifications']}",
@@ -1235,10 +1233,10 @@ def step_write_config(
     if ppc.get("auto_create"):
         yaml_lines.append("  per_project_channels:")
         yaml_lines.append(f"    auto_create: true")
-        yaml_lines.append(f"    naming_convention: \"{ppc['naming_convention']}\"")
+        yaml_lines.append(f'    naming_convention: "{ppc["naming_convention"]}"')
 
         if ppc.get("category_name"):
-            yaml_lines.append(f"    category_name: \"{ppc['category_name']}\"")
+            yaml_lines.append(f'    category_name: "{ppc["category_name"]}"')
 
         private = ppc.get("private", True)
         yaml_lines.append(f"    private: {'true' if private else 'false'}")
@@ -1402,7 +1400,9 @@ def main():
     chat_provider_cfg = step_chat_provider(existing)
     sched_cfg = step_scheduling(existing)
 
-    config_path = step_write_config(workspace, db_path, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg)
+    config_path = step_write_config(
+        workspace, db_path, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg
+    )
 
     step_test_connectivity(discord_cfg, agents_cfg, chat_provider_cfg)
     step_launch(config_path)

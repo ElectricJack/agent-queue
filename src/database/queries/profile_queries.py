@@ -19,21 +19,25 @@ class ProfileQueryMixin:
             "permission_mode, allowed_tools, mcp_servers, "
             "system_prompt_suffix, install, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (profile.id, profile.name, profile.description, profile.model,
-             profile.permission_mode,
-             json.dumps(profile.allowed_tools),
-             json.dumps(profile.mcp_servers),
-             profile.system_prompt_suffix,
-             json.dumps(profile.install),
-             now, now),
+            (
+                profile.id,
+                profile.name,
+                profile.description,
+                profile.model,
+                profile.permission_mode,
+                json.dumps(profile.allowed_tools),
+                json.dumps(profile.mcp_servers),
+                profile.system_prompt_suffix,
+                json.dumps(profile.install),
+                now,
+                now,
+            ),
         )
         await self._db.commit()
 
     async def get_profile(self, profile_id: str) -> AgentProfile | None:
         """Fetch a single profile by ID."""
-        cursor = await self._db.execute(
-            "SELECT * FROM agent_profiles WHERE id = ?", (profile_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM agent_profiles WHERE id = ?", (profile_id,))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -41,9 +45,7 @@ class ProfileQueryMixin:
 
     async def list_profiles(self) -> list[AgentProfile]:
         """List all agent profiles ordered by name."""
-        cursor = await self._db.execute(
-            "SELECT * FROM agent_profiles ORDER BY name ASC"
-        )
+        cursor = await self._db.execute("SELECT * FROM agent_profiles ORDER BY name ASC")
         rows = await cursor.fetchall()
         return [self._row_to_profile(r) for r in rows]
 
@@ -59,9 +61,7 @@ class ProfileQueryMixin:
         sets.append("updated_at = ?")
         vals.append(time.time())
         vals.append(profile_id)
-        await self._db.execute(
-            f"UPDATE agent_profiles SET {', '.join(sets)} WHERE id = ?", vals
-        )
+        await self._db.execute(f"UPDATE agent_profiles SET {', '.join(sets)} WHERE id = ?", vals)
         await self._db.commit()
 
     async def delete_profile(self, profile_id: str) -> None:
@@ -74,9 +74,7 @@ class ProfileQueryMixin:
             "UPDATE projects SET default_profile_id = NULL WHERE default_profile_id = ?",
             (profile_id,),
         )
-        await self._db.execute(
-            "DELETE FROM agent_profiles WHERE id = ?", (profile_id,)
-        )
+        await self._db.execute("DELETE FROM agent_profiles WHERE id = ?", (profile_id,))
         await self._db.commit()
 
     @staticmethod

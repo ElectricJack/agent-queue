@@ -46,6 +46,7 @@ Integration:
 
 See ``specs/hooks.md`` for the file/folder watch trigger specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -72,6 +73,7 @@ class WatchRule:
         watch_type: ``"file"`` or ``"folder"``.
         base_dir: Base directory to resolve relative paths against.
     """
+
     watch_id: str
     project_id: str
     paths: list[str]
@@ -84,6 +86,7 @@ class WatchRule:
 @dataclass
 class _FileState:
     """Tracks mtime and size for a single file."""
+
     mtime: float = 0.0
     size: int = 0
     exists: bool = True
@@ -181,9 +184,7 @@ class FileWatcher:
                 elif rule.watch_type == "folder":
                     await self._check_folder_watch(rule, now)
             except Exception as e:
-                logger.warning(
-                    "FileWatcher error checking %s: %s", watch_id, e
-                )
+                logger.warning("FileWatcher error checking %s: %s", watch_id, e)
 
         # Flush debounced folder events
         await self._flush_pending_folder_changes(now)
@@ -211,21 +212,22 @@ class FileWatcher:
 
             operation = self._detect_file_operation(old_state, new_state)
             if operation:
-                await self.bus.emit("file.changed", {
-                    "path": abs_path,
-                    "relative_path": path,
-                    "project_id": rule.project_id,
-                    "operation": operation,
-                    "old_mtime": old_state.mtime,
-                    "new_mtime": new_state.mtime,
-                    "size": new_state.size,
-                    "watch_id": rule.watch_id,
-                })
+                await self.bus.emit(
+                    "file.changed",
+                    {
+                        "path": abs_path,
+                        "relative_path": path,
+                        "project_id": rule.project_id,
+                        "operation": operation,
+                        "old_mtime": old_state.mtime,
+                        "new_mtime": new_state.mtime,
+                        "size": new_state.size,
+                        "watch_id": rule.watch_id,
+                    },
+                )
                 self._file_states[abs_path] = new_state
 
-    async def _check_folder_watch(
-        self, rule: WatchRule, now: float
-    ) -> None:
+    async def _check_folder_watch(self, rule: WatchRule, now: float) -> None:
         """Check folder watches for added/modified/deleted files."""
         for path in rule.paths:
             abs_path = self._resolve_path(path, rule.base_dir)
@@ -242,8 +244,7 @@ class FileWatcher:
                 old_state = old_snapshot.get(rel_path)
                 if old_state is None:
                     changes.append((rel_path, "created"))
-                elif (new_state.mtime != old_state.mtime or
-                      new_state.size != old_state.size):
+                elif new_state.mtime != old_state.mtime or new_state.size != old_state.size:
                     changes.append((rel_path, "modified"))
 
             # Check for deleted files
@@ -252,9 +253,7 @@ class FileWatcher:
                     changes.append((rel_path, "deleted"))
 
             if changes:
-                pending = self._pending_folder_changes.setdefault(
-                    abs_path, []
-                )
+                pending = self._pending_folder_changes.setdefault(abs_path, [])
                 for rel_path, op in changes:
                     pending.append((rel_path, op, now))
 
@@ -293,25 +292,25 @@ class FileWatcher:
                 final_changes[rel_path] = op
 
             if final_changes:
-                await self.bus.emit("folder.changed", {
-                    "path": watch_dir,
-                    "project_id": rule.project_id,
-                    "changes": [
-                        {"path": p, "operation": op}
-                        for p, op in final_changes.items()
-                    ],
-                    "count": len(final_changes),
-                    "watch_id": rule.watch_id,
-                })
+                await self.bus.emit(
+                    "folder.changed",
+                    {
+                        "path": watch_dir,
+                        "project_id": rule.project_id,
+                        "changes": [
+                            {"path": p, "operation": op} for p, op in final_changes.items()
+                        ],
+                        "count": len(final_changes),
+                        "watch_id": rule.watch_id,
+                    },
+                )
 
             flushed_dirs.append(watch_dir)
 
         for d in flushed_dirs:
             self._pending_folder_changes.pop(d, None)
 
-    def _scan_folder(
-        self, folder_path: str, rule: WatchRule
-    ) -> dict[str, _FileState]:
+    def _scan_folder(self, folder_path: str, rule: WatchRule) -> dict[str, _FileState]:
         """Scan a directory and return a snapshot of all matching files."""
         snapshot: dict[str, _FileState] = {}
         extensions = set(rule.extensions) if rule.extensions else None
@@ -320,15 +319,11 @@ class FileWatcher:
             if rule.recursive:
                 for dirpath, dirnames, filenames in os.walk(folder_path):
                     # Skip hidden directories
-                    dirnames[:] = [
-                        d for d in dirnames if not d.startswith(".")
-                    ]
+                    dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                     for fname in filenames:
                         if fname.startswith("."):
                             continue
-                        if extensions and not any(
-                            fname.endswith(ext) for ext in extensions
-                        ):
+                        if extensions and not any(fname.endswith(ext) for ext in extensions):
                             continue
                         full_path = os.path.join(dirpath, fname)
                         rel_path = os.path.relpath(full_path, folder_path)
@@ -348,9 +343,7 @@ class FileWatcher:
                     full_path = os.path.join(folder_path, fname)
                     if not os.path.isfile(full_path):
                         continue
-                    if extensions and not any(
-                        fname.endswith(ext) for ext in extensions
-                    ):
+                    if extensions and not any(fname.endswith(ext) for ext in extensions):
                         continue
                     try:
                         stat = os.stat(full_path)
@@ -384,9 +377,7 @@ class FileWatcher:
             self._folder_states[abs_path] = {}
 
     @staticmethod
-    def _detect_file_operation(
-        old: _FileState, new: _FileState
-    ) -> str | None:
+    def _detect_file_operation(old: _FileState, new: _FileState) -> str | None:
         """Compare two file states and return the operation, or None."""
         if old.exists and not new.exists:
             return "deleted"

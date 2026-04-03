@@ -13,65 +13,65 @@ from rich.theme import Theme
 # ---------------------------------------------------------------------------
 
 STATUS_STYLES: dict[str, str] = {
-    "DEFINED":                "dim white",
-    "READY":                  "bold blue",
-    "ASSIGNED":               "bold magenta",
-    "IN_PROGRESS":            "bold yellow",
-    "WAITING_INPUT":          "bold cyan",
-    "PAUSED":                 "dim white",
-    "VERIFYING":              "bold blue",
-    "AWAITING_APPROVAL":      "bold bright_yellow",
+    "DEFINED": "dim white",
+    "READY": "bold blue",
+    "ASSIGNED": "bold magenta",
+    "IN_PROGRESS": "bold yellow",
+    "WAITING_INPUT": "bold cyan",
+    "PAUSED": "dim white",
+    "VERIFYING": "bold blue",
+    "AWAITING_APPROVAL": "bold bright_yellow",
     "AWAITING_PLAN_APPROVAL": "bold bright_yellow",
-    "COMPLETED":              "bold green",
-    "FAILED":                 "bold red",
-    "BLOCKED":                "bold red",
+    "COMPLETED": "bold green",
+    "FAILED": "bold red",
+    "BLOCKED": "bold red",
 }
 
 STATUS_ICONS: dict[str, str] = {
-    "DEFINED":                "⚪",
-    "READY":                  "🔵",
-    "ASSIGNED":               "📋",
-    "IN_PROGRESS":            "🟡",
-    "WAITING_INPUT":          "💬",
-    "PAUSED":                 "⏸️",
-    "VERIFYING":              "🔍",
-    "AWAITING_APPROVAL":      "⏳",
+    "DEFINED": "⚪",
+    "READY": "🔵",
+    "ASSIGNED": "📋",
+    "IN_PROGRESS": "🟡",
+    "WAITING_INPUT": "💬",
+    "PAUSED": "⏸️",
+    "VERIFYING": "🔍",
+    "AWAITING_APPROVAL": "⏳",
     "AWAITING_PLAN_APPROVAL": "📋",
-    "COMPLETED":              "🟢",
-    "FAILED":                 "🔴",
-    "BLOCKED":                "⛔",
+    "COMPLETED": "🟢",
+    "FAILED": "🔴",
+    "BLOCKED": "⛔",
 }
 
 PRIORITY_STYLES: dict[str, str] = {
-    "critical": "bold red",     # priority >= 200
-    "high":     "bold yellow",  # priority >= 150
-    "normal":   "white",        # priority >= 50
-    "low":      "dim white",    # priority < 50
+    "critical": "bold red",  # priority >= 200
+    "high": "bold yellow",  # priority >= 150
+    "normal": "white",  # priority >= 50
+    "low": "dim white",  # priority < 50
 }
 
 AGENT_STATE_STYLES: dict[str, str] = {
-    "IDLE":   "bold green",
-    "BUSY":   "bold yellow",
+    "IDLE": "bold green",
+    "BUSY": "bold yellow",
     "PAUSED": "dim white",
-    "ERROR":  "bold red",
+    "ERROR": "bold red",
 }
 
 AGENT_STATE_ICONS: dict[str, str] = {
-    "IDLE":   "💤",
-    "BUSY":   "⚡",
+    "IDLE": "💤",
+    "BUSY": "⚡",
     "PAUSED": "⏸️",
-    "ERROR":  "❌",
+    "ERROR": "❌",
 }
 
 TASK_TYPE_ICONS: dict[str, str] = {
-    "feature":  "✨",
-    "bugfix":   "🐛",
+    "feature": "✨",
+    "bugfix": "🐛",
     "refactor": "♻️",
-    "test":     "🧪",
-    "docs":     "📝",
-    "chore":    "🔧",
+    "test": "🧪",
+    "docs": "📝",
+    "chore": "🔧",
     "research": "🔍",
-    "plan":     "📋",
+    "plan": "📋",
 }
 
 
@@ -90,15 +90,17 @@ def priority_style(priority: int) -> str:
 # Rich Theme (can be applied to Console for named style references)
 # ---------------------------------------------------------------------------
 
-AQ_THEME = Theme({
-    "aq.header":    "bold bright_white",
-    "aq.label":     "bold cyan",
-    "aq.value":     "white",
-    "aq.muted":     "dim white",
-    "aq.success":   "bold green",
-    "aq.error":     "bold red",
-    "aq.warning":   "bold yellow",
-    "aq.info":      "bold blue",
-    "aq.id":        "bold bright_cyan",
-    "aq.project":   "bold bright_magenta",
-})
+AQ_THEME = Theme(
+    {
+        "aq.header": "bold bright_white",
+        "aq.label": "bold cyan",
+        "aq.value": "white",
+        "aq.muted": "dim white",
+        "aq.success": "bold green",
+        "aq.error": "bold red",
+        "aq.warning": "bold yellow",
+        "aq.info": "bold blue",
+        "aq.id": "bold bright_cyan",
+        "aq.project": "bold bright_magenta",
+    }
+)

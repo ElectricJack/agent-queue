@@ -49,9 +49,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
-    "shutdown", "restart_daemon", "update_and_restart",
+    "shutdown",
+    "restart_daemon",
+    "update_and_restart",
     "run_command",  # dangerous for external MCP clients
-    "browse_tools", "load_tools",  # meta-tools for LLM context management, not MCP
+    "browse_tools",
+    "load_tools",  # meta-tools for LLM context management, not MCP
 }
 
 
@@ -90,6 +93,7 @@ def get_effective_exclusions(
         # --- Fallback: raw YAML parsing ---
         try:
             import yaml
+
             with open(config_path) as fh:
                 raw = yaml.safe_load(fh) or {}
             mcp_section = raw.get("mcp_server", {})
@@ -110,6 +114,7 @@ def get_effective_exclusions(
 # ---------------------------------------------------------------------------
 # Permissive argument model for dynamic tool registration
 # ---------------------------------------------------------------------------
+
 
 class _AnyArgs(ArgModelBase):
     """Accepts any JSON fields — used for dynamically registered tools
@@ -133,6 +138,7 @@ _ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
 # ---------------------------------------------------------------------------
 # Auto-discovery of CommandHandler commands
 # ---------------------------------------------------------------------------
+
 
 def _discover_all_commands() -> dict[str, dict]:
     """Discover all commands from CommandHandler by introspecting ``_cmd_*`` methods.
@@ -177,6 +183,7 @@ def _discover_all_commands() -> dict[str, dict]:
 # Dynamic tool registration from _ALL_TOOL_DEFINITIONS + auto-discovery
 # ---------------------------------------------------------------------------
 
+
 def register_command_tools(
     mcp_server: FastMCP,
     excluded: set[str] | None = None,
@@ -213,11 +220,13 @@ def register_command_tools(
 
     def _make_handler(cmd_name: str, server_ref: FastMCP):
         """Create a closure that delegates to CommandHandler.execute()."""
+
         async def handler(**kwargs):
             ctx = server_ref.get_context()
             ch = ctx.request_context.lifespan_context["command_handler"]
             result = await ch.execute(cmd_name, kwargs)
             return json.dumps(result, default=str)
+
         handler.__name__ = cmd_name
         handler.__qualname__ = cmd_name
         return handler
@@ -293,6 +302,7 @@ def register_command_tools(
 # ---------------------------------------------------------------------------
 # Resource registration
 # ---------------------------------------------------------------------------
+
 
 def register_resources(mcp_server: FastMCP) -> None:
     """Register all read-only MCP resources on the given FastMCP instance."""
@@ -427,6 +437,7 @@ def register_resources(mcp_server: FastMCP) -> None:
 # Prompt registration
 # ---------------------------------------------------------------------------
 
+
 def register_prompts(mcp_server: FastMCP) -> None:
     """Register all MCP prompt templates on the given FastMCP instance."""
 
@@ -481,10 +492,13 @@ Format your response as JSON with keys: title, description, priority, requires_a
             return f"Task {task_id} not found."
 
         contexts = await db.get_task_contexts(task_id)
-        context_text = "\n".join(
-            f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}"
-            for c in contexts
-        ) if contexts else "No additional context."
+        context_text = (
+            "\n".join(
+                f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}" for c in contexts
+            )
+            if contexts
+            else "No additional context."
+        )
 
         return f"""Review the following completed task:
 

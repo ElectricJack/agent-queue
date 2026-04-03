@@ -22,9 +22,14 @@ from src.git.manager import GitError, GitManager
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(args: list[str], cwd: str) -> str:
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -32,8 +37,7 @@ def _git(args: list[str], cwd: str) -> str:
 def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -49,30 +53,44 @@ def _current_branch(cwd: str) -> str:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def two_agent_clones(tmp_path):
     """Bare remote with two agent clones, each with an initial commit."""
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
     agent1 = str(tmp_path / "agent1")
     subprocess.run(
         ["git", "clone", str(remote), agent1],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(agent1) / "README.md").write_text("init")
     _git(["add", "."], cwd=agent1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=agent1,
+    )
     _git(["push", "origin", "main"], cwd=agent1)
 
     agent2 = str(tmp_path / "agent2")
     subprocess.run(
         ["git", "clone", str(remote), agent2],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
@@ -84,18 +102,22 @@ def link_repo(tmp_path):
     repo = str(tmp_path / "link-repo")
     subprocess.run(
         ["git", "init", "--initial-branch=main", repo],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(repo) / "README.md").write_text("init")
     _git(["add", "."], cwd=repo)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", "initial commit"], cwd=repo)
+    _git(
+        ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "initial commit"],
+        cwd=repo,
+    )
     return repo
 
 
 # ===========================================================================
 # Unit tests: rebase_onto()
 # ===========================================================================
+
 
 class TestRebaseOnto:
     """Unit tests for the rebase_onto() helper (real git repos)."""
@@ -197,6 +219,7 @@ class TestRebaseOnto:
 # Unit tests: sync_and_merge() rebase fallback (mocked)
 # ===========================================================================
 
+
 class TestSyncAndMergeRebaseFallback:
     """Mocked tests verifying sync_and_merge tries rebase on merge conflict."""
 
@@ -275,6 +298,7 @@ class TestSyncAndMergeRebaseFallback:
 # Integration tests: sync_and_merge() rebase fallback (real git repos)
 # ===========================================================================
 
+
 class TestSyncAndMergeRebaseIntegration:
     """Integration tests with real repos for the rebase-before-merge flow."""
 
@@ -314,7 +338,8 @@ class TestSyncAndMergeRebaseIntegration:
         verify = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent1 change" in log
@@ -369,7 +394,8 @@ class TestSyncAndMergeRebaseIntegration:
         verify = str(tmp_path / "verify-multi")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent2 late feature" in log
@@ -380,6 +406,7 @@ class TestSyncAndMergeRebaseIntegration:
 # ===========================================================================
 # Unit tests: rebase_onto() with mocks
 # ===========================================================================
+
 
 class TestRebaseOntoMocked:
     """Mock-based unit tests for rebase_onto edge cases."""
@@ -431,6 +458,7 @@ class TestRebaseOntoMocked:
 # Orchestrator tests: LINK repo rebase fallback
 # ===========================================================================
 
+
 class _FakeOrchestrator:
     """Minimal stand-in for Orchestrator to test _merge_and_push in isolation."""
 
@@ -442,11 +470,13 @@ class _FakeOrchestrator:
         self._notifications.append(message)
 
     from src.orchestrator import Orchestrator as _Orch
+
     _merge_and_push = _Orch._merge_and_push
 
 
 def _make_task(**overrides):
     from src.models import Task
+
     defaults = dict(
         id="test-task",
         project_id="proj-1",
@@ -460,6 +490,7 @@ def _make_task(**overrides):
 
 def _make_repo(source_type=None, **overrides):
     from src.models import RepoConfig, RepoSourceType
+
     if source_type is None:
         source_type = RepoSourceType.CLONE
     defaults = dict(
@@ -503,7 +534,9 @@ class TestLinkRepoRebaseFallback:
         await orch._merge_and_push(task, repo, "/workspace")
 
         git.arebase_onto.assert_called_once_with(
-            "/workspace", "task/test-branch", "main",
+            "/workspace",
+            "task/test-branch",
+            "main",
         )
         # amerge_branch called twice: initial + retry
         assert git.amerge_branch.call_count == 2
@@ -595,6 +628,7 @@ class TestLinkRepoRebaseFallback:
 # ===========================================================================
 # Integration test: LINK repo rebase fallback (real git)
 # ===========================================================================
+
 
 class TestLinkRepoRebaseIntegration:
     """Integration tests with real LINK repos for rebase fallback."""

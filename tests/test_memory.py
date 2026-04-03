@@ -24,6 +24,7 @@ from src.models import MemoryContext
 # in unit tests — keeps the test boundary tight).
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FakeTask:
     id: str = "task-123"
@@ -44,6 +45,7 @@ class FakeOutput:
 # ---------------------------------------------------------------------------
 # MemoryConfig tests
 # ---------------------------------------------------------------------------
+
 
 class TestMemoryConfig:
     def test_defaults(self):
@@ -71,6 +73,7 @@ class TestMemoryConfig:
 # ---------------------------------------------------------------------------
 # MemoryManager tests
 # ---------------------------------------------------------------------------
+
 
 class TestMemoryManager:
     """Unit tests with mocked memsearch dependency."""
@@ -597,6 +600,7 @@ class TestMemoryCompaction:
     def _write_task_file(self, tasks_dir: str, name: str, content: str, age_days: float = 0):
         """Write a task file and set its mtime to age_days ago."""
         import time as _time
+
         path = os.path.join(tasks_dir, name)
         with open(path, "w") as f:
             f.write(content)
@@ -648,6 +652,7 @@ class TestMemoryCompaction:
         # land on the same Mon–Sun window regardless of what day the test runs
         # by computing target dates that fall on Wed and Thu of the same week.
         import datetime as _dt
+
         today = _dt.date.today()
         # Find a Wednesday that is 8-14 days ago (guaranteed medium tier)
         days_since_wed = (today.weekday() - 2) % 7  # 0=Mon … 6=Sun; Wed=2
@@ -749,6 +754,7 @@ class TestMemoryCompaction:
         # Create an old file
         import datetime as dt
         import time as _time
+
         age_days = 45
         mtime = _time.time() - (age_days * 86400)
         d = dt.date.fromtimestamp(mtime)
@@ -795,7 +801,9 @@ class TestMemoryCompaction:
 
         # Verify prompt contains task count and date range
         call_kwargs = provider_instance.create_message.call_args
-        user_msg = call_kwargs.kwargs.get("messages", call_kwargs[1].get("messages", [{}]))[0]["content"]
+        user_msg = call_kwargs.kwargs.get("messages", call_kwargs[1].get("messages", [{}]))[0][
+            "content"
+        ]
         assert "2 tasks" in user_msg
         assert "2026-W10" in user_msg
 
@@ -840,6 +848,7 @@ class TestMemoryStatsEnhanced:
 
     def _write_task_file(self, tasks_dir: str, name: str, age_days: float = 0):
         import time as _time
+
         path = os.path.join(tasks_dir, name)
         with open(path, "w") as f:
             f.write(f"# {name}")

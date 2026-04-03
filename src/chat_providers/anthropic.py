@@ -13,6 +13,7 @@ Responses from the Anthropic SDK are converted into the normalized
 ``ChatResponse`` / ``TextBlock`` / ``ToolUseBlock`` types so the rest of
 the codebase stays provider-agnostic.
 """
+
 from __future__ import annotations
 
 import json
@@ -54,9 +55,8 @@ class AnthropicChatProvider(ChatProvider):
         self._model = model
 
         # Try Vertex AI first
-        project_id = (
-            os.environ.get("GOOGLE_CLOUD_PROJECT")
-            or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get(
+            "ANTHROPIC_VERTEX_PROJECT_ID"
         )
         if project_id:
             from anthropic import AsyncAnthropicVertex

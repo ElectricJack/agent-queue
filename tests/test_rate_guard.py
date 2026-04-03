@@ -71,9 +71,7 @@ class TestInvalidRequestTracker:
         assert t.count == 5
 
         # Advance time past the 10-minute window
-        with patch(
-            "src.discord.rate_guard.time.monotonic", return_value=base + 601
-        ):
+        with patch("src.discord.rate_guard.time.monotonic", return_value=base + 601):
             assert t.count == 0
             assert t.state == "ok"
 
@@ -105,9 +103,7 @@ class TestInvalidRequestTracker:
 
         # Simulate window expiry
         base = time.monotonic()
-        with patch(
-            "src.discord.rate_guard.time.monotonic", return_value=base + 601
-        ):
+        with patch("src.discord.rate_guard.time.monotonic", return_value=base + 601):
             _ = t.count  # triggers prune
             assert t._alerted_warn is False
 
@@ -143,9 +139,7 @@ class TestDiscordHTTPLogHandler:
     def test_captures_global_rate_limit(self):
         t = InvalidRequestTracker()
         handler = DiscordHTTPLogHandler(t)
-        record = self._make_record(
-            "Global rate limit has been hit. Retrying in 5.00 seconds."
-        )
+        record = self._make_record("Global rate limit has been hit. Retrying in 5.00 seconds.")
         handler.emit(record)
         assert t.count == 1
 
@@ -196,6 +190,7 @@ class TestSingleton:
     def test_get_tracker_returns_same_instance(self):
         # Reset module state
         import src.discord.rate_guard as mod
+
         mod._tracker = None
 
         t1 = get_tracker()
@@ -204,6 +199,7 @@ class TestSingleton:
 
     def test_configure_tracker_replaces_singleton(self):
         import src.discord.rate_guard as mod
+
         mod._tracker = None
 
         t1 = get_tracker()

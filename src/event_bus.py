@@ -27,6 +27,7 @@ class EventBus:
     async handlers are supported — sync handlers are called directly while
     async handlers are awaited.
     """
+
     def __init__(self):
         self._handlers: dict[str, list[Callable]] = defaultdict(list)
 

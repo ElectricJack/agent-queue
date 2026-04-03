@@ -22,10 +22,15 @@ from src.git.manager import GitError, GitManager
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(args: list[str], cwd: str) -> str:
     """Run a git command, returning stdout."""
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -34,8 +39,7 @@ def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     """Create/update a file, commit it, and return the commit SHA."""
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -51,36 +55,39 @@ def _current_branch(cwd: str) -> str:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def git_repo(tmp_path):
     """Create a bare remote + working clone with an initial commit."""
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     # Initial commit
     (clone / "README.md").write_text("init")
-    subprocess.run(["git", "add", "."], cwd=str(clone), check=True,
-                   capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
     subprocess.run(
-        ["git", "-c", "user.name=Test", "-c", "user.email=t@t.com",
-         "commit", "-m", "init"],
-        cwd=str(clone), check=True, capture_output=True,
+        ["git", "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init"],
+        cwd=str(clone),
+        check=True,
+        capture_output=True,
     )
-    subprocess.run(["git", "push"], cwd=str(clone), check=True,
-                   capture_output=True)
+    subprocess.run(["git", "push"], cwd=str(clone), check=True, capture_output=True)
     return {"remote": str(remote), "clone": str(clone)}
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestSyncAndMerge:
     """Integration tests for the sync_and_merge() method."""
@@ -120,7 +127,8 @@ class TestSyncAndMerge:
         clone2 = str(tmp_path / "verify-clone")
         subprocess.run(
             ["git", "clone", git_repo["remote"], clone2],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=clone2)
         assert "pushed commit" in log
@@ -139,7 +147,8 @@ class TestSyncAndMerge:
         clone2 = str(tmp_path / "clone2")
         subprocess.run(
             ["git", "clone", git_repo["remote"], clone2],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         _git_commit(clone2, "README.md", "other version", "other changes README")
         _git(["push", "origin", "main"], cwd=clone2)
@@ -165,7 +174,8 @@ class TestSyncAndMerge:
         clone2 = str(tmp_path / "clone2")
         subprocess.run(
             ["git", "clone", git_repo["remote"], clone2],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         _git_commit(clone2, "other.txt", "other", "other agent commit")
         _git(["push", "origin", "main"], cwd=clone2)
@@ -237,23 +247,36 @@ def two_agent_clones(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     agent1 = str(tmp_path / "agent1")
     subprocess.run(
         ["git", "clone", str(remote), agent1],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(agent1) / "README.md").write_text("init\n")
     _git(["add", "."], cwd=agent1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=agent1,
+    )
     _git(["push", "origin", "main"], cwd=agent1)
 
     agent2 = str(tmp_path / "agent2")
     subprocess.run(
         ["git", "clone", str(remote), agent2],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
 
@@ -425,7 +448,8 @@ class TestSyncAndMergeRebaseOnConflict:
         verify = str(tmp_path / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent2 feature" in log

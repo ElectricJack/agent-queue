@@ -43,6 +43,7 @@ def config(tmp_path):
 @pytest.fixture
 def mock_git():
     from src.git.manager import GitManager
+
     git = MagicMock(spec=GitManager)
     return git
 
@@ -72,20 +73,24 @@ async def project_with_workspace(db, workspace_dir):
     """
     project_id = "test-proj"
     await db.create_project(Project(id=project_id, name="Test Project"))
-    await db.create_repo(RepoConfig(
-        id="test-repo",
-        project_id=project_id,
-        source_type=RepoSourceType.LINK,
-        source_path=str(workspace_dir),
-        default_branch="main",
-    ))
-    await db.create_workspace(Workspace(
-        id="test-ws",
-        project_id=project_id,
-        workspace_path=str(workspace_dir),
-        source_type=RepoSourceType.LINK,
-        name="default",
-    ))
+    await db.create_repo(
+        RepoConfig(
+            id="test-repo",
+            project_id=project_id,
+            source_type=RepoSourceType.LINK,
+            source_path=str(workspace_dir),
+            default_branch="main",
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id="test-ws",
+            project_id=project_id,
+            workspace_path=str(workspace_dir),
+            source_type=RepoSourceType.LINK,
+            name="default",
+        )
+    )
     return project_id, str(workspace_dir)
 
 
@@ -100,11 +105,14 @@ class TestEditFile:
         target = workspace_dir / "hello.py"
         target.write_text("def foo():\n    return 1\n")
 
-        result = await handler.execute("edit_file", {
-            "path": str(target),
-            "old_string": "def foo",
-            "new_string": "def bar",
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": "def foo",
+                "new_string": "def bar",
+            },
+        )
 
         assert "error" not in result
         assert result["replacements"] == 1
@@ -115,11 +123,14 @@ class TestEditFile:
         target = workspace_dir / "dup.py"
         target.write_text("x = 1\nx = 2\nx = 3\n")
 
-        result = await handler.execute("edit_file", {
-            "path": str(target),
-            "old_string": "x = ",
-            "new_string": "y = ",
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": "x = ",
+                "new_string": "y = ",
+            },
+        )
 
         assert "error" in result
         assert "3 times" in result["error"]
@@ -131,12 +142,15 @@ class TestEditFile:
         target = workspace_dir / "multi.py"
         target.write_text("x = 1\nx = 2\nx = 3\n")
 
-        result = await handler.execute("edit_file", {
-            "path": str(target),
-            "old_string": "x = ",
-            "new_string": "y = ",
-            "replace_all": True,
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": "x = ",
+                "new_string": "y = ",
+                "replace_all": True,
+            },
+        )
 
         assert "error" not in result
         assert result["replacements"] == 3
@@ -147,22 +161,28 @@ class TestEditFile:
         target = workspace_dir / "no_match.py"
         target.write_text("hello world\n")
 
-        result = await handler.execute("edit_file", {
-            "path": str(target),
-            "old_string": "goodbye",
-            "new_string": "hi",
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(target),
+                "old_string": "goodbye",
+                "new_string": "hi",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"]
 
     async def test_file_not_found(self, handler, workspace_dir):
         """Error when path points to a nonexistent file."""
-        result = await handler.execute("edit_file", {
-            "path": str(workspace_dir / "nonexistent.py"),
-            "old_string": "x",
-            "new_string": "y",
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(workspace_dir / "nonexistent.py"),
+                "old_string": "x",
+                "new_string": "y",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"].lower() or "File not found" in result["error"]
@@ -180,10 +200,13 @@ class TestGlobFiles:
         (workspace_dir / "b.py").write_text("# b")
         (workspace_dir / "c.txt").write_text("c")
 
-        result = await handler.execute("glob_files", {
-            "pattern": "*.py",
-            "path": str(workspace_dir),
-        })
+        result = await handler.execute(
+            "glob_files",
+            {
+                "pattern": "*.py",
+                "path": str(workspace_dir),
+            },
+        )
 
         assert "error" not in result
         assert result["count"] == 2
@@ -199,10 +222,13 @@ class TestGlobFiles:
         (workspace_dir / "top.py").write_text("# top")
         (sub / "nested.py").write_text("# nested")
 
-        result = await handler.execute("glob_files", {
-            "pattern": "**/*.py",
-            "path": str(workspace_dir),
-        })
+        result = await handler.execute(
+            "glob_files",
+            {
+                "pattern": "**/*.py",
+                "path": str(workspace_dir),
+            },
+        )
 
         assert "error" not in result
         assert result["count"] == 2
@@ -212,10 +238,13 @@ class TestGlobFiles:
 
     async def test_no_matches(self, handler, workspace_dir):
         """Returns empty list when no files match."""
-        result = await handler.execute("glob_files", {
-            "pattern": "*.rs",
-            "path": str(workspace_dir),
-        })
+        result = await handler.execute(
+            "glob_files",
+            {
+                "pattern": "*.rs",
+                "path": str(workspace_dir),
+            },
+        )
 
         assert "error" not in result
         assert result["count"] == 0
@@ -223,10 +252,13 @@ class TestGlobFiles:
 
     async def test_directory_not_found(self, handler, workspace_dir):
         """Error when the search path doesn't exist."""
-        result = await handler.execute("glob_files", {
-            "pattern": "*.py",
-            "path": str(workspace_dir / "nonexistent"),
-        })
+        result = await handler.execute(
+            "glob_files",
+            {
+                "pattern": "*.py",
+                "path": str(workspace_dir / "nonexistent"),
+            },
+        )
 
         assert "error" in result
 
@@ -239,14 +271,15 @@ class TestGlobFiles:
 class TestGrep:
     async def test_basic(self, handler, workspace_dir):
         """Content search finds matching lines."""
-        (workspace_dir / "source.py").write_text(
-            "import os\nimport sys\nprint('hello')\n"
-        )
+        (workspace_dir / "source.py").write_text("import os\nimport sys\nprint('hello')\n")
 
-        result = await handler.execute("grep", {
-            "pattern": "import",
-            "path": str(workspace_dir),
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "import",
+                "path": str(workspace_dir),
+            },
+        )
 
         assert "error" not in result
         assert "import os" in result["results"]
@@ -254,15 +287,16 @@ class TestGrep:
 
     async def test_context_lines(self, handler, workspace_dir):
         """Context lines are included in output."""
-        (workspace_dir / "ctx.py").write_text(
-            "line1\nline2\nTARGET\nline4\nline5\n"
-        )
+        (workspace_dir / "ctx.py").write_text("line1\nline2\nTARGET\nline4\nline5\n")
 
-        result = await handler.execute("grep", {
-            "pattern": "TARGET",
-            "path": str(workspace_dir),
-            "context": 1,
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "TARGET",
+                "path": str(workspace_dir),
+                "context": 1,
+            },
+        )
 
         assert "error" not in result
         assert "line2" in result["results"]
@@ -273,11 +307,14 @@ class TestGrep:
         """case_insensitive=True matches regardless of case."""
         (workspace_dir / "ci.py").write_text("Hello World\nhello world\n")
 
-        result = await handler.execute("grep", {
-            "pattern": "HELLO",
-            "path": str(workspace_dir),
-            "case_insensitive": True,
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "HELLO",
+                "path": str(workspace_dir),
+                "case_insensitive": True,
+            },
+        )
 
         assert "error" not in result
         assert "Hello" in result["results"]
@@ -288,36 +325,47 @@ class TestGrep:
         (workspace_dir / "match.py").write_text("needle here\n")
         (workspace_dir / "nope.py").write_text("nothing\n")
 
-        result = await handler.execute("grep", {
-            "pattern": "needle",
-            "path": str(workspace_dir),
-            "output_mode": "files_with_matches",
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "needle",
+                "path": str(workspace_dir),
+                "output_mode": "files_with_matches",
+            },
+        )
 
         assert "error" not in result
         assert result["mode"] == "files_with_matches"
         assert "match.py" in result["results"]
         # files_with_matches mode should NOT show matched line content
-        assert "needle here" not in result["results"] or result["results"].strip().endswith("match.py")
+        assert "needle here" not in result["results"] or result["results"].strip().endswith(
+            "match.py"
+        )
 
     async def test_no_matches(self, handler, workspace_dir):
         """Returns '(no matches)' when nothing matches."""
         (workspace_dir / "empty.py").write_text("nothing relevant\n")
 
-        result = await handler.execute("grep", {
-            "pattern": "zzzzz_nonexistent_pattern",
-            "path": str(workspace_dir),
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "zzzzz_nonexistent_pattern",
+                "path": str(workspace_dir),
+            },
+        )
 
         assert "error" not in result
         assert result["results"] == "(no matches)"
 
     async def test_path_not_found(self, handler, workspace_dir):
         """Error when search path doesn't exist."""
-        result = await handler.execute("grep", {
-            "pattern": "test",
-            "path": str(workspace_dir / "nonexistent"),
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "test",
+                "path": str(workspace_dir / "nonexistent"),
+            },
+        )
 
         assert "error" in result
 
@@ -333,9 +381,12 @@ class TestReadFile:
         target = workspace_dir / "readme.txt"
         target.write_text("line 1\nline 2\nline 3\n")
 
-        result = await handler.execute("read_file", {
-            "path": str(target),
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(target),
+            },
+        )
 
         assert "error" not in result
         assert "line 1" in result["content"]
@@ -347,10 +398,13 @@ class TestReadFile:
         target = workspace_dir / "numbered.txt"
         target.write_text("\n".join(lines) + "\n")
 
-        result = await handler.execute("read_file", {
-            "path": str(target),
-            "offset": 3,
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(target),
+                "offset": 3,
+            },
+        )
 
         assert "error" not in result
         assert result.get("offset") == 3
@@ -367,10 +421,13 @@ class TestReadFile:
         target = workspace_dir / "long.txt"
         target.write_text("\n".join(lines) + "\n")
 
-        result = await handler.execute("read_file", {
-            "path": str(target),
-            "max_lines": 5,
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(target),
+                "max_lines": 5,
+            },
+        )
 
         assert "error" not in result
         assert result.get("truncated") is True
@@ -380,9 +437,12 @@ class TestReadFile:
 
     async def test_file_not_found(self, handler, workspace_dir):
         """Error for nonexistent file."""
-        result = await handler.execute("read_file", {
-            "path": str(workspace_dir / "ghost.txt"),
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(workspace_dir / "ghost.txt"),
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"].lower() or "File not found" in result["error"]
@@ -392,9 +452,12 @@ class TestReadFile:
         target = workspace_dir / "binary.bin"
         target.write_bytes(b"\x00\x01\x02\xff\xfe\xfd" * 100)
 
-        result = await handler.execute("read_file", {
-            "path": str(target),
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(target),
+            },
+        )
 
         assert "error" in result
         assert "binary" in result["error"].lower() or "Binary" in result["error"]
@@ -416,9 +479,12 @@ class TestListDirectory:
         (workspace_dir / "main.py").write_text("print('hi')")
 
         handler.set_active_project(project_id)
-        result = await handler.execute("list_directory", {
-            "project_id": project_id,
-        })
+        result = await handler.execute(
+            "list_directory",
+            {
+                "project_id": project_id,
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == project_id
@@ -435,10 +501,13 @@ class TestListDirectory:
         (sub / "app.py").write_text("# app")
 
         handler.set_active_project(project_id)
-        result = await handler.execute("list_directory", {
-            "project_id": project_id,
-            "path": "src",
-        })
+        result = await handler.execute(
+            "list_directory",
+            {
+                "project_id": project_id,
+                "path": "src",
+            },
+        )
 
         assert "error" not in result
         file_names = [f["name"] for f in result["files"]]
@@ -462,10 +531,13 @@ class TestWriteFile:
         """Write content to a new file."""
         target = workspace_dir / "output.txt"
 
-        result = await handler.execute("write_file", {
-            "path": str(target),
-            "content": "hello world",
-        })
+        result = await handler.execute(
+            "write_file",
+            {
+                "path": str(target),
+                "content": "hello world",
+            },
+        )
 
         assert "error" not in result
         assert result["written"] == len("hello world")
@@ -476,10 +548,13 @@ class TestWriteFile:
         target = workspace_dir / "existing.txt"
         target.write_text("old content")
 
-        result = await handler.execute("write_file", {
-            "path": str(target),
-            "content": "new content",
-        })
+        result = await handler.execute(
+            "write_file",
+            {
+                "path": str(target),
+                "content": "new content",
+            },
+        )
 
         assert "error" not in result
         assert target.read_text() == "new content"
@@ -488,10 +563,13 @@ class TestWriteFile:
         """Creates parent directories if they don't exist."""
         target = workspace_dir / "deep" / "nested" / "file.txt"
 
-        result = await handler.execute("write_file", {
-            "path": str(target),
-            "content": "deep content",
-        })
+        result = await handler.execute(
+            "write_file",
+            {
+                "path": str(target),
+                "content": "deep content",
+            },
+        )
 
         assert "error" not in result
         assert target.read_text() == "deep content"
@@ -511,11 +589,14 @@ class TestPathValidation:
         outside = tmp_path / "outside.txt"
         outside.write_text("sensitive data")
 
-        result = await handler.execute("edit_file", {
-            "path": str(outside),
-            "old_string": "sensitive",
-            "new_string": "redacted",
-        })
+        result = await handler.execute(
+            "edit_file",
+            {
+                "path": str(outside),
+                "old_string": "sensitive",
+                "new_string": "redacted",
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
@@ -527,39 +608,51 @@ class TestPathValidation:
         outside = tmp_path / "secret.txt"
         outside.write_text("top secret")
 
-        result = await handler.execute("read_file", {
-            "path": str(outside),
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(outside),
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
 
     async def test_write_file_outside_workspace(self, handler, tmp_path):
         """write_file rejects paths outside workspace."""
-        result = await handler.execute("write_file", {
-            "path": str(tmp_path / "evil.txt"),
-            "content": "pwned",
-        })
+        result = await handler.execute(
+            "write_file",
+            {
+                "path": str(tmp_path / "evil.txt"),
+                "content": "pwned",
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
 
     async def test_glob_files_outside_workspace(self, handler, tmp_path):
         """glob_files rejects paths outside workspace."""
-        result = await handler.execute("glob_files", {
-            "pattern": "*.py",
-            "path": str(tmp_path),
-        })
+        result = await handler.execute(
+            "glob_files",
+            {
+                "pattern": "*.py",
+                "path": str(tmp_path),
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
 
     async def test_grep_outside_workspace(self, handler, tmp_path):
         """grep rejects paths outside workspace."""
-        result = await handler.execute("grep", {
-            "pattern": "password",
-            "path": str(tmp_path),
-        })
+        result = await handler.execute(
+            "grep",
+            {
+                "pattern": "password",
+                "path": str(tmp_path),
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
@@ -570,9 +663,12 @@ class TestPathValidation:
         (tmp_path / "adjacent.txt").write_text("should not read")
 
         # Try to escape via ../
-        result = await handler.execute("read_file", {
-            "path": str(workspace_dir / ".." / ".." / "adjacent.txt"),
-        })
+        result = await handler.execute(
+            "read_file",
+            {
+                "path": str(workspace_dir / ".." / ".." / "adjacent.txt"),
+            },
+        )
 
         assert "error" in result
         assert "denied" in result["error"].lower() or "Access denied" in result["error"]
@@ -603,8 +699,13 @@ class TestFilesCategoryRegistry:
 
         tool_names = {t["name"] for t in file_tools}
         expected = {
-            "read_file", "write_file", "edit_file",
-            "glob_files", "grep", "search_files", "list_directory",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "glob_files",
+            "grep",
+            "search_files",
+            "list_directory",
         }
         assert expected.issubset(tool_names), (
             f"Missing tools from files category: {expected - tool_names}"

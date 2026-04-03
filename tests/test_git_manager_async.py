@@ -14,7 +14,11 @@ from src.git.manager import GitManager, GitError
 
 def _git(args: list[str], cwd: str) -> str:
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -22,8 +26,7 @@ def _git(args: list[str], cwd: str) -> str:
 def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
     pathlib.Path(clone, filename).write_text(content)
     _git(["add", filename], cwd=clone)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=clone)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=clone)
     return _git(["rev-parse", "HEAD"], cwd=clone)
 
 
@@ -31,8 +34,9 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
 def bare_repo(tmp_path):
     """Create a bare repo to act as 'origin'."""
     bare = str(tmp_path / "origin.git")
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", bare],
-                    check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", bare], check=True, capture_output=True
+    )
     return bare
 
 
@@ -40,8 +44,7 @@ def bare_repo(tmp_path):
 def clone(tmp_path, bare_repo):
     """Clone the bare repo and add an initial commit."""
     clone_path = str(tmp_path / "clone")
-    subprocess.run(["git", "clone", bare_repo, clone_path],
-                    check=True, capture_output=True)
+    subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
     _git(["config", "user.name", "Test"], cwd=clone_path)
     _git(["config", "user.email", "t@t.com"], cwd=clone_path)
     pathlib.Path(clone_path, "README.md").write_text("init")
@@ -59,6 +62,7 @@ def mgr():
 # ------------------------------------------------------------------
 # _arun basic tests
 # ------------------------------------------------------------------
+
 
 class TestArun:
     @pytest.mark.asyncio
@@ -106,6 +110,7 @@ class TestArun:
 # _arun_subprocess tests
 # ------------------------------------------------------------------
 
+
 class TestArunSubprocess:
     @pytest.mark.asyncio
     async def test_returns_completed_process(self, mgr):
@@ -117,7 +122,8 @@ class TestArunSubprocess:
     async def test_nonzero_returncode(self, tmp_path, mgr):
         # Use a valid dir but invalid git command to get non-zero exit
         result = await mgr._arun_subprocess(
-            ["git", "log", "--oneline", "-1"], cwd=str(tmp_path),
+            ["git", "log", "--oneline", "-1"],
+            cwd=str(tmp_path),
         )
         assert result.returncode != 0
 
@@ -125,6 +131,7 @@ class TestArunSubprocess:
 # ------------------------------------------------------------------
 # Async public methods
 # ------------------------------------------------------------------
+
 
 class TestAsyncValidateCheckout:
     @pytest.mark.asyncio
@@ -190,10 +197,10 @@ class TestAsyncPrepareForTask:
     async def test_existing_branch_reuse(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/reuse")
         pathlib.Path(clone, "work.txt").write_text("work")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "-m", "work"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "work"], cwd=clone
+        )
         # Go back to main and prepare again — should reuse branch
         _git(["checkout", "main"], cwd=clone)
         await mgr.aprepare_for_task(clone, "task/reuse")
@@ -206,27 +213,38 @@ class TestAsyncPushBranch:
     async def test_push(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/push-test")
         pathlib.Path(clone, "pushed.txt").write_text("data")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "-m", "push test"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "push test"],
+            cwd=clone,
+        )
         await mgr.apush_branch(clone, "task/push-test")
 
     @pytest.mark.asyncio
     async def test_force_with_lease(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/fwl")
         pathlib.Path(clone, "f.txt").write_text("1")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "-m", "first"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "first"], cwd=clone
+        )
         await mgr.apush_branch(clone, "task/fwl")
         # Amend and force push
         pathlib.Path(clone, "f.txt").write_text("2")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "--amend", "-m", "amended"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=t@t.com",
+                "commit",
+                "--amend",
+                "-m",
+                "amended",
+            ],
+            cwd=clone,
+        )
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
 
 
@@ -235,10 +253,11 @@ class TestAsyncMergeBranch:
     async def test_clean_merge(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/merge-test")
         pathlib.Path(clone, "feature.txt").write_text("feature")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "-m", "feature"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "feature"],
+            cwd=clone,
+        )
         result = await mgr.amerge_branch(clone, "task/merge-test")
         assert result is True
 
@@ -255,10 +274,11 @@ class TestAsyncGetDiff:
     async def test_returns_diff(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/diff-test")
         pathlib.Path(clone, "changed.txt").write_text("changed")
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "add", "-A"], cwd=clone)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "commit", "-m", "change"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "change"],
+            cwd=clone,
+        )
         diff = await mgr.aget_diff(clone, "main")
         assert "changed.txt" in diff
 

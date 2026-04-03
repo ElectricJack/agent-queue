@@ -45,10 +45,13 @@ class TestSetProjectChannel:
     async def test_link_channel(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
 
-        result = await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "111111111111111111",
-        })
+        result = await handler.execute(
+            "set_project_channel",
+            {
+                "project_id": "p-1",
+                "channel_id": "111111111111111111",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == "p-1"
@@ -62,14 +65,20 @@ class TestSetProjectChannel:
         """Setting a new channel replaces the old one."""
         await db.create_project(Project(id="p-1", name="Alpha"))
 
-        await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "111111111111111111",
-        })
-        result = await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "999999999999999999",
-        })
+        await handler.execute(
+            "set_project_channel",
+            {
+                "project_id": "p-1",
+                "channel_id": "111111111111111111",
+            },
+        )
+        result = await handler.execute(
+            "set_project_channel",
+            {
+                "project_id": "p-1",
+                "channel_id": "999999999999999999",
+            },
+        )
 
         assert "error" not in result
         project = await db.get_project("p-1")
@@ -80,10 +89,13 @@ class TestSetProjectChannelErrors:
     """Error conditions for set_project_channel."""
 
     async def test_project_not_found(self, handler):
-        result = await handler.execute("set_project_channel", {
-            "project_id": "nonexistent",
-            "channel_id": "111111111111111111",
-        })
+        result = await handler.execute(
+            "set_project_channel",
+            {
+                "project_id": "nonexistent",
+                "channel_id": "111111111111111111",
+            },
+        )
 
         assert "error" in result
         assert "not found" in result["error"].lower()

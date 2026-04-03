@@ -74,9 +74,7 @@ async def clone_plugin_repo(
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"Git clone failed (rc={proc.returncode}): {proc.stderr.strip()}"
-        )
+        raise RuntimeError(f"Git clone failed (rc={proc.returncode}): {proc.stderr.strip()}")
 
     # Checkout specific revision if requested
     if rev:
@@ -88,9 +86,7 @@ async def clone_plugin_repo(
             timeout=30,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"Git checkout {rev} failed: {proc.stderr.strip()}"
-            )
+            raise RuntimeError(f"Git checkout {rev} failed: {proc.stderr.strip()}")
 
     # Get the resolved HEAD SHA
     proc = subprocess.run(
@@ -132,9 +128,7 @@ async def pull_plugin_repo(
         timeout=60,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"Git pull failed (rc={proc.returncode}): {proc.stderr.strip()}"
-        )
+        raise RuntimeError(f"Git pull failed (rc={proc.returncode}): {proc.stderr.strip()}")
 
     if rev:
         proc = subprocess.run(
@@ -145,9 +139,7 @@ async def pull_plugin_repo(
             timeout=30,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"Git checkout {rev} failed: {proc.stderr.strip()}"
-            )
+            raise RuntimeError(f"Git checkout {rev} failed: {proc.stderr.strip()}")
 
     proc = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -213,7 +205,8 @@ def install_requirements(install_path: str | Path) -> bool:
         if proc.returncode != 0:
             logger.error(
                 "pip install failed for %s: %s",
-                install_path, proc.stderr.strip(),
+                install_path,
+                proc.stderr.strip(),
             )
             return False
         return True
@@ -293,7 +286,8 @@ def install_plugin_package(install_path: str | Path) -> bool:
         if proc.returncode != 0:
             logger.error(
                 "pip install -e failed for %s: %s",
-                install_path, proc.stderr.strip(),
+                install_path,
+                proc.stderr.strip(),
             )
             return False
         return True
@@ -331,12 +325,15 @@ def load_plugin_via_entry_point(plugin_name: str) -> type[Plugin] | None:
                     return cls
                 logger.warning(
                     "Entry point '%s' for plugin '%s' is not a Plugin subclass",
-                    ep.value, plugin_name,
+                    ep.value,
+                    plugin_name,
                 )
             except Exception as e:
                 logger.error(
                     "Failed to load entry point for plugin '%s': %s",
-                    plugin_name, e, exc_info=True,
+                    plugin_name,
+                    e,
+                    exc_info=True,
                 )
             return None
     return None
@@ -374,11 +371,7 @@ def parse_pyproject_metadata(install_path: str | Path) -> dict:
     # what install_from_git uses via importlib.metadata, so discovery must
     # agree to avoid creating duplicate DB records under different names.
     name = dist_name
-    entry_points = (
-        data.get("project", {})
-        .get("entry-points", {})
-        .get("aq.plugins", {})
-    )
+    entry_points = data.get("project", {}).get("entry-points", {}).get("aq.plugins", {})
     if entry_points:
         # Take the first (and typically only) entry point name
         name = next(iter(entry_points))
@@ -477,9 +470,7 @@ def parse_plugin_yaml(install_path: str | Path) -> PluginInfo:
         # Also try plugin.yml
         manifest_path = src_dir / "plugin.yml"
     if not manifest_path.exists():
-        raise FileNotFoundError(
-            f"No plugin.yaml found in {src_dir}"
-        )
+        raise FileNotFoundError(f"No plugin.yaml found in {src_dir}")
 
     with open(manifest_path) as f:
         data = yaml.safe_load(f)
@@ -551,11 +542,7 @@ def import_plugin_module(install_path: str | Path) -> type[Plugin]:
     plugin_class = None
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
-        if (
-            isinstance(attr, type)
-            and issubclass(attr, Plugin)
-            and attr is not Plugin
-        ):
+        if isinstance(attr, type) and issubclass(attr, Plugin) and attr is not Plugin:
             plugin_class = attr
             break
 
@@ -708,6 +695,7 @@ async def install_plugin_from_url(
     config_path = data_dir / "config.yaml"
     if not config_path.exists() and info.default_config:
         import yaml as _yaml
+
         with open(config_path, "w") as f:
             _yaml.safe_dump(info.default_config, f, default_flow_style=False)
 

@@ -304,12 +304,8 @@ MIGRATIONS = [
 
 # Indexes created after migrations (idempotent).
 INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on "
-    "ON task_dependencies(depends_on_task_id)",
-    "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id "
-    "ON task_dependencies(task_id)",
-    "CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin_id "
-    "ON plugin_data(plugin_id)",
-    "CREATE INDEX IF NOT EXISTS idx_hooks_plugin_id "
-    "ON hooks(plugin_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON task_dependencies(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin_id ON plugin_data(plugin_id)",
+    "CREATE INDEX IF NOT EXISTS idx_hooks_plugin_id ON hooks(plugin_id)",
 ]

@@ -23,7 +23,10 @@ CASES: list[TestCase] = [
         tags=["stop_task", "write"],
         setup_commands=[
             ("create_project", {"name": "StopProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Running Task", "description": "In progress"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Running Task", "description": "In progress"},
+            ),
         ],
         turns=[
             Turn(
@@ -42,7 +45,10 @@ CASES: list[TestCase] = [
         tags=["stop_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "CancelProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Unneeded", "description": "No longer needed"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Unneeded", "description": "No longer needed"},
+            ),
         ],
         turns=[
             Turn(
@@ -61,7 +67,10 @@ CASES: list[TestCase] = [
         tags=["stop_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "AbortProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Wrong approach", "description": "Bad idea"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Wrong approach", "description": "Bad idea"},
+            ),
         ],
         turns=[
             Turn(
@@ -80,7 +89,10 @@ CASES: list[TestCase] = [
         tags=["stop_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "KillProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Runaway", "description": "Out of control"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Runaway", "description": "Out of control"},
+            ),
         ],
         turns=[
             Turn(
@@ -91,7 +103,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # restart_task — TRIVIAL / EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -103,7 +114,10 @@ CASES: list[TestCase] = [
         tags=["restart_task", "write"],
         setup_commands=[
             ("create_project", {"name": "RestartProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Failed Task", "description": "It failed"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Failed Task", "description": "It failed"},
+            ),
         ],
         turns=[
             Turn(
@@ -122,7 +136,10 @@ CASES: list[TestCase] = [
         tags=["restart_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "RetryProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Retry This", "description": "Needs retry"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Retry This", "description": "Needs retry"},
+            ),
         ],
         turns=[
             Turn(
@@ -141,7 +158,10 @@ CASES: list[TestCase] = [
         tags=["restart_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "RetryProj2"}),
-            ("create_task", {"project_id": "p-1", "title": "Another Fail", "description": "Failed again"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Another Fail", "description": "Failed again"},
+            ),
         ],
         turns=[
             Turn(
@@ -160,7 +180,10 @@ CASES: list[TestCase] = [
         tags=["restart_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "RerunProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Redo Task", "description": "Run it again"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Redo Task", "description": "Run it again"},
+            ),
         ],
         turns=[
             Turn(
@@ -171,7 +194,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # reopen_with_feedback — EASY / MEDIUM / HARD
     # -----------------------------------------------------------------------
@@ -183,7 +205,10 @@ CASES: list[TestCase] = [
         tags=["reopen_with_feedback", "write"],
         setup_commands=[
             ("create_project", {"name": "ReopenProj"}),
-            ("create_task", {"project_id": "p-1", "title": "QA Failed", "description": "Needs fix"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "QA Failed", "description": "Needs fix"},
+            ),
         ],
         turns=[
             Turn(
@@ -208,7 +233,10 @@ CASES: list[TestCase] = [
         tags=["reopen_with_feedback", "write"],
         setup_commands=[
             ("create_project", {"name": "QAProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Login Fix", "description": "Fix login"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Login Fix", "description": "Fix login"},
+            ),
         ],
         turns=[
             Turn(
@@ -233,13 +261,15 @@ CASES: list[TestCase] = [
         tags=["reopen_with_feedback", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "SendBack"}),
-            ("create_task", {"project_id": "p-1", "title": "Incomplete", "description": "Not done"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Incomplete", "description": "Not done"},
+            ),
         ],
         turns=[
             Turn(
                 user_message=(
-                    "send t-1 back for rework -- the API response format "
-                    "doesn't match the spec"
+                    "send t-1 back for rework -- the API response format doesn't match the spec"
                 ),
                 expected_tools=[
                     ExpectedTool(
@@ -258,7 +288,10 @@ CASES: list[TestCase] = [
         tags=["reopen_with_feedback", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "FixAgain"}),
-            ("create_task", {"project_id": "p-1", "title": "Broken Again", "description": "Still broken"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Broken Again", "description": "Still broken"},
+            ),
         ],
         turns=[
             Turn(
@@ -275,7 +308,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # approve_task — TRIVIAL / EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -287,7 +319,10 @@ CASES: list[TestCase] = [
         tags=["approve_task", "write"],
         setup_commands=[
             ("create_project", {"name": "ApproveProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Pending", "description": "Awaiting approval"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Pending", "description": "Awaiting approval"},
+            ),
         ],
         turns=[
             Turn(
@@ -306,7 +341,10 @@ CASES: list[TestCase] = [
         tags=["approve_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "LGTMProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Ship It", "description": "Ready to ship"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Ship It", "description": "Ready to ship"},
+            ),
         ],
         turns=[
             Turn(
@@ -325,7 +363,10 @@ CASES: list[TestCase] = [
         tags=["approve_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "GoodProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Reviewed", "description": "Reviewed task"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Reviewed", "description": "Reviewed task"},
+            ),
         ],
         turns=[
             Turn(
@@ -336,7 +377,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # skip_task — TRIVIAL / EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -367,7 +407,10 @@ CASES: list[TestCase] = [
         tags=["skip_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "UnblockProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Blocker", "description": "Blocking others"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Blocker", "description": "Blocking others"},
+            ),
         ],
         turns=[
             Turn(
@@ -386,7 +429,10 @@ CASES: list[TestCase] = [
         tags=["skip_task", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "SkipNeed"}),
-            ("create_task", {"project_id": "p-1", "title": "Optional", "description": "Optional work"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Optional", "description": "Optional work"},
+            ),
         ],
         turns=[
             Turn(
@@ -397,7 +443,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # approve_plan — TRIVIAL / MEDIUM
     # -----------------------------------------------------------------------
@@ -409,7 +454,10 @@ CASES: list[TestCase] = [
         tags=["approve_plan", "write"],
         setup_commands=[
             ("create_project", {"name": "PlanProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"},
+            ),
         ],
         turns=[
             Turn(
@@ -428,7 +476,14 @@ CASES: list[TestCase] = [
         tags=["approve_plan", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "PlanLGTM"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Review", "description": "Plan awaiting review"}),
+            (
+                "create_task",
+                {
+                    "project_id": "p-1",
+                    "title": "Plan Review",
+                    "description": "Plan awaiting review",
+                },
+            ),
         ],
         turns=[
             Turn(
@@ -439,7 +494,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # reject_plan — TRIVIAL / MEDIUM
     # -----------------------------------------------------------------------
@@ -451,7 +505,10 @@ CASES: list[TestCase] = [
         tags=["reject_plan", "write"],
         setup_commands=[
             ("create_project", {"name": "RejectProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"},
+            ),
         ],
         turns=[
             Turn(
@@ -470,7 +527,10 @@ CASES: list[TestCase] = [
         tags=["reject_plan", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "ChangesProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Review", "description": "Plan needs changes"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Plan Review", "description": "Plan needs changes"},
+            ),
         ],
         turns=[
             Turn(
@@ -481,7 +541,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # delete_plan — TRIVIAL / MEDIUM
     # -----------------------------------------------------------------------
@@ -493,7 +552,10 @@ CASES: list[TestCase] = [
         tags=["delete_plan", "write"],
         setup_commands=[
             ("create_project", {"name": "DeleteProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"},
+            ),
         ],
         turns=[
             Turn(
@@ -512,7 +574,10 @@ CASES: list[TestCase] = [
         tags=["delete_plan", "write", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "CancelProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"},
+            ),
         ],
         turns=[
             Turn(

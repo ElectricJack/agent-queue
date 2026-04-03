@@ -1,17 +1,33 @@
 from src.models import (
-    TaskStatus, TaskEvent, AgentState, AgentResult,
-    ProjectStatus, VerificationType,
-    Project, Task, Agent, RepoConfig, TaskContext, AgentOutput,
+    TaskStatus,
+    TaskEvent,
+    AgentState,
+    AgentResult,
+    ProjectStatus,
+    VerificationType,
+    Project,
+    Task,
+    Agent,
+    RepoConfig,
+    TaskContext,
+    AgentOutput,
 )
 
 
 class TestTaskStatus:
     def test_all_states_exist(self):
         expected = {
-            "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS",
-            "WAITING_INPUT", "PAUSED",
-            "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
-            "COMPLETED", "FAILED", "BLOCKED",
+            "DEFINED",
+            "READY",
+            "ASSIGNED",
+            "IN_PROGRESS",
+            "WAITING_INPUT",
+            "PAUSED",
+            "AWAITING_APPROVAL",
+            "AWAITING_PLAN_APPROVAL",
+            "COMPLETED",
+            "FAILED",
+            "BLOCKED",
         }
         assert {s.value for s in TaskStatus} == expected
 
@@ -19,18 +35,34 @@ class TestTaskStatus:
 class TestTaskEvent:
     def test_all_events_exist(self):
         expected = {
-            "DEPS_MET", "ASSIGNED", "AGENT_STARTED",
-            "AGENT_COMPLETED", "AGENT_FAILED", "TOKENS_EXHAUSTED",
-            "AGENT_QUESTION", "HUMAN_REPLIED", "INPUT_TIMEOUT",
+            "DEPS_MET",
+            "ASSIGNED",
+            "AGENT_STARTED",
+            "AGENT_COMPLETED",
+            "AGENT_FAILED",
+            "TOKENS_EXHAUSTED",
+            "AGENT_QUESTION",
+            "HUMAN_REPLIED",
+            "INPUT_TIMEOUT",
             "RESUME_TIMER",
-            "PR_CREATED", "PR_MERGED",
-            "RETRY", "MAX_RETRIES",
-            "MERGE_FAILED", "MERGE_SUCCEEDED",
+            "PR_CREATED",
+            "PR_MERGED",
+            "RETRY",
+            "MAX_RETRIES",
+            "MERGE_FAILED",
+            "MERGE_SUCCEEDED",
             # Administrative / recovery events
-            "ADMIN_SKIP", "ADMIN_STOP", "ADMIN_RESTART",
-            "PR_CLOSED", "PLAN_FOUND", "PLAN_APPROVED",
-            "PLAN_REJECTED", "PLAN_DELETED",
-            "TIMEOUT", "EXECUTION_ERROR", "RECOVERY",
+            "ADMIN_SKIP",
+            "ADMIN_STOP",
+            "ADMIN_RESTART",
+            "PR_CLOSED",
+            "PLAN_FOUND",
+            "PLAN_APPROVED",
+            "PLAN_REJECTED",
+            "PLAN_DELETED",
+            "TIMEOUT",
+            "EXECUTION_ERROR",
+            "RECOVERY",
         }
         assert {e.value for e in TaskEvent} == expected
 

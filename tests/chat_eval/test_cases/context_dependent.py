@@ -113,7 +113,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Git Project", "project_id": "p-1"}),
         ],
     ),
-
     # --- Without active project ---
     TestCase(
         id="ctx-list-notes-no-active",
@@ -143,7 +142,6 @@ CASES: list[TestCase] = [
         tags=["task", "creation", "no-active-project"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- Context switching between projects (turn-level override) ---
     TestCase(
         id="ctx-switch-project-between-turns",
@@ -199,7 +197,6 @@ CASES: list[TestCase] = [
             ("create_project", {"name": "Web App", "project_id": "p-2"}),
         ],
     ),
-
     # --- Explicit project overrides active project ---
     TestCase(
         id="ctx-explicit-overrides-active",

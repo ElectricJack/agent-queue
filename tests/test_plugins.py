@@ -45,7 +45,8 @@ def plugin_dir(tmp_path: Path) -> Path:
     src.mkdir()
 
     # plugin.yaml
-    (src / "plugin.yaml").write_text(textwrap.dedent("""\
+    (src / "plugin.yaml").write_text(
+        textwrap.dedent("""\
         name: test-plugin
         version: "1.0.0"
         description: A test plugin
@@ -60,10 +61,12 @@ def plugin_dir(tmp_path: Path) -> Path:
           - test.greeting
         default_config:
           greeting: hello
-    """))
+    """)
+    )
 
     # plugin.py
-    (src / "plugin.py").write_text(textwrap.dedent("""\
+    (src / "plugin.py").write_text(
+        textwrap.dedent("""\
         from src.plugins.base import Plugin, PluginContext
 
 
@@ -88,7 +91,8 @@ def plugin_dir(tmp_path: Path) -> Path:
             async def handle_greet(self, args: dict) -> dict:
                 name = args.get("name", "world")
                 return {"greeting": f"Hello, {name}!"}
-    """))
+    """)
+    )
 
     # prompts
     prompts = src / "prompts"
@@ -139,29 +143,35 @@ def mock_config(tmp_path: Path):
 
 class TestPluginInfo:
     def test_from_dict_basic(self):
-        info = PluginInfo.from_dict({
-            "name": "my-plugin",
-            "version": "2.0.0",
-            "description": "A great plugin",
-        })
+        info = PluginInfo.from_dict(
+            {
+                "name": "my-plugin",
+                "version": "2.0.0",
+                "description": "A great plugin",
+            }
+        )
         assert info.name == "my-plugin"
         assert info.version == "2.0.0"
         assert info.description == "A great plugin"
         assert info.permissions == []
 
     def test_from_dict_with_permissions(self):
-        info = PluginInfo.from_dict({
-            "name": "my-plugin",
-            "permissions": ["network", "filesystem"],
-        })
+        info = PluginInfo.from_dict(
+            {
+                "name": "my-plugin",
+                "permissions": ["network", "filesystem"],
+            }
+        )
         assert PluginPermission.NETWORK in info.permissions
         assert PluginPermission.FILESYSTEM in info.permissions
 
     def test_from_dict_unknown_permission_ignored(self):
-        info = PluginInfo.from_dict({
-            "name": "my-plugin",
-            "permissions": ["network", "teleport"],
-        })
+        info = PluginInfo.from_dict(
+            {
+                "name": "my-plugin",
+                "permissions": ["network", "teleport"],
+            }
+        )
         assert len(info.permissions) == 1
         assert PluginPermission.NETWORK in info.permissions
 
@@ -213,11 +223,13 @@ class TestPluginContext:
             event_type_registry=set(),
         )
 
-        ctx.register_tool({
-            "name": "my_tool",
-            "description": "Does something",
-            "input_schema": {"type": "object"},
-        })
+        ctx.register_tool(
+            {
+                "name": "my_tool",
+                "description": "Does something",
+                "input_schema": {"type": "object"},
+            }
+        )
         assert "my_tool" in tools
         assert tools["my_tool"]["_plugin"] == "test-plugin"
 
@@ -289,6 +301,7 @@ class TestPluginContext:
     def test_get_config(self, plugin_dir, mock_db, mock_bus):
         # Write a config file
         import yaml
+
         config_path = plugin_dir / "config.yaml"
         config_path.write_text(yaml.dump({"greeting": "hi", "count": 5}))
 
@@ -664,7 +677,11 @@ class TestPluginRegistry:
 
     @pytest.mark.asyncio
     async def test_command_execution_through_context(
-        self, plugin_dir, mock_db, mock_bus, mock_config,
+        self,
+        plugin_dir,
+        mock_db,
+        mock_bus,
+        mock_config,
     ):
         plugins_dir = Path(mock_config.data_dir) / "plugins"
         plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -841,6 +858,7 @@ class TestPluginDatabaseQueries:
 class TestCronDecorator:
     def test_cron_sets_attribute(self):
         """The @cron decorator stores the expression on the function."""
+
         @cron("0 */4 * * *")
         async def my_job(ctx):
             pass
@@ -851,6 +869,7 @@ class TestCronDecorator:
 
     def test_cron_with_config_key(self):
         """The @cron decorator stores the config_key."""
+
         @cron("0 */4 * * *", config_key="check_schedule")
         async def my_job(ctx):
             pass
@@ -860,6 +879,7 @@ class TestCronDecorator:
 
     def test_cron_on_method(self):
         """The @cron decorator works on class methods."""
+
         class MyPlugin(Plugin):
             plugin_permissions = []
 
@@ -879,6 +899,7 @@ class TestCronDecorator:
 
     def test_cron_preserves_function(self):
         """The @cron decorator doesn't alter function identity or callability."""
+
         @cron("0 0 * * *")
         async def midnight_job(ctx):
             return "done"
@@ -895,6 +916,7 @@ class TestCronDecorator:
 class TestPluginClassAttributes:
     def test_default_class_attrs(self):
         """Plugin subclass inherits empty defaults for class attributes."""
+
         class MinimalPlugin(Plugin):
             async def initialize(self, ctx):
                 pass
@@ -908,6 +930,7 @@ class TestPluginClassAttributes:
 
     def test_custom_class_attrs(self):
         """Plugin subclass can override class attributes."""
+
         class CustomPlugin(Plugin):
             plugin_permissions = [PluginPermission.NETWORK, PluginPermission.SHELL]
             config_schema = {"api_key": {"type": "string"}}
@@ -926,6 +949,7 @@ class TestPluginClassAttributes:
 
     def test_cli_group_default_none(self):
         """Default cli_group() returns None."""
+
         class MinimalPlugin(Plugin):
             async def initialize(self, ctx):
                 pass
@@ -937,6 +961,7 @@ class TestPluginClassAttributes:
 
     def test_discord_commands_default_none(self):
         """Default discord_commands() returns None."""
+
         class MinimalPlugin(Plugin):
             async def initialize(self, ctx):
                 pass
@@ -956,6 +981,7 @@ class TestConfigHelpers:
     def test_get_config_value(self, tmp_path):
         """get_config_value reads a single key."""
         import yaml
+
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
 
@@ -977,6 +1003,7 @@ class TestConfigHelpers:
     async def test_set_config_value(self, tmp_path):
         """set_config_value updates a single key without clobbering others."""
         import yaml
+
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
 
@@ -1032,7 +1059,11 @@ class TestInvokeLLM:
         result = await ctx.invoke_llm("What is 2+2?")
         assert result == "LLM response"
         callback.assert_called_once_with(
-            "What is 2+2?", "test", model=None, provider=None, tools=None,
+            "What is 2+2?",
+            "test",
+            model=None,
+            provider=None,
+            tools=None,
         )
 
     @pytest.mark.asyncio
@@ -1056,7 +1087,8 @@ class TestInvokeLLM:
             tools=[{"name": "t"}],
         )
         callback.assert_called_once_with(
-            "prompt", "test",
+            "prompt",
+            "test",
             model="claude-opus-4-20250514",
             provider="anthropic",
             tools=[{"name": "t"}],
@@ -1088,25 +1120,29 @@ class TestPyprojectLoader:
         """has_pyproject returns True when pyproject.toml has aq.plugins entry."""
         src = tmp_path / "src"
         src.mkdir()
-        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+        (src / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [project]
             name = "aq-test"
             version = "1.0.0"
 
             [project.entry-points."aq.plugins"]
             test = "test_mod:TestPlugin"
-        """))
+        """)
+        )
         assert has_pyproject(str(tmp_path)) is True
 
     def test_has_pyproject_false_no_entry_point(self, tmp_path):
         """has_pyproject returns False when no aq.plugins entry point."""
         src = tmp_path / "src"
         src.mkdir()
-        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+        (src / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [project]
             name = "aq-test"
             version = "1.0.0"
-        """))
+        """)
+        )
         assert has_pyproject(str(tmp_path)) is False
 
     def test_has_pyproject_false_no_file(self, tmp_path):
@@ -1119,7 +1155,8 @@ class TestPyprojectLoader:
         """parse_pyproject_metadata reads name/version/description/author."""
         src = tmp_path / "src"
         src.mkdir()
-        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+        (src / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [project]
             name = "aq-email-reviewer"
             version = "2.1.0"
@@ -1128,7 +1165,8 @@ class TestPyprojectLoader:
 
             [project.entry-points."aq.plugins"]
             email-reviewer = "email_reviewer:Plugin"
-        """))
+        """)
+        )
         meta = parse_pyproject_metadata(str(tmp_path))
         assert meta["name"] == "email-reviewer"
         assert meta["version"] == "2.1.0"
@@ -1146,7 +1184,8 @@ class TestPyprojectLoader:
         """parse_plugin_metadata merges package data with class attributes."""
         src = tmp_path / "src"
         src.mkdir()
-        (src / "pyproject.toml").write_text(textwrap.dedent("""\
+        (src / "pyproject.toml").write_text(
+            textwrap.dedent("""\
             [project]
             name = "aq-test-plugin"
             version = "3.0.0"
@@ -1154,7 +1193,8 @@ class TestPyprojectLoader:
 
             [project.entry-points."aq.plugins"]
             test = "test:TestPlugin"
-        """))
+        """)
+        )
 
         class TestPlugin(Plugin):
             plugin_permissions = [PluginPermission.NETWORK]
@@ -1189,19 +1229,26 @@ class TestPyprojectLoader:
 class TestReservedNames:
     @pytest.mark.asyncio
     async def test_install_reserved_name_rejected(
-        self, tmp_path, mock_db, mock_bus, mock_config,
+        self,
+        tmp_path,
+        mock_db,
+        mock_bus,
+        mock_config,
     ):
         """Installing a plugin with a reserved name raises ValueError."""
         from src.plugins.registry import RESERVED_PLUGIN_NAMES
 
         registry = PluginRegistry(
-            db=mock_db, bus=mock_bus, config=mock_config,
+            db=mock_db,
+            bus=mock_bus,
+            config=mock_config,
         )
         for reserved in ["task", "status", "plugin", "hook"]:
             assert reserved.lower() in RESERVED_PLUGIN_NAMES
             with pytest.raises(ValueError, match="reserved"):
                 await registry.install_from_git(
-                    "https://example.com/repo.git", name=reserved,
+                    "https://example.com/repo.git",
+                    name=reserved,
                 )
 
 
@@ -1213,7 +1260,11 @@ class TestReservedNames:
 class TestRegistryCronJobs:
     @pytest.mark.asyncio
     async def test_cron_jobs_collected_on_load(
-        self, tmp_path, mock_db, mock_bus, mock_config,
+        self,
+        tmp_path,
+        mock_db,
+        mock_bus,
+        mock_config,
     ):
         """@cron-decorated methods are collected when a plugin is loaded."""
         # Create a plugin with a cron method
@@ -1224,11 +1275,14 @@ class TestRegistryCronJobs:
         src = plugin_dir / "src"
         src.mkdir(parents=True)
 
-        (src / "plugin.yaml").write_text(textwrap.dedent("""\
+        (src / "plugin.yaml").write_text(
+            textwrap.dedent("""\
             name: cron-test
             version: "1.0.0"
-        """))
-        (src / "plugin.py").write_text(textwrap.dedent("""\
+        """)
+        )
+        (src / "plugin.py").write_text(
+            textwrap.dedent("""\
             from src.plugins.base import Plugin, PluginContext, cron
 
             class CronPlugin(Plugin):
@@ -1245,16 +1299,21 @@ class TestRegistryCronJobs:
                 @cron("30 2 * * 1-5")
                 async def weekday_check(self, ctx: PluginContext) -> None:
                     pass
-        """))
+        """)
+        )
 
-        mock_db.get_plugin = AsyncMock(return_value={
-            "id": "cron-test",
-            "install_path": str(plugin_dir),
-            "status": "installed",
-        })
+        mock_db.get_plugin = AsyncMock(
+            return_value={
+                "id": "cron-test",
+                "install_path": str(plugin_dir),
+                "status": "installed",
+            }
+        )
 
         registry = PluginRegistry(
-            db=mock_db, bus=mock_bus, config=mock_config,
+            db=mock_db,
+            bus=mock_bus,
+            config=mock_config,
         )
         await registry.load_plugin("cron-test")
 
@@ -1266,7 +1325,11 @@ class TestRegistryCronJobs:
 
     @pytest.mark.asyncio
     async def test_cron_jobs_removed_on_unload(
-        self, tmp_path, mock_db, mock_bus, mock_config,
+        self,
+        tmp_path,
+        mock_db,
+        mock_bus,
+        mock_config,
     ):
         """Cron jobs are removed when a plugin is unloaded."""
         mock_config.data_dir = str(tmp_path / "data")
@@ -1276,11 +1339,14 @@ class TestRegistryCronJobs:
         src = plugin_dir / "src"
         src.mkdir(parents=True)
 
-        (src / "plugin.yaml").write_text(textwrap.dedent("""\
+        (src / "plugin.yaml").write_text(
+            textwrap.dedent("""\
             name: cron-test
             version: "1.0.0"
-        """))
-        (src / "plugin.py").write_text(textwrap.dedent("""\
+        """)
+        )
+        (src / "plugin.py").write_text(
+            textwrap.dedent("""\
             from src.plugins.base import Plugin, PluginContext, cron
 
             class CronPlugin(Plugin):
@@ -1293,16 +1359,21 @@ class TestRegistryCronJobs:
                 @cron("0 0 * * *")
                 async def midnight(self, ctx: PluginContext) -> None:
                     pass
-        """))
+        """)
+        )
 
-        mock_db.get_plugin = AsyncMock(return_value={
-            "id": "cron-test",
-            "install_path": str(plugin_dir),
-            "status": "installed",
-        })
+        mock_db.get_plugin = AsyncMock(
+            return_value={
+                "id": "cron-test",
+                "install_path": str(plugin_dir),
+                "status": "installed",
+            }
+        )
 
         registry = PluginRegistry(
-            db=mock_db, bus=mock_bus, config=mock_config,
+            db=mock_db,
+            bus=mock_bus,
+            config=mock_config,
         )
         await registry.load_plugin("cron-test")
         assert len(registry._cron_jobs) == 1

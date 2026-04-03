@@ -183,21 +183,25 @@ def evaluate_turn(
                 remap = ARG_ALIASES[call.name]
                 check_args = {remap.get(k, k): v for k, v in call.args.items()}
             args_matched_result, mismatched = _match_args(
-                expected.args, check_args, expected.args_exact,
+                expected.args,
+                check_args,
+                expected.args_exact,
             )
             args_matched = args_matched_result
             mismatched_keys = mismatched
             matched_actual_indices.add(i)
             break
 
-        result.tool_matches.append(ToolMatch(
-            expected_name=expected.name,
-            matched=matched,
-            args_matched=args_matched if matched else False,
-            actual_args=actual_args,
-            expected_args=expected.args,
-            mismatched_keys=mismatched_keys,
-        ))
+        result.tool_matches.append(
+            ToolMatch(
+                expected_name=expected.name,
+                matched=matched,
+                args_matched=args_matched if matched else False,
+                actual_args=actual_args,
+                expected_args=expected.args,
+                mismatched_keys=mismatched_keys,
+            )
+        )
 
     # Check for unexpected tools (those not in expected list, accounting for aliases)
     expected_names = {e.name for e in turn.expected_tools}
@@ -217,10 +221,7 @@ def evaluate_turn(
     # Check order if required
     if turn.ordered and turn.expected_tools:
         expected_order = [e.name for e in turn.expected_tools]
-        actual_matched = [
-            actual_calls[i].name
-            for i in sorted(matched_actual_indices)
-        ]
+        actual_matched = [actual_calls[i].name for i in sorted(matched_actual_indices)]
         result.order_correct = actual_matched == expected_order
 
     # Determine pass/fail
@@ -289,8 +290,7 @@ def aggregate_results(
     return run
 
 
-def save_run(run: EvalRunResult, output_dir: str | Path,
-             filename: str = "") -> Path:
+def save_run(run: EvalRunResult, output_dir: str | Path, filename: str = "") -> Path:
     """Persist an eval run as JSON for historical comparison."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -304,31 +304,38 @@ def save_run(run: EvalRunResult, output_dir: str | Path,
     for r in run.case_results:
         turns = []
         for tr in r.turn_results:
-            turns.append({
-                "user_message": tr.user_message,
-                "passed": tr.passed,
-                "latency": tr.latency,
-                "expected_tools": [
-                    {"name": m.expected_name, "matched": m.matched,
-                     "args_matched": m.args_matched,
-                     "expected_args": m.expected_args,
-                     "actual_args": m.actual_args,
-                     "mismatched_keys": m.mismatched_keys}
-                    for m in tr.tool_matches
-                ],
-                "unexpected_tools": tr.unexpected_tools,
-                "forbidden_tools_called": tr.forbidden_tools_called,
-                "order_correct": tr.order_correct,
-            })
-        case_details.append({
-            "case_id": r.case_id,
-            "category": r.category,
-            "difficulty": r.difficulty,
-            "tags": r.tags,
-            "passed": r.passed,
-            "error": r.error,
-            "turns": turns,
-        })
+            turns.append(
+                {
+                    "user_message": tr.user_message,
+                    "passed": tr.passed,
+                    "latency": tr.latency,
+                    "expected_tools": [
+                        {
+                            "name": m.expected_name,
+                            "matched": m.matched,
+                            "args_matched": m.args_matched,
+                            "expected_args": m.expected_args,
+                            "actual_args": m.actual_args,
+                            "mismatched_keys": m.mismatched_keys,
+                        }
+                        for m in tr.tool_matches
+                    ],
+                    "unexpected_tools": tr.unexpected_tools,
+                    "forbidden_tools_called": tr.forbidden_tools_called,
+                    "order_correct": tr.order_correct,
+                }
+            )
+        case_details.append(
+            {
+                "case_id": r.case_id,
+                "category": r.category,
+                "difficulty": r.difficulty,
+                "tags": r.tags,
+                "passed": r.passed,
+                "error": r.error,
+                "turns": turns,
+            }
+        )
 
     data = {
         "model": run.model,
@@ -387,13 +394,15 @@ def detect_regressions(
     curr_rate = current.get("pass_rate", 0)
     base_rate = baseline.get("pass_rate", 0)
     if base_rate - curr_rate > threshold:
-        regressions.append(Regression(
-            scope="overall",
-            metric="pass_rate",
-            baseline=base_rate,
-            current=curr_rate,
-            delta=curr_rate - base_rate,
-        ))
+        regressions.append(
+            Regression(
+                scope="overall",
+                metric="pass_rate",
+                baseline=base_rate,
+                current=curr_rate,
+                delta=curr_rate - base_rate,
+            )
+        )
 
     # Per-category pass rates
     for cat, base_stats in baseline.get("by_category", {}).items():
@@ -402,13 +411,15 @@ def detect_regressions(
         curr_total = curr_stats.get("total", 0)
         curr_cat_rate = curr_stats["passed"] / curr_total if curr_total else 0
         if base_cat_rate - curr_cat_rate > threshold:
-            regressions.append(Regression(
-                scope=f"category:{cat}",
-                metric="pass_rate",
-                baseline=base_cat_rate,
-                current=curr_cat_rate,
-                delta=curr_cat_rate - base_cat_rate,
-            ))
+            regressions.append(
+                Regression(
+                    scope=f"category:{cat}",
+                    metric="pass_rate",
+                    baseline=base_cat_rate,
+                    current=curr_cat_rate,
+                    delta=curr_cat_rate - base_cat_rate,
+                )
+            )
 
     # Per-tool recall
     for tool, base_ta in baseline.get("tool_accuracy", {}).items():
@@ -416,12 +427,14 @@ def detect_regressions(
         base_recall = base_ta.get("recall", 0)
         curr_recall = curr_ta.get("recall", 0)
         if base_recall - curr_recall > threshold:
-            regressions.append(Regression(
-                scope=f"tool:{tool}",
-                metric="recall",
-                baseline=base_recall,
-                current=curr_recall,
-                delta=curr_recall - base_recall,
-            ))
+            regressions.append(
+                Regression(
+                    scope=f"tool:{tool}",
+                    metric="recall",
+                    baseline=base_recall,
+                    current=curr_recall,
+                    delta=curr_recall - base_recall,
+                )
+            )
 
     return regressions
