@@ -32,7 +32,6 @@ import time
 
 from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
-from src.health import HealthCheckServer
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
 from src.messaging.base import MessagingAdapter
@@ -88,21 +87,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         adapter.platform_name,
     )
 
-    # Health check server — use legacy TCP server only when MCP/API server
-    # is disabled (otherwise health endpoints are served by FastAPI).
+    # Health provider callback — used by the FastAPI health endpoints.
     _health_prov = lambda: _health_checks(orch, adapter)  # noqa: E731
-    health_server: HealthCheckServer | None = None
-    if not config.mcp_server.enabled:
-        health_server = HealthCheckServer(
-            config=config.health_check,
-            health_provider=_health_prov,
-            plan_content_provider=_plan_content,
-        )
-        await health_server.start()
-
-    # Make health server accessible to orchestrator for plan URL generation.
-    # When running on FastAPI, the plan URL helper lives in src.api.health.
-    orch._health_server = health_server
 
     shutdown_event = asyncio.Event()
 
@@ -178,10 +164,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # Wait until shutdown is signaled
         await shutdown_event.wait()
     finally:
-        # Shut down adapter, health server, MCP server, and orchestrator
+        # Shut down adapter, MCP/API server, and orchestrator
         restart = orch._restart_requested
-        if health_server is not None:
-            await health_server.stop()
         await adapter.close()
         if mcp_task is not None:
             mcp_task.cancel()
