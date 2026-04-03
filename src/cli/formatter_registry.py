@@ -24,7 +24,7 @@ Or equivalently::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -93,9 +93,15 @@ def apply_formatter(command: str, result: dict, console) -> bool:
     if spec is None:
         return False
 
-    # Extract data from result
+    # Extract data from result (handle both dicts and typed objects)
     if spec.extract:
-        data = result.get(spec.extract, [] if spec.many else result)
+        if isinstance(result, dict):
+            data = result.get(spec.extract, [] if spec.many else result)
+        else:
+            data = getattr(result, spec.extract, [] if spec.many else result)
+            # Generated client uses Unset sentinel for missing fields
+            if type(data).__name__ == "Unset":
+                data = [] if spec.many else result
     else:
         data = result
 
@@ -151,23 +157,24 @@ def _register_all():
 
     # -- Task commands -------------------------------------------------------
 
-    _task_sort = lambda t: (
-        {
-            "IN_PROGRESS": 0,
-            "WAITING_INPUT": 1,
-            "ASSIGNED": 2,
-            "READY": 3,
-            "AWAITING_APPROVAL": 4,
-            "AWAITING_PLAN_APPROVAL": 5,
-            "VERIFYING": 6,
-            "DEFINED": 7,
-            "BLOCKED": 8,
-            "PAUSED": 9,
-            "FAILED": 10,
-            "COMPLETED": 11,
-        }.get(t.status.value if t.status else "", 99),
-        -(t.priority or 0),
-    )
+    def _task_sort(t):
+        return (
+            {
+                "IN_PROGRESS": 0,
+                "WAITING_INPUT": 1,
+                "ASSIGNED": 2,
+                "READY": 3,
+                "AWAITING_APPROVAL": 4,
+                "AWAITING_PLAN_APPROVAL": 5,
+                "VERIFYING": 6,
+                "DEFINED": 7,
+                "BLOCKED": 8,
+                "PAUSED": 9,
+                "FAILED": 10,
+                "COMPLETED": 11,
+            }.get((t.status or "").upper(), 99),
+            -(t.priority or 0),
+        )
 
     FORMATTERS["list_tasks"] = FormatterSpec(
         render=format_task_table,
@@ -179,15 +186,22 @@ def _register_all():
     )
 
     def _render_task_detail(task):
-        # get_task returns deps/blocks/subtasks inline
-        raw = object.__getattribute__(task, "_data")
-        deps_on = [d["id"] for d in raw.get("depends_on", [])]
-        dependents = [d["id"] for d in raw.get("blocks", [])]
-        subtasks = raw.get("subtasks", [])
+        # get_task returns deps/blocks/subtasks inline — extract IDs for display.
+        # The proxy wraps either a dict or typed model; use attribute access.
+        deps_raw = task.depends_on or []
+        blocks_raw = task.blocks or []
+        subtasks_raw = task.subtasks or []
+        deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
+        dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
         subtask_stats = None
-        if subtasks:
-            total = len(subtasks)
-            done = sum(1 for s in subtasks if s.get("status") in ("COMPLETED", "completed"))
+        if subtasks_raw:
+            total = len(subtasks_raw)
+            done = sum(
+                1
+                for s in subtasks_raw
+                if (s.status if hasattr(s, "status") else s.get("status", "")).upper()
+                == "COMPLETED"
+            )
             subtask_stats = (done, total)
         return format_task_detail(
             task,

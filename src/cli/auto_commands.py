@@ -231,7 +231,9 @@ def _make_auto_command(
 
             # Use Rich formatter if registered, otherwise fall back to JSON
             if not apply_formatter(name, result, console):
-                console.print_json(data=result)
+                # Typed responses need to_dict() for JSON serialisation
+                json_data = result.to_dict() if hasattr(result, "to_dict") else result
+                console.print_json(data=json_data)
 
         return callback
 

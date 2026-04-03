@@ -9,7 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.list_hook_runs_response_runs_item import ListHookRunsResponseRunsItem
+    from ..models.hook_run_summary import HookRunSummary
 
 
 T = TypeVar("T", bound="ListHookRunsResponse")
@@ -21,12 +21,12 @@ class ListHookRunsResponse:
     Attributes:
         hook_id (str):
         hook_name (str | Unset):  Default: ''.
-        runs (list[ListHookRunsResponseRunsItem] | Unset):
+        runs (list[HookRunSummary] | Unset):
     """
 
     hook_id: str
     hook_name: str | Unset = ""
-    runs: list[ListHookRunsResponseRunsItem] | Unset = UNSET
+    runs: list[HookRunSummary] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,7 +57,7 @@ class ListHookRunsResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_hook_runs_response_runs_item import ListHookRunsResponseRunsItem
+        from ..models.hook_run_summary import HookRunSummary
 
         d = dict(src_dict)
         hook_id = d.pop("hook_id")
@@ -65,11 +65,11 @@ class ListHookRunsResponse:
         hook_name = d.pop("hook_name", UNSET)
 
         _runs = d.pop("runs", UNSET)
-        runs: list[ListHookRunsResponseRunsItem] | Unset = UNSET
+        runs: list[HookRunSummary] | Unset = UNSET
         if _runs is not UNSET:
             runs = []
             for runs_item_data in _runs:
-                runs_item = ListHookRunsResponseRunsItem.from_dict(runs_item_data)
+                runs_item = HookRunSummary.from_dict(runs_item_data)
 
                 runs.append(runs_item)
 

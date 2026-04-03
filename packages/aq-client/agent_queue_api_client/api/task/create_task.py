@@ -65,11 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CreateTaskRequest,
 ) -> Response[CreateTaskResponse | CreateTaskResponse422]:
-    """Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+    """Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
-     Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+     Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
     Args:
         body (CreateTaskRequest):
@@ -98,11 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CreateTaskRequest,
 ) -> CreateTaskResponse | CreateTaskResponse422 | None:
-    """Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+    """Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
-     Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+     Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
     Args:
         body (CreateTaskRequest):
@@ -126,11 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CreateTaskRequest,
 ) -> Response[CreateTaskResponse | CreateTaskResponse422]:
-    """Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+    """Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
-     Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+     Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
     Args:
         body (CreateTaskRequest):
@@ -157,11 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CreateTaskRequest,
 ) -> CreateTaskResponse | CreateTaskResponse422 | None:
-    """Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+    """Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
-     Create a new task. If no project_id is given, it inherits from the active project; errors if none is
-    set.
+     Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer
+    creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces,
+    and can run in parallel. Task descriptions must be completely self-contained with all context the
+    agent needs. If no project_id is given, it inherits from the active project.
 
     Args:
         body (CreateTaskRequest):

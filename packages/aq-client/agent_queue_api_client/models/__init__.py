@@ -228,6 +228,7 @@ from .glob_files_response_422 import GlobFilesResponse422
 from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
+from .hook_run_summary import HookRunSummary
 from .hook_schedules_request import HookSchedulesRequest
 from .hook_schedules_response import HookSchedulesResponse
 from .hook_schedules_response_422 import HookSchedulesResponse422
@@ -267,7 +268,6 @@ from .list_directory_response_422 import ListDirectoryResponse422
 from .list_hook_runs_request import ListHookRunsRequest
 from .list_hook_runs_response import ListHookRunsResponse
 from .list_hook_runs_response_422 import ListHookRunsResponse422
-from .list_hook_runs_response_runs_item import ListHookRunsResponseRunsItem
 from .list_hooks_request import ListHooksRequest
 from .list_hooks_response import ListHooksResponse
 from .list_hooks_response_422 import ListHooksResponse422
@@ -293,7 +293,6 @@ from .list_scheduled_response_scheduled_hooks_item import ListScheduledResponseS
 from .list_tasks_request import ListTasksRequest
 from .list_tasks_response import ListTasksResponse
 from .list_tasks_response_422 import ListTasksResponse422
-from .list_tasks_response_tasks_item import ListTasksResponseTasksItem
 from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
@@ -468,6 +467,7 @@ from .stop_task_response_422 import StopTaskResponse422
 from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
+from .task_detail import TaskDetail
 from .task_ref import TaskRef
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
@@ -721,6 +721,7 @@ __all__ = (
     "GrepRequest",
     "GrepResponse",
     "GrepResponse422",
+    "HookRunSummary",
     "HookSchedulesRequest",
     "HookSchedulesResponse",
     "HookSchedulesResponse422",
@@ -758,7 +759,6 @@ __all__ = (
     "ListHookRunsRequest",
     "ListHookRunsResponse",
     "ListHookRunsResponse422",
-    "ListHookRunsResponseRunsItem",
     "ListHooksRequest",
     "ListHooksResponse",
     "ListHooksResponse422",
@@ -784,7 +784,6 @@ __all__ = (
     "ListTasksRequest",
     "ListTasksResponse",
     "ListTasksResponse422",
-    "ListTasksResponseTasksItem",
     "ListWorkspacesRequest",
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
@@ -959,6 +958,7 @@ __all__ = (
     "TaskDepsRequest",
     "TaskDepsResponse",
     "TaskDepsResponse422",
+    "TaskDetail",
     "TaskRef",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",

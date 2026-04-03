@@ -172,12 +172,13 @@ class CLIClient:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def execute(self, command: str, args: dict[str, Any] | None = None) -> dict:
+    async def execute(self, command: str, args: dict[str, Any] | None = None) -> Any:
         """Execute a CommandHandler command via the REST API.
 
         Routes through the typed endpoint when available, falls back to /api/execute.
 
-        Returns the result dict on success.
+        Returns the typed response model when the generated client handles the
+        command, or a plain dict from the generic ``/api/execute`` fallback.
         Raises ``CommandError`` if the command returns an error.
         Raises ``DaemonNotRunningError`` on connection failure.
         """
@@ -196,8 +197,11 @@ class CLIClient:
         command: str,
         args: dict[str, Any],
         entry: tuple[Any, type],
-    ) -> dict:
-        """Execute via the generated typed API client."""
+    ) -> Any:
+        """Execute via the generated typed API client.
+
+        Returns the typed response model directly (no dict conversion).
+        """
         mod, req_model = entry
         try:
             # Build the request model from args
@@ -217,10 +221,7 @@ class CLIClient:
         if hasattr(result, "error") and result.error is not None:
             raise CommandError(command, result.error)
 
-        # Convert to dict for formatter compatibility
-        if hasattr(result, "to_dict"):
-            return result.to_dict()
-        return result if isinstance(result, dict) else {}
+        return result
 
     async def _execute_generic(self, command: str, args: dict[str, Any]) -> dict:
         """Execute via the generic /api/execute endpoint."""

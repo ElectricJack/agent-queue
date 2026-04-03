@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> Response[UpdateAndRestartResponse | UpdateAndRestartResponse422]:
-    """Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> UpdateAndRestartResponse | UpdateAndRestartResponse422 | None:
-    """Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> Response[UpdateAndRestartResponse | UpdateAndRestartResponse422]:
-    """Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> UpdateAndRestartResponse | UpdateAndRestartResponse422 | None:
-    """Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Excluded from MCP by default for safety.
+     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
+    finish before restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):

@@ -8,25 +8,13 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
 
-from rich.columns import Columns
 from rich.console import Group
 from rich.panel import Panel
-from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
-from src.models import (
-    Agent,
-    Hook,
-    HookRun,
-    Project,
-    ProjectStatus,
-    Task,
-    TaskStatus,
-    Workspace,
-)
+from typing import Any
 
 from .styles import (
     AGENT_STATE_ICONS,
@@ -79,7 +67,7 @@ def _status_text(status: str) -> Text:
 
 
 def format_task_table(
-    tasks: list[Task],
+    tasks: list[Any],
     title: str = "Tasks",
     show_project: bool = True,
 ) -> Table:
@@ -105,7 +93,7 @@ def format_task_table(
     for task in tasks:
         type_icon = ""
         if task.task_type:
-            type_icon = TASK_TYPE_ICONS.get(task.task_type.value, "")
+            type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
 
@@ -114,7 +102,7 @@ def format_task_table(
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status.value),
+                _status_text(task.status),
                 pri_text,
                 type_icon,
                 _truncate(task.title, 50),
@@ -131,27 +119,28 @@ def format_task_table(
 
 
 def format_task_detail(
-    task: Task,
+    task: Any,
     deps_on: list[str] | None = None,
     dependents: list[str] | None = None,
     subtask_stats: tuple[int, int] | None = None,
 ) -> Panel:
     """Format a single task as a detailed Rich panel."""
-    status_icon = STATUS_ICONS.get(task.status.value, "⚪")
-    status_style = STATUS_STYLES.get(task.status.value, "white")
+    status = task.status or ""
+    status_icon = STATUS_ICONS.get(status, "⚪")
+    status_style = STATUS_STYLES.get(status, "white")
 
     # Build content sections
     lines: list[str | Text] = []
 
     # Header line
-    lines.append(Text(f"{status_icon} {task.status.value}", style=status_style))
+    lines.append(Text(f"{status_icon} {status}", style=status_style))
     lines.append("")
 
     # Core fields
     fields = [
         ("Project", task.project_id),
         ("Priority", str(task.priority)),
-        ("Type", task.task_type.value if task.task_type else "—"),
+        ("Type", task.task_type if task.task_type else "—"),
         ("Agent", task.assigned_agent_id or "—"),
         ("Branch", task.branch_name or "—"),
         ("Approval", "Required" if task.requires_approval else "No"),
@@ -187,7 +176,7 @@ def format_task_detail(
         completed, total = subtask_stats
         lines.append("")
         prog_line = Text()
-        prog_line.append(f"  Subtasks: ", style="bold cyan")
+        prog_line.append("  Subtasks: ", style="bold cyan")
         prog_line.append(f"{completed}/{total} completed", style="white")
         lines.append(prog_line)
 
@@ -202,7 +191,7 @@ def format_task_detail(
 
     type_tag = ""
     if task.task_type:
-        type_tag = f" {TASK_TYPE_ICONS.get(task.task_type.value, '')} {task.task_type.value}"
+        type_tag = f" {TASK_TYPE_ICONS.get(task.task_type, '')} {task.task_type}"
 
     return Panel(
         content,
@@ -217,7 +206,7 @@ def format_task_detail(
 # ---------------------------------------------------------------------------
 
 
-def format_agent_table(agents: list[Agent]) -> Table:
+def format_agent_table(agents: list[Any]) -> Table:
     """Format a list of agents as a Rich table."""
     table = Table(
         title="Agents",
@@ -235,9 +224,10 @@ def format_agent_table(agents: list[Agent]) -> Table:
     table.add_column("Tokens", justify="right", style="dim")
 
     for agent in agents:
-        state_icon = AGENT_STATE_ICONS.get(agent.state.value, "❓")
-        state_style = AGENT_STATE_STYLES.get(agent.state.value, "white")
-        state_text = Text(f"{state_icon} {agent.state.value}", style=state_style)
+        state = (agent.state or "").upper()
+        state_icon = AGENT_STATE_ICONS.get(state, "❓")
+        state_style = AGENT_STATE_STYLES.get(state, "white")
+        state_text = Text(f"{state_icon} {state}", style=state_style)
 
         tokens = f"{agent.session_tokens_used:,}" if agent.session_tokens_used else "—"
 
@@ -259,7 +249,7 @@ def format_agent_table(agents: list[Agent]) -> Table:
 # ---------------------------------------------------------------------------
 
 
-def format_hook_table(hooks: list[Hook]) -> Table:
+def format_hook_table(hooks: list[Any]) -> Table:
     """Format hooks as a Rich table."""
     table = Table(
         title="Hooks",
@@ -303,7 +293,7 @@ def format_hook_table(hooks: list[Hook]) -> Table:
     return table
 
 
-def format_hook_run_table(runs: list[HookRun]) -> Table:
+def format_hook_run_table(runs: list[Any]) -> Table:
     """Format hook execution history."""
     table = Table(
         title="Hook Runs",
@@ -345,7 +335,7 @@ def format_hook_run_table(runs: list[HookRun]) -> Table:
 # ---------------------------------------------------------------------------
 
 
-def format_project_table(projects: list[Project]) -> Table:
+def format_project_table(projects: list[Any]) -> Table:
     """Format projects as a Rich table."""
     table = Table(
         title="Projects",
@@ -362,8 +352,9 @@ def format_project_table(projects: list[Project]) -> Table:
     table.add_column("Tokens Used", justify="right", style="dim")
 
     for project in projects:
-        status_style = "green" if project.status == ProjectStatus.ACTIVE else "dim"
-        status_text = Text(project.status.value, style=status_style)
+        status = (project.status or "").upper()
+        status_style = "green" if status == "ACTIVE" else "dim"
+        status_text = Text(status, style=status_style)
 
         table.add_row(
             project.id,
@@ -383,8 +374,8 @@ def format_project_table(projects: list[Project]) -> Table:
 
 
 def format_status_overview(
-    projects: list[Project],
-    agents: list[Agent],
+    projects: list[Any],
+    agents: list[Any],
     task_counts: dict[str, int],
 ) -> Panel:
     """Format a system status overview panel."""
@@ -417,14 +408,14 @@ def format_status_overview(
         lines.append("")
 
     # Agent summary
-    busy_agents = sum(1 for a in agents if a.state.value == "BUSY")
-    idle_agents = sum(1 for a in agents if a.state.value == "IDLE")
+    busy_agents = sum(1 for a in agents if (a.state or "").upper() == "BUSY")
+    idle_agents = sum(1 for a in agents if (a.state or "").upper() == "IDLE")
     lines.append(Text("🤖 Agents", style="bold bright_white"))
     lines.append(Text(f"  Total: {len(agents)}  Busy: {busy_agents}  Idle: {idle_agents}"))
     lines.append("")
 
     # Project summary
-    active_projects = sum(1 for p in projects if p.status == ProjectStatus.ACTIVE)
+    active_projects = sum(1 for p in projects if (p.status or "").upper() == "ACTIVE")
     lines.append(Text("📁 Projects", style="bold bright_white"))
     lines.append(Text(f"  Total: {len(projects)}  Active: {active_projects}"))
 

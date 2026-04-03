@@ -49,10 +49,20 @@ class ListHooksResponse(BaseModel):
     hooks: list[HookSummary] = []
 
 
+class HookRunSummary(BaseModel):
+    id: str
+    status: str = ""
+    trigger_reason: str = ""
+    tokens_used: int = 0
+    skipped_reason: str | None = None
+    started_at: float | None = None
+    completed_at: float | None = None
+
+
 class ListHookRunsResponse(BaseModel):
     hook_id: str
     hook_name: str = ""
-    runs: list[dict[str, Any]] = []
+    runs: list[HookRunSummary] = []
 
 
 class HookSchedulesResponse(BaseModel):

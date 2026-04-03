@@ -9,7 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.list_tasks_response_tasks_item import ListTasksResponseTasksItem
+    from ..models.task_detail import TaskDetail
 
 
 T = TypeVar("T", bound="ListTasksResponse")
@@ -20,7 +20,7 @@ class ListTasksResponse:
     """
     Attributes:
         display_mode (str | Unset):  Default: 'flat'.
-        tasks (list[ListTasksResponseTasksItem] | Unset):
+        tasks (list[TaskDetail] | Unset):
         total (int | Unset):  Default: 0.
         hidden_completed (int | Unset):  Default: 0.
         filtered (bool | Unset):  Default: False.
@@ -28,7 +28,7 @@ class ListTasksResponse:
     """
 
     display_mode: str | Unset = "flat"
-    tasks: list[ListTasksResponseTasksItem] | Unset = UNSET
+    tasks: list[TaskDetail] | Unset = UNSET
     total: int | Unset = 0
     hidden_completed: int | Unset = 0
     filtered: bool | Unset = False
@@ -77,17 +77,17 @@ class ListTasksResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.list_tasks_response_tasks_item import ListTasksResponseTasksItem
+        from ..models.task_detail import TaskDetail
 
         d = dict(src_dict)
         display_mode = d.pop("display_mode", UNSET)
 
         _tasks = d.pop("tasks", UNSET)
-        tasks: list[ListTasksResponseTasksItem] | Unset = UNSET
+        tasks: list[TaskDetail] | Unset = UNSET
         if _tasks is not UNSET:
             tasks = []
             for tasks_item_data in _tasks:
-                tasks_item = ListTasksResponseTasksItem.from_dict(tasks_item_data)
+                tasks_item = TaskDetail.from_dict(tasks_item_data)
 
                 tasks.append(tasks_item)
 

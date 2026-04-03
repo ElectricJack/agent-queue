@@ -20,7 +20,6 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import click
 from rich.console import Console
@@ -200,17 +199,31 @@ def status(ctx: click.Context) -> None:
     # Adapt get_status response for format_status_overview.
     # The formatter expects (projects: list, agents: list, task_counts: dict).
     # get_status returns {"agents": [...], "tasks": {"by_status": {...}}, ...}
-    agents = [agent_proxy(a) for a in result.get("agents", [])]
-    task_counts = result.get("tasks", {}).get("by_status", {})
+    # get_status may return a typed object or a dict depending on the dispatch path.
+    def _get(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        val = getattr(obj, key, default)
+        if type(val).__name__ == "Unset":
+            return default
+        return val
+
+    raw_agents = _get(result, "agents", [])
+    agents = [agent_proxy(a) for a in raw_agents]
+    tasks_section = _get(result, "tasks", {})
+    if isinstance(tasks_section, dict):
+        task_counts = tasks_section.get("by_status", {})
+    else:
+        task_counts = _get(tasks_section, "by_status", {})
     # Formatter expects uppercase status keys
     task_counts = {k.upper(): v for k, v in task_counts.items()}
 
     # format_status_overview needs project list — but get_status only returns
     # a count.  We'll create minimal proxies from the agent data.
-    project_ids = {a.get("project_id") for a in result.get("agents", []) if a.get("project_id")}
-    projects = [project_proxy({"id": pid, "name": pid, "status": "ACTIVE"}) for pid in project_ids]
+    project_ids = {_get(a, "project_id") for a in raw_agents if _get(a, "project_id")}
+    proj_list = [project_proxy({"id": pid, "name": pid, "status": "ACTIVE"}) for pid in project_ids]
 
-    panel = format_status_overview(projects, agents, task_counts)
+    panel = format_status_overview(proj_list, agents, task_counts)
     console.print(panel)
 
     if agents:

@@ -17,7 +17,9 @@ class CreateTaskRequest:
     Attributes:
         title (str): Short task title
         project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        description (None | str | Unset): Detailed task description for the agent
+        description (None | str | Unset): Complete, self-contained instructions for the agent. Include ALL context: file
+            paths, requirements, error messages, expected behavior, relevant code snippets, and design decisions from this
+            conversation. Write as if the agent has never seen this conversation.
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
         requires_approval (bool | Unset): If true, agent work creates a PR instead of auto-merging. Human must
             approve/merge the PR. Default: False.

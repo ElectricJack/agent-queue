@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from . import TaskBrief, TaskRef
+from . import TaskRef
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ class TaskDict(BaseModel):
 
 class ListTasksResponse(BaseModel):
     display_mode: str = "flat"
-    tasks: list[dict[str, Any]] = []
+    tasks: list[TaskDetail] = []
     total: int = 0
     hidden_completed: int = 0
     filtered: bool = False

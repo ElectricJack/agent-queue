@@ -7,7 +7,6 @@ The REST client is mocked via httpx so no daemon is needed.
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +20,7 @@ from src.cli.adapters import (
     project_proxy,
     task_proxy,
 )
-from src.cli.auto_commands import EXCLUDED, HANDCRAFTED_COVERAGE, register_auto_commands
+from src.cli.auto_commands import EXCLUDED
 from src.cli.client import CLIClient
 from src.cli.exceptions import CommandError, DaemonNotRunningError
 from src.cli.formatters import (
@@ -34,7 +33,6 @@ from src.cli.formatters import (
     format_task_table,
 )
 from src.cli.styles import STATUS_ICONS, STATUS_STYLES, priority_style
-from src.models import AgentState, ProjectStatus, TaskStatus, TaskType
 
 
 # ---------------------------------------------------------------------------
@@ -105,15 +103,17 @@ class TestDictProxy:
 
 
 class TestTaskProxy:
-    def test_status_conversion(self):
+    def test_status_string(self):
         t = task_proxy({"status": "IN_PROGRESS", "title": "Test"})
-        assert t.status == TaskStatus.IN_PROGRESS
-        assert t.status.value == "IN_PROGRESS"
+        assert t.status == "IN_PROGRESS"
 
-    def test_task_type_conversion(self):
+    def test_status_normalised_uppercase(self):
+        t = task_proxy({"status": "in_progress", "title": "Test"})
+        assert t.status == "IN_PROGRESS"
+
+    def test_task_type_string(self):
         t = task_proxy({"status": "READY", "task_type": "feature"})
-        assert t.task_type == TaskType.FEATURE
-        assert t.task_type.value == "feature"
+        assert t.task_type == "feature"
 
     def test_task_type_none(self):
         t = task_proxy({"status": "READY", "task_type": None})
@@ -131,9 +131,9 @@ class TestTaskProxy:
 
 
 class TestProjectProxy:
-    def test_status_conversion(self):
+    def test_status_string(self):
         p = project_proxy({"status": "ACTIVE", "name": "Test"})
-        assert p.status == ProjectStatus.ACTIVE
+        assert p.status == "ACTIVE"
 
     def test_defaults(self):
         p = project_proxy({"status": "ACTIVE"})
@@ -141,17 +141,16 @@ class TestProjectProxy:
         assert p.discord_channel_id is None
 
     def test_equality_comparison(self):
-        """Formatters compare project.status == ProjectStatus.ACTIVE."""
+        """Formatters compare project.status == 'ACTIVE'."""
         p = project_proxy({"status": "ACTIVE"})
-        assert p.status == ProjectStatus.ACTIVE
+        assert p.status == "ACTIVE"
 
 
 class TestAgentProxy:
-    def test_state_conversion_lowercase(self):
+    def test_state_normalised_uppercase(self):
         """CommandHandler returns lowercase 'busy'/'idle'."""
         a = agent_proxy({"state": "busy", "workspace_id": "ws-1", "name": "Agent 1"})
-        assert a.state == AgentState.BUSY
-        assert a.state.value == "BUSY"
+        assert a.state == "BUSY"
 
     def test_id_alias(self):
         a = agent_proxy({"workspace_id": "ws-1", "state": "idle"})
@@ -450,8 +449,9 @@ class TestCLIClient:
             client = CLIClient(base_url="http://localhost:8081")
             await client.connect()
             result = await client.execute("list_tasks", {"project_id": "test"})
-            assert result["tasks"] == []
-            assert result["total"] == 0
+            # Result is a typed response object, not a dict
+            assert result.tasks == []
+            assert result.total == 0
             # Verify the typed path was used (httpx .request() not .post())
             mock_http.request.assert_called_once()
             await client.close()
@@ -805,7 +805,6 @@ class TestDaemonNotRunningPrompt:
     def test_offers_to_start_on_connection_error(self, runner):
         """When daemon is down and user says 'n', should exit cleanly."""
         from src.cli.app import cli
-        from src.cli.exceptions import DaemonNotRunningError
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(
@@ -822,7 +821,6 @@ class TestDaemonNotRunningPrompt:
     def test_starts_daemon_on_yes(self, runner):
         """When user says 'y', should attempt to start and retry."""
         from src.cli.app import cli
-        from src.cli.exceptions import DaemonNotRunningError
 
         call_count = 0
 

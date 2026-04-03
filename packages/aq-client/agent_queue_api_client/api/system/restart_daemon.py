@@ -66,10 +66,10 @@ def sync_detailed(
     body: RestartDaemonRequest,
 ) -> Response[RestartDaemonResponse | RestartDaemonResponse422]:
     """Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
      Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
     Args:
         body (RestartDaemonRequest):
@@ -99,10 +99,10 @@ def sync(
     body: RestartDaemonRequest,
 ) -> RestartDaemonResponse | RestartDaemonResponse422 | None:
     """Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
      Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
     Args:
         body (RestartDaemonRequest):
@@ -127,10 +127,10 @@ async def asyncio_detailed(
     body: RestartDaemonRequest,
 ) -> Response[RestartDaemonResponse | RestartDaemonResponse422]:
     """Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
      Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
     Args:
         body (RestartDaemonRequest):
@@ -158,10 +158,10 @@ async def asyncio(
     body: RestartDaemonRequest,
 ) -> RestartDaemonResponse | RestartDaemonResponse422 | None:
     """Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
      Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is
-    required.
+    required. Use wait_for_tasks=true to let running tasks finish before restarting.
 
     Args:
         body (RestartDaemonRequest):
