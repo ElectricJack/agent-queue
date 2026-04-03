@@ -1,4 +1,5 @@
 """Tests for schedule matching logic."""
+
 from __future__ import annotations
 
 import json
@@ -197,23 +198,17 @@ class TestScheduleMatching:
         """Schedule with both time and day (AND logic)."""
         # Monday at 2am
         now = datetime(2026, 3, 23, 2, 0, 0, tzinfo=timezone.utc)
-        assert matches_schedule(
-            {"times": ["02:00"], "days_of_week": ["mon"]}, now=now
-        )
+        assert matches_schedule({"times": ["02:00"], "days_of_week": ["mon"]}, now=now)
 
     def test_combined_wrong_day(self):
         """Time matches but day doesn't → no match."""
         now = datetime(2026, 3, 23, 2, 0, 0, tzinfo=timezone.utc)  # Monday
-        assert not matches_schedule(
-            {"times": ["02:00"], "days_of_week": ["tue"]}, now=now
-        )
+        assert not matches_schedule({"times": ["02:00"], "days_of_week": ["tue"]}, now=now)
 
     def test_combined_wrong_time(self):
         """Day matches but time doesn't → no match."""
         now = datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc)  # Monday
-        assert not matches_schedule(
-            {"times": ["02:00"], "days_of_week": ["mon"]}, now=now
-        )
+        assert not matches_schedule({"times": ["02:00"], "days_of_week": ["mon"]}, now=now)
 
     def test_cron_simple(self):
         """Cron expression: every day at 2:00."""
@@ -259,9 +254,7 @@ class TestScheduleMatching:
         """Fires at next matching time window."""
         now = datetime(2026, 3, 23, 14, 30, 0, tzinfo=timezone.utc)
         last = datetime(2026, 3, 23, 2, 0, 0, tzinfo=timezone.utc)
-        assert matches_schedule(
-            {"times": ["02:00", "14:30"]}, now=now, last_run=last
-        )
+        assert matches_schedule({"times": ["02:00", "14:30"]}, now=now, last_run=last)
 
     def test_naive_datetime_handled(self):
         """Naive datetimes are treated as UTC."""
@@ -271,14 +264,10 @@ class TestScheduleMatching:
     def test_every_third_day_at_3am(self):
         """Complex: 'every 3rd of month at 3 AM'."""
         now = datetime(2026, 3, 3, 3, 0, 0, tzinfo=timezone.utc)
-        assert matches_schedule(
-            {"times": ["03:00"], "days_of_month": [3]}, now=now
-        )
+        assert matches_schedule({"times": ["03:00"], "days_of_month": [3]}, now=now)
         # Wrong day
         now2 = datetime(2026, 3, 4, 3, 0, 0, tzinfo=timezone.utc)
-        assert not matches_schedule(
-            {"times": ["03:00"], "days_of_month": [3]}, now=now2
-        )
+        assert not matches_schedule({"times": ["03:00"], "days_of_month": [3]}, now=now2)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +361,7 @@ class TestHookEngineScheduleIntegration:
     @pytest.fixture
     async def db(self, tmp_path):
         from src.database import Database
+
         db = Database(str(tmp_path / "test.db"))
         await db.initialize()
         yield db
@@ -380,11 +370,13 @@ class TestHookEngineScheduleIntegration:
     @pytest.fixture
     def bus(self):
         from src.event_bus import EventBus
+
         return EventBus()
 
     @pytest.fixture
     def config(self):
         from src.config import AppConfig, HookEngineConfig
+
         cfg = AppConfig()
         cfg.hook_engine = HookEngineConfig(enabled=True, max_concurrent_hooks=2)
         return cfg
@@ -392,6 +384,7 @@ class TestHookEngineScheduleIntegration:
     @pytest.fixture
     async def engine(self, db, bus, config):
         from src.hooks import HookEngine
+
         engine = HookEngine(db, bus, config)
         engine._orchestrator = MagicMock()
         engine._orchestrator._notify_channel = AsyncMock()
@@ -403,12 +396,14 @@ class TestHookEngineScheduleIntegration:
 
     async def _create_project(self, db, project_id="test-project"):
         from src.models import Project
+
         project = Project(id=project_id, name="Test Project")
         await db.create_project(project)
         return project
 
     async def _create_hook(self, db, **overrides):
         from src.models import Hook
+
         defaults = dict(
             id="sched-hook",
             project_id="test-project",
@@ -444,11 +439,13 @@ class TestHookEngineScheduleIntegration:
 
         hook = await self._create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 10,
-                "schedule": {"times": [time_str]},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 10,
+                    "schedule": {"times": [time_str]},
+                }
+            ),
         )
         engine._last_run_time.pop(hook.id, None)
         await engine.tick()
@@ -462,11 +459,13 @@ class TestHookEngineScheduleIntegration:
         # Create a schedule for a time that's definitely not now
         hook = await self._create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 10,
-                "schedule": {"times": ["99:99"]},  # Invalid / won't match
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 10,
+                    "schedule": {"times": ["99:99"]},  # Invalid / won't match
+                }
+            ),
         )
         engine._last_run_time.pop(hook.id, None)
         await engine.tick()
@@ -483,11 +482,13 @@ class TestHookEngineScheduleIntegration:
 
         hook = await self._create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 10,
-                "schedule": {"days_of_week": [wrong_day]},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 10,
+                    "schedule": {"days_of_week": [wrong_day]},
+                }
+            ),
         )
         engine._last_run_time.pop(hook.id, None)
         await engine.tick()
@@ -504,11 +505,13 @@ class TestHookEngineScheduleIntegration:
 
         hook = await self._create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 10,
-                "schedule": {"cron": cron},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 10,
+                    "schedule": {"cron": cron},
+                }
+            ),
         )
         engine._last_run_time.pop(hook.id, None)
         await engine.tick()
@@ -525,11 +528,13 @@ class TestHookEngineScheduleIntegration:
 
         hook = await self._create_hook(
             db,
-            trigger=json.dumps({
-                "type": "periodic",
-                "interval_seconds": 10,
-                "schedule": {"cron": f"0 {diff_hour} * * *"},
-            }),
+            trigger=json.dumps(
+                {
+                    "type": "periodic",
+                    "interval_seconds": 10,
+                    "schedule": {"cron": f"0 {diff_hour} * * *"},
+                }
+            ),
         )
         engine._last_run_time.pop(hook.id, None)
         await engine.tick()
@@ -686,13 +691,9 @@ class TestScheduleMatchingEdgeCases:
         """Both days_of_month and days_of_week must match (AND)."""
         # 2026-03-23 is a Monday, day 23
         now = datetime(2026, 3, 23, 12, 0, 0, tzinfo=timezone.utc)
-        assert matches_schedule(
-            {"days_of_week": ["mon"], "days_of_month": [23]}, now=now
-        )
+        assert matches_schedule({"days_of_week": ["mon"], "days_of_month": [23]}, now=now)
         # Right day of week, wrong day of month
-        assert not matches_schedule(
-            {"days_of_week": ["mon"], "days_of_month": [15]}, now=now
-        )
+        assert not matches_schedule({"days_of_week": ["mon"], "days_of_month": [15]}, now=now)
 
     def test_all_three_constraints(self):
         """Time + day_of_week + day_of_month all must match."""
@@ -711,17 +712,13 @@ class TestScheduleMatchingEdgeCases:
         """If 'cron' key is present, other fields are ignored (cron takes precedence)."""
         now = datetime(2026, 3, 23, 2, 0, 0, tzinfo=timezone.utc)
         # Cron matches, but days_of_week would not (if it were checked)
-        assert matches_schedule(
-            {"cron": "0 2 * * *", "days_of_week": ["sun"]}, now=now
-        )
+        assert matches_schedule({"cron": "0 2 * * *", "days_of_week": ["sun"]}, now=now)
 
     def test_time_dedup_across_days(self):
         """Last run on different day does not block current match."""
         now = datetime(2026, 3, 24, 2, 0, 0, tzinfo=timezone.utc)
         last = datetime(2026, 3, 23, 2, 0, 0, tzinfo=timezone.utc)
-        assert matches_schedule(
-            {"times": ["02:00"]}, now=now, last_run=last
-        )
+        assert matches_schedule({"times": ["02:00"]}, now=now, last_run=last)
 
 
 # ---------------------------------------------------------------------------
@@ -768,9 +765,7 @@ class TestNextRunTime:
         """Next run respects day-of-week."""
         # 2026-03-23 is Monday. Schedule for Wednesday only.
         now = datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc)
-        nxt = next_run_time(
-            {"times": ["14:00"], "days_of_week": ["wed"]}, now=now
-        )
+        nxt = next_run_time({"times": ["14:00"], "days_of_week": ["wed"]}, now=now)
         assert nxt is not None
         assert nxt.weekday() == 2  # Wednesday
 
@@ -838,11 +833,13 @@ class TestDescribeScheduleExtended:
         assert "mon" in desc
 
     def test_all_fields(self):
-        desc = describe_schedule({
-            "times": ["09:00"],
-            "days_of_week": ["mon"],
-            "days_of_month": [1],
-        })
+        desc = describe_schedule(
+            {
+                "times": ["09:00"],
+                "days_of_week": ["mon"],
+                "days_of_month": [1],
+            }
+        )
         assert "09:00" in desc
         assert "mon" in desc
         assert "1" in desc

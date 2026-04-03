@@ -26,8 +26,6 @@ class EventQueryMixin:
 
     async def get_recent_events(self, limit: int = 50) -> list[dict]:
         """Return the most recent events, newest first."""
-        cursor = await self._db.execute(
-            "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
-        )
+        cursor = await self._db.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

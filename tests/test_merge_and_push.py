@@ -58,6 +58,7 @@ class _FakeOrchestrator:
 
     # Bind the real method from Orchestrator
     from src.orchestrator import Orchestrator as _Orch
+
     _merge_and_push = _Orch._merge_and_push
 
 
@@ -87,10 +88,15 @@ class TestMergeAndPushClone:
 
         # Default _max_retries=3 → max_retries=2 passed to sync_and_merge
         git.async_and_merge.assert_called_once_with(
-            "/workspace", "task/test-branch", "main", max_retries=2,
+            "/workspace",
+            "task/test-branch",
+            "main",
+            max_retries=2,
         )
         git.adelete_branch.assert_called_once_with(
-            "/workspace", "task/test-branch", delete_remote=True,
+            "/workspace",
+            "task/test-branch",
+            delete_remote=True,
         )
         assert not orch._notifications
 
@@ -143,7 +149,10 @@ class TestMergeAndPushClone:
         assert "5 attempts" in orch._notifications[0]
         # max_retries = 5 - 1 = 4
         git.async_and_merge.assert_called_once_with(
-            "/workspace", "task/test-branch", "main", max_retries=4,
+            "/workspace",
+            "task/test-branch",
+            "main",
+            max_retries=4,
         )
 
     @pytest.mark.asyncio
@@ -157,7 +166,10 @@ class TestMergeAndPushClone:
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=1)
 
         git.async_and_merge.assert_called_once_with(
-            "/workspace", "task/test-branch", "main", max_retries=0,
+            "/workspace",
+            "task/test-branch",
+            "main",
+            max_retries=0,
         )
 
     @pytest.mark.asyncio
@@ -171,7 +183,10 @@ class TestMergeAndPushClone:
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=0)
 
         git.async_and_merge.assert_called_once_with(
-            "/workspace", "task/test-branch", "main", max_retries=0,
+            "/workspace",
+            "task/test-branch",
+            "main",
+            max_retries=0,
         )
 
     @pytest.mark.asyncio
@@ -281,12 +296,16 @@ class TestMergeAndPushLink:
         await orch._merge_and_push(task, repo, "/workspace")
 
         git.amerge_branch.assert_called_once_with(
-            "/workspace", "task/test-branch", "main",
+            "/workspace",
+            "task/test-branch",
+            "main",
         )
         git.async_and_merge.assert_not_called()
         # Branch cleanup with delete_remote=False for LINK repos
         git.adelete_branch.assert_called_once_with(
-            "/workspace", "task/test-branch", delete_remote=False,
+            "/workspace",
+            "task/test-branch",
+            delete_remote=False,
         )
         assert not orch._notifications
 
@@ -335,10 +354,7 @@ class TestMergeAndPushLink:
         # Recovery: checkout default branch (no hard reset — LINK has no origin)
         git._arun.assert_any_call(["checkout", "main"], cwd="/workspace")
         # Should NOT attempt hard reset to origin (LINK repos have no remote)
-        reset_calls = [
-            c for c in git._arun.call_args_list
-            if c[0][0][:2] == ["reset", "--hard"]
-        ]
+        reset_calls = [c for c in git._arun.call_args_list if c[0][0][:2] == ["reset", "--hard"]]
         assert len(reset_calls) == 0
 
     @pytest.mark.asyncio

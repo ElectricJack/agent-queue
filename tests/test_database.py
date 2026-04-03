@@ -1,8 +1,15 @@
 import pytest
 from src.database import Database
 from src.models import (
-    Project, Task, Agent, TaskStatus, AgentState,
-    ProjectStatus, RepoSourceType, VerificationType, Workspace,
+    Project,
+    Task,
+    Agent,
+    TaskStatus,
+    AgentState,
+    ProjectStatus,
+    RepoSourceType,
+    VerificationType,
+    Workspace,
 )
 
 
@@ -50,9 +57,7 @@ class TestTaskCRUD:
 
     async def test_update_task_status(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="X", description="Y")
-        )
+        await db.create_task(Task(id="t-1", project_id="p-1", title="X", description="Y"))
         await db.update_task("t-1", status=TaskStatus.READY)
         result = await db.get_task("t-1")
         assert result.status == TaskStatus.READY
@@ -60,12 +65,8 @@ class TestTaskCRUD:
     async def test_list_tasks_by_project(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
-        )
-        await db.create_task(
-            Task(id="t-2", project_id="p-2", title="B", description="D")
-        )
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
         tasks = await db.list_tasks(project_id="p-1")
         assert len(tasks) == 1
         assert tasks[0].id == "t-1"
@@ -73,12 +74,10 @@ class TestTaskCRUD:
     async def test_list_tasks_by_status(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D",
-                 status=TaskStatus.READY)
+            Task(id="t-1", project_id="p-1", title="A", description="D", status=TaskStatus.READY)
         )
         await db.create_task(
-            Task(id="t-2", project_id="p-1", title="B", description="D",
-                 status=TaskStatus.DEFINED)
+            Task(id="t-2", project_id="p-1", title="B", description="D", status=TaskStatus.DEFINED)
         )
         tasks = await db.list_tasks(project_id="p-1", status=TaskStatus.READY)
         assert len(tasks) == 1
@@ -86,12 +85,9 @@ class TestTaskCRUD:
 
     async def test_get_subtasks(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="Parent", description="D"))
         await db.create_task(
-            Task(id="t-1", project_id="p-1", title="Parent", description="D")
-        )
-        await db.create_task(
-            Task(id="t-2", project_id="p-1", title="Child",
-                 description="D", parent_task_id="t-1")
+            Task(id="t-2", project_id="p-1", title="Child", description="D", parent_task_id="t-1")
         )
         subtasks = await db.get_subtasks("t-1")
         assert len(subtasks) == 1
@@ -101,12 +97,8 @@ class TestTaskCRUD:
 class TestTaskDependencies:
     async def test_add_and_get_dependencies(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
-        )
-        await db.create_task(
-            Task(id="t-2", project_id="p-1", title="B", description="D")
-        )
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.add_dependency("t-2", depends_on="t-1")
         deps = await db.get_dependencies("t-2")
         assert deps == {"t-1"}
@@ -114,12 +106,9 @@ class TestTaskDependencies:
     async def test_check_dependencies_met(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A",
-                 description="D", status=TaskStatus.DEFINED)
+            Task(id="t-1", project_id="p-1", title="A", description="D", status=TaskStatus.DEFINED)
         )
-        await db.create_task(
-            Task(id="t-2", project_id="p-1", title="B", description="D")
-        )
+        await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.add_dependency("t-2", depends_on="t-1")
         assert not await db.are_dependencies_met("t-2")
 
@@ -137,24 +126,17 @@ class TestAgentCRUD:
 
     async def test_update_agent_state(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
-        )
-        await db.create_agent(
-            Agent(id="a-1", name="claude-1", agent_type="claude")
-        )
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await db.update_agent("a-1", state=AgentState.BUSY, current_task_id="t-1")
         result = await db.get_agent("a-1")
         assert result.state == AgentState.BUSY
         assert result.current_task_id == "t-1"
 
     async def test_list_idle_agents(self, db):
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await db.create_agent(
-            Agent(id="a-1", name="claude-1", agent_type="claude")
-        )
-        await db.create_agent(
-            Agent(id="a-2", name="claude-2", agent_type="claude",
-                  state=AgentState.BUSY)
+            Agent(id="a-2", name="claude-2", agent_type="claude", state=AgentState.BUSY)
         )
         idle = await db.list_agents(state=AgentState.IDLE)
         assert len(idle) == 1
@@ -164,12 +146,8 @@ class TestAgentCRUD:
 class TestTokenLedger:
     async def test_record_and_sum_tokens(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(
-            Agent(id="a-1", name="claude-1", agent_type="claude")
-        )
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
-        )
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.record_token_usage("p-1", "a-1", "t-1", 5000)
         await db.record_token_usage("p-1", "a-1", "t-1", 3000)
         total = await db.get_project_token_usage("p-1")
@@ -189,12 +167,9 @@ class TestAtomicTransition:
         """Task and agent state update atomically."""
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A",
-                 description="D", status=TaskStatus.READY)
+            Task(id="t-1", project_id="p-1", title="A", description="D", status=TaskStatus.READY)
         )
-        await db.create_agent(
-            Agent(id="a-1", name="claude-1", agent_type="claude")
-        )
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await db.assign_task_to_agent("t-1", "a-1")
         task = await db.get_task("t-1")
         agent = await db.get_agent("a-1")
@@ -207,11 +182,14 @@ class TestAtomicTransition:
 class TestWorkspaces:
     async def test_create_and_get_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/workspace",
-            source_type=RepoSourceType.LINK,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/workspace",
+                source_type=RepoSourceType.LINK,
+            )
+        )
         ws = await db.get_workspace("ws-1")
         assert ws is not None
         assert ws.workspace_path == "/tmp/workspace"
@@ -225,24 +203,36 @@ class TestWorkspaces:
     async def test_list_workspaces_by_project(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
-        await db.create_workspace(Workspace(
-            id="ws-2", project_id="p-2",
-            workspace_path="/tmp/ws2", source_type=RepoSourceType.CLONE,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-2",
+                workspace_path="/tmp/ws2",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
         workspaces = await db.list_workspaces(project_id="p-1")
         assert len(workspaces) == 1
         assert workspaces[0].id == "ws-1"
 
     async def test_delete_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
         await db.delete_workspace("ws-1")
         ws = await db.get_workspace("ws-1")
         assert ws is None
@@ -250,13 +240,15 @@ class TestWorkspaces:
     async def test_acquire_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
         )
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
         ws = await db.acquire_workspace("p-1", "a-1", "t-1")
         assert ws is not None
         assert ws.locked_by_agent_id == "a-1"
@@ -266,16 +258,16 @@ class TestWorkspaces:
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
         )
-        await db.create_task(
-            Task(id="t-2", project_id="p-1", title="B", description="D")
-        )
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
         await db.acquire_workspace("p-1", "a-1", "t-1")
         ws = await db.acquire_workspace("p-1", "a-2", "t-2")
         assert ws is None
@@ -283,13 +275,15 @@ class TestWorkspaces:
     async def test_release_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
         )
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
         await db.acquire_workspace("p-1", "a-1", "t-1")
         await db.release_workspace("ws-1")
         ws = await db.get_workspace("ws-1")
@@ -299,13 +293,15 @@ class TestWorkspaces:
     async def test_release_workspaces_for_agent(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
         )
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
         await db.acquire_workspace("p-1", "a-1", "t-1")
         count = await db.release_workspaces_for_agent("a-1")
         assert count == 1
@@ -314,10 +310,14 @@ class TestWorkspaces:
 
     async def test_get_project_workspace_path(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
         path = await db.get_project_workspace_path("p-1")
         assert path == "/tmp/ws1"
 
@@ -329,17 +329,23 @@ class TestWorkspaces:
     async def test_count_available_workspaces(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_task(
-            Task(id="t-1", project_id="p-1", title="A", description="D")
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
         )
-        await db.create_workspace(Workspace(
-            id="ws-1", project_id="p-1",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
-        ))
-        await db.create_workspace(Workspace(
-            id="ws-2", project_id="p-1",
-            workspace_path="/tmp/ws2", source_type=RepoSourceType.LINK,
-        ))
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-1",
+                workspace_path="/tmp/ws2",
+                source_type=RepoSourceType.LINK,
+            )
+        )
         assert await db.count_available_workspaces("p-1") == 2
 
         await db.acquire_workspace("p-1", "a-1", "t-1")

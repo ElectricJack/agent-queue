@@ -7,9 +7,21 @@ interactive prompts (wizard, confirmation dialogs, fuzzy search).
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
+
+
+def _getval(obj: Any, key: str, default: Any = None) -> Any:
+    """Get a value from a typed response or dict, normalising Unset → default."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    val = getattr(obj, key, default)
+    if type(val).__name__ == "Unset":
+        return default
+    return val
 
 
 @cli.group()
@@ -54,7 +66,8 @@ def task_create(
         async def _get_projects():
             async with _get_client(api_url) as client:
                 result = await client.execute("list_projects")
-                return [p["id"] for p in result.get("projects", [])]
+                projects = _getval(result, "projects", [])
+                return [_getval(p, "id") for p in projects]
 
         project_ids = _run(_get_projects())
         params = task_creation_wizard(project_ids)
@@ -67,11 +80,12 @@ def task_create(
             return await client.execute("create_task", params)
 
     result = _run(_create())
-    task_id = result.get("created", "?")
+    task_id = _getval(result, "created", "?")
     console.print()
     console.print(f"[bold green]Task created:[/] [bold bright_cyan]{task_id}[/]")
-    if result.get("title"):
-        console.print(f"  [dim]{result['title']}[/]")
+    title = _getval(result, "title")
+    if title:
+        console.print(f"  [dim]{title}[/]")
 
 
 @task.command("approve")
@@ -85,6 +99,7 @@ def task_approve(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Approve task '{task_id}'?"):
             console.print("[dim]Cancelled.[/]")
             return
@@ -94,7 +109,7 @@ def task_approve(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("approve_task", {"task_id": task_id})
 
     result = _run(_approve())
-    console.print(f"[bold green]Task approved:[/] {result.get('approved', task_id)}")
+    console.print(f"[bold green]Task approved:[/] {_getval(result, 'approved', task_id)}")
 
 
 @task.command("stop")
@@ -108,6 +123,7 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Stop task '{task_id}'? This will mark it as FAILED."):
             console.print("[dim]Cancelled.[/]")
             return
@@ -117,7 +133,7 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("stop_task", {"task_id": task_id})
 
     result = _run(_stop())
-    console.print(f"[bold yellow]Task stopped:[/] {result.get('stopped', task_id)}")
+    console.print(f"[bold yellow]Task stopped:[/] {_getval(result, 'stopped', task_id)}")
 
 
 @task.command("restart")
@@ -131,6 +147,7 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     if not yes:
         from .menus import confirm
+
         if not confirm(f"Restart task '{task_id}'?"):
             console.print("[dim]Cancelled.[/]")
             return
@@ -140,7 +157,7 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("restart_task", {"task_id": task_id})
 
     result = _run(_restart())
-    console.print(f"[bold green]Task restarted:[/] {result.get('restarted', task_id)}")
+    console.print(f"[bold green]Task restarted:[/] {_getval(result, 'restarted', task_id)}")
 
 
 @task.command("search")
@@ -165,10 +182,11 @@ def task_search(ctx: click.Context, query: str, project: str | None) -> None:
     result = _run(_search())
 
     q = query.lower()
-    raw_tasks = result.get("tasks", [])
+    raw_tasks = _getval(result, "tasks", [])
     matched = [
-        t for t in raw_tasks
-        if q in (t.get("title", "")).lower() or q in (t.get("description", "")).lower()
+        t
+        for t in raw_tasks
+        if q in (_getval(t, "title", "")).lower() or q in (_getval(t, "description", "")).lower()
     ]
     tasks = [task_proxy(t) for t in matched]
 
@@ -201,7 +219,7 @@ def task_select(ctx: click.Context, project: str | None) -> None:
             if project:
                 args["project_id"] = project
             result = await client.execute("list_tasks", args)
-            raw_tasks = result.get("tasks", [])
+            raw_tasks = _getval(result, "tasks", [])
             tasks = [task_proxy(t) for t in raw_tasks]
 
             if not tasks:
@@ -215,8 +233,10 @@ def task_select(ctx: click.Context, project: str | None) -> None:
 
             detail = await client.execute("get_task", {"task_id": selected.id})
             t = task_proxy(detail)
-            deps_on = [d["id"] for d in detail.get("depends_on", [])]
-            dependents = [d["id"] for d in detail.get("blocks", [])]
+            deps_raw = _getval(detail, "depends_on", [])
+            blocks_raw = _getval(detail, "blocks", [])
+            deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
+            dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
             panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
             console.print(panel)
 

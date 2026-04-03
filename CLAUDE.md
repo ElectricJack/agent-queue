@@ -13,7 +13,8 @@ Agent Queue — task queue and orchestrator for AI coding agents on throttled pl
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,cli]"
+pip install -e packages/aq-client      # typed API client (generated)
 pytest tests/                          # all tests
 pytest tests/test_orchestrator.py -v   # specific
 ./run.sh start                         # start daemon

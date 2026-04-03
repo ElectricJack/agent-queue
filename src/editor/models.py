@@ -60,7 +60,7 @@ class VoxelGrid:
         the column is empty.
         """
         max_z = None
-        for (vx, vy, vz) in self.voxels:
+        for vx, vy, vz in self.voxels:
             if vx == x and vy == y:
                 if max_z is None or vz > max_z:
                     max_z = vz
@@ -73,7 +73,7 @@ class VoxelGrid:
         the column is empty.
         """
         min_z = None
-        for (vx, vy, vz) in self.voxels:
+        for vx, vy, vz in self.voxels:
             if vx == x and vy == y:
                 if min_z is None or vz < min_z:
                     min_z = vz

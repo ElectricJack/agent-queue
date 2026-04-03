@@ -28,6 +28,7 @@ LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_pid() -> int | None:
     """Read and validate the PID from the PID file."""
     if not os.path.exists(PID_FILE):
@@ -55,7 +56,8 @@ def _find_daemon_pid() -> int | None:
     try:
         result = subprocess.run(
             ["pgrep", "-f", f"agent-queue.*{CONFIG_PATH}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0 and result.stdout.strip():
             return int(result.stdout.strip().split()[0])
@@ -67,6 +69,7 @@ def _find_daemon_pid() -> int | None:
 def _resolve_agent_queue_bin() -> str:
     """Find the agent-queue entry point binary."""
     import shutil
+
     path = shutil.which("agent-queue")
     if path:
         return path

@@ -64,7 +64,6 @@ CASES: list[TestCase] = [
         tags=["archive", "bulk", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
-
     # --- archive_task (single) ---
     TestCase(
         id="archive-single-task",
@@ -92,7 +91,6 @@ CASES: list[TestCase] = [
         tags=["archive", "single", "indirect"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- list_archived ---
     TestCase(
         id="archive-list-archived",
@@ -135,7 +133,6 @@ CASES: list[TestCase] = [
         tags=["archive", "list", "project-scoped"],
         difficulty=Difficulty.EASY,
     ),
-
     # --- restore_task ---
     TestCase(
         id="archive-restore-task",

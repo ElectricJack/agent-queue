@@ -1,4 +1,5 @@
 """Tests for the LoggedChatProvider wrapper."""
+
 import json
 import os
 from datetime import datetime, timezone

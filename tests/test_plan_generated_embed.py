@@ -4,6 +4,7 @@ Covers both the plain-text ``format_plan_generated()`` and the rich embed
 ``format_plan_generated_embed()`` functions, plus the helper
 ``_extract_description_snippet()``.
 """
+
 from __future__ import annotations
 
 import discord
@@ -21,6 +22,7 @@ from src.discord.embeds import TASK_TYPE_EMOJIS, check_embed_size
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_task(
     task_id: str = "task-001",
@@ -51,21 +53,24 @@ def _make_subtasks(count: int = 3, parent_id: str = "task-001") -> list[Task]:
     """Create a list of plan subtasks for testing."""
     tasks = []
     for i in range(count):
-        tasks.append(_make_task(
-            task_id=f"sub-{i+1:03d}",
-            title=f"Step {i+1}: Do thing {i+1}",
-            project_id="my-project",
-            description=f"Detailed description for step {i+1}.",
-            priority=100 + i,
-            is_plan_subtask=True,
-            parent_task_id=parent_id,
-        ))
+        tasks.append(
+            _make_task(
+                task_id=f"sub-{i + 1:03d}",
+                title=f"Step {i + 1}: Do thing {i + 1}",
+                project_id="my-project",
+                description=f"Detailed description for step {i + 1}.",
+                priority=100 + i,
+                is_plan_subtask=True,
+                parent_task_id=parent_id,
+            )
+        )
     return tasks
 
 
 # ---------------------------------------------------------------------------
 # format_plan_generated (plain text)
 # ---------------------------------------------------------------------------
+
 
 class TestFormatPlanGenerated:
     def test_basic_output_contains_key_info(self):
@@ -107,9 +112,7 @@ class TestFormatPlanGenerated:
     def test_workspace_shown_when_provided(self):
         parent = _make_task()
         subs = _make_subtasks(2)
-        result = format_plan_generated(
-            parent, subs, workspace_path="/home/user/workspace"
-        )
+        result = format_plan_generated(parent, subs, workspace_path="/home/user/workspace")
 
         assert "`/home/user/workspace`" in result
 
@@ -122,12 +125,14 @@ class TestFormatPlanGenerated:
 
     def test_task_type_emoji_shown(self):
         parent = _make_task()
-        subs = [_make_task(
-            task_id="sub-001",
-            title="Fix the bug",
-            task_type=TaskType.BUGFIX,
-            is_plan_subtask=True,
-        )]
+        subs = [
+            _make_task(
+                task_id="sub-001",
+                title="Fix the bug",
+                task_type=TaskType.BUGFIX,
+                is_plan_subtask=True,
+            )
+        ]
         result = format_plan_generated(parent, subs)
 
         assert TASK_TYPE_EMOJIS["bugfix"] in result
@@ -153,6 +158,7 @@ class TestFormatPlanGenerated:
 # ---------------------------------------------------------------------------
 # format_plan_generated_embed (rich embed)
 # ---------------------------------------------------------------------------
+
 
 class TestFormatPlanGeneratedEmbed:
     def test_returns_discord_embed(self):
@@ -249,12 +255,9 @@ class TestFormatPlanGeneratedEmbed:
         embed = format_plan_generated_embed(parent, subs)
 
         # Find step fields (skip header fields and separator)
-        step_fields = [
-            f for f in embed.fields
-            if f.name.startswith("Step") or "Step" in f.name
-        ]
+        step_fields = [f for f in embed.fields if f.name.startswith("Step") or "Step" in f.name]
         for idx, field in enumerate(step_fields):
-            expected_id = f"sub-{idx+1:03d}"
+            expected_id = f"sub-{idx + 1:03d}"
             assert expected_id in field.value
 
     def test_step_fields_contain_priority(self):
@@ -349,15 +352,17 @@ class TestFormatPlanGeneratedEmbed:
         )
         subs = []
         for i in range(5):  # Max steps
-            subs.append(_make_task(
-                task_id=f"sub-{i+1:03d}",
-                title=f"Long step title {'X' * 100}",
-                description=f"Very detailed description {'Y' * 300} for step {i+1}.",
-                priority=100 + i,
-                task_type=TaskType.FEATURE,
-                is_plan_subtask=True,
-                requires_approval=(i == 4),
-            ))
+            subs.append(
+                _make_task(
+                    task_id=f"sub-{i + 1:03d}",
+                    title=f"Long step title {'X' * 100}",
+                    description=f"Very detailed description {'Y' * 300} for step {i + 1}.",
+                    priority=100 + i,
+                    task_type=TaskType.FEATURE,
+                    is_plan_subtask=True,
+                    requires_approval=(i == 4),
+                )
+            )
         embed = format_plan_generated_embed(
             parent, subs, workspace_path="/very/long/workspace/path/here"
         )
@@ -384,9 +389,7 @@ class TestFormatPlanGeneratedEmbed:
         parent = _make_task()
         subs = _make_subtasks(1)
         long_path = "/home/user/very/deep/nested/workspace/directory/project"
-        embed = format_plan_generated_embed(
-            parent, subs, workspace_path=long_path
-        )
+        embed = format_plan_generated_embed(parent, subs, workspace_path=long_path)
 
         ws_field = next(f for f in embed.fields if f.name == "Workspace")
         # Should be truncated to last 2 components
@@ -410,6 +413,7 @@ class TestFormatPlanGeneratedEmbed:
 # ---------------------------------------------------------------------------
 # _extract_description_snippet
 # ---------------------------------------------------------------------------
+
 
 class TestExtractDescriptionSnippet:
     def test_returns_first_substantive_line(self):

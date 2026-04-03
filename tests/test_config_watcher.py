@@ -34,6 +34,7 @@ from src.event_bus import EventBus
 # diff_configs tests
 # ---------------------------------------------------------------------------
 
+
 class TestDiffConfigs:
     """Tests for diff_configs() helper."""
 
@@ -92,6 +93,7 @@ class TestDiffConfigs:
 # Classification constants tests
 # ---------------------------------------------------------------------------
 
+
 class TestClassificationConstants:
     """Verify that the hot-reload / restart classification sets are sane."""
 
@@ -113,6 +115,7 @@ class TestClassificationConstants:
 # ---------------------------------------------------------------------------
 # ConfigWatcher tests
 # ---------------------------------------------------------------------------
+
 
 class TestConfigWatcher:
     """Tests for the ConfigWatcher class."""
@@ -287,6 +290,7 @@ class TestConfigWatcher:
 # Integration: reload_config command
 # ---------------------------------------------------------------------------
 
+
 class TestReloadConfigCommand:
     """Test the reload_config command handler integration."""
 
@@ -312,11 +316,13 @@ class TestReloadConfigCommand:
 
         # Create a mock watcher that returns a result
         mock_watcher = MagicMock()
-        mock_watcher.reload = AsyncMock(return_value={
-            "changed_sections": ["scheduling"],
-            "applied": ["scheduling"],
-            "restart_required": [],
-        })
+        mock_watcher.reload = AsyncMock(
+            return_value={
+                "changed_sections": ["scheduling"],
+                "applied": ["scheduling"],
+                "restart_required": [],
+            }
+        )
 
         orch = MagicMock()
         orch._config_watcher = mock_watcher
@@ -334,11 +340,13 @@ class TestReloadConfigCommand:
         from src.command_handler import CommandHandler
 
         mock_watcher = MagicMock()
-        mock_watcher.reload = AsyncMock(return_value={
-            "changed_sections": [],
-            "applied": [],
-            "restart_required": [],
-        })
+        mock_watcher.reload = AsyncMock(
+            return_value={
+                "changed_sections": [],
+                "applied": [],
+                "restart_required": [],
+            }
+        )
 
         orch = MagicMock()
         orch._config_watcher = mock_watcher

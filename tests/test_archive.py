@@ -16,8 +16,15 @@ from src.command_handler import CommandHandler
 from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
 from src.models import (
-    Agent, AgentOutput, AgentResult, Project, RepoSourceType, Task,
-    TaskStatus, TaskType, Workspace,
+    Agent,
+    AgentOutput,
+    AgentResult,
+    Project,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    TaskType,
+    Workspace,
 )
 from src.orchestrator import Orchestrator
 
@@ -25,6 +32,7 @@ from src.orchestrator import Orchestrator
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 async def db(tmp_path):
@@ -47,12 +55,15 @@ async def _seed_project(
     await db.create_project(Project(id=pid, name=f"project-{pid}"))
     if workspace_path:
         import uuid
-        await db.create_workspace(Workspace(
-            id=f"ws-{uuid.uuid4().hex[:8]}",
-            project_id=pid,
-            workspace_path=workspace_path,
-            source_type=RepoSourceType.LINK,
-        ))
+
+        await db.create_workspace(
+            Workspace(
+                id=f"ws-{uuid.uuid4().hex[:8]}",
+                project_id=pid,
+                workspace_path=workspace_path,
+                source_type=RepoSourceType.LINK,
+            )
+        )
 
 
 async def _seed_task(
@@ -65,8 +76,11 @@ async def _seed_task(
 ) -> Task:
     """Create and persist a task, returning it."""
     task = Task(
-        id=tid, project_id=pid, title=title,
-        description=f"Description of {title}", status=status,
+        id=tid,
+        project_id=pid,
+        title=title,
+        description=f"Description of {title}",
+        status=status,
         **kwargs,
     )
     await db.create_task(task)
@@ -76,6 +90,7 @@ async def _seed_task(
 # ---------------------------------------------------------------------------
 # Database layer tests
 # ---------------------------------------------------------------------------
+
 
 class TestArchiveTask:
     async def test_archive_completed_task(self, db):
@@ -103,10 +118,15 @@ class TestArchiveTask:
     async def test_archive_preserves_task_fields(self, db):
         await _seed_project(db)
         task = Task(
-            id="t-full", project_id="p-1", title="Full Task",
-            description="Lots of details", priority=42,
-            status=TaskStatus.COMPLETED, max_retries=5,
-            branch_name="feature/foo", pr_url="https://github.com/pr/123",
+            id="t-full",
+            project_id="p-1",
+            title="Full Task",
+            description="Lots of details",
+            priority=42,
+            status=TaskStatus.COMPLETED,
+            max_retries=5,
+            branch_name="feature/foo",
+            pr_url="https://github.com/pr/123",
         )
         await db.create_task(task)
         await db.archive_task("t-full")
@@ -124,8 +144,11 @@ class TestArchiveTask:
         await _seed_project(db)
         await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
         await _seed_task(
-            db, "t-child", status=TaskStatus.READY,
-            title="Child", parent_task_id="t-parent",
+            db,
+            "t-child",
+            status=TaskStatus.READY,
+            title="Child",
+            parent_task_id="t-parent",
         )
 
         # This used to raise "FOREIGN KEY constraint failed"
@@ -147,7 +170,9 @@ class TestArchiveTask:
         await _seed_project(db)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
         agent = Agent(
-            id="a-1", name="test-agent", agent_type="claude",
+            id="a-1",
+            name="test-agent",
+            agent_type="claude",
             current_task_id="t-1",
         )
         await db.create_agent(agent)
@@ -164,7 +189,8 @@ class TestArchiveTask:
         await _seed_project(db)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
         ws = Workspace(
-            id="ws-1", project_id="p-1",
+            id="ws-1",
+            project_id="p-1",
             workspace_path="/tmp/ws",
             source_type=RepoSourceType.LINK,
             locked_by_task_id="t-1",
@@ -308,6 +334,7 @@ class TestDeleteArchivedTask:
 # Command handler tests
 # ---------------------------------------------------------------------------
 
+
 class TestArchiveCommands:
     """Integration tests for archive commands through the CommandHandler.
 
@@ -355,10 +382,13 @@ class TestArchiveCommands:
         await _seed_task(db, "t-3", status=TaskStatus.BLOCKED, title="Blocked")
         await _seed_task(db, "t-4", status=TaskStatus.READY, title="Active")
 
-        result = await handler.execute("archive_tasks", {
-            "project_id": "p-1",
-            "include_failed": True,
-        })
+        result = await handler.execute(
+            "archive_tasks",
+            {
+                "project_id": "p-1",
+                "include_failed": True,
+            },
+        )
         assert "error" not in result
         assert result["archived_count"] == 3
         assert set(result["archived_ids"]) == {"t-1", "t-2", "t-3"}
@@ -467,6 +497,7 @@ class TestArchiveCommands:
 # Markdown note export tests
 # ---------------------------------------------------------------------------
 
+
 class TestArchiveMarkdownNotes:
     """Tests that archiving writes markdown reference notes to data dir."""
 
@@ -507,7 +538,10 @@ class TestArchiveMarkdownNotes:
         assert "COMPLETED" in content
 
     async def test_archive_removes_from_active_keeps_in_archive_table(
-        self, handler, db, tmp_path,
+        self,
+        handler,
+        db,
+        tmp_path,
     ):
         ws = str(tmp_path / "workspaces" / "p-1")
         await _seed_project(db, workspace_path=ws)
@@ -525,7 +559,8 @@ class TestArchiveMarkdownNotes:
         await _seed_task(db, "t-1", title="Result task", status=TaskStatus.COMPLETED)
         await db.create_agent(Agent(id="a-1", name="Test Agent", agent_type="claude"))
         await db.save_task_result(
-            "t-1", "a-1",
+            "t-1",
+            "a-1",
             AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary="Implemented the feature successfully",
@@ -548,7 +583,9 @@ class TestArchiveMarkdownNotes:
         ws = str(tmp_path / "workspaces" / "p-1")
         await _seed_project(db, workspace_path=ws)
         await _seed_task(
-            db, "t-meta", title="Metadata task",
+            db,
+            "t-meta",
+            title="Metadata task",
             status=TaskStatus.COMPLETED,
             task_type=TaskType.FEATURE,
             branch_name="feat/metadata-task",
@@ -611,6 +648,7 @@ class TestArchiveMarkdownNotes:
 # Database: archive_old_terminal_tasks tests
 # ---------------------------------------------------------------------------
 
+
 class TestArchiveOldTerminalTasks:
     async def test_archive_old_completed_tasks(self, db):
         await _seed_project(db)
@@ -619,12 +657,14 @@ class TestArchiveOldTerminalTasks:
         # Manually backdate updated_at to simulate an old task
         old_time = time.time() - 86400 * 2  # 2 days ago
         await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (old_time, "t-1"),
         )
         await db._db.commit()
 
         archived_ids = await db.archive_old_terminal_tasks(
-            statuses=["COMPLETED"], older_than_seconds=3600,
+            statuses=["COMPLETED"],
+            older_than_seconds=3600,
         )
         assert archived_ids == ["t-1"]
         assert await db.get_task("t-1") is None
@@ -636,7 +676,8 @@ class TestArchiveOldTerminalTasks:
 
         # Task was just created — should not be archived with a 1-hour threshold
         archived_ids = await db.archive_old_terminal_tasks(
-            statuses=["COMPLETED"], older_than_seconds=3600,
+            statuses=["COMPLETED"],
+            older_than_seconds=3600,
         )
         assert archived_ids == []
         assert await db.get_task("t-1") is not None
@@ -651,13 +692,15 @@ class TestArchiveOldTerminalTasks:
         old_time = time.time() - 86400
         for tid in ("t-1", "t-2", "t-3"):
             await db._db.execute(
-                "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, tid),
+                "UPDATE tasks SET updated_at = ? WHERE id = ?",
+                (old_time, tid),
             )
         await db._db.commit()
 
         # Only archive COMPLETED (not FAILED or READY)
         archived_ids = await db.archive_old_terminal_tasks(
-            statuses=["COMPLETED"], older_than_seconds=3600,
+            statuses=["COMPLETED"],
+            older_than_seconds=3600,
         )
         assert archived_ids == ["t-1"]
         assert await db.get_task("t-2") is not None  # FAILED still active
@@ -672,7 +715,8 @@ class TestArchiveOldTerminalTasks:
         old_time = time.time() - 86400
         for tid in ("t-1", "t-2", "t-3"):
             await db._db.execute(
-                "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, tid),
+                "UPDATE tasks SET updated_at = ? WHERE id = ?",
+                (old_time, tid),
             )
         await db._db.commit()
 
@@ -687,7 +731,8 @@ class TestArchiveOldTerminalTasks:
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
 
         archived_ids = await db.archive_old_terminal_tasks(
-            statuses=[], older_than_seconds=0,
+            statuses=[],
+            older_than_seconds=0,
         )
         assert archived_ids == []
 
@@ -695,6 +740,7 @@ class TestArchiveOldTerminalTasks:
 # ---------------------------------------------------------------------------
 # Orchestrator auto-archive tests
 # ---------------------------------------------------------------------------
+
 
 class TestAutoArchive:
     @pytest.fixture
@@ -721,7 +767,8 @@ class TestAutoArchive:
         # Backdate task to 2 hours ago
         old_time = time.time() - 7200
         await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (old_time, "t-1"),
         )
         await db._db.commit()
 
@@ -748,7 +795,8 @@ class TestAutoArchive:
 
         old_time = time.time() - 7200
         await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (old_time, "t-1"),
         )
         await db._db.commit()
 
@@ -765,7 +813,8 @@ class TestAutoArchive:
 
         old_time = time.time() - 86400
         await db._db.execute(
-            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (old_time, "t-1"),
         )
         await db._db.commit()
 

@@ -65,10 +65,12 @@ def cron(expression: str, *, config_key: str | None = None):
         config_key: Optional config key whose value overrides ``expression``
                     at runtime.
     """
+
     def decorator(func: Callable) -> Callable:
         func._cron_expression = expression  # type: ignore[attr-defined]
         func._cron_config_key = config_key  # type: ignore[attr-defined]
         return func
+
     return decorator
 
 
@@ -79,18 +81,20 @@ def cron(expression: str, *, config_key: str | None = None):
 
 class PluginStatus(Enum):
     """Lifecycle states for an installed plugin."""
-    INSTALLED = "installed"      # On disk, not yet loaded
-    ACTIVE = "active"            # Loaded and running
-    DISABLED = "disabled"        # Explicitly disabled by user
-    ERROR = "error"              # Failed to load or crashed
+
+    INSTALLED = "installed"  # On disk, not yet loaded
+    ACTIVE = "active"  # Loaded and running
+    DISABLED = "disabled"  # Explicitly disabled by user
+    ERROR = "error"  # Failed to load or crashed
 
 
 class PluginPermission(Enum):
     """Granular permission flags declared in plugin.yaml."""
-    NETWORK = "network"          # HTTP/socket access
-    FILESYSTEM = "filesystem"    # Read/write outside plugin data dir
-    DATABASE = "database"        # Direct DB queries (discouraged)
-    SHELL = "shell"              # Subprocess execution
+
+    NETWORK = "network"  # HTTP/socket access
+    FILESYSTEM = "filesystem"  # Read/write outside plugin data dir
+    DATABASE = "database"  # Direct DB queries (discouraged)
+    SHELL = "shell"  # Subprocess execution
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +109,7 @@ class PluginInfo:
     This is the static declaration of what a plugin is and what it needs.
     It does NOT change at runtime.
     """
+
     name: str
     version: str
     description: str = ""
@@ -316,8 +321,7 @@ class PluginContext:
         if self._notify_callback:
             await self._notify_callback(message, project_id=project_id)
         else:
-            logger.info("Plugin '%s' notification (no callback): %s",
-                       self._plugin_name, message)
+            logger.info("Plugin '%s' notification (no callback): %s", self._plugin_name, message)
 
     # --- LLM Invocation ---
 
@@ -353,7 +357,11 @@ class PluginContext:
         if not self._invoke_llm_callback:
             raise RuntimeError("LLM invocation not available")
         return await self._invoke_llm_callback(
-            prompt, self._plugin_name, model=model, provider=provider, tools=tools,
+            prompt,
+            self._plugin_name,
+            model=model,
+            provider=provider,
+            tools=tools,
         )
 
     # --- Configuration ---
@@ -469,9 +477,7 @@ class PluginContext:
         if not prompt_path.exists():
             prompt_path = self._prompts_dir / f"{name}.txt"
         if not prompt_path.exists():
-            raise FileNotFoundError(
-                f"Prompt '{name}' not found in {self._prompts_dir}"
-            )
+            raise FileNotFoundError(f"Prompt '{name}' not found in {self._prompts_dir}")
 
         text = prompt_path.read_text()
         if variables:
@@ -547,6 +553,11 @@ class Plugin(abc.ABC):
 
     default_config: dict = {}
     """Default configuration values."""
+
+    def __init__(self) -> None:
+        # Seed self.config so CLI commands work even before initialize() runs.
+        # initialize() should overwrite this with ctx.get_config().
+        self.config: dict = dict(self.default_config)
 
     @abc.abstractmethod
     async def initialize(self, ctx: PluginContext) -> None:

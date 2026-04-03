@@ -22,7 +22,10 @@ def _build_sample_tools() -> list[dict]:
         tools.append(_make_tool(name))
     # Add some core tools (not in _TOOL_CATEGORIES)
     for core_name in [
-        "create_task", "list_tasks", "edit_task", "get_task",
+        "create_task",
+        "list_tasks",
+        "edit_task",
+        "get_task",
         "memory_search",
     ]:
         tools.append(_make_tool(core_name))
@@ -50,7 +53,17 @@ def test_registry_has_core_tools(registry):
 def test_registry_has_categories(registry):
     categories = registry.get_categories()
     cat_names = {c["name"] for c in categories}
-    assert cat_names == {"files", "git", "project", "agent", "hooks", "memory", "system", "task", "plugin"}
+    assert cat_names == {
+        "files",
+        "git",
+        "project",
+        "agent",
+        "hooks",
+        "memory",
+        "system",
+        "task",
+        "plugin",
+    }
 
     for cat in categories:
         assert "name" in cat
@@ -79,7 +92,7 @@ def test_all_tools_returns_everything(registry):
     all_tools = registry.get_all_tools()
     all_names = {t["name"] for t in all_tools}
     assert "create_task" in all_names  # core
-    assert "git_push" in all_names     # git category
+    assert "git_push" in all_names  # git category
     assert "create_project" in all_names  # project category
 
 
@@ -87,8 +100,7 @@ def test_no_duplicate_tool_names(registry):
     all_tools = registry.get_all_tools()
     names = [t["name"] for t in all_tools]
     assert len(names) == len(set(names)), (
-        f"Duplicate tool names found: "
-        f"{[n for n in names if names.count(n) > 1]}"
+        f"Duplicate tool names found: {[n for n in names if names.count(n) > 1]}"
     )
 
 
@@ -121,6 +133,7 @@ from unittest.mock import AsyncMock, MagicMock
 def _get_command_handler():
     """Import CommandHandler."""
     from src.command_handler import CommandHandler
+
     return CommandHandler
 
 
@@ -150,9 +163,7 @@ def test_cmd_browse_tools():
 
 def test_cmd_load_tools_valid_category():
     handler = _make_handler()
-    result = asyncio.run(
-        handler.execute("load_tools", {"category": "git"})
-    )
+    result = asyncio.run(handler.execute("load_tools", {"category": "git"}))
 
     assert result["loaded"] == "git"
     assert "tools_added" in result
@@ -162,18 +173,21 @@ def test_cmd_load_tools_valid_category():
 
 def test_cmd_load_tools_invalid_category():
     handler = _make_handler()
-    result = asyncio.run(
-        handler.execute("load_tools", {"category": "nonexistent"})
-    )
+    result = asyncio.run(handler.execute("load_tools", {"category": "nonexistent"}))
     assert "error" in result
 
 
 def test_cmd_send_message_stub():
     handler = _make_handler()
-    result = asyncio.run(handler.execute("send_message", {
-        "channel_id": "12345",
-        "content": "Hello world",
-    }))
+    result = asyncio.run(
+        handler.execute(
+            "send_message",
+            {
+                "channel_id": "12345",
+                "content": "Hello world",
+            },
+        )
+    )
     # send_message needs Discord bot reference; without it, error
     assert "error" in result or "success" in result
 
@@ -189,12 +203,13 @@ def test_cmd_save_rule():
     handler = _make_handler()
     # Ensure the real implementation is wired (not a Phase 2 stub)
     # Full save_rule testing is in test_rule_manager.py
-    assert hasattr(handler, '_cmd_save_rule')
+    assert hasattr(handler, "_cmd_save_rule")
 
 
 # -------------------------------------------------------------------
 # Mutable tool set tests (chat() behavior)
 # -------------------------------------------------------------------
+
 
 def test_chat_starts_with_core_tools_only(registry):
     """Verify core tools are significantly fewer than all tools."""
@@ -202,9 +217,7 @@ def test_chat_starts_with_core_tools_only(registry):
     all_count = len(registry.get_all_tools())
 
     # Core should be significantly fewer than all
-    assert core_count < all_count, (
-        f"Core ({core_count}) should be fewer than all ({all_count})"
-    )
+    assert core_count < all_count, f"Core ({core_count}) should be fewer than all ({all_count})"
 
 
 def test_load_tools_expands_active_set(registry):
@@ -245,6 +258,7 @@ def test_load_tools_idempotent(registry):
 # Tool count preservation after split (Task 5)
 # -------------------------------------------------------------------
 
+
 def test_total_tool_count_preserved():
     """Verify no tools were lost in the split."""
     registry = ToolRegistry(tools=_build_sample_tools())
@@ -253,9 +267,15 @@ def test_total_tool_count_preserved():
 
     # These are the new navigation tools added by the registry
     expected_new_tools = {
-        "browse_tools", "load_tools", "send_message",
+        "browse_tools",
+        "load_tools",
+        "send_message",
         "reply_to_user",
-        "list_rules", "load_rule", "save_rule", "delete_rule", "refresh_hooks",
+        "list_rules",
+        "load_rule",
+        "save_rule",
+        "delete_rule",
+        "refresh_hooks",
     }
 
     # Every original categorized tool should still exist
@@ -268,7 +288,10 @@ def test_total_tool_count_preserved():
 
     # Core task tools should be present
     for name in [
-        "create_task", "list_tasks", "edit_task", "get_task",
+        "create_task",
+        "list_tasks",
+        "edit_task",
+        "get_task",
         "memory_search",
     ]:
         assert name in all_names, f"Core tool {name} missing"
@@ -277,6 +300,7 @@ def test_total_tool_count_preserved():
 # -------------------------------------------------------------------
 # Compact prompt tests (Task 6)
 # -------------------------------------------------------------------
+
 
 def test_core_tools_are_compact(registry):
     """Core tools should be significantly fewer than all tools."""
@@ -294,28 +318,26 @@ def test_core_tools_are_compact(registry):
 # Tool description quality tests (Task 7)
 # -------------------------------------------------------------------
 
+
 def test_all_tools_have_descriptions():
     """Every tool should have a non-empty description."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     for tool in registry.get_all_tools():
-        assert "description" in tool, (
-            f"Tool {tool['name']} missing description"
-        )
+        assert "description" in tool, f"Tool {tool['name']} missing description"
         assert len(tool["description"]) > 10, (
-            f"Tool {tool['name']} has too-short description: "
-            f"{tool['description']}"
+            f"Tool {tool['name']} has too-short description: {tool['description']}"
         )
 
 
 def test_all_tools_have_input_schema():
     """Every tool should have an input_schema."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     for tool in registry.get_all_tools():
-        assert "input_schema" in tool, (
-            f"Tool {tool['name']} missing input_schema"
-        )
+        assert "input_schema" in tool, f"Tool {tool['name']} missing input_schema"
 
 
 def test_system_prompt_is_compact():
@@ -323,24 +345,22 @@ def test_system_prompt_is_compact():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder()
-    builder.set_identity(
-        "chat-agent-system", {"workspace_dir": "/tmp/test"}
-    )
+    builder.set_identity("chat-agent-system", {"workspace_dir": "/tmp/test"})
     prompt, _ = builder.build()
 
     line_count = len(prompt.split("\n"))
-    assert line_count < 500, (
-        f"System prompt is {line_count} lines -- should be compact"
-    )
+    assert line_count < 500, f"System prompt is {line_count} lines -- should be compact"
 
 
 # -------------------------------------------------------------------
 # Tool search tests (prompt-based category pre-loading)
 # -------------------------------------------------------------------
 
+
 def test_search_relevant_categories_git_query():
     """Git-related queries should return the git category."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("commit and push my changes")
     assert "git" in cats
@@ -349,6 +369,7 @@ def test_search_relevant_categories_git_query():
 def test_search_relevant_categories_project_query():
     """Project management queries should return the project category."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("create a new project with workspace")
     assert "project" in cats
@@ -357,6 +378,7 @@ def test_search_relevant_categories_project_query():
 def test_search_relevant_categories_files_query():
     """File-related queries should return the files category."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("read the file and grep for errors")
     assert "files" in cats
@@ -365,6 +387,7 @@ def test_search_relevant_categories_files_query():
 def test_search_relevant_categories_hooks_query():
     """Hook-related queries should return the hooks category."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("create a hook that fires on schedule")
     assert "hooks" in cats
@@ -373,6 +396,7 @@ def test_search_relevant_categories_hooks_query():
 def test_search_relevant_categories_memory_query():
     """Memory-related queries should return the memory category."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("reindex memory and compact notes")
     assert "memory" in cats
@@ -381,6 +405,7 @@ def test_search_relevant_categories_memory_query():
 def test_search_relevant_categories_empty_query():
     """Empty query should return no categories."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories("")
     assert cats == []
@@ -389,6 +414,7 @@ def test_search_relevant_categories_empty_query():
 def test_search_relevant_categories_max_limit():
     """Should return at most max_categories results."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     cats = registry.search_relevant_categories(
         "commit project files hooks memory agent system",
@@ -400,10 +426,9 @@ def test_search_relevant_categories_max_limit():
 def test_search_relevant_categories_respects_min_score():
     """Very unrelated queries should return few or no categories."""
     from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
     registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
-    cats = registry.search_relevant_categories(
-        "xyzzy plugh frobozz", min_score=0.5
-    )
+    cats = registry.search_relevant_categories("xyzzy plugh frobozz", min_score=0.5)
     assert len(cats) == 0
 
 
@@ -506,6 +531,7 @@ class TestCompressToolSchema:
         comp = reg.get_core_tools(compressed=True)
         assert len(full) == len(comp)
         import json
+
         full_size = len(json.dumps(full))
         comp_size = len(json.dumps(comp))
         assert comp_size < full_size
@@ -520,4 +546,5 @@ class TestCompressToolSchema:
         assert full is not None and comp is not None
         assert len(full) == len(comp)
         import json
+
         assert len(json.dumps(comp)) < len(json.dumps(full))

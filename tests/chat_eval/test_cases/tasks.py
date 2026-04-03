@@ -227,7 +227,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # list_active_tasks_all_projects — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -279,7 +278,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_task_tree — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -291,7 +289,10 @@ CASES: list[TestCase] = [
         tags=["get_task_tree", "read"],
         setup_commands=[
             ("create_project", {"name": "TreeTest"}),
-            ("create_task", {"project_id": "p-1", "title": "Root Task", "description": "A root task"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Root Task", "description": "A root task"},
+            ),
         ],
         turns=[
             Turn(
@@ -329,7 +330,10 @@ CASES: list[TestCase] = [
         tags=["get_task_tree", "read"],
         setup_commands=[
             ("create_project", {"name": "CompactTree"}),
-            ("create_task", {"project_id": "p-1", "title": "Big Plan", "description": "Task with subtasks"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Big Plan", "description": "Task with subtasks"},
+            ),
         ],
         turns=[
             Turn(
@@ -343,7 +347,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # create_task — TRIVIAL / EASY / MEDIUM / HARD
     # -----------------------------------------------------------------------
@@ -584,7 +587,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_task — TRIVIAL / EASY
     # -----------------------------------------------------------------------
@@ -615,7 +617,10 @@ CASES: list[TestCase] = [
         tags=["get_task", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "Details"}),
-            ("create_task", {"project_id": "p-1", "title": "Important Task", "description": "Details here"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Important Task", "description": "Details here"},
+            ),
         ],
         turns=[
             Turn(
@@ -645,7 +650,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # edit_task — EASY / MEDIUM / HARD
     # -----------------------------------------------------------------------
@@ -773,7 +777,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # delete_task — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -815,7 +818,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_task_result — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -846,7 +848,10 @@ CASES: list[TestCase] = [
         tags=["get_task_result", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "OutputProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Mystery Task", "description": "What happened"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Mystery Task", "description": "What happened"},
+            ),
         ],
         turns=[
             Turn(
@@ -876,7 +881,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_task_diff — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -888,7 +892,10 @@ CASES: list[TestCase] = [
         tags=["get_task_diff", "read"],
         setup_commands=[
             ("create_project", {"name": "DiffProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Code Change", "description": "Changed code"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Code Change", "description": "Changed code"},
+            ),
         ],
         turns=[
             Turn(
@@ -907,7 +914,10 @@ CASES: list[TestCase] = [
         tags=["get_task_diff", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "CodeReview"}),
-            ("create_task", {"project_id": "p-1", "title": "Refactor", "description": "Refactored"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Refactor", "description": "Refactored"},
+            ),
         ],
         turns=[
             Turn(
@@ -926,7 +936,10 @@ CASES: list[TestCase] = [
         tags=["get_task_diff", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "Review"}),
-            ("create_task", {"project_id": "p-1", "title": "Feature", "description": "New feature"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Feature", "description": "New feature"},
+            ),
         ],
         turns=[
             Turn(
@@ -937,7 +950,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # get_agent_error — EASY / MEDIUM
     # -----------------------------------------------------------------------
@@ -968,7 +980,10 @@ CASES: list[TestCase] = [
         tags=["get_agent_error", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "FailProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Crashing", "description": "Keeps crashing"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Crashing", "description": "Keeps crashing"},
+            ),
         ],
         turns=[
             Turn(
@@ -987,7 +1002,10 @@ CASES: list[TestCase] = [
         tags=["get_agent_error", "read", "natural-language"],
         setup_commands=[
             ("create_project", {"name": "DiagProj"}),
-            ("create_task", {"project_id": "p-1", "title": "Errored", "description": "Errored out"}),
+            (
+                "create_task",
+                {"project_id": "p-1", "title": "Errored", "description": "Errored out"},
+            ),
         ],
         turns=[
             Turn(

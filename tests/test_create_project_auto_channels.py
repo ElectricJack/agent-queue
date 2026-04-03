@@ -86,9 +86,7 @@ class TestBasicProjectCreation:
         assert project.name == "My App"
 
     async def test_project_id_normalisation(self, handler_auto_off):
-        result = await handler_auto_off.execute(
-            "create_project", {"name": "Hello World App"}
-        )
+        result = await handler_auto_off.execute("create_project", {"name": "Hello World App"})
         assert result["created"] == "hello-world-app"
 
     async def test_custom_credit_weight(self, handler_auto_off, db):
@@ -118,17 +116,13 @@ class TestAutoCreateChannelsFlag:
 
     async def test_default_false_when_config_off(self, handler_auto_off):
         """When config auto_create is False and no explicit arg, result is False."""
-        result = await handler_auto_off.execute(
-            "create_project", {"name": "NoChannels"}
-        )
+        result = await handler_auto_off.execute("create_project", {"name": "NoChannels"})
         assert "error" not in result
         assert result["auto_create_channels"] is False
 
     async def test_default_true_when_config_on(self, handler_auto_on):
         """When config auto_create is True and no explicit arg, result is True."""
-        result = await handler_auto_on.execute(
-            "create_project", {"name": "WithChannels"}
-        )
+        result = await handler_auto_on.execute("create_project", {"name": "WithChannels"})
         assert "error" not in result
         assert result["auto_create_channels"] is True
 
@@ -170,18 +164,14 @@ class TestResultStructure:
     """Verify the result dict has all expected fields."""
 
     async def test_result_contains_all_fields(self, handler_auto_off):
-        result = await handler_auto_off.execute(
-            "create_project", {"name": "Complete"}
-        )
+        result = await handler_auto_off.execute("create_project", {"name": "Complete"})
 
         assert "created" in result
         assert "name" in result
         assert "auto_create_channels" in result
 
     async def test_result_types(self, handler_auto_off):
-        result = await handler_auto_off.execute(
-            "create_project", {"name": "Types"}
-        )
+        result = await handler_auto_off.execute("create_project", {"name": "Types"})
 
         assert isinstance(result["created"], str)
         assert isinstance(result["name"], str)

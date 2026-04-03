@@ -1,8 +1,8 @@
 """REST client for CLI operations.
 
-Delegates all commands to the daemon's ``/api/execute`` endpoint, which
-calls ``CommandHandler.execute()`` — the same code path as Discord and
-MCP clients.  No business logic is reimplemented here.
+Delegates commands to the daemon's typed API endpoints (``/api/{category}/{command}``)
+via the generated ``agent_queue_api_client`` package.  Falls back to the generic
+``/api/execute`` endpoint for commands not covered by the generated client.
 
 Plugin operations still need direct database access (filesystem ops that
 don't belong in CommandHandler), so ``PluginClient`` is provided as a
@@ -11,17 +11,23 @@ separate class for that purpose.
 
 from __future__ import annotations
 
+import importlib
+import logging
 import os
+import pkgutil
 from typing import Any
 
 import httpx
 
 from .exceptions import CommandError, DaemonNotRunningError
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # URL resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_api_url() -> str:
     """Resolve the daemon API base URL.
@@ -40,6 +46,7 @@ def _resolve_api_url() -> str:
     if os.path.exists(config_file):
         try:
             import yaml
+
             with open(config_file) as f:
                 cfg = yaml.safe_load(f) or {}
             mcp = cfg.get("mcp_server", {})
@@ -53,11 +60,73 @@ def _resolve_api_url() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Typed endpoint dispatch
+# ---------------------------------------------------------------------------
+
+# Lazily built map: command_name → (api_module, request_model_class)
+_TYPED_DISPATCH: dict[str, tuple[Any, type]] | None = None
+
+
+def _build_typed_dispatch() -> dict[str, tuple[Any, type]]:
+    """Discover all generated API functions and their request models.
+
+    Returns a dict mapping command names to (module, RequestModelClass) tuples.
+    The module has an ``asyncio()`` function that accepts ``client`` and ``body``.
+    """
+    dispatch: dict[str, tuple[Any, type]] = {}
+    try:
+        import agent_queue_api_client.api as api_pkg
+
+        for _, cat_name, ispkg in pkgutil.iter_modules(api_pkg.__path__):
+            if not ispkg:
+                continue
+            cat_mod = importlib.import_module(f"agent_queue_api_client.api.{cat_name}")
+            for _, func_name, _ in pkgutil.iter_modules(cat_mod.__path__):
+                try:
+                    mod = importlib.import_module(
+                        f"agent_queue_api_client.api.{cat_name}.{func_name}"
+                    )
+                    if not hasattr(mod, "asyncio"):
+                        continue
+                    # Find the request model: look for the _get_kwargs body param type
+                    # Convention: {FuncName}Request in the module's imports
+                    req_model = None
+                    for attr_name in dir(mod):
+                        obj = getattr(mod, attr_name)
+                        if (
+                            isinstance(obj, type)
+                            and attr_name.endswith("Request")
+                            and hasattr(obj, "to_dict")
+                        ):
+                            req_model = obj
+                            break
+                    if req_model is not None:
+                        dispatch[func_name] = (mod, req_model)
+                except Exception:
+                    pass
+    except ImportError:
+        logger.debug("agent_queue_api_client not installed, typed dispatch unavailable")
+    return dispatch
+
+
+def _get_typed_dispatch() -> dict[str, tuple[Any, type]]:
+    """Get or build the typed dispatch map (cached)."""
+    global _TYPED_DISPATCH
+    if _TYPED_DISPATCH is None:
+        _TYPED_DISPATCH = _build_typed_dispatch()
+    return _TYPED_DISPATCH
+
+
+# ---------------------------------------------------------------------------
 # REST CLI client
 # ---------------------------------------------------------------------------
 
+
 class CLIClient:
     """Async HTTP client that delegates commands to the daemon.
+
+    Routes commands through the generated typed API client when possible,
+    falling back to ``/api/execute`` for unrecognized commands.
 
     Usage::
 
@@ -68,6 +137,7 @@ class CLIClient:
     def __init__(self, base_url: str | None = None):
         self._base_url = base_url or _resolve_api_url()
         self._http: httpx.AsyncClient | None = None
+        self._generated_client: Any | None = None
 
     async def connect(self) -> None:
         self._http = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
@@ -79,7 +149,18 @@ class CLIClient:
             self._http = None
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
 
+        # Set up the generated client, sharing the same httpx.AsyncClient
+        try:
+            from agent_queue_api_client.client import Client
+
+            self._generated_client = Client(base_url=self._base_url, timeout=30.0)
+            self._generated_client.set_async_httpx_client(self._http)
+        except ImportError:
+            pass
+
     async def close(self) -> None:
+        # Don't close the httpx client via generated client — we own it
+        self._generated_client = None
         if self._http:
             await self._http.aclose()
             self._http = None
@@ -91,18 +172,64 @@ class CLIClient:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def execute(self, command: str, args: dict[str, Any] | None = None) -> dict:
+    async def execute(self, command: str, args: dict[str, Any] | None = None) -> Any:
         """Execute a CommandHandler command via the REST API.
 
-        Returns the result dict on success.
+        Routes through the typed endpoint when available, falls back to /api/execute.
+
+        Returns the typed response model when the generated client handles the
+        command, or a plain dict from the generic ``/api/execute`` fallback.
         Raises ``CommandError`` if the command returns an error.
         Raises ``DaemonNotRunningError`` on connection failure.
         """
+        # Try typed endpoint first
+        if self._generated_client is not None:
+            dispatch = _get_typed_dispatch()
+            entry = dispatch.get(command)
+            if entry is not None:
+                return await self._execute_typed(command, args or {}, entry)
+
+        # Fallback to generic /api/execute
+        return await self._execute_generic(command, args or {})
+
+    async def _execute_typed(
+        self,
+        command: str,
+        args: dict[str, Any],
+        entry: tuple[Any, type],
+    ) -> Any:
+        """Execute via the generated typed API client.
+
+        Returns the typed response model directly (no dict conversion).
+        """
+        mod, req_model = entry
+        try:
+            # Build the request model from args
+            body = req_model(**args)
+            result = await mod.asyncio(client=self._generated_client, body=body)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except TypeError as exc:
+            # Request model construction failed — fall back to generic
+            logger.debug("Typed call for %s failed (%s), falling back", command, exc)
+            return await self._execute_generic(command, args)
+
+        if result is None:
+            raise CommandError(command, "No response from server")
+
+        # Check for error response (422 models have an 'error' field)
+        if hasattr(result, "error") and result.error is not None:
+            raise CommandError(command, result.error)
+
+        return result
+
+    async def _execute_generic(self, command: str, args: dict[str, Any]) -> dict:
+        """Execute via the generic /api/execute endpoint."""
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.post(
                 "/api/execute",
-                json={"command": command, "args": args or {}},
+                json={"command": command, "args": args},
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
@@ -127,6 +254,7 @@ class CLIClient:
 # Plugin client — direct DB access for plugin management operations
 # ---------------------------------------------------------------------------
 
+
 class PluginClient:
     """Direct database client for plugin management operations.
 
@@ -141,6 +269,7 @@ class PluginClient:
 
     async def connect(self) -> None:
         from src.database import Database
+
         if not os.path.exists(self._db_path):
             raise FileNotFoundError(
                 f"Database not found at {self._db_path}. "
@@ -202,6 +331,7 @@ def _default_plugin_db_path() -> str:
     if os.path.exists(config_file):
         try:
             import yaml
+
             with open(config_file) as f:
                 cfg = yaml.safe_load(f) or {}
             db_path = cfg.get("database", {}).get("path")

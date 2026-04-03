@@ -277,7 +277,8 @@ class TestRepoChoiceView:
     @pytest.mark.asyncio
     async def test_skip_repo_sets_state(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         view = RepoChoiceView(mock_handler, mock_bot)
         await view.skip_repo_btn.callback(mock_interaction)
@@ -299,7 +300,8 @@ class TestRepoChoiceView:
     @pytest.mark.asyncio
     async def test_create_repo_opens_modal(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         view = RepoChoiceView(mock_handler, mock_bot)
         await view.create_repo_btn.callback(mock_interaction)
@@ -308,7 +310,8 @@ class TestRepoChoiceView:
     @pytest.mark.asyncio
     async def test_existing_repo_opens_modal(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         view = RepoChoiceView(mock_handler, mock_bot)
         await view.existing_repo_btn.callback(mock_interaction)
@@ -324,7 +327,8 @@ class TestGitHubRepoModal:
     @pytest.mark.asyncio
     async def test_on_submit_stores_repo_info(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         modal = GitHubRepoModal(mock_handler, mock_bot, default_name="test")
         modal.repo_name_input._value = "custom-repo"
@@ -342,7 +346,8 @@ class TestGitHubRepoModal:
     @pytest.mark.asyncio
     async def test_on_submit_defaults(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="My App",
+            user_id=12345,
+            project_name="My App",
         )
         modal = GitHubRepoModal(mock_handler, mock_bot)
         modal.repo_name_input._value = ""
@@ -359,7 +364,8 @@ class TestGitHubRepoModal:
     @pytest.mark.asyncio
     async def test_on_submit_invalid_visibility(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         modal = GitHubRepoModal(mock_handler, mock_bot)
         modal.repo_name_input._value = "repo"
@@ -381,7 +387,8 @@ class TestExistingRepoModal:
     @pytest.mark.asyncio
     async def test_on_submit_stores_url(self, mock_handler, mock_bot, mock_interaction):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         modal = ExistingRepoModal(mock_handler, mock_bot)
         modal.repo_url_input._value = "https://github.com/user/repo.git"
@@ -421,19 +428,26 @@ class TestWorkspaceCountView:
 class TestWorkspaceLocationView:
     @pytest.mark.asyncio
     async def test_default_location_sets_empty_root(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """Default location button leaves workspace_root empty and executes."""
         state = ProjectWizardState(
-            user_id=12345, project_name="Test", workspace_count=2,
+            user_id=12345,
+            project_name="Test",
+            workspace_count=2,
         )
         _wizard_states[12345] = state
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            {"created": "test"},
-            {"created": "ws-001"},
-            {"created": "ws-002"},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                {"created": "test"},
+                {"created": "ws-001"},
+                {"created": "ws-002"},
+            ]
+        )
 
         view = WorkspaceLocationView(mock_handler, mock_bot)
         await view.default_location_btn.callback(mock_interaction)
@@ -444,10 +458,14 @@ class TestWorkspaceLocationView:
 
     @pytest.mark.asyncio
     async def test_custom_location_opens_modal(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         view = WorkspaceLocationView(mock_handler, mock_bot)
         await view.custom_location_btn.callback(mock_interaction)
@@ -457,7 +475,10 @@ class TestWorkspaceLocationView:
 
     @pytest.mark.asyncio
     async def test_cancel_cleans_state(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         _wizard_states[12345] = ProjectWizardState(user_id=12345)
         view = WorkspaceLocationView(mock_handler, mock_bot)
@@ -473,20 +494,27 @@ class TestWorkspaceLocationView:
 class TestWorkspaceLocationModal:
     @pytest.mark.asyncio
     async def test_on_submit_stores_custom_path(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         state = ProjectWizardState(
-            user_id=12345, project_name="Test", workspace_count=2,
+            user_id=12345,
+            project_name="Test",
+            workspace_count=2,
         )
         _wizard_states[12345] = state
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            {"created": "test"},
-            {"created": "ws-001"},
-            {"created": "ws-002"},
-            # Step 4: set_project_channel
-            {"ok": True},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                {"created": "test"},
+                {"created": "ws-001"},
+                {"created": "ws-002"},
+                # Step 4: set_project_channel
+                {"ok": True},
+            ]
+        )
 
         modal = WorkspaceLocationModal(mock_handler, mock_bot)
         modal.location_input._value = "/custom/workspace/path"
@@ -499,10 +527,14 @@ class TestWorkspaceLocationModal:
 
     @pytest.mark.asyncio
     async def test_on_submit_empty_path_rejected(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         _wizard_states[12345] = ProjectWizardState(
-            user_id=12345, project_name="Test",
+            user_id=12345,
+            project_name="Test",
         )
         modal = WorkspaceLocationModal(mock_handler, mock_bot)
         modal.location_input._value = "   "
@@ -535,19 +567,21 @@ class TestWizardExecutorSuccess:
             workspace_count=2,
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            # Step 1: create_github_repo
-            {"repo_url": "https://github.com/user/my-app"},
-            # Step 2: create_project
-            {"created": "my-app", "auto_create_channels": True},
-            # Step 3: add_workspace x2
-            {"created": "ws-001"},
-            {"created": "ws-002"},
-            # Step 4: set_project_channel (auto-create channel)
-            {"ok": True},
-            # Step 5: generate_readme
-            {"committed": True, "pushed": True},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                # Step 1: create_github_repo
+                {"repo_url": "https://github.com/user/my-app"},
+                # Step 2: create_project
+                {"created": "my-app", "auto_create_channels": True},
+                # Step 3: add_workspace x2
+                {"created": "ws-001"},
+                {"created": "ws-002"},
+                # Step 4: set_project_channel (auto-create channel)
+                {"ok": True},
+                # Step 5: generate_readme
+                {"committed": True, "pushed": True},
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -572,16 +606,18 @@ class TestWizardExecutorSuccess:
             workspace_count=3,
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            # Step 2: create_project
-            {"created": "local-project"},
-            # Step 3: add_workspace x3
-            {"created": "ws-001"},
-            {"created": "ws-002"},
-            {"created": "ws-003"},
-            # Step 4: set_project_channel (auto-create channel)
-            {"ok": True},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                # Step 2: create_project
+                {"created": "local-project"},
+                # Step 3: add_workspace x3
+                {"created": "ws-001"},
+                {"created": "ws-002"},
+                {"created": "ws-003"},
+                # Step 4: set_project_channel (auto-create channel)
+                {"ok": True},
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -591,7 +627,9 @@ class TestWizardExecutorSuccess:
         assert len(calls) == 5  # 1 project + 3 workspaces + 1 channel, no readme
 
     @pytest.mark.asyncio
-    async def test_custom_workspace_root_passes_path(self, mock_handler, mock_bot, mock_interaction):
+    async def test_custom_workspace_root_passes_path(
+        self, mock_handler, mock_bot, mock_interaction
+    ):
         """Custom workspace_root should pass a 'path' arg to add_workspace."""
         state = ProjectWizardState(
             user_id=12345,
@@ -600,13 +638,15 @@ class TestWizardExecutorSuccess:
             workspace_root="/custom/workspaces",
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            {"created": "my-app"},
-            {"created": "ws-001"},
-            {"created": "ws-002"},
-            # Step 4: set_project_channel
-            {"ok": True},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                {"created": "my-app"},
+                {"created": "ws-001"},
+                {"created": "ws-002"},
+                # Step 4: set_project_channel
+                {"ok": True},
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -630,12 +670,14 @@ class TestWizardExecutorSuccess:
             workspace_count=1,
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            {"created": "my-app"},
-            {"created": "ws-001"},
-            # Step 4: set_project_channel
-            {"ok": True},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                {"created": "my-app"},
+                {"created": "ws-001"},
+                # Step 4: set_project_channel
+                {"ok": True},
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -653,13 +695,15 @@ class TestWizardExecutorSuccess:
             workspace_count=1,
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            {"created": "test"},
-            {"created": "ws-001"},
-            # Step 4: set_project_channel
-            {"ok": True},
-            {"error": "README generation failed"},  # Non-fatal
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                {"created": "test"},
+                {"created": "ws-001"},
+                # Step 4: set_project_channel
+                {"ok": True},
+                {"error": "README generation failed"},  # Non-fatal
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -677,7 +721,10 @@ class TestWizardExecutorSuccess:
 class TestWizardExecutorRollback:
     @pytest.mark.asyncio
     async def test_rollback_on_project_creation_failure(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """If project creation fails, no rollback needed (nothing created yet)."""
         state = ProjectWizardState(
@@ -686,9 +733,11 @@ class TestWizardExecutorRollback:
             workspace_count=2,
         )
 
-        mock_handler.execute = AsyncMock(return_value={
-            "error": "Duplicate project ID",
-        })
+        mock_handler.execute = AsyncMock(
+            return_value={
+                "error": "Duplicate project ID",
+            }
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -698,7 +747,10 @@ class TestWizardExecutorRollback:
 
     @pytest.mark.asyncio
     async def test_rollback_on_workspace_failure(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """If workspace creation fails mid-way, earlier workspaces and project are rolled back."""
         state = ProjectWizardState(
@@ -707,18 +759,20 @@ class TestWizardExecutorRollback:
             workspace_count=3,
         )
 
-        mock_handler.execute = AsyncMock(side_effect=[
-            # create_project
-            {"created": "partial-fail"},
-            # add_workspace #1 (success)
-            {"created": "ws-001"},
-            # add_workspace #2 (fail)
-            {"error": "Clone failed: disk full"},
-            # Rollback: remove_workspace ws-001
-            {"deleted": "ws-001"},
-            # Rollback: delete_project
-            {"deleted": "partial-fail"},
-        ])
+        mock_handler.execute = AsyncMock(
+            side_effect=[
+                # create_project
+                {"created": "partial-fail"},
+                # add_workspace #1 (success)
+                {"created": "ws-001"},
+                # add_workspace #2 (fail)
+                {"error": "Clone failed: disk full"},
+                # Rollback: remove_workspace ws-001
+                {"deleted": "ws-001"},
+                # Rollback: delete_project
+                {"deleted": "partial-fail"},
+            ]
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -737,7 +791,10 @@ class TestWizardExecutorRollback:
 
     @pytest.mark.asyncio
     async def test_rollback_on_github_repo_failure(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """If GitHub repo creation fails, nothing else was created."""
         state = ProjectWizardState(
@@ -748,9 +805,11 @@ class TestWizardExecutorRollback:
             workspace_count=2,
         )
 
-        mock_handler.execute = AsyncMock(return_value={
-            "error": "gh: not authenticated",
-        })
+        mock_handler.execute = AsyncMock(
+            return_value={
+                "error": "gh: not authenticated",
+            }
+        )
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
@@ -760,7 +819,10 @@ class TestWizardExecutorRollback:
 
     @pytest.mark.asyncio
     async def test_state_cleaned_after_failure(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """Wizard state is always cleaned up, even on failure."""
         state = ProjectWizardState(user_id=12345, project_name="Test")
@@ -774,7 +836,10 @@ class TestWizardExecutorRollback:
 
     @pytest.mark.asyncio
     async def test_rollback_handles_removal_errors(
-        self, mock_handler, mock_bot, mock_interaction,
+        self,
+        mock_handler,
+        mock_bot,
+        mock_interaction,
     ):
         """Rollback should continue even if individual removal calls fail."""
         state = ProjectWizardState(

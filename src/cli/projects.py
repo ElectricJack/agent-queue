@@ -7,9 +7,21 @@ multiple API calls or provide friendly key aliasing.
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
+
+
+def _getval(obj: Any, key: str, default: Any = None) -> Any:
+    """Get a value from a typed response or dict, normalising Unset → default."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    val = getattr(obj, key, default)
+    if type(val).__name__ == "Unset":
+        return default
+    return val
 
 
 @cli.group()
@@ -35,17 +47,20 @@ def project_details(ctx: click.Context, project_id: str) -> None:
     async def _details():
         async with _get_client(api_url) as client:
             proj_result = await client.execute("list_projects")
-            task_result = await client.execute("list_tasks", {
-                "project_id": project_id,
-                "include_completed": True,
-            })
+            task_result = await client.execute(
+                "list_tasks",
+                {
+                    "project_id": project_id,
+                    "include_completed": True,
+                },
+            )
             return proj_result, task_result
 
     proj_result, task_result = _run(_details())
 
     p = None
-    for proj in proj_result.get("projects", []):
-        if proj.get("id") == project_id:
+    for proj in _getval(proj_result, "projects", []):
+        if _getval(proj, "id") == project_id:
             p = proj
             break
 
@@ -53,7 +68,7 @@ def project_details(ctx: click.Context, project_id: str) -> None:
         console.print(f"[bold red]Project not found:[/] {project_id}")
         raise SystemExit(1)
 
-    status = p.get("status", "ACTIVE")
+    status = (_getval(p, "status", "ACTIVE") or "ACTIVE").upper()
     status_style = "green" if status == "ACTIVE" else "dim"
 
     lines = [
@@ -62,10 +77,10 @@ def project_details(ctx: click.Context, project_id: str) -> None:
     ]
 
     fields = [
-        ("Name", p.get("name", "—")),
-        ("Channel", p.get("discord_channel_id", "—") or "—"),
-        ("Max Agents", str(p.get("max_concurrent_agents", "—"))),
-        ("Credit Weight", str(p.get("credit_weight", "—"))),
+        ("Name", _getval(p, "name", "—")),
+        ("Channel", _getval(p, "discord_channel_id", "—") or "—"),
+        ("Max Agents", str(_getval(p, "max_concurrent_agents", "—"))),
+        ("Credit Weight", str(_getval(p, "credit_weight", "—"))),
     ]
 
     for label, value in fields:
@@ -74,11 +89,11 @@ def project_details(ctx: click.Context, project_id: str) -> None:
         line.append(value, style="white")
         lines.append(line)
 
-    tasks = task_result.get("tasks", [])
+    tasks = _getval(task_result, "tasks", [])
     if tasks:
         counts: dict[str, int] = {}
         for t in tasks:
-            s = t.get("status", "UNKNOWN").upper()
+            s = (_getval(t, "status", "UNKNOWN") or "UNKNOWN").upper()
             counts[s] = counts.get(s, 0) + 1
 
         lines.append(Text(""))
@@ -124,8 +139,7 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
     field = KEY_MAP.get(key)
     if not field:
         console.print(
-            f"[bold red]Unknown key:[/] {key}\n"
-            f"[dim]Allowed: {', '.join(sorted(KEY_MAP))}[/]"
+            f"[bold red]Unknown key:[/] {key}\n[dim]Allowed: {', '.join(sorted(KEY_MAP))}[/]"
         )
         raise SystemExit(1)
 

@@ -8,6 +8,7 @@ this module translates between the two formats on every request and response.
 Useful for local or self-hosted LLM inference where Anthropic API access
 is unavailable or cost-prohibitive.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -123,11 +124,13 @@ class OllamaChatProvider(ChatProvider):
                 args = tc.function.arguments
                 if isinstance(args, str):
                     args = json.loads(args)
-                content.append(ToolUseBlock(
-                    id=tc.id or str(uuid.uuid4())[:8],
-                    name=tc.function.name,
-                    input=args,
-                ))
+                content.append(
+                    ToolUseBlock(
+                        id=tc.id or str(uuid.uuid4())[:8],
+                        name=tc.function.name,
+                        input=args,
+                    )
+                )
 
         return ChatResponse(content=content)
 
@@ -166,11 +169,13 @@ class OllamaChatProvider(ChatProvider):
                 # Could be tool_result blocks
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "tool_result":
-                        result.append({
-                            "role": "tool",
-                            "tool_call_id": item["tool_use_id"],
-                            "content": item.get("content", ""),
-                        })
+                        result.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": item["tool_use_id"],
+                                "content": item.get("content", ""),
+                            }
+                        )
                     elif isinstance(item, dict) and item.get("type") == "text":
                         result.append({"role": "user", "content": item["text"]})
                     else:
@@ -184,14 +189,16 @@ class OllamaChatProvider(ChatProvider):
                     if hasattr(item, "text"):
                         text_parts.append(item.text)
                     elif hasattr(item, "name") and hasattr(item, "input"):
-                        tool_calls.append({
-                            "id": item.id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": json.dumps(item.input),
-                            },
-                        })
+                        tool_calls.append(
+                            {
+                                "id": item.id,
+                                "type": "function",
+                                "function": {
+                                    "name": item.name,
+                                    "arguments": json.dumps(item.input),
+                                },
+                            }
+                        )
 
                 assistant_msg: dict = {"role": "assistant"}
                 if text_parts:

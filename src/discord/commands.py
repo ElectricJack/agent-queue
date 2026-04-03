@@ -7,6 +7,7 @@ intentionally a thin formatting layer: each slash command calls
 (ephemeral replies, embeds, file attachments, autocomplete).  No business
 logic lives here -- see ``src/command_handler.py`` for that.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,10 +22,20 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.discord.embeds import (
-    STATUS_COLORS, STATUS_EMOJIS, TYPE_TAGS,
-    success_embed, error_embed, warning_embed, info_embed, status_embed,
-    truncate, progress_bar, format_tree_task,
-    TREE_PIPE, TREE_SPACE, LIMIT_FIELD_VALUE,
+    STATUS_COLORS,
+    STATUS_EMOJIS,
+    TYPE_TAGS,
+    success_embed,
+    error_embed,
+    warning_embed,
+    info_embed,
+    status_embed,
+    truncate,
+    progress_bar,
+    format_tree_task,
+    TREE_PIPE,
+    TREE_SPACE,
+    LIMIT_FIELD_VALUE,
 )
 from src.discord.project_wizard import ProjectInfoModal
 from src.models import TaskStatus
@@ -155,12 +166,15 @@ class _NoteDeleteButton(discord.ui.Button):
         title = self._slug.replace("-", " ").title()
         await interaction.response.defer(ephemeral=True)
 
-        result = await handler.execute("delete_note", {
-            "project_id": self._project_id,
-            "title": title,
-        })
+        result = await handler.execute(
+            "delete_note",
+            {
+                "project_id": self._project_id,
+                "title": title,
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
 
         # Clean up note_viewers tracking
@@ -180,9 +194,11 @@ class _NoteDeleteButton(discord.ui.Button):
 
         # Send ephemeral confirmation
         await _send_success(
-            interaction, "Note Deleted",
+            interaction,
+            "Note Deleted",
             description=f"Note **{title}** deleted.",
-            followup=True, ephemeral=True,
+            followup=True,
+            ephemeral=True,
         )
 
         # Auto-refresh notes TOC if available
@@ -197,9 +213,12 @@ class _NoteDeleteButton(discord.ui.Button):
             return
         try:
             handler = self._handler
-            result = await handler.execute("list_notes", {
-                "project_id": self._project_id,
-            })
+            result = await handler.execute(
+                "list_notes",
+                {
+                    "project_id": self._project_id,
+                },
+            )
             if "error" in result:
                 return
             notes = result.get("notes", [])
@@ -208,11 +227,14 @@ class _NoteDeleteButton(discord.ui.Button):
                 return
             toc_msg = await thread.fetch_message(toc_msg_id)
             view = NotesView(
-                self._project_id, notes,
-                handler=handler, bot=bot,
+                self._project_id,
+                notes,
+                handler=handler,
+                bot=bot,
             )
             await toc_msg.edit(
-                content=view.build_content(), view=view,
+                content=view.build_content(),
+                view=view,
             )
         except Exception:
             pass
@@ -242,10 +264,13 @@ class _NotePlanButton(discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
 
         # Read the note content
-        result = await handler.execute("read_note", {
-            "project_id": self._project_id,
-            "title": title,
-        })
+        result = await handler.execute(
+            "read_note",
+            {
+                "project_id": self._project_id,
+                "title": title,
+            },
+        )
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
             return
@@ -260,23 +285,27 @@ class _NotePlanButton(discord.ui.Button):
             f"## Note: {note_title}\n\n{note_content}"
         )
 
-        task_result = await handler.execute("create_task", {
-            "project_id": self._project_id,
-            "title": task_title,
-            "description": task_description,
-        })
+        task_result = await handler.execute(
+            "create_task",
+            {
+                "project_id": self._project_id,
+                "title": task_title,
+                "description": task_description,
+            },
+        )
         if "error" in task_result:
             await _send_error(interaction, task_result["error"], followup=True)
             return
 
         task_id = task_result["created"]
         await _send_success(
-            interaction, "Task Created",
+            interaction,
+            "Task Created",
             description=(
-                f"Created task **{task_id}** to plan implementation "
-                f"of note **{note_title}**."
+                f"Created task **{task_id}** to plan implementation of note **{note_title}**."
             ),
-            followup=True, ephemeral=True,
+            followup=True,
+            ephemeral=True,
         )
 
 
@@ -312,12 +341,15 @@ class _NoteViewButton(discord.ui.Button):
             return
         title = self._slug.replace("-", " ").title()
         await interaction.response.defer()
-        result = await handler.execute("read_note", {
-            "project_id": self._project_id,
-            "title": title,
-        })
+        result = await handler.execute(
+            "read_note",
+            {
+                "project_id": self._project_id,
+                "title": title,
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         content = result["content"]
         fname = f"{self._slug}.md"
@@ -383,9 +415,12 @@ class _NotesRefreshButton(discord.ui.Button):
             await interaction.response.send_message("Not available.", ephemeral=True)
             return
         await interaction.response.defer()
-        result = await handler.execute("list_notes", {
-            "project_id": self._project_id,
-        })
+        result = await handler.execute(
+            "list_notes",
+            {
+                "project_id": self._project_id,
+            },
+        )
         if "error" not in result:
             parent_view: NotesView = self.view
             parent_view.notes = result.get("notes", [])
@@ -396,7 +431,8 @@ class _NotesRefreshButton(discord.ui.Button):
                 parent_view.page = parent_view.total_pages - 1
             parent_view._rebuild_components()
             await interaction.edit_original_response(
-                content=parent_view.build_content(), view=parent_view,
+                content=parent_view.build_content(),
+                view=parent_view,
             )
 
 
@@ -473,7 +509,8 @@ class _NotesPageButton(discord.ui.Button):
             parent_view.page += 1
         parent_view._rebuild_components()
         await interaction.response.edit_message(
-            content=parent_view.build_content(), view=parent_view,
+            content=parent_view.build_content(),
+            view=parent_view,
         )
 
 
@@ -500,7 +537,7 @@ class NotesView(discord.ui.View):
     def _rebuild_components(self) -> None:
         self.clear_items()
         start = self.page * _NOTES_PER_PAGE
-        page_notes = self.notes[start:start + _NOTES_PER_PAGE]
+        page_notes = self.notes[start : start + _NOTES_PER_PAGE]
 
         # Rows 1-4: note buttons (up to 5 per row, 4 rows = 20 max)
         for note in page_notes:
@@ -508,19 +545,32 @@ class NotesView(discord.ui.View):
             label = note["title"]
             if len(label) > 72:
                 label = label[:69] + "..."
-            self.add_item(_NoteViewButton(
-                self.project_id, slug, label, self._handler, self._bot,
-            ))
+            self.add_item(
+                _NoteViewButton(
+                    self.project_id,
+                    slug,
+                    label,
+                    self._handler,
+                    self._bot,
+                )
+            )
 
         # Row 5: control buttons
         if self.total_pages > 1:
-            self.add_item(_NotesPageButton(
-                self.project_id, "prev", disabled=(self.page == 0),
-            ))
-            self.add_item(_NotesPageButton(
-                self.project_id, "next",
-                disabled=(self.page >= self.total_pages - 1),
-            ))
+            self.add_item(
+                _NotesPageButton(
+                    self.project_id,
+                    "prev",
+                    disabled=(self.page == 0),
+                )
+            )
+            self.add_item(
+                _NotesPageButton(
+                    self.project_id,
+                    "next",
+                    disabled=(self.page >= self.total_pages - 1),
+                )
+            )
         self.add_item(_NotesRefreshButton(self.project_id, self._handler, self._bot))
         self.add_item(_NotesCloseButton(self.project_id, self._bot))
 
@@ -529,7 +579,7 @@ class NotesView(discord.ui.View):
             return "## 📝 Notes\n_No notes yet._ Use the chat thread to create some!"
         lines = ["## 📝 Notes"]
         start = self.page * _NOTES_PER_PAGE
-        for i, note in enumerate(self.notes[start:start + _NOTES_PER_PAGE], start=1):
+        for i, note in enumerate(self.notes[start : start + _NOTES_PER_PAGE], start=1):
             size_kb = note["size_bytes"] / 1024
             lines.append(f"**{i}.** {note['title']} (`{note['name']}`, {size_kb:.1f} KB)")
         if self.total_pages > 1:
@@ -561,7 +611,7 @@ def _split_display_text(text: str, limit: int) -> list[str]:
         # Strip outer fences so we can split the inner content
         inner = text[first_nl + 1 :]
         if inner.rstrip().endswith("```"):
-            inner = inner.rstrip()[: -3].rstrip("\n")
+            inner = inner.rstrip()[:-3].rstrip("\n")
 
     # Budget per chunk: subtract fence overhead
     overhead = len(fence_open) + len(fence_close)
@@ -615,11 +665,14 @@ class _AddTaskMenuModal(discord.ui.Modal, title="Add New Task"):
         await interaction.response.defer(ephemeral=True)
         description = self.task_description.value
         title = description[:100]
-        result = await self._handler.execute("create_task", {
-            "project_id": self._project_id,
-            "title": title,
-            "description": description,
-        })
+        result = await self._handler.execute(
+            "create_task",
+            {
+                "project_id": self._project_id,
+                "title": title,
+                "description": description,
+            },
+        )
         if "error" in result:
             await interaction.followup.send(
                 f"Could not create task: {result['error']}", ephemeral=True
@@ -728,9 +781,7 @@ class MenuView(discord.ui.View):
         total = result.get("total", 0)
 
         if total == 0:
-            await interaction.followup.send(
-                "No active tasks across any project.", ephemeral=True
-            )
+            await interaction.followup.send("No active tasks across any project.", ephemeral=True)
             return
 
         lines = [f"**{total} active tasks:**"]
@@ -764,9 +815,7 @@ class MenuView(discord.ui.View):
         proj_result = await self._handler.execute("list_projects", {})
         projects = proj_result.get("projects", [])
         if not projects:
-            await interaction.followup.send(
-                "No projects configured.", ephemeral=True
-            )
+            await interaction.followup.send("No projects configured.", ephemeral=True)
             return
 
         lines: list[str] = []
@@ -797,9 +846,7 @@ class MenuView(discord.ui.View):
                     lines.append(formatted)
 
         if not lines:
-            await interaction.followup.send(
-                "No active tasks across any project.", ephemeral=True
-            )
+            await interaction.followup.send("No active tasks across any project.", ephemeral=True)
             return
 
         header = f"## 🌳 All Tasks — Tree View ({grand_total} total)"
@@ -844,7 +891,9 @@ class MenuView(discord.ui.View):
             return
         agents = result.get("agents", [])
         if not agents:
-            await interaction.followup.send("No agent slots (workspaces) configured.", ephemeral=True)
+            await interaction.followup.send(
+                "No agent slots (workspaces) configured.", ephemeral=True
+            )
             return
         lines = [f"**Agent Slots** (project: `{result.get('project_id', '?')}`)"]
         for a in agents:
@@ -885,9 +934,7 @@ class MenuView(discord.ui.View):
             return
         notes = result.get("notes", [])
         if not notes:
-            await interaction.followup.send(
-                f"No notes in project `{project_id}`.", ephemeral=True
-            )
+            await interaction.followup.send(f"No notes in project `{project_id}`.", ephemeral=True)
             return
         lines = [f"**Notes for `{project_id}`:**"]
         for n in notes[:20]:
@@ -905,9 +952,8 @@ class MenuView(discord.ui.View):
     async def add_task_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        project_id = (
-            self._bot.get_project_for_channel(interaction.channel_id)
-            or getattr(self._handler, "_active_project_id", None)
+        project_id = self._bot.get_project_for_channel(interaction.channel_id) or getattr(
+            self._handler, "_active_project_id", None
         )
         if not project_id:
             await interaction.response.send_message(
@@ -989,9 +1035,7 @@ class MenuView(discord.ui.View):
         result = await self._handler.execute("hook_schedules", {})
         hooks = result.get("hooks", [])
         if not hooks:
-            await interaction.followup.send(
-                "No scheduled periodic hooks found.", ephemeral=True
-            )
+            await interaction.followup.send("No scheduled periodic hooks found.", ephemeral=True)
             return
 
         lines = ["**📅 Hook Schedules**\n"]
@@ -1002,9 +1046,7 @@ class MenuView(discord.ui.View):
                 f"    Schedule: {h['schedule']}\n"
                 f"    Last run: {h['last_run']} · Next: {h['next_run']}"
             )
-        await _send_long_interaction(
-            "\n".join(lines), interaction.followup.send, ephemeral=True
-        )
+        await _send_long_interaction("\n".join(lines), interaction.followup.send, ephemeral=True)
 
     @discord.ui.button(
         label="Toggle Orchestrator",
@@ -1017,9 +1059,7 @@ class MenuView(discord.ui.View):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         # Check current state
-        status_result = await self._handler.execute(
-            "orchestrator_control", {"action": "status"}
-        )
+        status_result = await self._handler.execute("orchestrator_control", {"action": "status"})
         is_paused = status_result.get("status") == "paused"
         # Toggle
         action = "resume" if is_paused else "pause"
@@ -1046,9 +1086,8 @@ class MenuView(discord.ui.View):
     ) -> None:
         """Show all rules with an interactive browsing view."""
         await interaction.response.defer(ephemeral=True)
-        project_id = (
-            self._bot.get_project_for_channel(interaction.channel_id)
-            or getattr(self._handler, "_active_project_id", None)
+        project_id = self._bot.get_project_for_channel(interaction.channel_id) or getattr(
+            self._handler, "_active_project_id", None
         )
         result = await self._handler.execute(
             "browse_rules", {"project_id": project_id} if project_id else {}
@@ -1070,25 +1109,54 @@ _HOOKS_PER_PAGE = 10  # max hooks per page (Discord allows 5 rows × 5 items)
 
 # Common event types for the event hook selection menu (used by both wizard and edit UI).
 _HOOK_EVENT_CATEGORIES: list[tuple[str, list[str]]] = [
-    ("Task", [
-        "task.created", "task.started", "task.completed", "task.failed",
-        "task.blocked", "task.paused", "task.resumed", "task.retried",
-    ]),
-    ("Agent", [
-        "agent.registered", "agent.idle", "agent.error",
-        "agent.heartbeat_lost",
-    ]),
-    ("Project", [
-        "project.created", "project.paused", "project.resumed",
-        "project.budget_warning", "project.budget_exhausted",
-    ]),
-    ("Git", [
-        "git.commit_created", "git.pr_created", "git.pr_merged",
-    ]),
-    ("Error", [
-        "error.agent_crash", "error.adapter_failure",
-        "error.dependency_cycle",
-    ]),
+    (
+        "Task",
+        [
+            "task.created",
+            "task.started",
+            "task.completed",
+            "task.failed",
+            "task.blocked",
+            "task.paused",
+            "task.resumed",
+            "task.retried",
+        ],
+    ),
+    (
+        "Agent",
+        [
+            "agent.registered",
+            "agent.idle",
+            "agent.error",
+            "agent.heartbeat_lost",
+        ],
+    ),
+    (
+        "Project",
+        [
+            "project.created",
+            "project.paused",
+            "project.resumed",
+            "project.budget_warning",
+            "project.budget_exhausted",
+        ],
+    ),
+    (
+        "Git",
+        [
+            "git.commit_created",
+            "git.pr_created",
+            "git.pr_merged",
+        ],
+    ),
+    (
+        "Error",
+        [
+            "error.agent_crash",
+            "error.adapter_failure",
+            "error.dependency_cycle",
+        ],
+    ),
 ]
 
 
@@ -1153,20 +1221,23 @@ class _HookInlineEditModal(discord.ui.Modal, title="Edit Hook"):
 
         if len(args) <= 1:
             await interaction.response.send_message(
-                "No changes provided.", ephemeral=True,
+                "No changes provided.",
+                ephemeral=True,
             )
             return
 
         result = await self._handler.execute("edit_hook", args)
         if "error" in result:
             await interaction.response.send_message(
-                f"❌ {result['error']}", ephemeral=True,
+                f"❌ {result['error']}",
+                ephemeral=True,
             )
             return
 
         fields = ", ".join(result.get("fields", []))
         await interaction.response.send_message(
-            f"✅ Hook `{self._hook_id}` updated: {fields}", ephemeral=True,
+            f"✅ Hook `{self._hook_id}` updated: {fields}",
+            ephemeral=True,
         )
         # Refresh the hooks list if a callback is provided
         if self._refresh_callback:
@@ -1239,13 +1310,17 @@ class _HookScheduleEditModal(discord.ui.Modal, title="Edit Schedule"):
             return
 
         trigger = {"type": "periodic", "interval_seconds": seconds}
-        result = await self._handler.execute("edit_hook", {
-            "hook_id": self._hook_id,
-            "trigger": trigger,
-        })
+        result = await self._handler.execute(
+            "edit_hook",
+            {
+                "hook_id": self._hook_id,
+                "trigger": trigger,
+            },
+        )
         if "error" in result:
             await interaction.response.send_message(
-                f"❌ {result['error']}", ephemeral=True,
+                f"❌ {result['error']}",
+                ephemeral=True,
             )
             return
 
@@ -1278,17 +1353,21 @@ class _HookTriggerEditView(discord.ui.View):
         if ttype == "event":
             # Show a dropdown with all event types
             current_event = (
-                trigger.get("event_type") or trigger.get("event", "")
-            ) if isinstance(trigger, dict) else ""
+                (trigger.get("event_type") or trigger.get("event", ""))
+                if isinstance(trigger, dict)
+                else ""
+            )
             options: list[discord.SelectOption] = []
             for cat, events in _HOOK_EVENT_CATEGORIES:
                 for evt in events:
-                    options.append(discord.SelectOption(
-                        label=evt,
-                        value=evt,
-                        description=f"{cat} event",
-                        default=(evt == current_event),
-                    ))
+                    options.append(
+                        discord.SelectOption(
+                            label=evt,
+                            value=evt,
+                            description=f"{cat} event",
+                            default=(evt == current_event),
+                        )
+                    )
             select = discord.ui.Select(
                 placeholder="Change event type…",
                 options=options,
@@ -1351,7 +1430,11 @@ class _HookTriggerEditView(discord.ui.View):
             interval = trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
             trigger_desc = f"every {interval}s"
         elif ttype == "event":
-            event = (trigger.get("event_type") or trigger.get("event", "?")) if isinstance(trigger, dict) else "?"
+            event = (
+                (trigger.get("event_type") or trigger.get("event", "?"))
+                if isinstance(trigger, dict)
+                else "?"
+            )
             trigger_desc = f"on `{event}`"
         else:
             trigger_desc = ttype
@@ -1367,13 +1450,17 @@ class _HookTriggerEditView(discord.ui.View):
         if not event_type:
             return
         trigger = {"type": "event", "event_type": event_type}
-        result = await self._handler.execute("edit_hook", {
-            "hook_id": self._hook["id"],
-            "trigger": trigger,
-        })
+        result = await self._handler.execute(
+            "edit_hook",
+            {
+                "hook_id": self._hook["id"],
+                "trigger": trigger,
+            },
+        )
         if "error" in result:
             await interaction.response.send_message(
-                f"❌ {result['error']}", ephemeral=True,
+                f"❌ {result['error']}",
+                ephemeral=True,
             )
             return
 
@@ -1381,27 +1468,34 @@ class _HookTriggerEditView(discord.ui.View):
         self._hook["trigger"] = trigger
         self._rebuild()
         await interaction.response.edit_message(
-            content=self.build_content(), view=self,
+            content=self.build_content(),
+            view=self,
         )
         if self._refresh_callback:
             await self._refresh_callback(interaction)
 
     async def _custom_event_callback(self, interaction: discord.Interaction) -> None:
         modal = _HookCustomEventEditModal(
-            self._hook, self._handler, refresh_callback=self._refresh_callback,
+            self._hook,
+            self._handler,
+            refresh_callback=self._refresh_callback,
             parent_view=self,
         )
         await interaction.response.send_modal(modal)
 
     async def _schedule_callback(self, interaction: discord.Interaction) -> None:
         modal = _HookScheduleEditModal(
-            self._hook, self._handler, refresh_callback=self._refresh_callback,
+            self._hook,
+            self._handler,
+            refresh_callback=self._refresh_callback,
         )
         await interaction.response.send_modal(modal)
 
     async def _details_callback(self, interaction: discord.Interaction) -> None:
         modal = _HookInlineEditModal(
-            self._hook, self._handler, refresh_callback=self._refresh_callback,
+            self._hook,
+            self._handler,
+            refresh_callback=self._refresh_callback,
         )
         await interaction.response.send_modal(modal)
 
@@ -1418,17 +1512,22 @@ class _HookTriggerEditView(discord.ui.View):
         )
 
         async def _confirm(confirm_interaction: discord.Interaction) -> None:
-            result = await self._handler.execute("delete_hook", {
-                "hook_id": self._hook["id"],
-            })
+            result = await self._handler.execute(
+                "delete_hook",
+                {
+                    "hook_id": self._hook["id"],
+                },
+            )
             if "error" in result:
                 await confirm_interaction.response.edit_message(
-                    content=f"❌ {result['error']}", view=None,
+                    content=f"❌ {result['error']}",
+                    view=None,
                 )
                 return
             hook_name = self._hook.get("name", self._hook["id"])
             await confirm_interaction.response.edit_message(
-                content=f"🗑️ Hook **{hook_name}** deleted.", view=None,
+                content=f"🗑️ Hook **{hook_name}** deleted.",
+                view=None,
             )
             if self._refresh_callback:
                 await self._refresh_callback(confirm_interaction)
@@ -1436,7 +1535,8 @@ class _HookTriggerEditView(discord.ui.View):
         async def _cancel(cancel_interaction: discord.Interaction) -> None:
             self._rebuild()
             await cancel_interaction.response.edit_message(
-                content=self.build_content(), view=self,
+                content=self.build_content(),
+                view=self,
             )
 
         yes_btn.callback = _confirm
@@ -1452,7 +1552,8 @@ class _HookTriggerEditView(discord.ui.View):
 
     async def _close_callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(
-            content="Hook edit closed.", view=None,
+            content="Hook edit closed.",
+            view=None,
         )
 
 
@@ -1482,18 +1583,23 @@ class _HookCustomEventEditModal(discord.ui.Modal, title="Custom Event Type"):
         event_type = self.event_input.value.strip()
         if not event_type:
             await interaction.response.send_message(
-                "❌ Event type cannot be empty.", ephemeral=True,
+                "❌ Event type cannot be empty.",
+                ephemeral=True,
             )
             return
 
         trigger = {"type": "event", "event_type": event_type}
-        result = await self._handler.execute("edit_hook", {
-            "hook_id": self._hook_id,
-            "trigger": trigger,
-        })
+        result = await self._handler.execute(
+            "edit_hook",
+            {
+                "hook_id": self._hook_id,
+                "trigger": trigger,
+            },
+        )
         if "error" in result:
             await interaction.response.send_message(
-                f"❌ {result['error']}", ephemeral=True,
+                f"❌ {result['error']}",
+                ephemeral=True,
             )
             return
 
@@ -1547,7 +1653,8 @@ class _HookViewSourceRuleButton(discord.ui.Button):
         result = await self._handler.execute("load_rule", {"id": rule_id})
         if "error" in result:
             await interaction.response.send_message(
-                f"⚠️ {result['error']}", ephemeral=True,
+                f"⚠️ {result['error']}",
+                ephemeral=True,
             )
             return
         rule_type = result.get("type", "passive")
@@ -1566,7 +1673,8 @@ class _HookViewSourceRuleButton(discord.ui.Button):
             content,
         ]
         await interaction.response.send_message(
-            "\n".join(lines), ephemeral=True,
+            "\n".join(lines),
+            ephemeral=True,
         )
 
 
@@ -1589,10 +1697,14 @@ class _HookEditButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = _HookTriggerEditView(
-            self._hook, self._handler, refresh_callback=self._refresh_callback,
+            self._hook,
+            self._handler,
+            refresh_callback=self._refresh_callback,
         )
         await interaction.response.send_message(
-            content=view.build_content(), view=view, ephemeral=True,
+            content=view.build_content(),
+            view=view,
+            ephemeral=True,
         )
 
 
@@ -1620,13 +1732,13 @@ class HooksListView(discord.ui.View):
                 break  # Reserve row 4 for nav buttons
             hook_id = h.get("id", "")
             if hook_id.startswith("rule-"):
-                self.add_item(
-                    _HookViewSourceRuleButton(h, self._handler, row=row)
-                )
+                self.add_item(_HookViewSourceRuleButton(h, self._handler, row=row))
             else:
                 self.add_item(
                     _HookEditButton(
-                        h, self._handler, row=row,
+                        h,
+                        self._handler,
+                        row=row,
                         refresh_callback=self._refresh_list,
                     )
                 )
@@ -1665,12 +1777,16 @@ class HooksListView(discord.ui.View):
             trigger = h.get("trigger", {})
             trigger_type = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
             if trigger_type == "periodic":
-                interval = trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
+                interval = (
+                    trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
+                )
                 trigger_desc = f"every {interval}s"
             elif trigger_type == "event":
                 event = (
-                    trigger.get("event_type") or trigger.get("event", "?")
-                ) if isinstance(trigger, dict) else "?"
+                    (trigger.get("event_type") or trigger.get("event", "?"))
+                    if isinstance(trigger, dict)
+                    else "?"
+                )
                 trigger_desc = f"on `{event}`"
             else:
                 trigger_desc = trigger_type
@@ -1703,14 +1819,16 @@ class HooksListView(discord.ui.View):
         self.page = max(0, self.page - 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(), view=self,
+            content=self.build_content(),
+            view=self,
         )
 
     async def _next_page(self, interaction: discord.Interaction) -> None:
         self.page = min(self.total_pages - 1, self.page + 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(), view=self,
+            content=self.build_content(),
+            view=self,
         )
 
 
@@ -1742,12 +1860,15 @@ class _RuleViewButton(discord.ui.Button):
         result = await self._handler.execute("load_rule", {"id": rule_id})
         if "error" in result:
             await interaction.response.send_message(
-                f"⚠️ {result['error']}", ephemeral=True,
+                f"⚠️ {result['error']}",
+                ephemeral=True,
             )
             return
         view = _RuleContentView(result, self._rule, self._handler)
         await interaction.response.send_message(
-            view.build_content(), ephemeral=True, view=view,
+            view.build_content(),
+            ephemeral=True,
+            view=view,
         )
 
 
@@ -1820,7 +1941,8 @@ class _RuleContentView(discord.ui.View):
             result = await self._handler.execute("delete_rule", {"id": rule_id})
             if "error" in result:
                 await confirm_interaction.response.edit_message(
-                    content=f"❌ {result['error']}", view=None,
+                    content=f"❌ {result['error']}",
+                    view=None,
                 )
                 return
             hooks_removed = result.get("hooks_removed", [])
@@ -1830,13 +1952,15 @@ class _RuleContentView(discord.ui.View):
                 msg += f" ({len(hooks_removed)} hook(s) removed)"
             msg += "."
             await confirm_interaction.response.edit_message(
-                content=msg, view=None,
+                content=msg,
+                view=None,
             )
 
         async def _cancel(cancel_interaction: discord.Interaction) -> None:
             self._rebuild()
             await cancel_interaction.response.edit_message(
-                content=self.build_content(), view=self,
+                content=self.build_content(),
+                view=self,
             )
 
         yes_btn.callback = _confirm
@@ -1851,12 +1975,14 @@ class _RuleContentView(discord.ui.View):
             warning += f"\n\nThis will also remove **{len(hooks)}** generated hook(s)."
         warning += "\n\nThis cannot be undone."
         await interaction.response.edit_message(
-            content=warning, view=confirm_view,
+            content=warning,
+            view=confirm_view,
         )
 
     async def _close_callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(
-            content="Rule view closed.", view=None,
+            content="Rule view closed.",
+            view=None,
         )
 
 
@@ -1868,9 +1994,7 @@ class RulesListView(discord.ui.View):
         self._rules = rules
         self._handler = handler
         self.page = page
-        self.total_pages = max(
-            1, (len(rules) + _RULES_PER_PAGE - 1) // _RULES_PER_PAGE
-        )
+        self.total_pages = max(1, (len(rules) + _RULES_PER_PAGE - 1) // _RULES_PER_PAGE)
         self._rebuild_components()
 
     def _rebuild_components(self) -> None:
@@ -1932,19 +2056,24 @@ class RulesListView(discord.ui.View):
         self.page = max(0, self.page - 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(), view=self,
+            content=self.build_content(),
+            view=self,
         )
 
     async def _next_page(self, interaction: discord.Interaction) -> None:
         self.page = min(self.total_pages - 1, self.page + 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(), view=self,
+            content=self.build_content(),
+            view=self,
         )
 
 
 async def _async_git_output(
-    args: list[str], *, cwd: str | None = None, timeout: int = 10,
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: int = 10,
 ) -> str:
     """Run a git command asynchronously and return stripped stdout.
 
@@ -1953,7 +2082,8 @@ async def _async_git_output(
     pool slot).  Raises on non-zero exit or timeout.
     """
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -2034,7 +2164,7 @@ def setup_commands(bot: commands.Bot) -> None:
             tags.append(TYPE_TAGS["approval_required"])
         tag_str = " ".join(tags) + " " if tags else ""
 
-        status = result['status']
+        status = result["status"]
         emoji = STATUS_EMOJIS.get(status, "⚪")
 
         lines = [
@@ -2075,7 +2205,7 @@ def setup_commands(bot: commands.Bot) -> None:
             bar = progress_bar(completed, len(subtasks), width=8)
             lines.append(f"\n**Subtasks:** {bar}")
             for i, st in enumerate(subtasks):
-                is_last = (i == len(subtasks) - 1)
+                is_last = i == len(subtasks) - 1
                 st_emoji = STATUS_EMOJIS.get(st["status"], "⚪")
                 connector = "└── " if is_last else "├── "
                 lines.append(f"  {connector}{st_emoji} `{st['id']}` — {st['title']}")
@@ -2091,24 +2221,42 @@ def setup_commands(bot: commands.Bot) -> None:
     # ---------------------------------------------------------------------------
 
     _STATUS_ORDER = [
-        "IN_PROGRESS", "ASSIGNED", "READY", "DEFINED",
-        "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
+        "IN_PROGRESS",
+        "ASSIGNED",
+        "READY",
+        "DEFINED",
+        "PAUSED",
+        "WAITING_INPUT",
+        "AWAITING_APPROVAL",
         "AWAITING_PLAN_APPROVAL",
-        "FAILED", "BLOCKED", "COMPLETED",
+        "FAILED",
+        "BLOCKED",
+        "COMPLETED",
     ]
     _STATUS_DISPLAY: dict[str, str] = {
-        "DEFINED": "Defined", "READY": "Ready", "ASSIGNED": "Assigned",
+        "DEFINED": "Defined",
+        "READY": "Ready",
+        "ASSIGNED": "Assigned",
         "IN_PROGRESS": "In Progress",
-        "COMPLETED": "Completed", "PAUSED": "Paused",
-        "WAITING_INPUT": "Waiting Input", "FAILED": "Failed",
-        "BLOCKED": "Blocked", "AWAITING_APPROVAL": "Awaiting Approval",
+        "COMPLETED": "Completed",
+        "PAUSED": "Paused",
+        "WAITING_INPUT": "Waiting Input",
+        "FAILED": "Failed",
+        "BLOCKED": "Blocked",
+        "AWAITING_APPROVAL": "Awaiting Approval",
         "AWAITING_PLAN_APPROVAL": "Awaiting Plan Approval",
     }
     # Sections expanded by default (active/actionable states)
     _DEFAULT_EXPANDED = {
-        "IN_PROGRESS", "ASSIGNED", "READY",
-        "FAILED", "BLOCKED", "PAUSED", "WAITING_INPUT",
-        "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
+        "IN_PROGRESS",
+        "ASSIGNED",
+        "READY",
+        "FAILED",
+        "BLOCKED",
+        "PAUSED",
+        "WAITING_INPUT",
+        "AWAITING_APPROVAL",
+        "AWAITING_PLAN_APPROVAL",
     }
     _MAX_TASKS_PER_SECTION = 15
 
@@ -2119,10 +2267,7 @@ def setup_commands(bot: commands.Bot) -> None:
             emoji = _STATUS_EMOJIS.get(status, "⚪")
             display = _STATUS_DISPLAY.get(status, status)
             label = f"{display} ({count})"
-            style = (
-                discord.ButtonStyle.primary if is_expanded
-                else discord.ButtonStyle.secondary
-            )
+            style = discord.ButtonStyle.primary if is_expanded else discord.ButtonStyle.secondary
             super().__init__(style=style, label=label, emoji=emoji)
             self.status = status
 
@@ -2150,9 +2295,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.response.defer(ephemeral=True)
             detail = await _format_task_detail(task_id)
             if detail is None:
-                await interaction.followup.send(
-                    f"Task `{task_id}` not found.", ephemeral=True
-                )
+                await interaction.followup.send(f"Task `{task_id}` not found.", ephemeral=True)
             else:
                 await interaction.followup.send(detail, ephemeral=True)
 
@@ -2221,7 +2364,8 @@ def setup_commands(bot: commands.Bot) -> None:
                     view._subtask_map.setdefault(pid, []).append(t)
             view._rebuild_components()
             await interaction.edit_original_response(
-                content=view.build_content(), view=view,
+                content=view.build_content(),
+                view=view,
             )
 
     # StatusReportView removed — /status now uses TaskReportView with
@@ -2308,11 +2452,13 @@ def setup_commands(bot: commands.Bot) -> None:
                         title = f"{tag} {title}"
                     if len(title) > 95:
                         title = title[:92] + "..."
-                    options.append(discord.SelectOption(
-                        label=title,
-                        value=t["id"],
-                        description=t["id"],
-                    ))
+                    options.append(
+                        discord.SelectOption(
+                            label=title,
+                            value=t["id"],
+                            description=t["id"],
+                        )
+                    )
                 if len(options) >= 25:
                     break
             if options:
@@ -2333,17 +2479,17 @@ def setup_commands(bot: commands.Bot) -> None:
             # Show inline subtask count if parent has children
             children = self._subtask_map.get(t["id"], [])
             if children and show_children:
-                completed = sum(
-                    1 for c in children if c.get("status") == "COMPLETED"
-                )
+                completed = sum(1 for c in children if c.get("status") == "COMPLETED")
                 total = len(children)
                 if total <= 4:
                     # Show individual subtasks in tree view
                     for i, child in enumerate(children):
-                        is_last = (i == total - 1)
+                        is_last = i == total - 1
                         child_emoji = _STATUS_EMOJIS.get(child.get("status", ""), "⚪")
                         connector = "└── " if is_last else "├── "
-                        child_tag = TYPE_TAGS["plan_subtask"] + " " if child.get("is_plan_subtask") else ""
+                        child_tag = (
+                            TYPE_TAGS["plan_subtask"] + " " if child.get("is_plan_subtask") else ""
+                        )
                         lines.append(
                             f"  {connector}{child_emoji} {child_tag}{child['title']} `{child['id']}`"
                         )
@@ -2363,9 +2509,7 @@ def setup_commands(bot: commands.Bot) -> None:
             # since tasks_by_status may be filtered (e.g. completed hidden).
             if self._all_tasks:
                 all_count = len(self._all_tasks)
-                completed_count = sum(
-                    1 for t in self._all_tasks if t.get("status") == "COMPLETED"
-                )
+                completed_count = sum(1 for t in self._all_tasks if t.get("status") == "COMPLETED")
             else:
                 all_count = sum(len(v) for v in self.tasks_by_status.values())
                 completed_count = len(self.tasks_by_status.get("COMPLETED", []))
@@ -2412,17 +2556,14 @@ def setup_commands(bot: commands.Bot) -> None:
                             # Only skip if parent is in the same expanded section
                             parent_id = t.get("parent_task_id")
                             parent_in_section = any(
-                                pt["id"] == parent_id
-                                for pt in self.tasks_by_status.get(status, [])
+                                pt["id"] == parent_id for pt in self.tasks_by_status.get(status, [])
                             )
                             if parent_in_section:
                                 continue
                         task_lines = self._format_task_line(t)
                         lines.extend(task_lines)
                     if count > _MAX_TASKS_PER_SECTION:
-                        lines.append(
-                            f"_...and {count - _MAX_TASKS_PER_SECTION} more_"
-                        )
+                        lines.append(f"_...and {count - _MAX_TASKS_PER_SECTION} more_")
                     lines.append("")
                 else:
                     lines.append(f"{emoji} **{display}** ({count})")
@@ -2649,9 +2790,13 @@ def setup_commands(bot: commands.Bot) -> None:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
             view_widget = TaskReportView(
-                tasks_by_status, total,
-                all_tasks=tasks, handler=handler, project_id=project_id,
-                thread_urls=thread_urls, header_lines=header_lines,
+                tasks_by_status,
+                total,
+                all_tasks=tasks,
+                handler=handler,
+                project_id=project_id,
+                thread_urls=thread_urls,
+                header_lines=header_lines,
             )
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
@@ -2695,7 +2840,8 @@ def setup_commands(bot: commands.Bot) -> None:
         agents = result.get("agents", [])
         if not agents:
             await _send_info(
-                interaction, "No Agent Slots",
+                interaction,
+                "No Agent Slots",
                 description=f"No workspaces configured for project `{result.get('project_id', '?')}`.",
             )
             return
@@ -2760,8 +2906,7 @@ def setup_commands(bot: commands.Bot) -> None:
         sessions = result.get("active_sessions", [])
         if sessions:
             total_active = result.get("active_total_tokens", 0)
-            lines.append(f"\n### Active Sessions ({len(sessions)})"
-                         f" — {total_active:,} tokens total")
+            lines.append(f"\n### Active Sessions ({len(sessions)}) — {total_active:,} tokens total")
             for s in sorted(sessions, key=lambda x: -x["total_tokens"]):
                 u = s["usage"]
                 lines.append(
@@ -2864,7 +3009,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["discord_channel_id"] = str(channel.id)
         result = await handler.execute("edit_project", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         fields = ", ".join(result.get("fields", []))
         desc = f"Project `{project_id}` updated: {fields}"
@@ -2872,7 +3017,8 @@ def setup_commands(bot: commands.Bot) -> None:
             desc += f"\nChannel: {channel.mention}"
             bot.update_project_channel(project_id, channel)
         await _send_success(
-            interaction, "Project Updated",
+            interaction,
+            "Project Updated",
             description=desc,
         )
 
@@ -2915,10 +3061,12 @@ def setup_commands(bot: commands.Bot) -> None:
         project_id="Project ID to delete",
         archive_channels="Archive the project's Discord channels instead of leaving them (default: False)",
     )
-    @app_commands.choices(archive_channels=[
-        app_commands.Choice(name="Yes – archive channels", value=1),
-        app_commands.Choice(name="No – leave channels as-is", value=0),
-    ])
+    @app_commands.choices(
+        archive_channels=[
+            app_commands.Choice(name="Yes – archive channels", value=1),
+            app_commands.Choice(name="No – leave channels as-is", value=0),
+        ]
+    )
     async def delete_project_command(
         interaction: discord.Interaction,
         project_id: str,
@@ -2930,7 +3078,7 @@ def setup_commands(bot: commands.Bot) -> None:
             {"project_id": project_id, "archive_channels": do_archive},
         )
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
 
         # The command handler's _on_project_deleted callback already cleared
@@ -2948,7 +3096,8 @@ def setup_commands(bot: commands.Bot) -> None:
                             overwrite = channel.overwrites_for(guild.default_role)
                             overwrite.send_messages = False
                             await channel.set_permissions(
-                                guild.default_role, overwrite=overwrite,
+                                guild.default_role,
+                                overwrite=overwrite,
                                 reason=f"Archived: project {project_id} deleted",
                             )
                             await channel.edit(
@@ -2958,13 +3107,19 @@ def setup_commands(bot: commands.Bot) -> None:
                             archived.append(f"#{channel.name} ({ch_type})")
                         except discord.Forbidden:
                             from src.discord.rate_guard import get_tracker
+
                             get_tracker().record(403)
-                            archived.append(f"#{channel.name} ({ch_type}) — no permission to archive")
+                            archived.append(
+                                f"#{channel.name} ({ch_type}) — no permission to archive"
+                            )
                         except discord.HTTPException as exc:
                             from src.discord.rate_guard import get_tracker
+
                             if exc.status in (401, 429):
                                 get_tracker().record(exc.status)
-                            archived.append(f"#{channel.name} ({ch_type}) — archive failed (HTTP {exc.status})")
+                            archived.append(
+                                f"#{channel.name} ({ch_type}) — archive failed (HTTP {exc.status})"
+                            )
 
         desc = f"Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
         if archived:
@@ -3031,25 +3186,33 @@ def setup_commands(bot: commands.Bot) -> None:
                 reason=f"AgentQueue: channel for project {project_id}",
             )
         except discord.Forbidden:
-            await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
+            await _send_error(
+                interaction, "Bot lacks permission to create channels.", followup=True
+            )
             return
         except discord.HTTPException as e:
             await _send_error(interaction, f"Error creating channel: {e}", followup=True)
             return
 
         # Link it to the project in the database
-        result = await handler.execute("set_project_channel", {
-            "project_id": project_id,
-            "channel_id": str(new_channel.id),
-        })
+        result = await handler.execute(
+            "set_project_channel",
+            {
+                "project_id": project_id,
+                "channel_id": str(new_channel.id),
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, f"Channel created but linking failed: {result['error']}", followup=True)
+            await _send_error(
+                interaction, f"Channel created but linking failed: {result['error']}", followup=True
+            )
             return
 
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, new_channel)
         await _send_success(
-            interaction, "Channel Created",
+            interaction,
+            "Channel Created",
             description=f"Created {new_channel.mention} as channel for project `{project_id}`",
             followup=True,
         )
@@ -3073,9 +3236,7 @@ def setup_commands(bot: commands.Bot) -> None:
         for p in projects:
             channel_id = p.get("discord_channel_id")
             if channel_id:
-                assigned.append(
-                    f"**{p['name']}** (`{p['id']}`) → <#{channel_id}>"
-                )
+                assigned.append(f"**{p['name']}** (`{p['id']}`) → <#{channel_id}>")
             else:
                 unassigned.append(f"`{p['id']}`")
 
@@ -3089,9 +3250,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if unassigned:
             lines.append(f"\n**Using global channels:** {', '.join(unassigned)}")
 
-        lines.append(
-            f"\n_Use `/set-channel` or `/create-channel` to assign project channels._"
-        )
+        lines.append(f"\n_Use `/set-channel` or `/create-channel` to assign project channels._")
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="pause", description="Pause a project")
@@ -3102,10 +3261,11 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         result = await handler.execute("pause_project", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_info(
-            interaction, "Project Paused",
+            interaction,
+            "Project Paused",
             description=f"Project **{result.get('name', project_id)}** is now paused.",
         )
 
@@ -3117,29 +3277,34 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         result = await handler.execute("resume_project", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Project Resumed",
+            interaction,
+            "Project Resumed",
             description=f"Project **{result.get('name', project_id)}** is now active.",
         )
 
-    @bot.tree.command(name="set-project", description="Set or clear the active project for the chat agent")
+    @bot.tree.command(
+        name="set-project", description="Set or clear the active project for the chat agent"
+    )
     @app_commands.describe(project_id="Project ID to set as active (leave empty to clear)")
     async def set_project_command(interaction: discord.Interaction, project_id: str | None = None):
         args = {"project_id": project_id} if project_id else {}
         result = await handler.execute("set_active_project", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         if result.get("active_project"):
             await _send_success(
-                interaction, "Active Project Set",
+                interaction,
+                "Active Project Set",
                 description=f"Active project set to **{result.get('name', '')}** (`{result['active_project']}`)",
             )
         else:
             await _send_info(
-                interaction, "Active Project Cleared",
+                interaction,
+                "Active Project Cleared",
                 description="No active project is set for the chat agent.",
             )
 
@@ -3191,8 +3356,11 @@ def setup_commands(bot: commands.Bot) -> None:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
             view_widget = TaskReportView(
-                tasks_by_status, total,
-                all_tasks=tasks, handler=handler, project_id=project_id,
+                tasks_by_status,
+                total,
+                all_tasks=tasks,
+                handler=handler,
+                project_id=project_id,
                 thread_urls=thread_urls,
             )
             content = view_widget.build_content()
@@ -3257,7 +3425,7 @@ def setup_commands(bot: commands.Bot) -> None:
             project_tasks = by_project[project_id]
             task_lines: list[str] = []
             for t in project_tasks[:max_tasks_per_field]:
-                emoji = STATUS_EMOJIS.get(t["status"], "\u26AA")
+                emoji = STATUS_EMOJIS.get(t["status"], "\u26aa")
                 title = t["title"]
                 if len(title) > 60:
                     title = title[:57] + "..."
@@ -3266,17 +3434,17 @@ def setup_commands(bot: commands.Bot) -> None:
                     agent_info = f" \u2190 `{t['assigned_agent']}`"
                 task_lines.append(f"{emoji} **{title}** `{t['id']}`{agent_info}")
             if len(project_tasks) > max_tasks_per_field:
-                task_lines.append(
-                    f"_...and {len(project_tasks) - max_tasks_per_field} more_"
-                )
+                task_lines.append(f"_...and {len(project_tasks) - max_tasks_per_field} more_")
             field_value = "\n".join(task_lines)
             # Truncate field value to Discord's limit as a safety net
             field_value = truncate(field_value, LIMIT_FIELD_VALUE)
-            fields.append((
-                f"`{project_id}` ({len(project_tasks)})",
-                field_value,
-                False,  # not inline — each project gets a full-width field
-            ))
+            fields.append(
+                (
+                    f"`{project_id}` ({len(project_tasks)})",
+                    field_value,
+                    False,  # not inline — each project gets a full-width field
+                )
+            )
 
         embed = info_embed(
             "Active Tasks — All Projects",
@@ -3301,8 +3469,7 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(description="What the task should do")
     async def add_task_command(interaction: discord.Interaction, description: str):
         project_id = (
-            bot.get_project_for_channel(interaction.channel_id)
-            or handler._active_project_id
+            bot.get_project_for_channel(interaction.channel_id) or handler._active_project_id
         )
         if not project_id:
             await interaction.response.send_message(
@@ -3311,15 +3478,18 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         title = description[:100] if len(description) > 100 else description
-        result = await handler.execute("create_task", {
-            "project_id": project_id,
-            "title": title,
-            "description": description,
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": project_id,
+                "title": title,
+                "description": description,
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
-        task_id = result['created']
+        task_id = result["created"]
         desc_preview = truncate(description, LIMIT_FIELD_VALUE)
         embed = success_embed(
             "Task Added",
@@ -3351,27 +3521,27 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.choices(
         task_type=[
-            app_commands.Choice(name="feature",  value="feature"),
-            app_commands.Choice(name="bugfix",   value="bugfix"),
+            app_commands.Choice(name="feature", value="feature"),
+            app_commands.Choice(name="bugfix", value="bugfix"),
             app_commands.Choice(name="refactor", value="refactor"),
-            app_commands.Choice(name="test",     value="test"),
-            app_commands.Choice(name="docs",     value="docs"),
-            app_commands.Choice(name="chore",    value="chore"),
+            app_commands.Choice(name="test", value="test"),
+            app_commands.Choice(name="docs", value="docs"),
+            app_commands.Choice(name="chore", value="chore"),
             app_commands.Choice(name="research", value="research"),
-            app_commands.Choice(name="plan",     value="plan"),
+            app_commands.Choice(name="plan", value="plan"),
         ],
         status=[
-            app_commands.Choice(name="DEFINED",     value="DEFINED"),
-            app_commands.Choice(name="READY",       value="READY"),
+            app_commands.Choice(name="DEFINED", value="DEFINED"),
+            app_commands.Choice(name="READY", value="READY"),
             app_commands.Choice(name="IN_PROGRESS", value="IN_PROGRESS"),
-            app_commands.Choice(name="COMPLETED",   value="COMPLETED"),
-            app_commands.Choice(name="FAILED",      value="FAILED"),
-            app_commands.Choice(name="BLOCKED",     value="BLOCKED"),
+            app_commands.Choice(name="COMPLETED", value="COMPLETED"),
+            app_commands.Choice(name="FAILED", value="FAILED"),
+            app_commands.Choice(name="BLOCKED", value="BLOCKED"),
         ],
         verification_type=[
             app_commands.Choice(name="auto_test", value="auto_test"),
-            app_commands.Choice(name="qa_agent",  value="qa_agent"),
-            app_commands.Choice(name="human",     value="human"),
+            app_commands.Choice(name="qa_agent", value="qa_agent"),
+            app_commands.Choice(name="human", value="human"),
         ],
     )
     async def edit_task_command(
@@ -3402,17 +3572,21 @@ def setup_commands(bot: commands.Bot) -> None:
             args["verification_type"] = verification_type.value
         result = await handler.execute("edit_task", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         fields = ", ".join(result.get("fields", []))
         desc = f"Task `{task_id}` updated: {fields}"
         if result.get("old_status"):
             from src.discord.embeds import STATUS_EMOJIS
+
             old_emoji = STATUS_EMOJIS.get(result["old_status"], "")
             new_emoji = STATUS_EMOJIS.get(result["new_status"], "")
-            desc += f"\n{old_emoji} **{result['old_status']}** → {new_emoji} **{result['new_status']}**"
+            desc += (
+                f"\n{old_emoji} **{result['old_status']}** → {new_emoji} **{result['new_status']}**"
+            )
         await _send_success(
-            interaction, "Task Updated",
+            interaction,
+            "Task Updated",
             description=desc,
         )
 
@@ -3421,19 +3595,24 @@ def setup_commands(bot: commands.Bot) -> None:
     async def stop_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("stop_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
-        await _send_success(interaction, "Task Stopped", description=f"Task `{task_id}` has been stopped.")
+        await _send_success(
+            interaction, "Task Stopped", description=f"Task `{task_id}` has been stopped."
+        )
 
-    @bot.tree.command(name="restart-task", description="Reset a task back to READY for re-execution")
+    @bot.tree.command(
+        name="restart-task", description="Reset a task back to READY for re-execution"
+    )
     @app_commands.describe(task_id="Task ID to restart")
     async def restart_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("restart_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Task Restarted",
+            interaction,
+            "Task Restarted",
             description=f"Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)",
         )
 
@@ -3446,18 +3625,22 @@ def setup_commands(bot: commands.Bot) -> None:
         feedback="QA feedback explaining what went wrong or needs fixing",
     )
     async def reopen_with_feedback_command(
-        interaction: discord.Interaction, task_id: str, feedback: str,
+        interaction: discord.Interaction,
+        task_id: str,
+        feedback: str,
     ):
         result = await handler.execute(
-            "reopen_with_feedback", {"task_id": task_id, "feedback": feedback},
+            "reopen_with_feedback",
+            {"task_id": task_id, "feedback": feedback},
         )
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
-        prev = result.get('previous_status', '?')
-        title = result.get('title', '')
+        prev = result.get("previous_status", "?")
+        title = result.get("title", "")
         await _send_success(
-            interaction, "Task Reopened with Feedback",
+            interaction,
+            "Task Reopened with Feedback",
             description=(
                 f"Task `{task_id}` ({title}) reopened ({prev} → READY).\n\n"
                 f"**Feedback added:**\n{feedback[:500]}"
@@ -3469,10 +3652,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def delete_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("delete_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Task Deleted",
+            interaction,
+            "Task Deleted",
             description=f"Task `{task_id}` ({result.get('title', '')}) deleted.",
         )
 
@@ -3495,12 +3679,14 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
         result = await handler.execute("archive_tasks", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         if "message" in result:
             await _send_info(
-                interaction, "Nothing to Archive",
-                description=result["message"], followup=True,
+                interaction,
+                "Nothing to Archive",
+                description=result["message"],
+                followup=True,
             )
             return
         count = result.get("archived_count", 0)
@@ -3510,7 +3696,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if archive_dir:
             desc += f"\nNotes written to `{archive_dir}`"
         await _send_success(
-            interaction, "Tasks Archived", description=desc, followup=True,
+            interaction,
+            "Tasks Archived",
+            description=desc,
+            followup=True,
         )
 
     @bot.tree.command(
@@ -3521,10 +3710,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def archive_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("archive_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Task Archived",
+            interaction,
+            "Task Archived",
             description=(
                 f"Task `{task_id}` ({result.get('title', '')}) archived "
                 f"(was {result.get('status', '?')})."
@@ -3549,14 +3739,15 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         result = await handler.execute("list_archived", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         tasks = result.get("tasks", [])
         total = result.get("total", 0)
         if not tasks:
             scope = f" in project `{project_id}`" if project_id else ""
             await _send_info(
-                interaction, "No Archived Tasks",
+                interaction,
+                "No Archived Tasks",
                 description=f"No archived tasks found{scope}.",
             )
             return
@@ -3567,10 +3758,15 @@ def setup_commands(bot: commands.Bot) -> None:
             tid = t.get("id", "?")
             lines.append(f"• `{tid}` — {title} ({status})")
         body = "\n".join(lines)
-        showing = f"Showing {len(tasks)} of {total}" if total > len(tasks) else f"{len(tasks)} task{'s' if len(tasks) != 1 else ''}"
+        showing = (
+            f"Showing {len(tasks)} of {total}"
+            if total > len(tasks)
+            else f"{len(tasks)} task{'s' if len(tasks) != 1 else ''}"
+        )
         scope = f" in `{project_id}`" if project_id else ""
         await _send_info(
-            interaction, f"Archived Tasks{scope}",
+            interaction,
+            f"Archived Tasks{scope}",
             description=f"{showing}\n\n{body}",
         )
 
@@ -3582,13 +3778,13 @@ def setup_commands(bot: commands.Bot) -> None:
     async def restore_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("restore_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Task Restored",
+            interaction,
+            "Task Restored",
             description=(
-                f"Task `{task_id}` ({result.get('title', '')}) restored "
-                f"with status DEFINED."
+                f"Task `{task_id}` ({result.get('title', '')}) restored with status DEFINED."
             ),
         )
 
@@ -3599,7 +3795,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def archive_settings_command(interaction: discord.Interaction):
         result = await handler.execute("archive_settings", {})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         enabled = "✅ Enabled" if result["enabled"] else "❌ Disabled"
         hours = result["after_hours"]
@@ -3621,10 +3817,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def approve_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("approve_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Task Approved",
+            interaction,
+            "Task Approved",
             description=f"Task `{task_id}` ({result.get('title', '')}) approved and completed.",
         )
 
@@ -3636,14 +3833,12 @@ def setup_commands(bot: commands.Bot) -> None:
     async def skip_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("skip_task", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         unblocked_count = result.get("unblocked_count", 0)
         desc = f"Task `{task_id}` skipped (marked COMPLETED)."
         if unblocked_count:
-            unblocked_list = ", ".join(
-                f"`{t['id']}`" for t in result.get("unblocked", [])
-            )
+            unblocked_list = ", ".join(f"`{t['id']}`" for t in result.get("unblocked", []))
             desc += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
         await _send_success(interaction, "Task Skipped", description=desc)
 
@@ -3666,14 +3861,15 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         result = await handler.execute("get_chain_health", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
 
         if "task_id" in result:
             stuck = result.get("stuck_downstream", [])
             if not stuck:
                 await _send_success(
-                    interaction, "Chain Healthy",
+                    interaction,
+                    "Chain Healthy",
                     description=f"No stuck downstream tasks for `{result['task_id']}`.",
                 )
             else:
@@ -3686,15 +3882,19 @@ def setup_commands(bot: commands.Bot) -> None:
                 if len(stuck) > 15:
                     lines.append(f"  … and {len(stuck) - 15} more")
                 await _send_warning(
-                    interaction, "Stuck Chain Detected",
+                    interaction,
+                    "Stuck Chain Detected",
                     description="\n".join(lines),
                 )
         else:
             chains = result.get("stuck_chains", [])
             if not chains:
-                scope = f" in project `{result.get('project_id')}`" if result.get("project_id") else ""
+                scope = (
+                    f" in project `{result.get('project_id')}`" if result.get("project_id") else ""
+                )
                 await _send_success(
-                    interaction, "Chains Healthy",
+                    interaction,
+                    "Chains Healthy",
                     description=f"No stuck dependency chains{scope}.",
                 )
             else:
@@ -3702,13 +3902,13 @@ def setup_commands(bot: commands.Bot) -> None:
                 for chain in chains[:10]:
                     bt = chain["blocked_task"]
                     lines.append(
-                        f"  • `{bt['id']}` — {bt['title']} "
-                        f"→ {chain['stuck_count']} stuck task(s)"
+                        f"  • `{bt['id']}` — {bt['title']} → {chain['stuck_count']} stuck task(s)"
                     )
                 if len(chains) > 10:
                     lines.append(f"  … and {len(chains) - 10} more chains")
                 await _send_warning(
-                    interaction, "Stuck Chains Found",
+                    interaction,
+                    "Stuck Chains Found",
                     description="\n".join(lines),
                 )
 
@@ -3721,7 +3921,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_task_result", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         fields: list[tuple[str, str, bool]] = [
             ("Result", result.get("result", "unknown"), True),
@@ -3754,7 +3954,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_task_diff", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         diff = result.get("diff", "(no changes)")
         branch = result.get("branch", "?")
@@ -3766,11 +3966,13 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             await interaction.followup.send(
                 f"{header}*Diff attached ({len(diff):,} chars)*",
-                file=file, ephemeral=True,
+                file=file,
+                ephemeral=True,
             )
         else:
             await interaction.followup.send(
-                f"{header}```diff\n{diff}\n```", ephemeral=True,
+                f"{header}```diff\n{diff}\n```",
+                ephemeral=True,
             )
 
     @bot.tree.command(
@@ -3781,7 +3983,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def task_deps_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("task_deps", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
 
         status = result["status"]
@@ -3833,7 +4035,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_agent_error", {"task_id": task_id})
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         fields: list[tuple[str, str, bool]] = [
             ("Task", result.get("title", ""), False),
@@ -3882,7 +4084,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("create_agent", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         agent_fields: list[tuple[str, str, bool]] = [
             ("Name", result.get("name", name), True),
@@ -3903,7 +4105,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("pause_agent", {"agent_id": agent_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         desc = f"Agent `{agent_id}` is now paused."
         if result.get("note"):
@@ -3922,7 +4124,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("resume_agent", {"agent_id": agent_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         embed = success_embed(
             "Agent Resumed",
@@ -3936,12 +4138,14 @@ def setup_commands(bot: commands.Bot) -> None:
         name="New display name (optional)",
         agent_type="New agent type (optional)",
     )
-    @app_commands.choices(agent_type=[
-        app_commands.Choice(name="claude", value="claude"),
-        app_commands.Choice(name="codex",  value="codex"),
-        app_commands.Choice(name="cursor", value="cursor"),
-        app_commands.Choice(name="aider",  value="aider"),
-    ])
+    @app_commands.choices(
+        agent_type=[
+            app_commands.Choice(name="claude", value="claude"),
+            app_commands.Choice(name="codex", value="codex"),
+            app_commands.Choice(name="cursor", value="cursor"),
+            app_commands.Choice(name="aider", value="aider"),
+        ]
+    )
     async def edit_agent_command(
         interaction: discord.Interaction,
         agent_id: str,
@@ -3955,11 +4159,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["agent_type"] = agent_type.value
         result = await handler.execute("edit_agent", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         fields = ", ".join(result.get("fields", []))
         await _send_success(
-            interaction, "Agent Updated",
+            interaction,
+            "Agent Updated",
             description=f"Agent `{agent_id}` updated: {fields}",
         )
 
@@ -3974,7 +4179,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("delete_agent", {"agent_id": agent_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         embed = success_embed(
             "Agent Deleted",
@@ -3996,7 +4201,8 @@ def setup_commands(bot: commands.Bot) -> None:
         workspaces = result.get("workspaces", [])
         if not workspaces:
             await _send_info(
-                interaction, "No Workspaces",
+                interaction,
+                "No Workspaces",
                 description="No workspaces registered. Use `/add-workspace` to add one.",
             )
             return
@@ -4021,10 +4227,12 @@ def setup_commands(bot: commands.Bot) -> None:
         path="Directory path (required for link, auto-generated for clone)",
         name="Workspace name (optional)",
     )
-    @app_commands.choices(source=[
-        app_commands.Choice(name="clone", value="clone"),
-        app_commands.Choice(name="link",  value="link"),
-    ])
+    @app_commands.choices(
+        source=[
+            app_commands.Choice(name="clone", value="clone"),
+            app_commands.Choice(name="link", value="link"),
+        ]
+    )
     async def add_workspace_command(
         interaction: discord.Interaction,
         source: app_commands.Choice[str],
@@ -4045,7 +4253,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("add_workspace", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         embed = success_embed(
             "Workspace Added",
@@ -4069,10 +4277,11 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("release_workspace", {"workspace_id": workspace_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Workspace Released",
+            interaction,
+            "Workspace Released",
             description=f"Workspace `{workspace_id}` lock has been released.",
         )
 
@@ -4113,8 +4322,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        result = await handler.execute(
-            "queue_sync_workspaces", {"project_id": project_id})
+        result = await handler.execute("queue_sync_workspaces", {"project_id": project_id})
         if "error" in result:
             await _send_error(interaction, result["error"])
             return
@@ -4148,7 +4356,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
         result = await handler.execute("get_git_status", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
 
         project_name = result.get("project_name", project_id)
@@ -4165,8 +4373,7 @@ def setup_commands(bot: commands.Bot) -> None:
             branch = rs.get("branch", "?")
             status_raw = rs.get("status", "(clean)")
             is_clean = status_raw.strip() in ("(clean)", "") or (
-                "nothing to commit" in status_raw
-                and "working tree clean" in status_raw
+                "nothing to commit" in status_raw and "working tree clean" in status_raw
             )
 
             # Build compact one-line status indicators
@@ -4234,9 +4441,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
             ws_name = rs.get("workspace_name")
             ws_id = rs.get("workspace_id") or "?"
-            ws_header = (
-                f"`{ws_name}` (`{ws_id}`)" if ws_name else f"`{ws_id}`"
-            )
+            ws_header = f"`{ws_name}` (`{ws_id}`)" if ws_name else f"`{ws_id}`"
             lines: list[str] = [f"### 📁 Workspace: {ws_header}"]
 
             if rs.get("path"):
@@ -4278,9 +4483,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
             # Recent commits
             if rs.get("recent_commits"):
-                lines.append(
-                    f"**Recent commits:**\n```\n{rs['recent_commits']}\n```"
-                )
+                lines.append(f"**Recent commits:**\n```\n{rs['recent_commits']}\n```")
 
             detail_msg = "\n".join(lines)
             # Split if too long for Discord
@@ -4335,12 +4538,13 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
 
         if "created" in result:
             await _send_success(
-                interaction, "Branch Created",
+                interaction,
+                "Branch Created",
                 description=f"Created and switched to branch `{result['created']}` on `{project_id}`",
                 followup=True,
             )
@@ -4348,10 +4552,7 @@ def setup_commands(bot: commands.Bot) -> None:
             current = result.get("current_branch", "?")
             branches = result.get("branches", [])
             branch_list = "\n".join(branches) if branches else "(no branches)"
-            text = (
-                f"## Branches: `{project_id}`\n"
-                f"**Current:** `{current}`\n```\n{branch_list}\n```"
-            )
+            text = f"## Branches: `{project_id}`\n**Current:** `{current}`\n```\n{branch_list}\n```"
             await _send_long(interaction, text, followup=True)
 
     @bot.tree.command(
@@ -4378,10 +4579,11 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         await _send_success(
-            interaction, "Branch Switched",
+            interaction,
+            "Branch Switched",
             description=f"Switched to branch `{result['branch']}` on `{project_id}`",
             followup=True,
             result=result,
@@ -4411,19 +4613,21 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         if result.get("status") == "committed":
             repo_label = project_id
             await _send_success(
-                interaction, "Changes Committed",
+                interaction,
+                "Changes Committed",
                 description=f"Committed in `{repo_label}` on `{project_id}`: {message}",
                 followup=True,
                 result=result,
             )
         else:
             await _send_info(
-                interaction, "Nothing to Commit",
+                interaction,
+                "Nothing to Commit",
                 description=f"Working tree clean on `{project_id}`.",
                 followup=True,
             )
@@ -4454,11 +4658,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         pushed_branch = result.get("branch", "?")
         await _send_success(
-            interaction, "Branch Pushed",
+            interaction,
+            "Branch Pushed",
             description=f"Pushed `{pushed_branch}` to origin on `{project_id}`",
             followup=True,
         )
@@ -4487,12 +4692,13 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         target = result.get("target", "main")
         if result.get("status") == "conflict":
             await _send_warning(
-                interaction, "Merge Conflict",
+                interaction,
+                "Merge Conflict",
                 description=(
                     f"`{branch_name}` could not be merged into `{target}` "
                     f"on `{project_id}`. Merge was aborted."
@@ -4501,7 +4707,8 @@ def setup_commands(bot: commands.Bot) -> None:
             )
         else:
             await _send_success(
-                interaction, "Branch Merged",
+                interaction,
+                "Branch Merged",
                 description=f"Merged `{branch_name}` into `{target}` on `{project_id}`",
                 followup=True,
                 result=result,
@@ -4531,10 +4738,11 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         await _send_success(
-            interaction, "Branch Created",
+            interaction,
+            "Branch Created",
             description=f"Created and switched to branch `{result['branch']}` on `{project_id}`",
             followup=True,
         )
@@ -4562,10 +4770,11 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Branch Created",
+            interaction,
+            "Branch Created",
             description=f"Branch `{branch_name}` created in `{project_id}`",
         )
 
@@ -4592,10 +4801,11 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Branch Switched",
+            interaction,
+            "Branch Switched",
             description=f"Switched to branch `{branch_name}` in `{project_id}`",
             result=result,
         )
@@ -4623,16 +4833,18 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         if result.get("status") == "nothing_to_commit":
             await _send_info(
-                interaction, "Nothing to Commit",
+                interaction,
+                "Nothing to Commit",
                 description=f"Working tree clean in `{project_id}`.",
             )
             return
         await _send_success(
-            interaction, "Changes Committed",
+            interaction,
+            "Changes Committed",
             description=f"Committed in `{project_id}`: {message}",
             result=result,
         )
@@ -4662,11 +4874,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         pushed_branch = result.get("branch", branch_name or "current")
         await _send_success(
-            interaction, "Branch Pushed",
+            interaction,
+            "Branch Pushed",
             description=f"Pushed `{pushed_branch}` in `{project_id}`",
         )
 
@@ -4693,11 +4906,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         if result.get("status") == "conflict":
             await _send_warning(
-                interaction, "Merge Conflict",
+                interaction,
+                "Merge Conflict",
                 description=(
                     f"Merge conflict: `{branch_name}` → `{result.get('target', 'main')}` "
                     f"in `{project_id}`. Merge was aborted."
@@ -4705,7 +4919,8 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         await _send_success(
-            interaction, "Branch Merged",
+            interaction,
+            "Branch Merged",
             description=f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{project_id}`",
             result=result,
         )
@@ -4736,18 +4951,20 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_commit", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         if result.get("committed"):
             await _send_success(
-                interaction, "Changes Committed",
+                interaction,
+                "Changes Committed",
                 description=f"Committed in `{label}`: {message}",
                 followup=True,
             )
         else:
             await _send_info(
-                interaction, "Nothing to Commit",
+                interaction,
+                "Nothing to Commit",
                 description=f"Working tree clean in `{label}`.",
                 followup=True,
             )
@@ -4778,11 +4995,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_pull", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         await _send_success(
-            interaction, "Branch Pulled",
+            interaction,
+            "Branch Pulled",
             description=f"Pulled `{result['pulled']}` in `{label}`",
             followup=True,
         )
@@ -4813,11 +5031,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_push", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         await _send_success(
-            interaction, "Branch Pushed",
+            interaction,
+            "Branch Pushed",
             description=f"Pushed `{result['pushed']}` in `{label}`",
             followup=True,
         )
@@ -4846,11 +5065,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_create_branch", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         await _send_success(
-            interaction, "Branch Created",
+            interaction,
+            "Branch Created",
             description=f"Created and switched to branch `{branch_name}` in `{label}`",
             followup=True,
         )
@@ -4883,18 +5103,20 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_merge", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         if result.get("merged"):
             await _send_success(
-                interaction, "Branch Merged",
+                interaction,
+                "Branch Merged",
                 description=f"Merged `{branch_name}` into `{result['into']}` in `{label}`",
                 followup=True,
             )
         else:
             await _send_warning(
-                interaction, "Merge Conflict",
+                interaction,
+                "Merge Conflict",
                 description=(
                     f"`{branch_name}` could not be merged into "
                     f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
@@ -4936,11 +5158,12 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base"] = base
         result = await handler.execute("git_create_pr", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         pr_url = result.get("pr_url", "")
         await _send_success(
-            interaction, "Pull Request Created",
+            interaction,
+            "Pull Request Created",
             description=(
                 f"[View PR]({pr_url})\n"
                 f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
@@ -4974,7 +5197,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
+            await _send_error(interaction, result["error"], followup=True)
             return
         label = project_id or "repo"
         files = result.get("files", [])
@@ -4982,7 +5205,8 @@ def setup_commands(bot: commands.Bot) -> None:
         base = result.get("base_branch", "main")
         if not files:
             await _send_info(
-                interaction, "No Changes",
+                interaction,
+                "No Changes",
                 description=f"No files changed in `{label}` vs `{base}`",
                 followup=True,
             )
@@ -4990,10 +5214,7 @@ def setup_commands(bot: commands.Bot) -> None:
         file_list = "\n".join(f"• `{f}`" for f in files[:50])
         if count > 50:
             file_list += f"\n_...and {count - 50} more_"
-        msg = (
-            f"## Changed Files: `{label}` vs `{base}`\n"
-            f"**{count} file(s) changed:**\n{file_list}"
-        )
+        msg = f"## Changed Files: `{label}` vs `{base}`\n**{count} file(s) changed:**\n{file_list}"
         await _send_long(interaction, msg, followup=True)
 
     @bot.tree.command(
@@ -5019,7 +5240,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_log", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         branch = result.get("branch", "?")
         log = result.get("log", "(no commits)")
@@ -5052,7 +5273,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["workspace"] = workspace
         result = await handler.execute("git_diff", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
 
         diff = result.get("diff", "(no changes)")
@@ -5070,15 +5291,15 @@ def setup_commands(bot: commands.Bot) -> None:
                 ),
             )
         else:
-            await interaction.response.send_message(
-                f"{header}```diff\n{diff}\n```"
-            )
+            await interaction.response.send_message(f"{header}```diff\n{diff}\n```")
 
     # ===================================================================
     # HOOK COMMANDS
     # ===================================================================
 
-    @bot.tree.command(name="hooks", description="List automation hooks (read-only — manage via /rules)")
+    @bot.tree.command(
+        name="hooks", description="List automation hooks (read-only — manage via /rules)"
+    )
     async def hooks_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         args = {}
@@ -5139,7 +5360,8 @@ def setup_commands(bot: commands.Bot) -> None:
             rule_type = self.rule_type_input.value.strip().lower()
             if rule_type not in ("active", "passive"):
                 await interaction.response.send_message(
-                    "Type must be 'active' or 'passive'.", ephemeral=True,
+                    "Type must be 'active' or 'passive'.",
+                    ephemeral=True,
                 )
                 return
 
@@ -5151,14 +5373,18 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"\n## Logic\n\n{self.logic_input.value}")
             content = "\n".join(lines)
 
-            result = await handler.execute("save_rule", {
-                "project_id": self._project_id,
-                "type": rule_type,
-                "content": content,
-            })
+            result = await handler.execute(
+                "save_rule",
+                {
+                    "project_id": self._project_id,
+                    "type": rule_type,
+                    "content": content,
+                },
+            )
             if "error" in result:
                 await interaction.response.send_message(
-                    f"Error creating rule: {result['error']}", ephemeral=True,
+                    f"Error creating rule: {result['error']}",
+                    ephemeral=True,
                 )
                 return
 
@@ -5190,18 +5416,17 @@ def setup_commands(bot: commands.Bot) -> None:
         hook_id="Hook ID",
         limit="Number of runs to show (default 10)",
     )
-    async def hook_runs_command(
-        interaction: discord.Interaction, hook_id: str, limit: int = 10
-    ):
+    async def hook_runs_command(interaction: discord.Interaction, hook_id: str, limit: int = 10):
         result = await handler.execute("list_hook_runs", {"hook_id": hook_id, "limit": limit})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         runs = result.get("runs", [])
         hook_name = result.get("hook_name", hook_id)
         if not runs:
             await _send_info(
-                interaction, "No Hook Runs",
+                interaction,
+                "No Hook Runs",
                 description=f"No runs found for hook **{hook_name}**.",
             )
             return
@@ -5222,10 +5447,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def fire_hook_command(interaction: discord.Interaction, hook_id: str):
         result = await handler.execute("fire_hook", {"hook_id": hook_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Hook Fired",
+            interaction,
+            "Hook Fired",
             description=f"Hook `{hook_id}` fired — status: {result.get('status', 'running')}",
         )
 
@@ -5237,9 +5463,7 @@ def setup_commands(bot: commands.Bot) -> None:
         project="Project ID",
         enabled="True to enable all hooks, False to disable all hooks",
     )
-    async def toggle_hooks_command(
-        interaction: discord.Interaction, project: str, enabled: bool
-    ):
+    async def toggle_hooks_command(interaction: discord.Interaction, project: str, enabled: bool):
         result = await handler.execute(
             "toggle_project_hooks", {"project_id": project, "enabled": enabled}
         )
@@ -5259,9 +5483,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_success(
                 interaction,
                 f"Hooks {action.title()}",
-                description=(
-                    f"**{changed}** of **{total}** hook(s) in `{project}` {action}."
-                ),
+                description=(f"**{changed}** of **{total}** hook(s) in `{project}` {action}."),
             )
 
     # ===================================================================
@@ -5270,9 +5492,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="rules", description="Browse rules for a project")
     @app_commands.describe(project_id="Project ID (optional if active project is set)")
-    async def rules_command(
-        interaction: discord.Interaction, project_id: str | None = None
-    ):
+    async def rules_command(interaction: discord.Interaction, project_id: str | None = None):
         project_id = await _resolve_project_from_context(interaction, project_id)
         args = {}
         if project_id:
@@ -5281,14 +5501,17 @@ def setup_commands(bot: commands.Bot) -> None:
         rules = result.get("rules", [])
         if not rules:
             await _send_info(
-                interaction, "No Rules",
+                interaction,
+                "No Rules",
                 description="No rules configured for this scope.",
             )
             return
         view = RulesListView(rules, handler)
         msg = view.build_content()
         await _send_long_interaction(
-            msg, interaction.response.send_message, view=view,
+            msg,
+            interaction.response.send_message,
+            view=view,
         )
 
     @bot.tree.command(name="rule", description="View full details of a rule")
@@ -5317,7 +5540,8 @@ def setup_commands(bot: commands.Bot) -> None:
             content,
         ]
         await _send_long_interaction(
-            "\n".join(lines), interaction.response.send_message,
+            "\n".join(lines),
+            interaction.response.send_message,
         )
 
     @bot.tree.command(name="delete-rule", description="Delete a rule and its hooks")
@@ -5362,9 +5586,7 @@ def setup_commands(bot: commands.Bot) -> None:
         desc = ", ".join(parts) + "."
         if errors:
             desc += f"\n⚠️ {errors} error(s) during reconciliation."
-        await interaction.followup.send(
-            f"✅ **Hooks Refreshed**\n{desc}"
-        )
+        await interaction.followup.send(f"✅ **Hooks Refreshed**\n{desc}")
 
     # ===================================================================
     # NOTES COMMANDS
@@ -5378,7 +5600,7 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         result = await handler.execute("list_notes", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
 
         # Look up project name for the header
@@ -5392,7 +5614,8 @@ def setup_commands(bot: commands.Bot) -> None:
         notes = result.get("notes", [])
         view = NotesView(project_id, notes, handler=handler, bot=bot)
         await interaction.response.send_message(
-            view.build_content(), view=view,
+            view.build_content(),
+            view=view,
         )
 
         # Create a thread for interactive note management
@@ -5427,17 +5650,21 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        result = await handler.execute("write_note", {
-            "project_id": project_id,
-            "title": title,
-            "content": content,
-        })
+        result = await handler.execute(
+            "write_note",
+            {
+                "project_id": project_id,
+                "title": title,
+                "content": content,
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         status = result.get("status", "created")
         await _send_success(
-            interaction, f"Note {status.title()}",
+            interaction,
+            f"Note {status.title()}",
             description=f"Note **{title}** {status} in `{project_id}`",
         )
 
@@ -5453,15 +5680,19 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        result = await handler.execute("delete_note", {
-            "project_id": project_id,
-            "title": title,
-        })
+        result = await handler.execute(
+            "delete_note",
+            {
+                "project_id": project_id,
+                "title": title,
+            },
+        )
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result["error"])
             return
         await _send_success(
-            interaction, "Note Deleted",
+            interaction,
+            "Note Deleted",
             description=f"Note **{title}** deleted from `{project_id}`",
         )
 
@@ -5492,7 +5723,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
         if not enabled:
             await _send_info(
-                interaction, "Memory Disabled",
+                interaction,
+                "Memory Disabled",
                 description=(
                     f"Memory is **not enabled** for `{project_id}`.\n"
                     f"memsearch installed: {'Yes' if available else 'No'}\n\n"
@@ -5503,7 +5735,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
         if not available:
             await _send_warning(
-                interaction, "Memory Unavailable",
+                interaction,
+                "Memory Unavailable",
                 description=(
                     f"Memory is enabled for `{project_id}` but the "
                     "`memsearch` package is not installed."
@@ -5521,7 +5754,8 @@ def setup_commands(bot: commands.Bot) -> None:
         ]
 
         await _send_success(
-            interaction, f"Memory Stats — {project_id}",
+            interaction,
+            f"Memory Stats — {project_id}",
             description="Memory subsystem is **active** and operational.",
             fields=fields,
         )
@@ -5545,11 +5779,14 @@ def setup_commands(bot: commands.Bot) -> None:
 
         await interaction.response.defer()
 
-        result = await handler.execute("memory_search", {
-            "project_id": project_id,
-            "query": query,
-            "top_k": top_k,
-        })
+        result = await handler.execute(
+            "memory_search",
+            {
+                "project_id": project_id,
+                "query": query,
+                "top_k": top_k,
+            },
+        )
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
             return
@@ -5559,7 +5796,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
         if count == 0:
             await _send_info(
-                interaction, "No Results",
+                interaction,
+                "No Results",
                 description=f"No memories matched your query in `{project_id}`.\n\n**Query:** {query}",
                 followup=True,
             )
@@ -5583,9 +5821,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
             rank = r.get("rank", "?")
             score_pct = f"{score * 100:.1f}%" if isinstance(score, (int, float)) else "N/A"
-            entry = (
-                f"**{rank}.** `{source_short}` — {score_pct}\n"
-            )
+            entry = f"**{rank}.** `{source_short}` — {score_pct}\n"
             if heading:
                 entry += f"> **{heading}**\n"
             entry += f"> {preview}"
@@ -5608,23 +5844,27 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="orchestrator", description="Pause or resume task scheduling")
     @app_commands.describe(action="pause | resume | status")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="pause",  value="pause"),
-        app_commands.Choice(name="resume", value="resume"),
-        app_commands.Choice(name="status", value="status"),
-    ])
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="pause", value="pause"),
+            app_commands.Choice(name="resume", value="resume"),
+            app_commands.Choice(name="status", value="status"),
+        ]
+    )
     async def orchestrator_command(
         interaction: discord.Interaction, action: app_commands.Choice[str]
     ):
         result = await handler.execute("orchestrator_control", {"action": action.value})
         if action.value == "pause":
             await _send_info(
-                interaction, "Orchestrator Paused",
+                interaction,
+                "Orchestrator Paused",
                 description="No new tasks will be scheduled.",
             )
         elif action.value == "resume":
             await _send_success(
-                interaction, "Orchestrator Resumed",
+                interaction,
+                "Orchestrator Resumed",
                 description="Task scheduling is now active.",
             )
         else:
@@ -5633,7 +5873,8 @@ def setup_commands(bot: commands.Bot) -> None:
             state = "⏸ PAUSED" if is_paused else "▶ RUNNING"
             embed_fn = _send_info if is_paused else _send_success
             await embed_fn(
-                interaction, f"Orchestrator {state}",
+                interaction,
+                f"Orchestrator {state}",
                 description=f"**Running tasks:** {running}",
             )
 
@@ -5662,7 +5903,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _async_git_output(["fetch", "--quiet"], timeout=15)
             behind = await _async_git_output(["rev-list", "--count", "HEAD..@{u}"], timeout=5)
             if behind and int(behind) > 0:
-                git_info_parts.append(f"**{behind}** commit{'s' if int(behind) != 1 else ''} behind origin")
+                git_info_parts.append(
+                    f"**{behind}** commit{'s' if int(behind) != 1 else ''} behind origin"
+                )
         except Exception:
             pass
 
@@ -5710,9 +5953,7 @@ def setup_commands(bot: commands.Bot) -> None:
         ]
         if running_count > 0:
             if force:
-                desc_parts.append(
-                    f"⚠️ **{running_count}** running task(s) will be force-stopped."
-                )
+                desc_parts.append(f"⚠️ **{running_count}** running task(s) will be force-stopped.")
             else:
                 desc_parts.append(
                     f"⏳ Waiting for **{running_count}** running task(s) to complete…"
@@ -5720,9 +5961,7 @@ def setup_commands(bot: commands.Bot) -> None:
         else:
             desc_parts.append("No tasks currently running.")
 
-        await _send_warning(
-            interaction, "Shutting Down", description="\n".join(desc_parts)
-        )
+        await _send_warning(interaction, "Shutting Down", description="\n".join(desc_parts))
 
         # Set bot status to invisible/offline before shutting down
         try:
@@ -5755,7 +5994,9 @@ def setup_commands(bot: commands.Bot) -> None:
         before_hash = ""
         try:
             before_hash = await _async_git_output(
-                ["rev-parse", "--short", "HEAD"], cwd=repo_dir, timeout=5,
+                ["rev-parse", "--short", "HEAD"],
+                cwd=repo_dir,
+                timeout=5,
             )
         except Exception:
             pass
@@ -5773,7 +6014,9 @@ def setup_commands(bot: commands.Bot) -> None:
         after_hash = ""
         try:
             after_hash = await _async_git_output(
-                ["rev-parse", "--short", "HEAD"], cwd=repo_dir, timeout=5,
+                ["rev-parse", "--short", "HEAD"],
+                cwd=repo_dir,
+                timeout=5,
             )
         except Exception:
             pass
@@ -5791,7 +6034,8 @@ def setup_commands(bot: commands.Bot) -> None:
             desc_parts.append("```\n" + "\n".join(lines) + "\n```")
 
         await _send_warning(
-            interaction, "Updating & Restarting",
+            interaction,
+            "Updating & Restarting",
             description="\n".join(desc_parts),
             followup=True,
         )
@@ -5889,7 +6133,9 @@ def setup_commands(bot: commands.Bot) -> None:
             self._project_id = project_id
             self._current_path = current_path
             # Always resolve to absolute path to prevent CWD-relative issues
-            self._workspace_path = os.path.realpath(workspace_path) if workspace_path else workspace_path
+            self._workspace_path = (
+                os.path.realpath(workspace_path) if workspace_path else workspace_path
+            )
             self._workspace_name = workspace_name
             self._directories = directories
             self._files = files
@@ -5955,13 +6201,17 @@ def setup_commands(bot: commands.Bot) -> None:
             if total_dir_pages > 1:
                 if self._dir_page > 0:
                     prev_dir = discord.ui.Button(
-                        label="◀ Prev Dirs", style=discord.ButtonStyle.secondary, row=3,
+                        label="◀ Prev Dirs",
+                        style=discord.ButtonStyle.secondary,
+                        row=3,
                     )
                     prev_dir.callback = self._prev_dir_page
                     self.add_item(prev_dir)
                 if self._dir_page < total_dir_pages - 1:
                     next_dir = discord.ui.Button(
-                        label="Next Dirs ▶", style=discord.ButtonStyle.secondary, row=3,
+                        label="Next Dirs ▶",
+                        style=discord.ButtonStyle.secondary,
+                        row=3,
                     )
                     next_dir.callback = self._next_dir_page
                     self.add_item(next_dir)
@@ -5969,13 +6219,17 @@ def setup_commands(bot: commands.Bot) -> None:
             if total_file_pages > 1:
                 if self._file_page > 0:
                     prev_file = discord.ui.Button(
-                        label="◀ Prev Files", style=discord.ButtonStyle.secondary, row=3,
+                        label="◀ Prev Files",
+                        style=discord.ButtonStyle.secondary,
+                        row=3,
                     )
                     prev_file.callback = self._prev_file_page
                     self.add_item(prev_file)
                 if self._file_page < total_file_pages - 1:
                     next_file = discord.ui.Button(
-                        label="Next Files ▶", style=discord.ButtonStyle.secondary, row=3,
+                        label="Next Files ▶",
+                        style=discord.ButtonStyle.secondary,
+                        row=3,
                     )
                     next_file.callback = self._next_file_page
                     self.add_item(next_file)
@@ -5993,7 +6247,7 @@ def setup_commands(bot: commands.Bot) -> None:
             embed.add_field(
                 name="Contents",
                 value=f"📁 {dir_count} director{'y' if dir_count == 1 else 'ies'}, "
-                      f"📄 {file_count} file{'s' if file_count != 1 else ''}",
+                f"📄 {file_count} file{'s' if file_count != 1 else ''}",
                 inline=False,
             )
             # Show the resolved workspace path for transparency
@@ -6016,7 +6270,9 @@ def setup_commands(bot: commands.Bot) -> None:
 
             if "error" in result:
                 await interaction.edit_original_response(
-                    content=f"❌ {result['error']}", embed=None, view=None,
+                    content=f"❌ {result['error']}",
+                    embed=None,
+                    view=None,
                 )
                 return
             # Update workspace path from the resolved result to stay in sync
@@ -6028,7 +6284,9 @@ def setup_commands(bot: commands.Bot) -> None:
             self._file_page = 0
             self._build_buttons()
             await interaction.edit_original_response(
-                content=None, embed=self._build_embed(), view=self,
+                content=None,
+                embed=self._build_embed(),
+                view=self,
             )
 
         async def _go_parent(self, interaction: discord.Interaction):
@@ -6077,7 +6335,9 @@ def setup_commands(bot: commands.Bot) -> None:
                 project_id=self._project_id,
             )
             await interaction.response.send_message(
-                embed=embed, view=view, ephemeral=True,
+                embed=embed,
+                view=view,
+                ephemeral=True,
             )
 
         async def _prev_dir_page(self, interaction: discord.Interaction):
@@ -6229,7 +6489,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 embed=success_embed(
                     "File Saved ✅",
                     description=f"**`{self._file_rel}`** saved successfully.\n"
-                                f"Wrote {written:,} characters.",
+                    f"Wrote {written:,} characters.",
                 ),
                 ephemeral=True,
             )
@@ -6290,9 +6550,7 @@ def setup_commands(bot: commands.Bot) -> None:
             if current and current.lower() not in label.lower():
                 continue
             locked = " 🔒" if ws.locked_by_agent_id else ""
-            choices.append(
-                app_commands.Choice(name=f"{label}{locked}", value=ws.name or ws.id)
-            )
+            choices.append(app_commands.Choice(name=f"{label}{locked}", value=ws.name or ws.id))
             if len(choices) >= 25:
                 break
         return choices
@@ -6321,7 +6579,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
         file_full = f"{ws_path}/{path}"
         result = await handler.execute(
-            "read_file", {"path": file_full, "max_lines": 4000},
+            "read_file",
+            {"path": file_full, "max_lines": 4000},
         )
         if "error" in result:
             await _send_error(interaction, result["error"])
@@ -6362,7 +6621,6 @@ def setup_commands(bot: commands.Bot) -> None:
         if not resolved_project:
             await _send_error(interaction, _NO_PROJECT_MSG, followup=True)
             return
-
 
         cmd_args: dict = {"project_id": resolved_project}
         if task_id:
@@ -6424,7 +6682,8 @@ def setup_commands(bot: commands.Bot) -> None:
         plugins = result.get("plugins", [])
         if not plugins:
             await _send_info(
-                interaction, "No Plugins",
+                interaction,
+                "No Plugins",
                 description="No plugins are currently installed.",
                 followup=True,
             )
@@ -6433,9 +6692,12 @@ def setup_commands(bot: commands.Bot) -> None:
         for p in plugins:
             status = "✅" if p.get("enabled") else "❌"
             version = p.get("version", "unknown")
-            lines.append(f"{status} **{p['name']}** `v{version}` — {p.get('description', 'No description')}")
+            lines.append(
+                f"{status} **{p['name']}** `v{version}` — {p.get('description', 'No description')}"
+            )
         await _send_success(
-            interaction, f"Installed Plugins ({len(plugins)})",
+            interaction,
+            f"Installed Plugins ({len(plugins)})",
             description="\n".join(lines),
             followup=True,
         )
@@ -6449,7 +6711,9 @@ def setup_commands(bot: commands.Bot) -> None:
         branch="Git branch to install from (optional)",
     )
     async def plugin_install_command(
-        interaction: discord.Interaction, url: str, branch: str | None = None,
+        interaction: discord.Interaction,
+        url: str,
+        branch: str | None = None,
     ):
         await interaction.response.defer()
         args: dict = {"url": url}
@@ -6462,9 +6726,11 @@ def setup_commands(bot: commands.Bot) -> None:
         name = result.get("name", "unknown")
         version = result.get("version", "unknown")
         await _send_success(
-            interaction, "Plugin Installed",
+            interaction,
+            "Plugin Installed",
             description=f"**{name}** `v{version}` has been installed successfully.",
-            followup=True, result=result,
+            followup=True,
+            result=result,
         )
 
     @bot.tree.command(name="plugin-update", description="Update an installed plugin")
@@ -6479,8 +6745,11 @@ def setup_commands(bot: commands.Bot) -> None:
         new_ver = result.get("version", "unknown")
         desc = f"**{name}** updated from `v{old_ver}` to `v{new_ver}`."
         await _send_success(
-            interaction, "Plugin Updated",
-            description=desc, followup=True, result=result,
+            interaction,
+            "Plugin Updated",
+            description=desc,
+            followup=True,
+            result=result,
         )
 
     @bot.tree.command(name="plugin-remove", description="Remove an installed plugin")
@@ -6492,9 +6761,11 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"], followup=True)
             return
         await _send_success(
-            interaction, "Plugin Removed",
+            interaction,
+            "Plugin Removed",
             description=f"**{name}** has been removed.",
-            followup=True, result=result,
+            followup=True,
+            result=result,
         )
 
     @bot.tree.command(
@@ -6512,9 +6783,11 @@ def setup_commands(bot: commands.Bot) -> None:
         state = "enabled" if enabled else "disabled"
         emoji = "✅" if enabled else "❌"
         await _send_success(
-            interaction, "Plugin Toggled",
+            interaction,
+            "Plugin Toggled",
             description=f"{emoji} **{name}** is now **{state}**.",
-            followup=True, result=result,
+            followup=True,
+            result=result,
         )
 
     @bot.tree.command(name="plugin-info", description="Show detailed plugin information")
@@ -6541,9 +6814,11 @@ def setup_commands(bot: commands.Bot) -> None:
         if commands_list:
             fields.append(("Commands", ", ".join(f"`{c}`" for c in commands_list), False))
         await _send_info(
-            interaction, f"Plugin: {plugin.get('name', name)}",
+            interaction,
+            f"Plugin: {plugin.get('name', name)}",
             description=plugin.get("description", "No description available."),
-            fields=fields, followup=True,
+            fields=fields,
+            followup=True,
         )
 
     @bot.tree.command(
@@ -6560,7 +6835,8 @@ def setup_commands(bot: commands.Bot) -> None:
         config = result.get("config", {})
         if not config:
             await _send_info(
-                interaction, f"Plugin Config: {name}",
+                interaction,
+                f"Plugin Config: {name}",
                 description="This plugin has no configuration.",
                 followup=True,
             )
@@ -6569,7 +6845,8 @@ def setup_commands(bot: commands.Bot) -> None:
         for key, value in config.items():
             lines.append(f"**{key}:** `{value}`")
         await _send_info(
-            interaction, f"Plugin Config: {name}",
+            interaction,
+            f"Plugin Config: {name}",
             description="\n".join(lines),
             followup=True,
         )
@@ -6583,9 +6860,11 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"], followup=True)
             return
         await _send_success(
-            interaction, "Plugin Reloaded",
+            interaction,
+            "Plugin Reloaded",
             description=f"**{name}** has been reloaded successfully.",
-            followup=True, result=result,
+            followup=True,
+            result=result,
         )
 
     # ===================================================================
@@ -6603,9 +6882,7 @@ def setup_commands(bot: commands.Bot) -> None:
         by_status = tasks.get("by_status", {})
         total = tasks.get("total", 0)
         completed = by_status.get("COMPLETED", 0)
-        in_progress = (
-            by_status.get("IN_PROGRESS", 0) + by_status.get("ASSIGNED", 0)
-        )
+        in_progress = by_status.get("IN_PROGRESS", 0) + by_status.get("ASSIGNED", 0)
         failed = by_status.get("FAILED", 0)
         blocked = by_status.get("BLOCKED", 0)
         ready = by_status.get("READY", 0)
@@ -6625,14 +6902,8 @@ def setup_commands(bot: commands.Bot) -> None:
             f"📊 {total} tasks — {in_progress} active, {ready} ready, "
             f"{failed} failed, {blocked} blocked"
         )
-        lines.append(
-            f"🤖 {len(agents)} agents — {busy_count} busy"
-        )
-        lines.append(
-            "\n_Use the buttons below to view details and take actions._"
-        )
+        lines.append(f"🤖 {len(agents)} agents — {busy_count} busy")
+        lines.append("\n_Use the buttons below to view details and take actions._")
 
         view = MenuView(handler=handler, bot=bot)
-        await interaction.response.send_message(
-            "\n".join(lines), view=view
-        )
+        await interaction.response.send_message("\n".join(lines), view=view)

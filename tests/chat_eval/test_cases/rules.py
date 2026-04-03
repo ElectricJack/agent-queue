@@ -43,7 +43,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- load_rule ---
     TestCase(
         id="rules-load-by-id",
@@ -60,7 +59,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- save_rule ---
     TestCase(
         id="rules-save-new",
@@ -76,7 +74,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- delete_rule ---
     TestCase(
         id="rules-delete-by-id",
@@ -93,7 +90,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- browse_tools ---
     TestCase(
         id="tools-browse-categories",
@@ -108,7 +104,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- load_tools ---
     TestCase(
         id="tools-load-category",
@@ -125,7 +120,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- process_task_completion ---
     TestCase(
         id="task-process-completion",
@@ -145,7 +139,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- send_message ---
     TestCase(
         id="send-message-to-thread",
@@ -160,11 +153,9 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # -----------------------------------------------------------------------
     # Supervisor-specific rule management (post-refactor additions)
     # -----------------------------------------------------------------------
-
     # --- save_rule with natural language ---
     TestCase(
         id="rule-save-natural",
@@ -179,7 +170,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- delete_rule by name ---
     TestCase(
         id="rule-delete-by-name",
@@ -196,7 +186,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- browse_rules for specific project ---
     TestCase(
         id="rule-browse-project",
@@ -213,7 +202,6 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-
     # --- load_rule to inspect details ---
     TestCase(
         id="rule-load-detail",

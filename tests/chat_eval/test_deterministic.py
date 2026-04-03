@@ -83,16 +83,17 @@ class TestMultiToolSequence:
         agent, recorder, provider = eval_agent
 
         # Single response with multiple tool calls
-        provider.add_tool_calls([
-            ("list_projects", {}),
-            ("list_agents", {}),
-        ])
+        provider.add_tool_calls(
+            [
+                ("list_projects", {}),
+                ("list_agents", {}),
+            ]
+        )
         provider.add_reply("Done.")
 
         response = await agent.chat("status", user_name="test")
 
         assert set(recorder.tool_names_called) == {"list_projects", "list_agents"}
-
 
 
 # TestMaxIterations removed — agents now run without step limits

@@ -26,6 +26,7 @@ Prompt optimization features:
 
 See ``specs/llm-logger.md`` for the logging specification.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -56,14 +57,16 @@ class PromptAnalytics:
     """
 
     def __init__(self):
-        self._stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
-            "call_count": 0,
-            "total_input_tokens_est": 0,
-            "total_output_tokens_est": 0,
-            "total_duration_ms": 0,
-            "error_count": 0,
-            "last_call": None,
-        })
+        self._stats: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "call_count": 0,
+                "total_input_tokens_est": 0,
+                "total_output_tokens_est": 0,
+                "total_duration_ms": 0,
+                "error_count": 0,
+                "last_call": None,
+            }
+        )
 
     def record(
         self,
@@ -107,8 +110,7 @@ class LLMLogger:
        monitoring token spend and identifying optimization opportunities.
     """
 
-    def __init__(self, base_dir: str = "logs/llm", enabled: bool = True,
-                 retention_days: int = 30):
+    def __init__(self, base_dir: str = "logs/llm", enabled: bool = True, retention_days: int = 30):
         self._base_dir = base_dir
         self._enabled = enabled
         self._retention_days = retention_days
@@ -166,17 +168,17 @@ class LLMLogger:
                 ]
 
         # Estimate token counts for analytics (rough: 1 token ≈ 4 chars)
-        input_tokens_est = (len(system) + sum(
-            len(str(m.get("content", ""))) for m in messages
-        )) // 4
+        input_tokens_est = (
+            len(system) + sum(len(str(m.get("content", ""))) for m in messages)
+        ) // 4
         output_tokens_est = output_text_length // 4
 
         # Generate a prompt template fingerprint for A/B comparison
         # Uses first 100 chars of system prompt + tool names as template ID
         template_sig = f"{system[:100]}|{','.join(sorted(tool_names))}"
-        prompt_fingerprint = hashlib.md5(
-            template_sig.encode(), usedforsecurity=False
-        ).hexdigest()[:12]
+        prompt_fingerprint = hashlib.md5(template_sig.encode(), usedforsecurity=False).hexdigest()[
+            :12
+        ]
 
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -293,15 +295,16 @@ class LLMLogger:
                 **stats,
                 "avg_duration_ms": (
                     stats["total_duration_ms"] / stats["call_count"]
-                    if stats["call_count"] > 0 else 0
+                    if stats["call_count"] > 0
+                    else 0
                 ),
                 "token_efficiency": (
                     stats["total_output_tokens_est"] / stats["total_input_tokens_est"]
-                    if stats["total_input_tokens_est"] > 0 else 0
+                    if stats["total_input_tokens_est"] > 0
+                    else 0
                 ),
                 "error_rate": (
-                    stats["error_count"] / stats["call_count"]
-                    if stats["call_count"] > 0 else 0
+                    stats["error_count"] / stats["call_count"] if stats["call_count"] > 0 else 0
                 ),
             }
 
@@ -365,21 +368,27 @@ class LLMLogger:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, str):
-                summaries.append({
-                    "role": role,
-                    "content_length": len(content),
-                    "content_preview": content[:150],
-                })
+                summaries.append(
+                    {
+                        "role": role,
+                        "content_length": len(content),
+                        "content_preview": content[:150],
+                    }
+                )
             elif isinstance(content, list):
                 # Tool results or multi-part content
-                summaries.append({
-                    "role": role,
-                    "content_type": "list",
-                    "content_count": len(content),
-                })
+                summaries.append(
+                    {
+                        "role": role,
+                        "content_type": "list",
+                        "content_count": len(content),
+                    }
+                )
             else:
-                summaries.append({
-                    "role": role,
-                    "content_type": type(content).__name__,
-                })
+                summaries.append(
+                    {
+                        "role": role,
+                        "content_type": type(content).__name__,
+                    }
+                )
         return summaries

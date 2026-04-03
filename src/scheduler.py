@@ -67,7 +67,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from src.models import (
-    Agent, AgentState, Project, ProjectStatus, Task, TaskStatus, TaskType,
+    Agent,
+    AgentState,
+    Project,
+    ProjectStatus,
+    Task,
+    TaskStatus,
+    TaskType,
 )
 
 
@@ -80,6 +86,7 @@ class AssignAction:
     The orchestrator is responsible for actually executing the assignment
     (updating the database, starting the agent process, etc.).
     """
+
     agent_id: str
     task_id: str
     project_id: str
@@ -164,10 +171,7 @@ class Scheduler:
         matched with a task.  May be empty if no work can be assigned.
         """
         # Check global budget
-        if (
-            state.global_budget is not None
-            and state.global_tokens_used >= state.global_budget
-        ):
+        if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
             return []
 
         idle_agents = [a for a in state.agents if a.state == AgentState.IDLE]
@@ -202,9 +206,9 @@ class Scheduler:
         # the sync workflow.
         projects_with_active_sync: set[str] = set()
         for task in state.tasks:
-            if (
-                task.task_type == TaskType.SYNC
-                and task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            if task.task_type == TaskType.SYNC and task.status in (
+                TaskStatus.ASSIGNED,
+                TaskStatus.IN_PROGRESS,
             ):
                 projects_with_active_sync.add(task.project_id)
 
@@ -220,7 +224,8 @@ class Scheduler:
 
         # Filter to active projects with ready tasks
         active_projects = [
-            p for p in state.projects
+            p
+            for p in state.projects
             if p.status == ProjectStatus.ACTIVE and p.id in ready_by_project
         ]
         if not active_projects:
@@ -281,8 +286,7 @@ class Scheduler:
                 # Check per-project budget
                 if (
                     project.budget_limit is not None
-                    and state.project_token_usage.get(project.id, 0)
-                    >= project.budget_limit
+                    and state.project_token_usage.get(project.id, 0) >= project.budget_limit
                 ):
                     continue
 
@@ -307,19 +311,21 @@ class Scheduler:
                 # Pick highest priority ready task not yet assigned
                 # Also filter out tasks whose preferred workspace is locked
                 available = [
-                    t for t in ready_by_project.get(project.id, [])
-                    if t.id not in assigned_tasks
-                    and _workspace_available(t, state.workspace_locks)
+                    t
+                    for t in ready_by_project.get(project.id, [])
+                    if t.id not in assigned_tasks and _workspace_available(t, state.workspace_locks)
                 ]
                 if not available:
                     continue
 
                 task = available[0]
-                actions.append(AssignAction(
-                    agent_id=agent.id,
-                    task_id=task.id,
-                    project_id=project.id,
-                ))
+                actions.append(
+                    AssignAction(
+                        agent_id=agent.id,
+                        task_id=task.id,
+                        project_id=project.id,
+                    )
+                )
                 assigned_agents.add(agent.id)
                 assigned_tasks.add(task.id)
                 round_agent_counts[project.id] = current_agents + 1

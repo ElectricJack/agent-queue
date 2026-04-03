@@ -25,6 +25,7 @@ checks buffers for readiness (by count or age), then invokes the
 
 See ``specs/chat-observer.md`` for the full behavioral specification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,10 +39,33 @@ if TYPE_CHECKING:
 
 # Action words that indicate work-relevant messages
 _ACTION_WORDS = {
-    "deploy", "hotfix", "fix", "bug", "crash", "error", "issue", "problem",
-    "broken", "failing", "failed", "investigate", "debug", "urgent",
-    "blocker", "stuck", "help", "review", "merge", "release", "ship",
-    "revert", "rollback", "incident", "outage", "down", "timeout",
+    "deploy",
+    "hotfix",
+    "fix",
+    "bug",
+    "crash",
+    "error",
+    "issue",
+    "problem",
+    "broken",
+    "failing",
+    "failed",
+    "investigate",
+    "debug",
+    "urgent",
+    "blocker",
+    "stuck",
+    "help",
+    "review",
+    "merge",
+    "release",
+    "ship",
+    "revert",
+    "rollback",
+    "incident",
+    "outage",
+    "down",
+    "timeout",
 }
 
 # Minimum message length to auto-pass (detailed discussion)

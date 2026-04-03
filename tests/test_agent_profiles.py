@@ -12,6 +12,7 @@ Covers:
 - Tool validation, install manifest, discovery (v2)
 - Export/import roundtrip (v2)
 """
+
 import pytest
 
 from src.adapters import AdapterFactory
@@ -21,8 +22,16 @@ from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.known_tools import validate_tool_names
 from src.models import (
-    Agent, AgentOutput, AgentProfile, AgentResult, AgentState,
-    Project, RepoSourceType, Task, TaskStatus, Workspace,
+    Agent,
+    AgentOutput,
+    AgentProfile,
+    AgentResult,
+    AgentState,
+    Project,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    Workspace,
 )
 from src.orchestrator import Orchestrator
 
@@ -52,6 +61,7 @@ def sample_profile():
 # ---------------------------------------------------------------------------
 # Database CRUD
 # ---------------------------------------------------------------------------
+
 
 class TestProfileDatabaseCRUD:
     async def test_create_and_get_profile(self, db, sample_profile):
@@ -113,10 +123,15 @@ class TestProfileDatabaseCRUD:
     async def test_delete_profile_clears_task_references(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.create_project(Project(id="p-1", name="test"))
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test", profile_id="reviewer",
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Test",
+                profile_id="reviewer",
+            )
+        )
         task = await db.get_task("t-1")
         assert task.profile_id == "reviewer"
 
@@ -126,9 +141,13 @@ class TestProfileDatabaseCRUD:
 
     async def test_delete_profile_clears_project_references(self, db, sample_profile):
         await db.create_profile(sample_profile)
-        await db.create_project(Project(
-            id="p-1", name="test", default_profile_id="reviewer",
-        ))
+        await db.create_project(
+            Project(
+                id="p-1",
+                name="test",
+                default_profile_id="reviewer",
+            )
+        )
         project = await db.get_project("p-1")
         assert project.default_profile_id == "reviewer"
 
@@ -141,33 +160,47 @@ class TestProfileDatabaseCRUD:
 # Task and Project profile_id fields
 # ---------------------------------------------------------------------------
 
+
 class TestTaskProfileId:
     async def test_create_task_with_profile_id(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.create_project(Project(id="p-1", name="test"))
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="Review code",
-            description="Review the PR", profile_id="reviewer",
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Review code",
+                description="Review the PR",
+                profile_id="reviewer",
+            )
+        )
         task = await db.get_task("t-1")
         assert task.profile_id == "reviewer"
 
     async def test_create_task_without_profile_id(self, db):
         await db.create_project(Project(id="p-1", name="test"))
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do thing",
-            description="Details",
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do thing",
+                description="Details",
+            )
+        )
         task = await db.get_task("t-1")
         assert task.profile_id is None
 
     async def test_update_task_profile_id(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.create_project(Project(id="p-1", name="test"))
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test",
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Test",
+            )
+        )
         await db.update_task("t-1", profile_id="reviewer")
         task = await db.get_task("t-1")
         assert task.profile_id == "reviewer"
@@ -175,10 +208,15 @@ class TestTaskProfileId:
     async def test_clear_task_profile_id(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.create_project(Project(id="p-1", name="test"))
-        await db.create_task(Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test", profile_id="reviewer",
-        ))
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Test",
+                profile_id="reviewer",
+            )
+        )
         await db.update_task("t-1", profile_id=None)
         task = await db.get_task("t-1")
         assert task.profile_id is None
@@ -187,9 +225,13 @@ class TestTaskProfileId:
 class TestProjectDefaultProfileId:
     async def test_create_project_with_default_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)
-        await db.create_project(Project(
-            id="p-1", name="test", default_profile_id="reviewer",
-        ))
+        await db.create_project(
+            Project(
+                id="p-1",
+                name="test",
+                default_profile_id="reviewer",
+            )
+        )
         project = await db.get_project("p-1")
         assert project.default_profile_id == "reviewer"
 
@@ -210,6 +252,7 @@ class TestProjectDefaultProfileId:
 # Profile resolution cascade
 # ---------------------------------------------------------------------------
 
+
 class TestProfileResolution:
     """Test the _resolve_profile cascade: task → project → None."""
 
@@ -229,8 +272,11 @@ class TestProfileResolution:
         await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test", profile_id="reviewer",
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="Test",
+            profile_id="reviewer",
         )
         profile = await orch._resolve_profile(task)
         assert profile is not None
@@ -239,9 +285,13 @@ class TestProfileResolution:
     async def test_resolve_project_default_profile(self, orch):
         """Task without profile_id, project with default → use project's default."""
         await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
-        await orch.db.create_project(Project(
-            id="p-1", name="test", default_profile_id="reviewer",
-        ))
+        await orch.db.create_project(
+            Project(
+                id="p-1",
+                name="test",
+                default_profile_id="reviewer",
+            )
+        )
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
         profile = await orch._resolve_profile(task)
         assert profile is not None
@@ -258,12 +308,19 @@ class TestProfileResolution:
         """Task profile_id takes precedence over project default_profile_id."""
         await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
         await orch.db.create_profile(AgentProfile(id="developer", name="Developer"))
-        await orch.db.create_project(Project(
-            id="p-1", name="test", default_profile_id="developer",
-        ))
+        await orch.db.create_project(
+            Project(
+                id="p-1",
+                name="test",
+                default_profile_id="developer",
+            )
+        )
         task = Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test", profile_id="reviewer",
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="Test",
+            profile_id="reviewer",
         )
         profile = await orch._resolve_profile(task)
         assert profile.id == "reviewer"
@@ -272,8 +329,11 @@ class TestProfileResolution:
         """Task references a profile_id that doesn't exist → None."""
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(
-            id="t-1", project_id="p-1", title="Test",
-            description="Test", profile_id="nonexistent",
+            id="t-1",
+            project_id="p-1",
+            title="Test",
+            description="Test",
+            profile_id="nonexistent",
         )
         profile = await orch._resolve_profile(task)
         assert profile is None
@@ -282,6 +342,7 @@ class TestProfileResolution:
 # ---------------------------------------------------------------------------
 # AdapterFactory._config_for_profile() merging
 # ---------------------------------------------------------------------------
+
 
 class TestConfigForProfile:
     def test_no_profile_returns_base_config(self):
@@ -314,7 +375,8 @@ class TestConfigForProfile:
         )
         factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
-            id="reviewer", name="Reviewer",
+            id="reviewer",
+            name="Reviewer",
             allowed_tools=["Read", "Glob", "Grep"],
         )
         result = factory._config_for_profile(profile)
@@ -344,7 +406,8 @@ class TestConfigForProfile:
         )
         factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
-            id="reviewer", name="Reviewer",
+            id="reviewer",
+            name="Reviewer",
             model="claude-opus-4-20250514",
             permission_mode="plan",
             allowed_tools=["Read", "Glob"],
@@ -358,6 +421,7 @@ class TestConfigForProfile:
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
+
 
 class TestConfigProfileLoading:
     def test_load_profiles_from_yaml(self, tmp_path):
@@ -399,7 +463,9 @@ agent_profiles:
 
     def test_no_profiles_section(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("discord:\n  bot_token: test-token\n  guild_id: '123'\nscheduling:\n  rolling_window_hours: 48\n")
+        config_path.write_text(
+            "discord:\n  bot_token: test-token\n  guild_id: '123'\nscheduling:\n  rolling_window_hours: 48\n"
+        )
         config = load_config(str(config_path))
         assert config.agent_profiles == []
 
@@ -408,6 +474,7 @@ agent_profiles:
 # Orchestrator profile sync from config
 # ---------------------------------------------------------------------------
 
+
 class TestProfileSyncFromConfig:
     async def test_sync_creates_profiles(self, tmp_path):
         config = AppConfig(
@@ -415,7 +482,8 @@ class TestProfileSyncFromConfig:
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(
-                    id="reviewer", name="Reviewer",
+                    id="reviewer",
+                    name="Reviewer",
                     allowed_tools=["Read", "Glob"],
                 ),
             ],
@@ -460,10 +528,12 @@ class TestProfileSyncFromConfig:
 # Command handler integration
 # ---------------------------------------------------------------------------
 
+
 class TestProfileCommands:
     @pytest.fixture
     async def handler(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -475,11 +545,14 @@ class TestProfileCommands:
         await orch.db.close()
 
     async def test_create_and_list_profiles(self, handler):
-        result = await handler.execute("create_profile", {
-            "id": "reviewer",
-            "name": "Code Reviewer",
-            "allowed_tools": ["Read", "Glob", "Grep"],
-        })
+        result = await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Code Reviewer",
+                "allowed_tools": ["Read", "Glob", "Grep"],
+            },
+        )
         assert result.get("created") == "reviewer"
 
         result = await handler.execute("list_profiles", {})
@@ -487,30 +560,45 @@ class TestProfileCommands:
         assert result["profiles"][0]["id"] == "reviewer"
 
     async def test_get_profile(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         result = await handler.execute("get_profile", {"profile_id": "reviewer"})
         assert result["id"] == "reviewer"
         assert result["name"] == "Reviewer"
 
     async def test_edit_profile(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
-        result = await handler.execute("edit_profile", {
-            "profile_id": "reviewer",
-            "name": "Senior Reviewer",
-            "allowed_tools": ["Read"],
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "reviewer",
+                "name": "Senior Reviewer",
+                "allowed_tools": ["Read"],
+            },
+        )
         assert result.get("updated") == "reviewer"
         assert "name" in result["fields"]
         assert "allowed_tools" in result["fields"]
 
     async def test_delete_profile(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         result = await handler.execute("delete_profile", {"profile_id": "reviewer"})
         assert result.get("deleted") == "reviewer"
 
@@ -518,28 +606,43 @@ class TestProfileCommands:
         assert "error" in result
 
     async def test_create_duplicate_profile_fails(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
-        result = await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Another Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
+        result = await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Another Reviewer",
+            },
+        )
         assert "error" in result
         assert "already exists" in result["error"]
 
     async def test_create_task_with_profile(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("create_task", {
-            "project_id": pid,
-            "title": "Review code",
-            "profile_id": "reviewer",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": pid,
+                "title": "Review code",
+                "profile_id": "reviewer",
+            },
+        )
         assert result.get("profile_id") == "reviewer"
 
     async def test_create_task_with_invalid_profile_fails(self, handler):
@@ -547,65 +650,101 @@ class TestProfileCommands:
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("create_task", {
-            "project_id": pid,
-            "title": "Test",
-            "profile_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": pid,
+                "title": "Test",
+                "profile_id": "nonexistent",
+            },
+        )
         assert "error" in result
         assert "not found" in result["error"]
 
     async def test_edit_task_profile_id(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("create_task", {
-            "project_id": pid, "title": "Test",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": pid,
+                "title": "Test",
+            },
+        )
         task_id = result["created"]
 
-        result = await handler.execute("edit_task", {
-            "task_id": task_id, "profile_id": "reviewer",
-        })
+        result = await handler.execute(
+            "edit_task",
+            {
+                "task_id": task_id,
+                "profile_id": "reviewer",
+            },
+        )
         assert result.get("updated") == task_id
         assert "profile_id" in result["fields"]
 
     async def test_edit_task_clear_profile_id(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("create_task", {
-            "project_id": pid, "title": "Test", "profile_id": "reviewer",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": pid,
+                "title": "Test",
+                "profile_id": "reviewer",
+            },
+        )
         task_id = result["created"]
 
-        result = await handler.execute("edit_task", {
-            "task_id": task_id, "profile_id": None,
-        })
+        result = await handler.execute(
+            "edit_task",
+            {
+                "task_id": task_id,
+                "profile_id": None,
+            },
+        )
         assert result.get("updated") == task_id
 
         task = await handler.orchestrator.db.get_task(task_id)
         assert task.profile_id is None
 
     async def test_edit_project_default_profile(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("edit_project", {
-            "project_id": pid, "default_profile_id": "reviewer",
-        })
+        result = await handler.execute(
+            "edit_project",
+            {
+                "project_id": pid,
+                "default_profile_id": "reviewer",
+            },
+        )
         assert result.get("updated") == pid
         assert "default_profile_id" in result["fields"]
 
@@ -617,23 +756,36 @@ class TestProfileCommands:
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("edit_project", {
-            "project_id": pid, "default_profile_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "edit_project",
+            {
+                "project_id": pid,
+                "default_profile_id": "nonexistent",
+            },
+        )
         assert "error" in result
         assert "not found" in result["error"]
 
     async def test_get_task_includes_profile_id(self, handler):
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Reviewer",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Reviewer",
+            },
+        )
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute("create_task", {
-            "project_id": pid, "title": "Test", "profile_id": "reviewer",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": pid,
+                "title": "Test",
+                "profile_id": "reviewer",
+            },
+        )
         task_id = result["created"]
 
         result = await handler.execute("get_task", {"task_id": task_id})
@@ -644,6 +796,7 @@ class TestProfileCommands:
 # Profile enforcement — verify profile reaches the adapter factory (v2)
 # ---------------------------------------------------------------------------
 
+
 class MockAdapter(AgentAdapter):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
         self._result = result
@@ -653,8 +806,7 @@ class MockAdapter(AgentAdapter):
         pass
 
     async def wait(self, on_message=None):
-        return AgentOutput(result=self._result, summary="Done",
-                           tokens_used=self._tokens)
+        return AgentOutput(result=self._result, summary="Done", tokens_used=self._tokens)
 
     async def stop(self):
         pass
@@ -677,21 +829,28 @@ class MockAdapterFactory:
 
 
 async def _create_project_with_workspace(
-    db, project_id: str = "p-1", name: str = "alpha",
+    db,
+    project_id: str = "p-1",
+    name: str = "alpha",
     workspace_path: str = "/tmp/test-workspace",
     default_profile_id: str | None = None,
 ) -> None:
     """Create a project and an associated workspace so task execution succeeds."""
-    await db.create_project(Project(
-        id=project_id, name=name,
-        default_profile_id=default_profile_id,
-    ))
-    await db.create_workspace(Workspace(
-        id=f"ws-{project_id}",
-        project_id=project_id,
-        workspace_path=workspace_path,
-        source_type=RepoSourceType.LINK,
-    ))
+    await db.create_project(
+        Project(
+            id=project_id,
+            name=name,
+            default_profile_id=default_profile_id,
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id=f"ws-{project_id}",
+            project_id=project_id,
+            workspace_path=workspace_path,
+            source_type=RepoSourceType.LINK,
+        )
+    )
 
 
 class TestProfileEnforcement:
@@ -709,25 +868,38 @@ class TestProfileEnforcement:
         yield orch, factory
         if orch._running_tasks:
             import asyncio
+
             await asyncio.gather(*orch._running_tasks.values(), return_exceptions=True)
             orch._running_tasks.clear()
         await orch.shutdown()
 
     async def test_execute_task_passes_profile_to_adapter_factory(self, setup):
         orch, factory = setup
-        await orch.db.create_profile(AgentProfile(
-            id="reviewer", name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-        ))
+        await orch.db.create_profile(
+            AgentProfile(
+                id="reviewer",
+                name="Reviewer",
+                allowed_tools=["Read", "Glob", "Grep"],
+            )
+        )
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(
-            id="a-1", name="claude-1", agent_type="claude",
-        ))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Review",
-            description="Review code", status=TaskStatus.READY,
-            profile_id="reviewer",
-        ))
+        await orch.db.create_agent(
+            Agent(
+                id="a-1",
+                name="claude-1",
+                agent_type="claude",
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Review",
+                description="Review code",
+                status=TaskStatus.READY,
+                profile_id="reviewer",
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
         assert factory.last_profile is not None
@@ -736,33 +908,55 @@ class TestProfileEnforcement:
     async def test_execute_task_no_profile_passes_none(self, setup):
         orch, factory = setup
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(
-            id="a-1", name="claude-1", agent_type="claude",
-        ))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Do work",
-            description="Details", status=TaskStatus.READY,
-        ))
+        await orch.db.create_agent(
+            Agent(
+                id="a-1",
+                name="claude-1",
+                agent_type="claude",
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
         assert factory.last_profile is None
 
     async def test_execute_task_project_default_profile_passed(self, setup):
         orch, factory = setup
-        await orch.db.create_profile(AgentProfile(
-            id="developer", name="Developer",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        ))
-        await _create_project_with_workspace(
-            orch.db, default_profile_id="developer",
+        await orch.db.create_profile(
+            AgentProfile(
+                id="developer",
+                name="Developer",
+                allowed_tools=["Read", "Write", "Edit", "Bash"],
+            )
         )
-        await orch.db.create_agent(Agent(
-            id="a-1", name="claude-1", agent_type="claude",
-        ))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Build feature",
-            description="Build it", status=TaskStatus.READY,
-        ))
+        await _create_project_with_workspace(
+            orch.db,
+            default_profile_id="developer",
+        )
+        await orch.db.create_agent(
+            Agent(
+                id="a-1",
+                name="claude-1",
+                agent_type="claude",
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Build feature",
+                description="Build it",
+                status=TaskStatus.READY,
+            )
+        )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
         assert factory.last_profile is not None
@@ -773,9 +967,11 @@ class TestProfileEnforcement:
 # Discovery & validation (v2)
 # ---------------------------------------------------------------------------
 
+
 class TestToolValidation:
     async def test_create_profile_with_valid_tools_no_warnings(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -783,17 +979,21 @@ class TestToolValidation:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        result = await handler.execute("create_profile", {
-            "id": "valid",
-            "name": "Valid Profile",
-            "allowed_tools": ["Read", "Write", "Edit"],
-        })
+        result = await handler.execute(
+            "create_profile",
+            {
+                "id": "valid",
+                "name": "Valid Profile",
+                "allowed_tools": ["Read", "Write", "Edit"],
+            },
+        )
         assert result.get("created") == "valid"
         assert "warnings" not in result
         await orch.db.close()
 
     async def test_create_profile_with_unknown_tools_has_warnings(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -801,11 +1001,14 @@ class TestToolValidation:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        result = await handler.execute("create_profile", {
-            "id": "typos",
-            "name": "Typo Profile",
-            "allowed_tools": ["Read", "Typo", "FakeGlob"],
-        })
+        result = await handler.execute(
+            "create_profile",
+            {
+                "id": "typos",
+                "name": "Typo Profile",
+                "allowed_tools": ["Read", "Typo", "FakeGlob"],
+            },
+        )
         assert result.get("created") == "typos"
         assert "warnings" in result
         assert any("Typo" in w for w in result["warnings"])
@@ -813,6 +1016,7 @@ class TestToolValidation:
 
     async def test_edit_profile_with_unknown_tools_has_warnings(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -820,13 +1024,20 @@ class TestToolValidation:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        await handler.execute("create_profile", {
-            "id": "test", "name": "Test",
-        })
-        result = await handler.execute("edit_profile", {
-            "profile_id": "test",
-            "allowed_tools": ["Read", "Oops"],
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "test",
+                "name": "Test",
+            },
+        )
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "test",
+                "allowed_tools": ["Read", "Oops"],
+            },
+        )
         assert result.get("updated") == "test"
         assert "warnings" in result
         await orch.db.close()
@@ -835,6 +1046,7 @@ class TestToolValidation:
 class TestListAvailableTools:
     async def test_list_available_tools(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -856,9 +1068,11 @@ class TestListAvailableTools:
 # Check / install profile (v2)
 # ---------------------------------------------------------------------------
 
+
 class TestCheckProfile:
     async def test_check_profile_empty_manifest(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -866,9 +1080,13 @@ class TestCheckProfile:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        await handler.execute("create_profile", {
-            "id": "plain", "name": "Plain",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "plain",
+                "name": "Plain",
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "plain"})
         assert result["profile_id"] == "plain"
         assert result["valid"] is True
@@ -877,6 +1095,7 @@ class TestCheckProfile:
 
     async def test_check_profile_missing_command(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -884,10 +1103,14 @@ class TestCheckProfile:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        await handler.execute("create_profile", {
-            "id": "docker-user", "name": "Docker User",
-            "install": {"commands": ["definitely-not-a-real-command-xyz"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "docker-user",
+                "name": "Docker User",
+                "install": {"commands": ["definitely-not-a-real-command-xyz"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "docker-user"})
         assert result["profile_id"] == "docker-user"
         assert result["valid"] is False
@@ -896,6 +1119,7 @@ class TestCheckProfile:
 
     async def test_check_nonexistent_profile(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -912,9 +1136,11 @@ class TestCheckProfile:
 # Export / import roundtrip (v2)
 # ---------------------------------------------------------------------------
 
+
 class TestExportImport:
     async def test_export_profile_yaml(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -922,11 +1148,15 @@ class TestExportImport:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        await handler.execute("create_profile", {
-            "id": "reviewer", "name": "Code Reviewer",
-            "allowed_tools": ["Read", "Glob", "Grep"],
-            "system_prompt_suffix": "You are a code reviewer.",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "reviewer",
+                "name": "Code Reviewer",
+                "allowed_tools": ["Read", "Glob", "Grep"],
+                "system_prompt_suffix": "You are a code reviewer.",
+            },
+        )
         result = await handler.execute("export_profile", {"profile_id": "reviewer"})
         assert "yaml" in result
         assert "reviewer" in result["yaml"]
@@ -935,6 +1165,7 @@ class TestExportImport:
 
     async def test_import_profile_from_yaml(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -961,6 +1192,7 @@ agent_profile:
 
     async def test_export_import_roundtrip(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -968,19 +1200,28 @@ agent_profile:
         orch = Orchestrator(config)
         await orch.initialize()
         handler = CommandHandler(orch, config)
-        await handler.execute("create_profile", {
-            "id": "original", "name": "Original",
-            "allowed_tools": ["Read", "Glob", "Grep", "Bash"],
-            "mcp_servers": {"linter": {"command": "npx", "args": ["eslint-mcp"]}},
-            "system_prompt_suffix": "You are a code reviewer.",
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "original",
+                "name": "Original",
+                "allowed_tools": ["Read", "Glob", "Grep", "Bash"],
+                "mcp_servers": {"linter": {"command": "npx", "args": ["eslint-mcp"]}},
+                "system_prompt_suffix": "You are a code reviewer.",
+            },
+        )
         export_result = await handler.execute("export_profile", {"profile_id": "original"})
         yaml_text = export_result["yaml"]
 
         # Import with different ID and name
-        import_result = await handler.execute("import_profile", {
-            "source": yaml_text, "id": "copy", "name": "Copy of Original",
-        })
+        import_result = await handler.execute(
+            "import_profile",
+            {
+                "source": yaml_text,
+                "id": "copy",
+                "name": "Copy of Original",
+            },
+        )
         assert import_result.get("imported") is True
 
         copy = await orch.db.get_profile("copy")
@@ -992,6 +1233,7 @@ agent_profile:
 
     async def test_import_profile_with_install_reports_readiness(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -1014,6 +1256,7 @@ agent_profile:
 
     async def test_import_duplicate_fails_without_overwrite(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -1034,6 +1277,7 @@ agent_profile:
 
     async def test_import_with_overwrite(self, tmp_path):
         from src.command_handler import CommandHandler
+
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -1052,9 +1296,13 @@ agent_profile:
   id: dupe
   name: "Version 2"
 """
-        result = await handler.execute("import_profile", {
-            "source": yaml_text2, "overwrite": True,
-        })
+        result = await handler.execute(
+            "import_profile",
+            {
+                "source": yaml_text2,
+                "overwrite": True,
+            },
+        )
         assert result.get("imported") is True
         profile = await orch.db.get_profile("dupe")
         assert profile.name == "Version 2"

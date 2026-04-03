@@ -208,9 +208,7 @@ CASES: list[TestCase] = [
         tags=["run_command"],
         turns=[
             Turn(
-                user_message=(
-                    "run 'npm run build' in /home/dev/frontend with a 60 second timeout"
-                ),
+                user_message=("run 'npm run build' in /home/dev/frontend with a 60 second timeout"),
                 expected_tools=[
                     ExpectedTool(
                         name="run_command",

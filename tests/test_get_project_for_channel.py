@@ -47,9 +47,12 @@ class TestReverseLookup:
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "111111111111111111",
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": "111111111111111111",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == "p-1"
@@ -64,9 +67,12 @@ class TestReverseLookupNoMatch:
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "999999999999999999",
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": "999999999999999999",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] is None
@@ -74,9 +80,12 @@ class TestReverseLookupNoMatch:
         assert result["channel_id"] == "999999999999999999"
 
     async def test_returns_nulls_when_no_projects_exist(self, handler):
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "111111111111111111",
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": "111111111111111111",
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] is None
@@ -94,15 +103,21 @@ class TestReverseLookupMultipleProjects:
         await db.update_project("p-3", discord_channel_id="333333333333333333")
 
         # Find p-2 by its channel
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "222222222222222222",
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": "222222222222222222",
+            },
+        )
         assert result["project_id"] == "p-2"
 
         # Find p-3 by its channel
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "333333333333333333",
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": "333333333333333333",
+            },
+        )
         assert result["project_id"] == "p-3"
 
 
@@ -120,9 +135,12 @@ class TestReverseLookupErrors:
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": 111111111111111111,  # int, not str
-        })
+        result = await handler.execute(
+            "get_project_for_channel",
+            {
+                "channel_id": 111111111111111111,  # int, not str
+            },
+        )
 
         assert "error" not in result
         assert result["project_id"] == "p-1"

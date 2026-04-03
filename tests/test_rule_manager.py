@@ -19,6 +19,7 @@ def storage_root(tmp_path):
 @pytest.fixture
 def rule_manager(storage_root):
     from src.rule_manager import RuleManager
+
     return RuleManager(storage_root=storage_root)
 
 
@@ -33,9 +34,7 @@ def test_save_rule_creates_file(rule_manager, storage_root):
     assert result["success"] is True
     assert result["id"] == "rule-test"
 
-    rule_path = os.path.join(
-        storage_root, "memory", "my-project", "rules", "rule-test.md"
-    )
+    rule_path = os.path.join(storage_root, "memory", "my-project", "rules", "rule-test.md")
     assert os.path.isfile(rule_path)
 
     with open(rule_path) as f:
@@ -55,9 +54,7 @@ def test_save_rule_global_scope(rule_manager, storage_root):
     )
     assert result["success"] is True
 
-    rule_path = os.path.join(
-        storage_root, "memory", "global", "rules", "rule-global.md"
-    )
+    rule_path = os.path.join(storage_root, "memory", "global", "rules", "rule-global.md")
     assert os.path.isfile(rule_path)
 
 
@@ -155,7 +152,9 @@ def test_browse_rules_summary_truncation(rule_manager):
     """browse_rules returns first 200 chars as summary."""
     long_intent = "A" * 500
     rule_manager.save_rule(
-        "rule-long", "proj", "passive",
+        "rule-long",
+        "proj",
+        "passive",
         f"# Long Rule\n\n## Intent\n{long_intent}",
     )
     rules = rule_manager.browse_rules("proj")
@@ -186,6 +185,7 @@ def test_get_rules_for_prompt_empty(rule_manager):
 # Async hook generation and deletion (Task 3)
 # ------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_db():
     """Mock database that tracks hook create/delete calls."""
@@ -200,6 +200,7 @@ def mock_db():
 @pytest.fixture
 def rule_manager_with_db(storage_root, mock_db):
     from src.rule_manager import RuleManager
+
     return RuleManager(storage_root=storage_root, db=mock_db)
 
 
@@ -216,9 +217,7 @@ def test_async_delete_rule_removes_hooks(rule_manager_with_db, mock_db):
     )
     rm._update_rule_hooks("rule-with-hooks", ["hook-from-rule"])
 
-    result = asyncio.run(
-        rm.async_delete_rule("rule-with-hooks")
-    )
+    result = asyncio.run(rm.async_delete_rule("rule-with-hooks"))
     assert result["success"] is True
     assert "hook-from-rule" in result["hooks_removed"]
 
@@ -226,9 +225,7 @@ def test_async_delete_rule_removes_hooks(rule_manager_with_db, mock_db):
     mock_db.delete_hook.assert_any_call("hook-from-rule")
 
 
-def test_async_save_active_rule_generates_hooks(
-    rule_manager_with_db, mock_db
-):
+def test_async_save_active_rule_generates_hooks(rule_manager_with_db, mock_db):
     """async_save_rule generates hooks for active rules with triggers."""
     rm = rule_manager_with_db
 
@@ -237,10 +234,7 @@ def test_async_save_active_rule_generates_hooks(
             id="rule-periodic",
             project_id="proj",
             rule_type="active",
-            content=(
-                "# Check Status\n\n## Trigger\nEvery 10 minutes."
-                "\n\n## Logic\nRun check."
-            ),
+            content=("# Check Status\n\n## Trigger\nEvery 10 minutes.\n\n## Logic\nRun check."),
         )
     )
     assert result["success"] is True
@@ -261,10 +255,7 @@ def test_reconcile_regenerates_hooks(rule_manager_with_db, mock_db):
         id="rule-active",
         project_id="proj",
         rule_type="active",
-        content=(
-            "# Active Rule\n\n## Trigger\nEvery 10 min."
-            "\n\n## Logic\nCheck status."
-        ),
+        content=("# Active Rule\n\n## Trigger\nEvery 10 min.\n\n## Logic\nCheck status."),
     )
 
     result = asyncio.run(rm.reconcile())
@@ -274,9 +265,7 @@ def test_reconcile_regenerates_hooks(rule_manager_with_db, mock_db):
     mock_db.create_hook.assert_called()
 
 
-def test_reconcile_unchanged_rules_report_zero_regenerated(
-    storage_root, mock_db
-):
+def test_reconcile_unchanged_rules_report_zero_regenerated(storage_root, mock_db):
     """reconcile reports 0 hooks_regenerated when rules haven't changed.
 
     When existing hooks already have matching source_hash values,
@@ -286,10 +275,7 @@ def test_reconcile_unchanged_rules_report_zero_regenerated(
     from src.models import Hook
     from src.rule_manager import RuleManager, _compute_source_hash
 
-    content = (
-        "# My Rule\n\n## Trigger\nEvery 60 minutes."
-        "\n\n## Logic\nDo something."
-    )
+    content = "# My Rule\n\n## Trigger\nEvery 60 minutes.\n\n## Logic\nDo something."
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
     rm.save_rule(
@@ -350,10 +336,7 @@ def test_reconcile_preserves_last_triggered_at(storage_root, mock_db):
         id="my-rule",
         project_id="proj",
         rule_type="active",
-        content=(
-            "# My Rule\n\n## Trigger\nEvery 60 minutes."
-            "\n\n## Logic\nDo something."
-        ),
+        content=("# My Rule\n\n## Trigger\nEvery 60 minutes.\n\n## Logic\nDo something."),
     )
 
     result = asyncio.run(rm.reconcile())
@@ -376,7 +359,9 @@ def test_hook_generation_uses_llm_expansion(storage_root, mock_db):
     mock_orch._supervisor = mock_supervisor
 
     rm = RuleManager(
-        storage_root=storage_root, db=mock_db, orchestrator=mock_orch,
+        storage_root=storage_root,
+        db=mock_db,
+        orchestrator=mock_orch,
     )
     result = asyncio.run(
         rm.async_save_rule(
@@ -401,10 +386,12 @@ def test_global_rule_generates_hooks_for_all_projects(storage_root, mock_db):
     from src.rule_manager import RuleManager
     from src.models import Project
 
-    mock_db.list_projects = AsyncMock(return_value=[
-        Project(id="proj-a", name="A"),
-        Project(id="proj-b", name="B"),
-    ])
+    mock_db.list_projects = AsyncMock(
+        return_value=[
+            Project(id="proj-a", name="A"),
+            Project(id="proj-b", name="B"),
+        ]
+    )
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
     result = asyncio.run(
@@ -412,10 +399,7 @@ def test_global_rule_generates_hooks_for_all_projects(storage_root, mock_db):
             id="rule-global",
             project_id=None,
             rule_type="active",
-            content=(
-                "# Global Check\n\n## Trigger\nEvery 10 minutes."
-                "\n\n## Logic\nDo stuff."
-            ),
+            content=("# Global Check\n\n## Trigger\nEvery 10 minutes.\n\n## Logic\nDo stuff."),
         )
     )
     assert result["success"] is True
@@ -423,10 +407,7 @@ def test_global_rule_generates_hooks_for_all_projects(storage_root, mock_db):
     assert mock_db.create_hook.call_count == 2
 
     # Verify hooks target different projects
-    pids = {
-        mock_db.create_hook.call_args_list[i][0][0].project_id
-        for i in range(2)
-    }
+    pids = {mock_db.create_hook.call_args_list[i][0][0].project_id for i in range(2)}
     assert pids == {"proj-a", "proj-b"}
 
 
@@ -435,10 +416,12 @@ def test_global_rule_hooks_include_project_context(storage_root, mock_db):
     from src.rule_manager import RuleManager
     from src.models import Project
 
-    mock_db.list_projects = AsyncMock(return_value=[
-        Project(id="proj-a", name="A"),
-        Project(id="proj-b", name="B"),
-    ])
+    mock_db.list_projects = AsyncMock(
+        return_value=[
+            Project(id="proj-a", name="A"),
+            Project(id="proj-b", name="B"),
+        ]
+    )
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
     result = asyncio.run(
@@ -504,10 +487,7 @@ def test_global_rule_no_projects_creates_no_hooks(storage_root, mock_db):
             id="rule-empty",
             project_id=None,
             rule_type="active",
-            content=(
-                "# Empty\n\n## Trigger\nEvery 5 minutes."
-                "\n\n## Logic\nCheck."
-            ),
+            content=("# Empty\n\n## Trigger\nEvery 5 minutes.\n\n## Logic\nCheck."),
         )
     )
     assert result["success"] is True
@@ -516,7 +496,8 @@ def test_global_rule_no_projects_creates_no_hooks(storage_root, mock_db):
 
 
 def test_hook_generation_falls_back_without_supervisor(
-    rule_manager_with_db, mock_db,
+    rule_manager_with_db,
+    mock_db,
 ):
     """Hook generation uses static template when supervisor is unavailable."""
     result = asyncio.run(
@@ -524,10 +505,7 @@ def test_hook_generation_falls_back_without_supervisor(
             id="rule-no-sup",
             project_id="proj",
             rule_type="active",
-            content=(
-                "# Check Status\n\n## Trigger\nEvery 10 minutes."
-                "\n\n## Logic\nRun check."
-            ),
+            content=("# Check Status\n\n## Trigger\nEvery 10 minutes.\n\n## Logic\nRun check."),
         )
     )
     assert result["success"] is True
@@ -546,17 +524,16 @@ def test_hook_generation_falls_back_on_llm_failure(storage_root, mock_db):
     mock_orch._supervisor = mock_supervisor
 
     rm = RuleManager(
-        storage_root=storage_root, db=mock_db, orchestrator=mock_orch,
+        storage_root=storage_root,
+        db=mock_db,
+        orchestrator=mock_orch,
     )
     result = asyncio.run(
         rm.async_save_rule(
             id="rule-fail",
             project_id="proj",
             rule_type="active",
-            content=(
-                "# Failing\n\n## Trigger\nEvery 5 minutes."
-                "\n\n## Logic\nDo stuff."
-            ),
+            content=("# Failing\n\n## Trigger\nEvery 5 minutes.\n\n## Logic\nDo stuff."),
         )
     )
     assert result["success"] is True
@@ -577,9 +554,7 @@ def test_parse_trigger_event():
     """_parse_trigger extracts event-based triggers."""
     from src.rule_manager import RuleManager
 
-    content = (
-        "# Test\n\n## Trigger\nWhen a task is completed.\n\n## Logic\nReview."
-    )
+    content = "# Test\n\n## Trigger\nWhen a task is completed.\n\n## Logic\nReview."
     result = RuleManager._parse_trigger(content)
     assert result == {"type": "event", "event_type": "task.completed"}
 
@@ -597,6 +572,7 @@ def test_parse_trigger_none():
 # CommandHandler integration (Task 4)
 # ------------------------------------------------------------------
 
+
 def _make_command_handler(storage_root, mock_db):
     """Create a CommandHandler with a mocked orchestrator and RuleManager.
 
@@ -608,7 +584,10 @@ def _make_command_handler(storage_root, mock_db):
     # Ensure discord and aiosqlite stubs exist so command_handler can import
     mods_to_stub = {}
     for mod_name in [
-        "discord", "discord.ext", "discord.ext.commands", "discord.ui",
+        "discord",
+        "discord.ext",
+        "discord.ext.commands",
+        "discord.ui",
         "aiosqlite",
     ]:
         if mod_name not in sys.modules:
@@ -630,11 +609,14 @@ def test_cmd_save_rule(storage_root, mock_db):
     """CommandHandler.execute('save_rule') creates a rule file."""
     handler, rm = _make_command_handler(storage_root, mock_db)
     result = asyncio.run(
-        handler.execute("save_rule", {
-            "project_id": "proj",
-            "type": "passive",
-            "content": "# Check Code Style\n\n## Intent\nEnforce linting.",
-        })
+        handler.execute(
+            "save_rule",
+            {
+                "project_id": "proj",
+                "type": "passive",
+                "content": "# Check Code Style\n\n## Intent\nEnforce linting.",
+            },
+        )
     )
     assert result.get("success") is True or "id" in result
 
@@ -644,9 +626,7 @@ def test_cmd_browse_rules(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-1", "proj", "passive", "# Rule One")
 
-    result = asyncio.run(
-        handler.execute("browse_rules", {"project_id": "proj"})
-    )
+    result = asyncio.run(handler.execute("browse_rules", {"project_id": "proj"}))
     assert "rules" in result
     assert any(r["id"] == "rule-1" for r in result["rules"])
 
@@ -656,9 +636,7 @@ def test_cmd_load_rule(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-2", "proj", "passive", "# Rule Two\n\nContent here.")
 
-    result = asyncio.run(
-        handler.execute("load_rule", {"id": "rule-2"})
-    )
+    result = asyncio.run(handler.execute("load_rule", {"id": "rule-2"}))
     assert result.get("id") == "rule-2"
     assert "Rule Two" in result.get("content", "")
 
@@ -668,9 +646,7 @@ def test_cmd_delete_rule(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-3", "proj", "passive", "# Rule Three")
 
-    result = asyncio.run(
-        handler.execute("delete_rule", {"id": "rule-3"})
-    )
+    result = asyncio.run(handler.execute("delete_rule", {"id": "rule-3"}))
     assert result.get("success") is True
 
 
@@ -680,9 +656,7 @@ def test_cmd_refresh_hooks(storage_root, mock_db):
     # Save a passive rule (no hooks to generate, but should be scanned)
     rm.save_rule("rule-scan", "proj", "passive", "# Passive Rule")
 
-    result = asyncio.run(
-        handler.execute("refresh_hooks", {})
-    )
+    result = asyncio.run(handler.execute("refresh_hooks", {}))
     assert result.get("success") is True
     assert result.get("rules_scanned", 0) >= 1
     assert "errors" in result
@@ -693,9 +667,7 @@ def test_cmd_refresh_hooks_no_rule_manager(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     handler.orchestrator.rule_manager = None
 
-    result = asyncio.run(
-        handler.execute("refresh_hooks", {})
-    )
+    result = asyncio.run(handler.execute("refresh_hooks", {}))
     assert "error" in result
 
 
@@ -703,13 +675,17 @@ def test_cmd_refresh_hooks_no_rule_manager(storage_root, mock_db):
 # Orchestrator integration (Task 7)
 # ------------------------------------------------------------------
 
+
 def test_orchestrator_initializes_rule_manager(tmp_path):
     """Orchestrator creates RuleManager during initialize()."""
     import sys
 
     # Ensure discord/aiosqlite stubs exist so orchestrator can import
     for mod_name in [
-        "discord", "discord.ext", "discord.ext.commands", "discord.ui",
+        "discord",
+        "discord.ext",
+        "discord.ext.commands",
+        "discord.ui",
         "aiosqlite",
     ]:
         if mod_name not in sys.modules:
@@ -742,10 +718,10 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
     orch.db.list_workspaces = AsyncMock(return_value=[])
     orch.db.list_tasks = AsyncMock(return_value=[])
 
-    with patch.object(orch, '_sync_profiles_from_config', new_callable=AsyncMock):
+    with patch.object(orch, "_sync_profiles_from_config", new_callable=AsyncMock):
         asyncio.run(orch.initialize())
 
-    assert hasattr(orch, 'rule_manager')
+    assert hasattr(orch, "rule_manager")
     assert orch.rule_manager is not None
 
 
@@ -753,9 +729,11 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
 # Default rule installation (Task 8)
 # ------------------------------------------------------------------
 
+
 def test_install_default_rules(storage_root):
     """install_defaults creates global rules from bundled templates."""
     from src.rule_manager import RuleManager
+
     rm = RuleManager(storage_root=storage_root)
 
     installed = rm.install_defaults()
@@ -771,6 +749,7 @@ def test_install_default_rules(storage_root):
 def test_install_defaults_idempotent(storage_root):
     """install_defaults does not duplicate rules on re-run."""
     from src.rule_manager import RuleManager
+
     rm = RuleManager(storage_root=storage_root)
 
     rm.install_defaults()
@@ -790,6 +769,7 @@ def test_install_defaults_idempotent(storage_root):
 def test_get_all_rule_dirs(storage_root):
     """_get_all_rule_dirs returns existing rule directories."""
     from src.rule_manager import RuleManager
+
     rm = RuleManager(storage_root=storage_root)
 
     # Create some rule dirs
@@ -836,11 +816,13 @@ def test_on_rule_folder_changed_ignores_non_rule_watches(storage_root):
 
     async def _run():
         # Event from hook engine file watcher — should be ignored
-        await rm._on_rule_folder_changed({
-            "watch_id": "hook-123",
-            "changes": [{"path": "test.md", "operation": "modified"}],
-            "path": "/some/dir",
-        })
+        await rm._on_rule_folder_changed(
+            {
+                "watch_id": "hook-123",
+                "changes": [{"path": "test.md", "operation": "modified"}],
+                "path": "/some/dir",
+            }
+        )
         # No errors, no DB calls
         rm._db.delete_hooks_by_id_prefix.assert_not_called()
 
@@ -866,11 +848,13 @@ def test_on_rule_folder_changed_modified(storage_root, mock_db):
     )
 
     async def _run():
-        await rm._on_rule_folder_changed({
-            "watch_id": "rule-watcher-proj",
-            "changes": [{"path": "rule-watch-test.md", "operation": "modified"}],
-            "path": rules_dir,
-        })
+        await rm._on_rule_folder_changed(
+            {
+                "watch_id": "rule-watcher-proj",
+                "changes": [{"path": "rule-watch-test.md", "operation": "modified"}],
+                "path": rules_dir,
+            }
+        )
         # Should have created hooks
         mock_db.create_hook.assert_called()
         created_hook = mock_db.create_hook.call_args[0][0]
@@ -888,14 +872,14 @@ def test_on_rule_folder_changed_deleted(storage_root, mock_db):
     rm = RuleManager(storage_root=storage_root, db=mock_db)
 
     async def _run():
-        await rm._on_rule_folder_changed({
-            "watch_id": "rule-watcher-proj",
-            "changes": [{"path": "rule-deleted.md", "operation": "deleted"}],
-            "path": "/some/dir",
-        })
-        mock_db.delete_hooks_by_id_prefix.assert_called_once_with(
-            "rule-rule-deleted-"
+        await rm._on_rule_folder_changed(
+            {
+                "watch_id": "rule-watcher-proj",
+                "changes": [{"path": "rule-deleted.md", "operation": "deleted"}],
+                "path": "/some/dir",
+            }
         )
+        mock_db.delete_hooks_by_id_prefix.assert_called_once_with("rule-rule-deleted-")
 
     asyncio.run(_run())
 
@@ -917,11 +901,13 @@ def test_on_rule_folder_changed_passive_rule_skipped(storage_root, mock_db):
     )
 
     async def _run():
-        await rm._on_rule_folder_changed({
-            "watch_id": "rule-watcher-proj",
-            "changes": [{"path": "rule-passive.md", "operation": "modified"}],
-            "path": rules_dir,
-        })
+        await rm._on_rule_folder_changed(
+            {
+                "watch_id": "rule-watcher-proj",
+                "changes": [{"path": "rule-passive.md", "operation": "modified"}],
+                "path": rules_dir,
+            }
+        )
         # No hooks should be created for passive rules
         mock_db.create_hook.assert_not_called()
 
@@ -1075,10 +1061,22 @@ def test_reverse_parse_trigger_periodic():
     """_reverse_parse_trigger handles periodic triggers."""
     from src.rule_manager import RuleManager
 
-    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 3600}') == "Every 1 hour."
-    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 300}') == "Every 5 minutes."
-    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 86400}') == "Every 1 day."
-    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 45}') == "Every 45 seconds."
+    assert (
+        RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 3600}')
+        == "Every 1 hour."
+    )
+    assert (
+        RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 300}')
+        == "Every 5 minutes."
+    )
+    assert (
+        RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 86400}')
+        == "Every 1 day."
+    )
+    assert (
+        RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 45}')
+        == "Every 45 seconds."
+    )
 
 
 def test_reverse_parse_trigger_event():
@@ -1186,8 +1184,7 @@ def test_parse_trigger_section_variants():
     assert result == {"type": "periodic", "interval_seconds": 600}
 
     content2 = (
-        "# Test\n\n## Trigger Schedule\n"
-        "**Frequency:** Every 30 minutes\n\n## Logic\nDo stuff."
+        "# Test\n\n## Trigger Schedule\n**Frequency:** Every 30 minutes\n\n## Logic\nDo stuff."
     )
     result2 = RuleManager._parse_trigger(content2)
     assert result2 == {"type": "periodic", "interval_seconds": 1800}
@@ -1207,8 +1204,7 @@ def test_parse_trigger_error_agent_crash():
     from src.rule_manager import RuleManager
 
     content = (
-        "# Test\n\n## Trigger\n"
-        "When an agent crash error occurs (`error.agent_crash` event).\n"
+        "# Test\n\n## Trigger\nWhen an agent crash error occurs (`error.agent_crash` event).\n"
     )
     result = RuleManager._parse_trigger(content)
     assert result == {"type": "event", "event_type": "error.agent_crash"}
@@ -1261,9 +1257,7 @@ def test_cleanup_duplicate_rules(storage_root):
     removed = asyncio.run(rm._cleanup_duplicate_rules())
 
     assert removed == 1
-    assert not os.path.exists(
-        os.path.join(rules_dir, "rule-rule-restart-daemon.md")
-    )
+    assert not os.path.exists(os.path.join(rules_dir, "rule-rule-restart-daemon.md"))
     assert os.path.exists(os.path.join(rules_dir, "rule-restart-daemon.md"))
     # Should have cleaned up the hook from the duplicate
     mock_db.delete_hook.assert_called_with("rule-rule-rule-restart-daemon-abc123")
@@ -1300,9 +1294,5 @@ def test_migrate_orphan_hooks_strips_rule_prefix(storage_root):
     unexpected_path = os.path.join(
         storage_root, "memory", "my-project", "rules", "rule-rule-restart-daemon.md"
     )
-    assert os.path.isfile(expected_path), (
-        f"Expected rule file at {expected_path}"
-    )
-    assert not os.path.isfile(unexpected_path), (
-        f"Should NOT create duplicate at {unexpected_path}"
-    )
+    assert os.path.isfile(expected_path), f"Expected rule file at {expected_path}"
+    assert not os.path.isfile(unexpected_path), f"Should NOT create duplicate at {unexpected_path}"

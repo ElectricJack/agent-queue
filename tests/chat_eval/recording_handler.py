@@ -52,13 +52,15 @@ class RecordingCommandHandler(CommandHandler):
             result = await super().execute(name, args)
         duration = time.monotonic() - start
 
-        self._calls.append(CommandCall(
-            name=name,
-            args=dict(args),
-            result=result,
-            timestamp=time.time(),
-            duration=duration,
-        ))
+        self._calls.append(
+            CommandCall(
+                name=name,
+                args=dict(args),
+                result=result,
+                timestamp=time.time(),
+                duration=duration,
+            )
+        )
         return result
 
     @property

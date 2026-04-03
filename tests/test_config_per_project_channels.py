@@ -31,12 +31,16 @@ class TestPerProjectChannelsDefaults:
 
     def test_default_when_not_in_yaml(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {
-                "bot_token": "test-token",
-                "guild_id": "123",
-            }
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {
+                        "bot_token": "test-token",
+                        "guild_id": "123",
+                    }
+                }
+            )
+        )
         config = load_config(str(config_file))
 
         ppc = config.discord.per_project_channels
@@ -50,17 +54,21 @@ class TestPerProjectChannelsFromYAML:
 
     def test_full_config(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {
-                "bot_token": "test-token",
-                "guild_id": "123",
-                "per_project_channels": {
-                    "auto_create": True,
-                    "naming_convention": "aq-{project_id}",
-                    "category_name": "Agent Queue Projects",
-                },
-            }
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {
+                        "bot_token": "test-token",
+                        "guild_id": "123",
+                        "per_project_channels": {
+                            "auto_create": True,
+                            "naming_convention": "aq-{project_id}",
+                            "category_name": "Agent Queue Projects",
+                        },
+                    }
+                }
+            )
+        )
         config = load_config(str(config_file))
 
         ppc = config.discord.per_project_channels
@@ -70,15 +78,19 @@ class TestPerProjectChannelsFromYAML:
 
     def test_partial_config_auto_create_only(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {
-                "bot_token": "test-token",
-                "guild_id": "123",
-                "per_project_channels": {
-                    "auto_create": True,
-                },
-            }
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {
+                        "bot_token": "test-token",
+                        "guild_id": "123",
+                        "per_project_channels": {
+                            "auto_create": True,
+                        },
+                    }
+                }
+            )
+        )
         config = load_config(str(config_file))
 
         ppc = config.discord.per_project_channels
@@ -89,16 +101,20 @@ class TestPerProjectChannelsFromYAML:
 
     def test_partial_config_custom_naming(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {
-                "bot_token": "test-token",
-                "guild_id": "123",
-                "per_project_channels": {
-                    "auto_create": False,
-                    "naming_convention": "{project_id}-notify",
-                },
-            }
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {
+                        "bot_token": "test-token",
+                        "guild_id": "123",
+                        "per_project_channels": {
+                            "auto_create": False,
+                            "naming_convention": "{project_id}-notify",
+                        },
+                    }
+                }
+            )
+        )
         config = load_config(str(config_file))
 
         ppc = config.discord.per_project_channels
@@ -107,13 +123,17 @@ class TestPerProjectChannelsFromYAML:
 
     def test_empty_per_project_channels_section(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "discord": {
-                "bot_token": "test-token",
-                "guild_id": "123",
-                "per_project_channels": {},
-            }
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {
+                        "bot_token": "test-token",
+                        "guild_id": "123",
+                        "per_project_channels": {},
+                    }
+                }
+            )
+        )
         config = load_config(str(config_file))
 
         ppc = config.discord.per_project_channels

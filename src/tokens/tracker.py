@@ -8,6 +8,7 @@ orchestrator pauses task assignment for that agent type until the window resets.
 This is used to detect when agents should back off to avoid API rate limits,
 not to enforce hard quotas (the API itself handles that).
 """
+
 from __future__ import annotations
 
 import time
@@ -28,9 +29,7 @@ class RateLimitWindow:
 
     @property
     def window_seconds(self) -> int:
-        return {"per_minute": 60, "per_hour": 3600, "per_day": 86400}[
-            self.limit_type
-        ]
+        return {"per_minute": 60, "per_hour": 3600, "per_day": 86400}[self.limit_type]
 
     def is_exceeded(self) -> bool:
         if time.time() - self.window_start > self.window_seconds:

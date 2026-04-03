@@ -7,6 +7,7 @@ dependencies = [
     "discord.py>=2.6.0",
     "claude-agent-sdk>=0.1.55",
     "pyyaml>=6.0",
+    "fastapi>=0.135.0",
 ]
 
 [project.optional-dependencies]
@@ -20,11 +21,13 @@ cli = [
     "click>=8.1",
     "rich>=13.0",
     "prompt-toolkit>=3.0",
+    "agent-queue-api-client",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4.0",
+    "pre-commit>=3.5.0",
 ]
 memory = [
     "memsearch>=0.1.0",
@@ -55,3 +58,6 @@ markers = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.format]
+quote-style = "double"

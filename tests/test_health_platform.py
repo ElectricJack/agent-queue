@@ -12,13 +12,11 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.health import HealthCheckServer, HealthCheckConfig
 from src.messaging.base import MessagingAdapter
 
 
@@ -75,13 +73,16 @@ def _make_orchestrator(**overrides):
     orch.db.list_agents = AsyncMock(return_value=overrides.get("agents", []))
     in_progress = overrides.get("in_progress_tasks", [])
     ready_tasks = overrides.get("ready_tasks", [])
+
     async def mock_list_tasks(status=None):
         from src.models import TaskStatus
+
         if status == TaskStatus.IN_PROGRESS:
             return in_progress
         elif status == TaskStatus.READY:
             return ready_tasks
         return []
+
     orch.db.list_tasks = mock_list_tasks
     return orch
 
@@ -176,28 +177,32 @@ class TestReadyEndpointMessaging:
     @pytest.mark.asyncio
     async def test_ready_checks_messaging_key(self):
         """Ready endpoint uses 'messaging' check, not 'discord'."""
+        from httpx import ASGITransport, AsyncClient
+        from src.api import dependencies as deps
+        from src.api.health import router
+
         health_data = {
             "database": {"ok": True},
             "messaging": {"ok": True, "platform": "telegram", "connected": True},
             "orchestrator": {"ok": True},
         }
 
-        server = HealthCheckServer(
-            config=HealthCheckConfig(enabled=True, port=0),
-            health_provider=AsyncMock(return_value=health_data),
-        )
+        # Temporarily set the health provider
+        old_prov = deps._health_provider
+        deps._health_provider = AsyncMock(return_value=health_data)
+        try:
+            from fastapi import FastAPI
 
-        writer = MagicMock()
-        writer.write = MagicMock()
-        writer.drain = AsyncMock()
+            app = FastAPI()
+            app.include_router(router)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get("/ready")
+            body = resp.json()
+        finally:
+            deps._health_provider = old_prov
 
-        await server._handle_ready(writer)
-
-        # Extract the JSON body from the written response
-        call_args = writer.write.call_args[0][0]
-        body_start = call_args.index(b"\r\n\r\n") + 4
-        body = json.loads(call_args[body_start:])
-
+        assert resp.status_code == 200
         assert body["ready"] is True
         assert "messaging" in body["checks"]
         assert "discord" not in body["checks"]
@@ -206,26 +211,30 @@ class TestReadyEndpointMessaging:
     @pytest.mark.asyncio
     async def test_ready_fails_when_messaging_disconnected(self):
         """Ready returns 503 when messaging is not connected."""
+        from httpx import ASGITransport, AsyncClient
+        from src.api import dependencies as deps
+        from src.api.health import router
+
         health_data = {
             "database": {"ok": True},
             "messaging": {"ok": False, "platform": "discord", "connected": False},
         }
 
-        server = HealthCheckServer(
-            config=HealthCheckConfig(enabled=True, port=0),
-            health_provider=AsyncMock(return_value=health_data),
-        )
+        old_prov = deps._health_provider
+        deps._health_provider = AsyncMock(return_value=health_data)
+        try:
+            from fastapi import FastAPI
 
-        writer = MagicMock()
-        writer.write = MagicMock()
-        writer.drain = AsyncMock()
+            app = FastAPI()
+            app.include_router(router)
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get("/ready")
+            body = resp.json()
+        finally:
+            deps._health_provider = old_prov
 
-        await server._handle_ready(writer)
-
-        call_args = writer.write.call_args[0][0]
-        assert b"503" in call_args
-        body_start = call_args.index(b"\r\n\r\n") + 4
-        body = json.loads(call_args[body_start:])
+        assert resp.status_code == 503
         assert body["ready"] is False
 
 

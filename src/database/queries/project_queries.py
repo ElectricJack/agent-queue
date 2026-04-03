@@ -18,28 +18,34 @@ class ProjectQueryMixin:
             "discord_channel_id, repo_url, repo_default_branch, "
             "default_profile_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (project.id, project.name, project.credit_weight,
-             project.max_concurrent_agents, project.status.value,
-             project.total_tokens_used, project.budget_limit,
-             project.discord_channel_id,
-             project.repo_url, project.repo_default_branch,
-             project.default_profile_id,
-             time.time()),
+            (
+                project.id,
+                project.name,
+                project.credit_weight,
+                project.max_concurrent_agents,
+                project.status.value,
+                project.total_tokens_used,
+                project.budget_limit,
+                project.discord_channel_id,
+                project.repo_url,
+                project.repo_default_branch,
+                project.default_profile_id,
+                time.time(),
+            ),
         )
         await self._db.commit()
 
     async def get_project(self, project_id: str) -> Project | None:
         """Fetch a single project by ID."""
-        cursor = await self._db.execute(
-            "SELECT * FROM projects WHERE id = ?", (project_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return self._row_to_project(row)
 
     async def list_projects(
-        self, status: ProjectStatus | None = None,
+        self,
+        status: ProjectStatus | None = None,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
         if status:
@@ -61,17 +67,13 @@ class ProjectQueryMixin:
             sets.append(f"{key} = ?")
             vals.append(value)
         vals.append(project_id)
-        await self._db.execute(
-            f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", vals
-        )
+        await self._db.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", vals)
         await self._db.commit()
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
         # Get all task IDs for this project
-        cursor = await self._db.execute(
-            "SELECT id FROM tasks WHERE project_id = ?", (project_id,)
-        )
+        cursor = await self._db.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
         task_rows = await cursor.fetchall()
         task_ids = [r["id"] for r in task_rows]
 
@@ -121,8 +123,6 @@ class ProjectQueryMixin:
                 else "main"
             ),
             default_profile_id=(
-                row["default_profile_id"]
-                if "default_profile_id" in keys
-                else None
+                row["default_profile_id"] if "default_profile_id" in keys else None
             ),
         )

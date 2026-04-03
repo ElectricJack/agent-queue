@@ -19,25 +19,32 @@ class WorkspaceQueryMixin:
             "INSERT INTO workspaces (id, project_id, workspace_path, source_type, "
             "name, locked_by_agent_id, locked_by_task_id, locked_at, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (workspace.id, workspace.project_id, workspace.workspace_path,
-             workspace.source_type.value, workspace.name,
-             workspace.locked_by_agent_id, workspace.locked_by_task_id,
-             workspace.locked_at, time.time()),
+            (
+                workspace.id,
+                workspace.project_id,
+                workspace.workspace_path,
+                workspace.source_type.value,
+                workspace.name,
+                workspace.locked_by_agent_id,
+                workspace.locked_by_task_id,
+                workspace.locked_at,
+                time.time(),
+            ),
         )
         await self._db.commit()
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
         """Fetch a single workspace by ID."""
-        cursor = await self._db.execute(
-            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
         row = await cursor.fetchone()
         if not row:
             return None
         return self._row_to_workspace(row)
 
     async def get_workspace_by_name(
-        self, project_id: str, name: str,
+        self,
+        project_id: str,
+        name: str,
     ) -> Workspace | None:
         """Find a workspace by name within a project."""
         cursor = await self._db.execute(
@@ -50,7 +57,8 @@ class WorkspaceQueryMixin:
         return self._row_to_workspace(row)
 
     async def list_workspaces(
-        self, project_id: str | None = None,
+        self,
+        project_id: str | None = None,
     ) -> list[Workspace]:
         """List workspaces, clone before link, optionally filtered by project."""
         if project_id:
@@ -69,13 +77,14 @@ class WorkspaceQueryMixin:
 
     async def delete_workspace(self, workspace_id: str) -> None:
         """Delete a workspace record."""
-        await self._db.execute(
-            "DELETE FROM workspaces WHERE id = ?", (workspace_id,)
-        )
+        await self._db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await self._db.commit()
 
     async def acquire_workspace(
-        self, project_id: str, agent_id: str, task_id: str,
+        self,
+        project_id: str,
+        agent_id: str,
+        task_id: str,
         preferred_workspace_id: str | None = None,
     ) -> Workspace | None:
         """Atomically find an unlocked workspace for a project and lock it.
@@ -132,7 +141,9 @@ class WorkspaceQueryMixin:
             if conflict:
                 logger.warning(
                     "Workspace path %s already locked by workspace %s — skipping %s",
-                    row["workspace_path"], conflict["id"], row["id"],
+                    row["workspace_path"],
+                    conflict["id"],
+                    row["id"],
                 )
                 continue
 

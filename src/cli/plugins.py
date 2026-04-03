@@ -12,6 +12,7 @@ from .app import cli, console, _run
 def _get_plugin_client():
     """Create a PluginClient for direct-DB plugin operations."""
     from .client import PluginClient
+
     db_path = os.environ.get("AGENT_QUEUE_DB")
     return PluginClient(db_path=db_path)
 
@@ -114,7 +115,9 @@ def plugin_install(url: str, branch: str | None, name: str | None) -> None:
             from pathlib import Path
             import json
 
-            data_dir = Path(os.environ.get("AGENT_QUEUE_DATA", os.path.expanduser("~/.agent-queue")))
+            data_dir = Path(
+                os.environ.get("AGENT_QUEUE_DATA", os.path.expanduser("~/.agent-queue"))
+            )
             result = await install_plugin_from_url(
                 url,
                 data_dir / "plugins",
@@ -162,9 +165,7 @@ def plugin_remove(name: str) -> None:
             await client.delete_plugin(name)
             # Check if another plugin record shares this install path
             all_plugins = await client.list_plugins()
-            shared = any(
-                pp.get("install_path") == install_path for pp in all_plugins
-            )
+            shared = any(pp.get("install_path") == install_path for pp in all_plugins)
             return install_path, shared
 
     try:
@@ -195,6 +196,7 @@ def plugin_remove(name: str) -> None:
 @click.argument("name")
 def plugin_enable(name: str) -> None:
     """Enable a disabled plugin."""
+
     async def _run_enable():
         async with _get_plugin_client() as client:
             await client.update_plugin(name, status="installed")
@@ -212,6 +214,7 @@ def plugin_enable(name: str) -> None:
 @click.argument("name")
 def plugin_disable(name: str) -> None:
     """Disable a plugin without removing it."""
+
     async def _run_disable():
         async with _get_plugin_client() as client:
             await client.update_plugin(name, status="disabled")
@@ -229,8 +232,12 @@ def plugin_disable(name: str) -> None:
 def plugin_update(name: str) -> None:
     """Update a plugin (git pull + reinstall)."""
     from src.plugins.loader import (
-        has_pyproject, install_plugin_package, load_plugin_via_entry_point,
-        parse_plugin_metadata, parse_plugin_yaml, pull_plugin_repo,
+        has_pyproject,
+        install_plugin_package,
+        load_plugin_via_entry_point,
+        parse_plugin_metadata,
+        parse_plugin_yaml,
+        pull_plugin_repo,
     )
 
     async def _run_update():
@@ -250,17 +257,16 @@ def plugin_update(name: str) -> None:
             else:
                 info = parse_plugin_yaml(install_path)
             await client.update_plugin(
-                name, version=info.version, source_rev=new_rev,
+                name,
+                version=info.version,
+                source_rev=new_rev,
             )
             return info.version, new_rev
 
     try:
         console.print(f"[bold]Updating plugin '{name}'...[/]")
         version, rev = _run(_run_update())
-        console.print(
-            f"[bold green]Plugin '{name}' updated to v{version} "
-            f"(rev {rev[:12]})[/]"
-        )
+        console.print(f"[bold green]Plugin '{name}' updated to v{version} (rev {rev[:12]})[/]")
         console.print("[dim]Restart the daemon to activate changes.[/dim]")
     except Exception as e:
         console.print(f"[bold red]Update failed:[/] {e}")
@@ -286,9 +292,7 @@ def plugin_reload(name: str) -> None:
 
     try:
         version = _run(_run_reload())
-        console.print(
-            f"[bold green]Plugin '{name}' reloaded (v{version}).[/]"
-        )
+        console.print(f"[bold green]Plugin '{name}' reloaded (v{version}).[/]")
         console.print("[dim]Restart the daemon to apply in-process.[/dim]")
     except Exception as e:
         console.print(f"[bold red]Reload failed:[/] {e}")
@@ -342,10 +346,7 @@ def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
             updates = {}
             for kv in key_values:
                 if "=" not in kv:
-                    console.print(
-                        f"[bold red]Invalid format:[/] '{kv}' "
-                        "(expected KEY=VALUE)"
-                    )
+                    console.print(f"[bold red]Invalid format:[/] '{kv}' (expected KEY=VALUE)")
                     raise SystemExit(1)
                 k, v = kv.split("=", 1)
                 updates[k] = v
@@ -373,9 +374,7 @@ def plugin_logs(name: str, limit: int) -> None:
             if not p:
                 raise ValueError(f"Plugin '{name}' not found.")
             hooks = await client.list_hooks()
-            plugin_hooks = [
-                h for h in hooks if getattr(h, "plugin_id", None) == name
-            ]
+            plugin_hooks = [h for h in hooks if getattr(h, "plugin_id", None) == name]
             all_runs = []
             for h in plugin_hooks:
                 runs = await client.list_hook_runs(h.id, limit=limit)
@@ -488,20 +487,20 @@ def plugin_diff_prompts(name: str) -> None:
             continue
         inst_file = inst_dir / src_file.name
         if not inst_file.exists():
-            console.print(
-                f"[yellow]{src_file.name}:[/] instance file missing"
-            )
+            console.print(f"[yellow]{src_file.name}:[/] instance file missing")
             any_diff = True
             continue
 
         src_lines = src_file.read_text().splitlines(keepends=True)
         inst_lines = inst_file.read_text().splitlines(keepends=True)
-        diff = list(difflib.unified_diff(
-            src_lines,
-            inst_lines,
-            fromfile=f"source/{src_file.name}",
-            tofile=f"instance/{src_file.name}",
-        ))
+        diff = list(
+            difflib.unified_diff(
+                src_lines,
+                inst_lines,
+                fromfile=f"source/{src_file.name}",
+                tofile=f"instance/{src_file.name}",
+            )
+        )
         if diff:
             any_diff = True
             console.print(f"\n[bold]{src_file.name}[/]")
@@ -515,9 +514,7 @@ def plugin_diff_prompts(name: str) -> None:
                     console.print(line)
 
     if not any_diff:
-        console.print(
-            f"[bold green]All prompts match source defaults for '{name}'.[/]"
-        )
+        console.print(f"[bold green]All prompts match source defaults for '{name}'.[/]")
 
 
 @plugin.command("reset-prompts")
@@ -537,9 +534,7 @@ def plugin_reset_prompts(name: str) -> None:
     try:
         install_path = _run(_run_reset())
         count = reset_prompts(install_path)
-        console.print(
-            f"[bold green]Reset {count} prompt(s) for '{name}'.[/]"
-        )
+        console.print(f"[bold green]Reset {count} prompt(s) for '{name}'.[/]")
     except Exception as e:
         console.print(f"[bold red]Reset failed:[/] {e}")
         raise SystemExit(1)

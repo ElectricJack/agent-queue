@@ -34,22 +34,39 @@ HANDCRAFTED_COVERAGE = {
     # app.py
     "get_status",
     # tasks.py — interactive commands only (wizard, search, select, confirmations)
-    "create_task", "approve_task", "stop_task", "restart_task",
+    "create_task",
+    "approve_task",
+    "stop_task",
+    "restart_task",
     # projects.py — composite/UX-heavy commands only
-    "edit_project", "set_default_branch", "set_project_channel",
+    "edit_project",
+    "set_default_branch",
+    "set_project_channel",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
-    "plugin_list", "plugin_info", "plugin_install", "plugin_update",
-    "plugin_remove", "plugin_enable", "plugin_disable", "plugin_reload",
-    "plugin_config", "plugin_prompts", "plugin_reset_prompts",
+    "plugin_list",
+    "plugin_info",
+    "plugin_install",
+    "plugin_update",
+    "plugin_remove",
+    "plugin_enable",
+    "plugin_disable",
+    "plugin_reload",
+    "plugin_config",
+    "plugin_prompts",
+    "plugin_reset_prompts",
 }
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
-    "shutdown", "restart_daemon", "update_and_restart",
+    "shutdown",
+    "restart_daemon",
+    "update_and_restart",
     "run_command",
-    "browse_tools", "load_tools",
+    "browse_tools",
+    "load_tools",
     # Core messaging tools — not useful from CLI
-    "send_message", "reply_to_user",
+    "send_message",
+    "reply_to_user",
 }
 
 # Map tool_registry category names → CLI group names.
@@ -116,7 +133,7 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
     for form in forms:
         pfx = f"{form}_"
         if cmd_name.startswith(pfx) and len(cmd_name) > len(pfx):
-            return cmd_name[len(pfx):]
+            return cmd_name[len(pfx) :]
 
     # Try suffix: compact_memory → compact, archive_task → archive, list_tasks → list
     for form in forms:
@@ -151,19 +168,23 @@ def _make_auto_command(
         option_name = f"--{prop_name.replace('_', '-')}"
 
         if isinstance(click_type, type) and click_type is bool:
-            params.append(click.Option(
-                [option_name + "/--no-" + prop_name.replace("_", "-")],
-                default=None,
-                help=description,
-            ))
+            params.append(
+                click.Option(
+                    [option_name + "/--no-" + prop_name.replace("_", "-")],
+                    default=None,
+                    help=description,
+                )
+            )
         else:
-            params.append(click.Option(
-                [option_name],
-                type=click_type,
-                required=prop_name in required,
-                default=None,
-                help=description,
-            ))
+            params.append(
+                click.Option(
+                    [option_name],
+                    type=click_type,
+                    required=prop_name in required,
+                    default=None,
+                    help=description,
+                )
+            )
 
     def _make_callback(name: str):
         from .formatter_registry import apply_formatter
@@ -172,12 +193,9 @@ def _make_auto_command(
         def callback(ctx, **kwargs):
             # Late-bind imports so mock patches take effect in tests
             from . import app as _app
+
             api_url = ctx.obj.get("api_url") if ctx.obj else None
-            args = {
-                k.replace("-", "_"): v
-                for k, v in kwargs.items()
-                if v is not None
-            }
+            args = {k.replace("-", "_"): v for k, v in kwargs.items() if v is not None}
 
             async def _exec():
                 async with _app._get_client(api_url) as client:
@@ -187,10 +205,16 @@ def _make_auto_command(
                 result = _app._run(_exec())
             except Exception as exc:
                 from .exceptions import CommandError, DaemonNotRunningError
+
                 if isinstance(exc, DaemonNotRunningError):
                     console.print("[bold red]Daemon is not running.[/]")
-                    if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in ("", "y", "yes"):
+                    if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in (
+                        "",
+                        "y",
+                        "yes",
+                    ):
                         from .daemon import start_daemon
+
                         if start_daemon():
                             console.print()
                             result = _app._run(_exec())
@@ -207,7 +231,9 @@ def _make_auto_command(
 
             # Use Rich formatter if registered, otherwise fall back to JSON
             if not apply_formatter(name, result, console):
-                console.print_json(data=result)
+                # Typed responses need to_dict() for JSON serialisation
+                json_data = result.to_dict() if hasattr(result, "to_dict") else result
+                console.print_json(data=json_data)
 
         return callback
 
@@ -230,6 +256,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
     try:
         from src.mcp_registration import _discover_all_commands
+
         discovered = _discover_all_commands()
         for name, defn in discovered.items():
             if name not in tool_map:

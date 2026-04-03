@@ -26,6 +26,7 @@ def mock_db():
 @pytest.fixture
 def handler(mock_orchestrator, mock_db):
     from src.command_handler import CommandHandler
+
     h = CommandHandler(mock_orchestrator, mock_db)
     return h
 
@@ -54,15 +55,24 @@ class TestClaudeUsageCommand:
         claude_dir.mkdir(parents=True)
         (claude_dir / "stats-cache.json").write_text(json.dumps(stats))
 
-        (claude_dir / ".credentials.json").write_text(json.dumps({
-            "claudeAiOauth": {
-                "subscriptionType": "max",
-                "rateLimitTier": "default_claude_max_20x",
-            }
-        }))
+        (claude_dir / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "subscriptionType": "max",
+                        "rateLimitTier": "default_claude_max_20x",
+                    }
+                }
+            )
+        )
 
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch.object(handler, "_probe_claude_rate_limit", new_callable=AsyncMock, return_value={"status": "allowed"}):
+            with patch.object(
+                handler,
+                "_probe_claude_rate_limit",
+                new_callable=AsyncMock,
+                return_value={"status": "allowed"},
+            ):
                 result = await handler.execute("claude_usage", {})
 
         assert result["total_sessions"] == 42
@@ -90,35 +100,53 @@ class TestClaudeUsageCommand:
         # Create a session file with a PID we can fake
         sessions_dir = claude_dir / "sessions"
         sessions_dir.mkdir(parents=True)
-        (sessions_dir / "12345.json").write_text(json.dumps({
-            "pid": os.getpid(),  # current process — guaranteed alive
-            "sessionId": "test-session-abc",
-            "cwd": "/mnt/d/Dev/my-project",
-            "startedAt": 1741900000000,
-        }))
+        (sessions_dir / "12345.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),  # current process — guaranteed alive
+                    "sessionId": "test-session-abc",
+                    "cwd": "/mnt/d/Dev/my-project",
+                    "startedAt": 1741900000000,
+                }
+            )
+        )
 
         # Create a matching JSONL with usage data
         project_dir = claude_dir / "projects" / "-mnt-d-Dev-my-project"
         project_dir.mkdir(parents=True)
         lines = [
-            json.dumps({"message": {"usage": {
-                "input_tokens": 10,
-                "output_tokens": 50,
-                "cache_read_input_tokens": 1000,
-                "cache_creation_input_tokens": 200,
-            }}}),
-            json.dumps({"message": {"usage": {
-                "input_tokens": 5,
-                "output_tokens": 30,
-                "cache_read_input_tokens": 500,
-                "cache_creation_input_tokens": 100,
-            }}}),
+            json.dumps(
+                {
+                    "message": {
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 1000,
+                            "cache_creation_input_tokens": 200,
+                        }
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "usage": {
+                            "input_tokens": 5,
+                            "output_tokens": 30,
+                            "cache_read_input_tokens": 500,
+                            "cache_creation_input_tokens": 100,
+                        }
+                    }
+                }
+            ),
             json.dumps({"type": "user", "message": "hello"}),  # no usage
         ]
         (project_dir / "test-session-abc.jsonl").write_text("\n".join(lines))
 
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch.object(handler, "_probe_claude_rate_limit", new_callable=AsyncMock, return_value={}):
+            with patch.object(
+                handler, "_probe_claude_rate_limit", new_callable=AsyncMock, return_value={}
+            ):
                 result = await handler.execute("claude_usage", {})
 
         assert result["active_session_count"] == 1
@@ -136,7 +164,9 @@ class TestClaudeUsageCommand:
     async def test_missing_stats_cache(self, handler, tmp_path):
         """Graceful fallback when stats cache doesn't exist."""
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch.object(handler, "_probe_claude_rate_limit", new_callable=AsyncMock, return_value={}):
+            with patch.object(
+                handler, "_probe_claude_rate_limit", new_callable=AsyncMock, return_value={}
+            ):
                 result = await handler.execute("claude_usage", {})
 
         # No stats-cache.json means no model_usage or total_sessions keys
@@ -149,7 +179,9 @@ class TestClaudeUsageCommand:
     async def test_rate_limit_probe_error_handled(self, handler, tmp_path):
         """Rate limit probe errors don't crash the command."""
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch.object(handler, "_probe_claude_rate_limit", side_effect=Exception("network error")):
+            with patch.object(
+                handler, "_probe_claude_rate_limit", side_effect=Exception("network error")
+            ):
                 result = await handler.execute("claude_usage", {})
 
         assert "rate_limit_error" in result
@@ -164,9 +196,7 @@ class TestProbeRateLimit:
         """OAuth token from credentials is used for the API call."""
         creds_file = tmp_path / ".claude" / ".credentials.json"
         creds_file.parent.mkdir(parents=True)
-        creds_file.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "sk-test-token"}
-        }))
+        creds_file.write_text(json.dumps({"claudeAiOauth": {"accessToken": "sk-test-token"}}))
 
         mock_resp = AsyncMock()
         mock_resp.status = 200

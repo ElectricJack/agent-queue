@@ -209,9 +209,7 @@ CASES: list[TestCase] = [
         active_project="p-1",
         turns=[
             Turn(
-                user_message=(
-                    "add 'remember to handle rate limiting' to the 'API Design' note"
-                ),
+                user_message=("add 'remember to handle rate limiting' to the 'API Design' note"),
                 expected_tools=[
                     ExpectedTool(
                         name="append_note",
@@ -378,9 +376,7 @@ CASES: list[TestCase] = [
         tags=["compare_specs_notes"],
         turns=[
             Turn(
-                user_message=(
-                    "compare specs in docs/specifications with notes for project p-1"
-                ),
+                user_message=("compare specs in docs/specifications with notes for project p-1"),
                 expected_tools=[
                     ExpectedTool(name="compare_specs_notes"),
                 ],

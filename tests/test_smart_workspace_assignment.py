@@ -6,6 +6,7 @@ Covers:
   - Orchestrator _prepare_workspace honoring preferred_workspace_id
   - End-to-end: detect conflict → create task → assign correct workspace
 """
+
 from __future__ import annotations
 
 import os
@@ -18,7 +19,14 @@ import pytest
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
-    Agent, AgentState, Project, ProjectStatus, RepoSourceType, Task, TaskStatus, Workspace,
+    Agent,
+    AgentState,
+    Project,
+    ProjectStatus,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    Workspace,
 )
 
 
@@ -26,10 +34,14 @@ from src.models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(cwd: str, *args: str, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *args],
-        cwd=cwd, capture_output=True, text=True, check=check,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=check,
     )
     return result.stdout.strip()
 
@@ -40,8 +52,7 @@ def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     with open(filepath, "w") as f:
         f.write(content)
     _git(cwd, "add", filename)
-    _git(cwd, "-c", "user.name=Test", "-c", "user.email=t@t.com",
-         "commit", "-m", message)
+    _git(cwd, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message)
     return _git(cwd, "rev-parse", "HEAD")
 
 
@@ -102,6 +113,7 @@ def git_repo_clean(tmp_path):
 # Database: acquire_workspace with preferred_workspace_id
 # ---------------------------------------------------------------------------
 
+
 class TestAcquireWorkspacePreferred:
     """Test that acquire_workspace respects preferred_workspace_id."""
 
@@ -111,29 +123,46 @@ class TestAcquireWorkspacePreferred:
         await db.initialize()
         # Create a project
         project = Project(
-            id="test-proj", name="Test Project", credit_weight=1.0,
-            max_concurrent_agents=2, status=ProjectStatus.ACTIVE,
+            id="test-proj",
+            name="Test Project",
+            credit_weight=1.0,
+            max_concurrent_agents=2,
+            status=ProjectStatus.ACTIVE,
         )
         await db.create_project(project)
         # Create agents (needed for FK constraints)
         for aid in ("agent-0", "agent-1"):
-            await db.create_agent(Agent(
-                id=aid, name=aid, agent_type="claude", state=AgentState.IDLE,
-            ))
+            await db.create_agent(
+                Agent(
+                    id=aid,
+                    name=aid,
+                    agent_type="claude",
+                    state=AgentState.IDLE,
+                )
+            )
         # Create tasks (needed for FK constraints on locked_by_task_id)
         for tid in ("task-0", "task-1"):
-            await db.create_task(Task(
-                id=tid, project_id="test-proj", title=f"Task {tid}",
-                description="test", status=TaskStatus.READY,
-            ))
+            await db.create_task(
+                Task(
+                    id=tid,
+                    project_id="test-proj",
+                    title=f"Task {tid}",
+                    description="test",
+                    status=TaskStatus.READY,
+                )
+            )
         # Create two workspaces
         ws1 = Workspace(
-            id="ws-1", project_id="test-proj",
-            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
+            id="ws-1",
+            project_id="test-proj",
+            workspace_path="/tmp/ws1",
+            source_type=RepoSourceType.LINK,
         )
         ws2 = Workspace(
-            id="ws-2", project_id="test-proj",
-            workspace_path="/tmp/ws2", source_type=RepoSourceType.LINK,
+            id="ws-2",
+            project_id="test-proj",
+            workspace_path="/tmp/ws2",
+            source_type=RepoSourceType.LINK,
         )
         await db.create_workspace(ws1)
         await db.create_workspace(ws2)
@@ -144,7 +173,9 @@ class TestAcquireWorkspacePreferred:
     async def test_preferred_workspace_acquired_first(self, db):
         """When preferred_workspace_id is set, that workspace should be acquired."""
         ws = await db.acquire_workspace(
-            "test-proj", "agent-1", "task-1",
+            "test-proj",
+            "agent-1",
+            "task-1",
             preferred_workspace_id="ws-2",
         )
         assert ws is not None
@@ -156,12 +187,13 @@ class TestAcquireWorkspacePreferred:
     async def test_fallback_when_preferred_locked(self, db):
         """If preferred workspace is locked, fall back to any available."""
         # Lock the preferred workspace
-        await db.acquire_workspace("test-proj", "agent-0", "task-0",
-                                   preferred_workspace_id="ws-2")
+        await db.acquire_workspace("test-proj", "agent-0", "task-0", preferred_workspace_id="ws-2")
 
         # Now try to acquire with ws-2 as preferred — should fall back to ws-1
         ws = await db.acquire_workspace(
-            "test-proj", "agent-1", "task-1",
+            "test-proj",
+            "agent-1",
+            "task-1",
             preferred_workspace_id="ws-2",
         )
         assert ws is not None
@@ -179,19 +211,26 @@ class TestAcquireWorkspacePreferred:
         """A preferred_workspace_id from a different project should fall back."""
         # Create workspace in different project
         project2 = Project(
-            id="other-proj", name="Other", credit_weight=1.0,
-            max_concurrent_agents=1, status=ProjectStatus.ACTIVE,
+            id="other-proj",
+            name="Other",
+            credit_weight=1.0,
+            max_concurrent_agents=1,
+            status=ProjectStatus.ACTIVE,
         )
         await db.create_project(project2)
         ws3 = Workspace(
-            id="ws-3", project_id="other-proj",
-            workspace_path="/tmp/ws3", source_type=RepoSourceType.LINK,
+            id="ws-3",
+            project_id="other-proj",
+            workspace_path="/tmp/ws3",
+            source_type=RepoSourceType.LINK,
         )
         await db.create_workspace(ws3)
 
         # Try to acquire with ws-3 (wrong project) as preferred
         ws = await db.acquire_workspace(
-            "test-proj", "agent-1", "task-1",
+            "test-proj",
+            "agent-1",
+            "task-1",
             preferred_workspace_id="ws-3",
         )
         assert ws is not None
@@ -202,6 +241,7 @@ class TestAcquireWorkspacePreferred:
 # Task model: preferred_workspace_id persistence
 # ---------------------------------------------------------------------------
 
+
 class TestTaskPreferredWorkspace:
     """Test preferred_workspace_id persists through create/read cycle."""
 
@@ -210,14 +250,19 @@ class TestTaskPreferredWorkspace:
         db = Database(str(tmp_path / "test.db"))
         await db.initialize()
         project = Project(
-            id="test-proj", name="Test", credit_weight=1.0,
-            max_concurrent_agents=1, status=ProjectStatus.ACTIVE,
+            id="test-proj",
+            name="Test",
+            credit_weight=1.0,
+            max_concurrent_agents=1,
+            status=ProjectStatus.ACTIVE,
         )
         await db.create_project(project)
         # Create a workspace to satisfy FK constraint
         ws = Workspace(
-            id="ws-conflict", project_id="test-proj",
-            workspace_path="/tmp/ws-conflict", source_type=RepoSourceType.LINK,
+            id="ws-conflict",
+            project_id="test-proj",
+            workspace_path="/tmp/ws-conflict",
+            source_type=RepoSourceType.LINK,
         )
         await db.create_workspace(ws)
         yield db
@@ -226,8 +271,10 @@ class TestTaskPreferredWorkspace:
     @pytest.mark.asyncio
     async def test_preferred_workspace_persisted(self, db):
         task = Task(
-            id="task-1", project_id="test-proj",
-            title="Fix conflicts", description="Fix merge conflicts",
+            id="task-1",
+            project_id="test-proj",
+            title="Fix conflicts",
+            description="Fix merge conflicts",
             status=TaskStatus.READY,
             preferred_workspace_id="ws-conflict",
         )
@@ -240,8 +287,10 @@ class TestTaskPreferredWorkspace:
     @pytest.mark.asyncio
     async def test_preferred_workspace_none_by_default(self, db):
         task = Task(
-            id="task-2", project_id="test-proj",
-            title="Normal task", description="Regular task",
+            id="task-2",
+            project_id="test-proj",
+            title="Normal task",
+            description="Regular task",
             status=TaskStatus.READY,
         )
         await db.create_task(task)
@@ -255,6 +304,7 @@ class TestTaskPreferredWorkspace:
 # CommandHandler: find_merge_conflict_workspaces
 # ---------------------------------------------------------------------------
 
+
 class TestFindMergeConflictWorkspacesCommand:
     """Test _cmd_find_merge_conflict_workspaces via CommandHandler."""
 
@@ -265,8 +315,11 @@ class TestFindMergeConflictWorkspacesCommand:
         await db.initialize()
 
         project = Project(
-            id="test-proj", name="Test", credit_weight=1.0,
-            max_concurrent_agents=1, status=ProjectStatus.ACTIVE,
+            id="test-proj",
+            name="Test",
+            credit_weight=1.0,
+            max_concurrent_agents=1,
+            status=ProjectStatus.ACTIVE,
             repo_default_branch="main",
         )
         await db.create_project(project)
@@ -279,6 +332,7 @@ class TestFindMergeConflictWorkspacesCommand:
         orchestrator.git = GitManager()
 
         from src.command_handler import CommandHandler
+
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 
         yield handler, db
@@ -289,16 +343,20 @@ class TestFindMergeConflictWorkspacesCommand:
         handler, db = handler_and_db
 
         ws = Workspace(
-            id="ws-conflict", project_id="test-proj",
+            id="ws-conflict",
+            project_id="test-proj",
             workspace_path=git_repo_with_conflict,
             source_type=RepoSourceType.LINK,
             name="conflict-workspace",
         )
         await db.create_workspace(ws)
 
-        result = await handler.execute("find_merge_conflict_workspaces", {
-            "project_id": "test-proj",
-        })
+        result = await handler.execute(
+            "find_merge_conflict_workspaces",
+            {
+                "project_id": "test-proj",
+            },
+        )
 
         assert "error" not in result
         assert result["workspaces_scanned"] == 1
@@ -317,16 +375,20 @@ class TestFindMergeConflictWorkspacesCommand:
         handler, db = handler_and_db
 
         ws = Workspace(
-            id="ws-clean", project_id="test-proj",
+            id="ws-clean",
+            project_id="test-proj",
             workspace_path=git_repo_clean,
             source_type=RepoSourceType.LINK,
             name="clean-workspace",
         )
         await db.create_workspace(ws)
 
-        result = await handler.execute("find_merge_conflict_workspaces", {
-            "project_id": "test-proj",
-        })
+        result = await handler.execute(
+            "find_merge_conflict_workspaces",
+            {
+                "project_id": "test-proj",
+            },
+        )
 
         assert "error" not in result
         assert result["workspaces_scanned"] == 1
@@ -337,34 +399,47 @@ class TestFindMergeConflictWorkspacesCommand:
     async def test_no_project_returns_error(self, handler_and_db):
         handler, _ = handler_and_db
 
-        result = await handler.execute("find_merge_conflict_workspaces", {
-            "project_id": "nonexistent",
-        })
+        result = await handler.execute(
+            "find_merge_conflict_workspaces",
+            {
+                "project_id": "nonexistent",
+            },
+        )
 
         assert "error" in result
 
     @pytest.mark.asyncio
     async def test_multiple_workspaces_mixed(
-        self, handler_and_db, git_repo_with_conflict, git_repo_clean,
+        self,
+        handler_and_db,
+        git_repo_with_conflict,
+        git_repo_clean,
     ):
         handler, db = handler_and_db
 
         ws1 = Workspace(
-            id="ws-1", project_id="test-proj",
+            id="ws-1",
+            project_id="test-proj",
             workspace_path=git_repo_with_conflict,
-            source_type=RepoSourceType.LINK, name="conflict-ws",
+            source_type=RepoSourceType.LINK,
+            name="conflict-ws",
         )
         ws2 = Workspace(
-            id="ws-2", project_id="test-proj",
+            id="ws-2",
+            project_id="test-proj",
             workspace_path=git_repo_clean,
-            source_type=RepoSourceType.LINK, name="clean-ws",
+            source_type=RepoSourceType.LINK,
+            name="clean-ws",
         )
         await db.create_workspace(ws1)
         await db.create_workspace(ws2)
 
-        result = await handler.execute("find_merge_conflict_workspaces", {
-            "project_id": "test-proj",
-        })
+        result = await handler.execute(
+            "find_merge_conflict_workspaces",
+            {
+                "project_id": "test-proj",
+            },
+        )
 
         assert result["workspaces_scanned"] == 2
         assert result["workspaces_with_conflicts"] == 1
@@ -376,6 +451,7 @@ class TestFindMergeConflictWorkspacesCommand:
 # CommandHandler: create_task with preferred_workspace_id
 # ---------------------------------------------------------------------------
 
+
 class TestCreateTaskWithPreferredWorkspace:
     """Test that create_task accepts and validates preferred_workspace_id."""
 
@@ -385,14 +461,19 @@ class TestCreateTaskWithPreferredWorkspace:
         await db.initialize()
 
         project = Project(
-            id="test-proj", name="Test", credit_weight=1.0,
-            max_concurrent_agents=1, status=ProjectStatus.ACTIVE,
+            id="test-proj",
+            name="Test",
+            credit_weight=1.0,
+            max_concurrent_agents=1,
+            status=ProjectStatus.ACTIVE,
         )
         await db.create_project(project)
 
         ws = Workspace(
-            id="ws-target", project_id="test-proj",
-            workspace_path="/tmp/ws", source_type=RepoSourceType.LINK,
+            id="ws-target",
+            project_id="test-proj",
+            workspace_path="/tmp/ws",
+            source_type=RepoSourceType.LINK,
         )
         await db.create_workspace(ws)
 
@@ -402,6 +483,7 @@ class TestCreateTaskWithPreferredWorkspace:
         orchestrator.db = db
 
         from src.command_handler import CommandHandler
+
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 
         yield handler, db
@@ -411,11 +493,14 @@ class TestCreateTaskWithPreferredWorkspace:
     async def test_create_task_with_preferred_workspace(self, handler_and_db):
         handler, db = handler_and_db
 
-        result = await handler.execute("create_task", {
-            "project_id": "test-proj",
-            "title": "Fix merge conflicts",
-            "preferred_workspace_id": "ws-target",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": "test-proj",
+                "title": "Fix merge conflicts",
+                "preferred_workspace_id": "ws-target",
+            },
+        )
 
         assert "error" not in result
         assert result["preferred_workspace_id"] == "ws-target"
@@ -428,11 +513,14 @@ class TestCreateTaskWithPreferredWorkspace:
     async def test_create_task_invalid_workspace_returns_error(self, handler_and_db):
         handler, _ = handler_and_db
 
-        result = await handler.execute("create_task", {
-            "project_id": "test-proj",
-            "title": "Fix merge conflicts",
-            "preferred_workspace_id": "ws-nonexistent",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": "test-proj",
+                "title": "Fix merge conflicts",
+                "preferred_workspace_id": "ws-nonexistent",
+            },
+        )
 
         assert "error" in result
 
@@ -442,21 +530,29 @@ class TestCreateTaskWithPreferredWorkspace:
 
         # Create workspace in different project
         project2 = Project(
-            id="other-proj", name="Other", credit_weight=1.0,
-            max_concurrent_agents=1, status=ProjectStatus.ACTIVE,
+            id="other-proj",
+            name="Other",
+            credit_weight=1.0,
+            max_concurrent_agents=1,
+            status=ProjectStatus.ACTIVE,
         )
         await db.create_project(project2)
         ws = Workspace(
-            id="ws-other", project_id="other-proj",
-            workspace_path="/tmp/other", source_type=RepoSourceType.LINK,
+            id="ws-other",
+            project_id="other-proj",
+            workspace_path="/tmp/other",
+            source_type=RepoSourceType.LINK,
         )
         await db.create_workspace(ws)
 
-        result = await handler.execute("create_task", {
-            "project_id": "test-proj",
-            "title": "Fix conflicts",
-            "preferred_workspace_id": "ws-other",
-        })
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": "test-proj",
+                "title": "Fix conflicts",
+                "preferred_workspace_id": "ws-other",
+            },
+        )
 
         assert "error" in result
         assert "other-proj" in result["error"]

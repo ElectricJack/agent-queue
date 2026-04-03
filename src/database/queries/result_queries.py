@@ -11,24 +11,34 @@ class ResultQueryMixin:
     """Query mixin for task result operations.  Expects ``self._db``."""
 
     async def save_task_result(
-        self, task_id: str, agent_id: str, output,
+        self,
+        task_id: str,
+        agent_id: str,
+        output,
     ) -> None:
         """Persist an AgentOutput to the task_results table."""
         await self._db.execute(
             "INSERT INTO task_results (id, task_id, agent_id, result, summary, "
             "files_changed, error_message, tokens_used, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), task_id, agent_id, output.result.value,
-             output.summary, json.dumps(output.files_changed),
-             output.error_message, output.tokens_used, time.time()),
+            (
+                str(uuid.uuid4()),
+                task_id,
+                agent_id,
+                output.result.value,
+                output.summary,
+                json.dumps(output.files_changed),
+                output.error_message,
+                output.tokens_used,
+                time.time(),
+            ),
         )
         await self._db.commit()
 
     async def get_task_result(self, task_id: str) -> dict | None:
         """Return the most recent result for a task."""
         cursor = await self._db.execute(
-            "SELECT * FROM task_results WHERE task_id = ? "
-            "ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM task_results WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
             (task_id,),
         )
         row = await cursor.fetchone()

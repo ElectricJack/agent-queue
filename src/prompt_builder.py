@@ -192,9 +192,7 @@ class PromptBuilder:
         tpl = self._templates.get(name)
         return tpl.body if tpl else None
 
-    def render_template(
-        self, name: str, variables: dict[str, str] | None = None
-    ) -> str | None:
+    def render_template(self, name: str, variables: dict[str, str] | None = None) -> str | None:
         """Load and render a template with variable substitution."""
         self._ensure_templates_loaded()
         tpl = self._templates.get(name)
@@ -235,9 +233,7 @@ class PromptBuilder:
             self._rules = ""
             return
         try:
-            rules_text = self._rule_manager.get_rules_for_prompt(
-                self._project_id, query
-            )
+            rules_text = self._rule_manager.get_rules_for_prompt(self._project_id, query)
             self._rules = rules_text
         except Exception:
             self._rules = ""  # graceful degradation
@@ -276,14 +272,17 @@ class PromptBuilder:
         if depth >= max_depth:
             content = self.render_template("execution-focus") or ""
         elif depth == 0:
-            content = self.render_template(
-                "plan-structure-guide", {"max_steps": str(max_steps)}
-            ) or ""
+            content = (
+                self.render_template("plan-structure-guide", {"max_steps": str(max_steps)}) or ""
+            )
         else:
-            content = self.render_template(
-                "controlled-splitting",
-                {"current_depth": str(depth), "max_depth": str(max_depth)},
-            ) or ""
+            content = (
+                self.render_template(
+                    "controlled-splitting",
+                    {"current_depth": str(depth), "max_depth": str(max_depth)},
+                )
+                or ""
+            )
 
         if content:
             self.add_context("execution_rules", content)

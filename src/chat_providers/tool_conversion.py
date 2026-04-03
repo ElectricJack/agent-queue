@@ -5,6 +5,7 @@ speaks OpenAI's API.  The rest of the codebase defines tools in Anthropic
 format (``name``, ``description``, ``input_schema``); this module maps them
 to OpenAI format (``type: "function"``, ``function.parameters``).
 """
+
 from __future__ import annotations
 
 
@@ -19,12 +20,14 @@ def anthropic_tools_to_openai(tools: list[dict]) -> list[dict]:
     """
     result = []
     for tool in tools:
-        result.append({
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        })
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+        )
     return result

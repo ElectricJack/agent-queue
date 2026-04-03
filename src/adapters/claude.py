@@ -87,9 +87,11 @@ async def _resilient_query(prompt, options, adapter=None):
         if options.permission_prompt_tool_name:
             raise ValueError("can_use_tool and permission_prompt_tool_name are mutually exclusive")
         from dataclasses import replace
+
         configured_options = replace(options, permission_prompt_tool_name="stdio")
 
     from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
     transport = SubprocessCLITransport(prompt=prompt, options=configured_options)
     await transport.connect()
 
@@ -100,6 +102,7 @@ async def _resilient_query(prompt, options, adapter=None):
                 sdk_mcp_servers[name] = config["instance"]
 
     from dataclasses import asdict
+
     agents_dict = None
     if configured_options.agents:
         agents_dict = {
@@ -109,10 +112,12 @@ async def _resilient_query(prompt, options, adapter=None):
 
     hooks = (
         client._convert_hooks_to_internal_format(configured_options.hooks)
-        if configured_options.hooks else None
+        if configured_options.hooks
+        else None
     )
 
     from claude_agent_sdk._internal.query import Query
+
     query_obj = Query(
         transport=transport,
         is_streaming_mode=True,
@@ -175,9 +180,16 @@ class ClaudeAdapterConfig:
 
     model: str = ""  # Empty = let Claude Code pick the default model
     permission_mode: str = "acceptEdits"
-    allowed_tools: list[str] = field(default_factory=lambda: [
-        "Read", "Write", "Edit", "Bash", "Glob", "Grep",
-    ])
+    allowed_tools: list[str] = field(
+        default_factory=lambda: [
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Glob",
+            "Grep",
+        ]
+    )
     max_turns: int = 20000  # Allow long-running multi-step tasks (100x default)
 
 
@@ -211,19 +223,27 @@ class ClaudeAdapter(AgentAdapter):
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
         import time as _time
+
         _wait_start = _time.monotonic()
         try:
             # Strip Claude Code session markers to allow launching agent sessions
             import os
+
             for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
                 os.environ.pop(var, None)
 
             import shutil
             from claude_agent_sdk import ClaudeAgentOptions
             from claude_agent_sdk.types import (
-                AssistantMessage, ResultMessage, UserMessage,
-                TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
+                AssistantMessage,
+                ResultMessage,
+                UserMessage,
+                TextBlock,
+                ThinkingBlock,
+                ToolUseBlock,
+                ToolResultBlock,
             )
+
             global _sdk_types_loaded, _AssistantMessage, _ResultMessage, _UserMessage
             global _TextBlock, _ThinkingBlock, _ToolUseBlock, _ToolResultBlock
             _AssistantMessage = AssistantMessage
@@ -269,12 +289,16 @@ class ClaudeAdapter(AgentAdapter):
             current_prompt = self._build_prompt()
 
             mcp_names = list(self._task.mcp_servers.keys()) if self._task.mcp_servers else []
-            print(f"Claude adapter: starting query (session={self._session_id or 'new'}, "
-                  f"prompt={len(current_prompt)} chars, "
-                  f"allowed_tools={allowed}, mcp_servers={mcp_names})")
+            print(
+                f"Claude adapter: starting query (session={self._session_id or 'new'}, "
+                f"prompt={len(current_prompt)} chars, "
+                f"allowed_tools={allowed}, mcp_servers={mcp_names})"
+            )
             cli_error: str | None = None
             try:
-                async for message in _resilient_query(prompt=current_prompt, options=options, adapter=self):
+                async for message in _resilient_query(
+                    prompt=current_prompt, options=options, adapter=self
+                ):
                     # Log only messages with meaningful subtypes to reduce noise
                     msg_subtype = getattr(message, "subtype", "")
                     if msg_subtype and msg_subtype not in ("", None):
@@ -314,22 +338,22 @@ class ClaudeAdapter(AgentAdapter):
                         if getattr(message, "is_error", False):
                             err_subtype = getattr(message, "subtype", "") or "unknown"
                             err_result = str(getattr(message, "result", "") or "")
-                            cli_error = (
-                                f"{err_subtype}: {err_result}".strip(": ")
-                                or err_subtype
-                            )
+                            cli_error = f"{err_subtype}: {err_result}".strip(": ") or err_subtype
                             print(f"Claude adapter: CLI returned error result: {cli_error}")
                         else:
                             if message.result:
                                 summary_parts.append(str(message.result))
                         usage = getattr(message, "usage", None)
                         if usage and isinstance(usage, dict):
-                            tokens_used += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                            tokens_used += usage.get("input_tokens", 0) + usage.get(
+                                "output_tokens", 0
+                            )
                     elif hasattr(message, "result") and message.result:
                         summary_parts.append(str(message.result))
 
             except Exception as e:
                 import traceback
+
                 error_msg = str(e)
                 full_traceback = traceback.format_exc()
                 print(f"Claude adapter error: {error_msg}")
@@ -359,8 +383,10 @@ class ClaudeAdapter(AgentAdapter):
                 self._log_session(current_prompt, output, _wait_start, _time)
                 return output
 
-            print(f"Claude adapter: query completed, {len(summary_parts)} result parts, "
-                  f"{tokens_used} tokens")
+            print(
+                f"Claude adapter: query completed, {len(summary_parts)} result parts, "
+                f"{tokens_used} tokens"
+            )
 
             # If the agent used 0 tokens and produced no meaningful output,
             # something went wrong (e.g. auth failure, rate limit, CLI crash).
@@ -392,14 +418,16 @@ class ClaudeAdapter(AgentAdapter):
                 error_message=f"Claude Agent SDK not available: {e}",
             )
 
-    def _log_session(self, prompt: str, output: AgentOutput,
-                      start: float, time_mod) -> None:
+    def _log_session(self, prompt: str, output: AgentOutput, start: float, time_mod) -> None:
         """Log agent session to LLMLogger if available."""
         duration_ms = int((time_mod.monotonic() - start) * 1000)
         task_id = self._task.task_id if self._task else ""
         logger.info(
             "Claude session completed: task=%s result=%s tokens=%d duration=%dms",
-            task_id, output.result.value, output.tokens_used, duration_ms,
+            task_id,
+            output.result.value,
+            output.tokens_used,
+            duration_ms,
         )
         if not self._llm_logger:
             return
@@ -439,7 +467,7 @@ class ClaudeAdapter(AgentAdapter):
         """Strip the task's checkout_path prefix to produce a relative path."""
         root = getattr(self._task, "checkout_path", "") if self._task else ""
         if root and path.startswith(root):
-            return path[len(root):].lstrip("/")
+            return path[len(root) :].lstrip("/")
         return path
 
     def _extract_message_text(self, message) -> str | None:
@@ -481,7 +509,9 @@ class ClaudeAdapter(AgentAdapter):
                         cmd = inp.get("command", "")[:100]
                         cmd = self._shorten_path(cmd)
                         detail = f" · {cmd}" if cmd else ""
-                    elif name in ("Read", "Write", "Edit", "Glob", "Grep") and isinstance(inp, dict):
+                    elif name in ("Read", "Write", "Edit", "Glob", "Grep") and isinstance(
+                        inp, dict
+                    ):
                         path = inp.get("file_path", inp.get("path", inp.get("pattern", "")))
                         if path:
                             path = self._shorten_path(path)
@@ -543,7 +573,7 @@ class ClaudeAdapter(AgentAdapter):
                 f"## Attached Images\n"
                 f"The user attached the following image files to this task. "
                 f"Use the Read tool to view each image — Claude Code can read "
-                f"image files natively.\n{paths}"
+                f"image files natively.\n{paths}",
             )
 
         if self._task.attached_context:

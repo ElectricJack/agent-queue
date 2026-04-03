@@ -53,7 +53,10 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
     # --- Plan approval lifecycle ---
     (TaskStatus.IN_PROGRESS, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,
-    (TaskStatus.READY, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,  # manual /process-plan
+    (
+        TaskStatus.READY,
+        TaskEvent.PLAN_FOUND,
+    ): TaskStatus.AWAITING_PLAN_APPROVAL,  # manual /process-plan
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_APPROVED): TaskStatus.COMPLETED,
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_REJECTED): TaskStatus.READY,
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_DELETED): TaskStatus.COMPLETED,
@@ -90,8 +93,7 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
 # Derived set of valid (from_status, to_status) pairs for quick validation
 # without requiring a specific event.
 VALID_STATUS_TRANSITIONS: set[tuple[TaskStatus, TaskStatus]] = {
-    (from_status, to_status)
-    for (from_status, _event), to_status in VALID_TASK_TRANSITIONS.items()
+    (from_status, to_status) for (from_status, _event), to_status in VALID_TASK_TRANSITIONS.items()
 }
 
 
@@ -106,9 +108,7 @@ def task_transition(current: TaskStatus, event: TaskEvent) -> TaskStatus:
     return VALID_TASK_TRANSITIONS[key]
 
 
-def is_valid_status_transition(
-    from_status: TaskStatus, to_status: TaskStatus
-) -> bool:
+def is_valid_status_transition(from_status: TaskStatus, to_status: TaskStatus) -> bool:
     """Return *True* if transitioning from *from_status* to *to_status* is
     covered by at least one event in the state machine."""
     return (from_status, to_status) in VALID_STATUS_TRANSITIONS
@@ -153,9 +153,7 @@ def validate_dag(deps: dict[str, set[str]]) -> None:
             dfs(node)
 
 
-def validate_dag_with_new_edge(
-    deps: dict[str, set[str]], task_id: str, depends_on: str
-) -> None:
+def validate_dag_with_new_edge(deps: dict[str, set[str]], task_id: str, depends_on: str) -> None:
     """Check that adding a dependency edge (task_id -> depends_on) won't create a cycle.
 
     Makes a copy of the dependency graph, adds the proposed edge, and runs

@@ -39,27 +39,13 @@ from typing import Any
 
 # ── Correlation context (contextvars-based) ──────────────────────────────
 
-_correlation_task_id: ContextVar[str | None] = ContextVar(
-    "correlation_task_id", default=None
-)
-_correlation_project_id: ContextVar[str | None] = ContextVar(
-    "correlation_project_id", default=None
-)
-_correlation_cycle_id: ContextVar[str | None] = ContextVar(
-    "correlation_cycle_id", default=None
-)
-_correlation_component: ContextVar[str | None] = ContextVar(
-    "correlation_component", default=None
-)
-_correlation_hook_id: ContextVar[str | None] = ContextVar(
-    "correlation_hook_id", default=None
-)
-_correlation_agent_id: ContextVar[str | None] = ContextVar(
-    "correlation_agent_id", default=None
-)
-_correlation_command: ContextVar[str | None] = ContextVar(
-    "correlation_command", default=None
-)
+_correlation_task_id: ContextVar[str | None] = ContextVar("correlation_task_id", default=None)
+_correlation_project_id: ContextVar[str | None] = ContextVar("correlation_project_id", default=None)
+_correlation_cycle_id: ContextVar[str | None] = ContextVar("correlation_cycle_id", default=None)
+_correlation_component: ContextVar[str | None] = ContextVar("correlation_component", default=None)
+_correlation_hook_id: ContextVar[str | None] = ContextVar("correlation_hook_id", default=None)
+_correlation_agent_id: ContextVar[str | None] = ContextVar("correlation_agent_id", default=None)
+_correlation_command: ContextVar[str | None] = ContextVar("correlation_command", default=None)
 
 
 class CorrelationContext:
@@ -142,6 +128,7 @@ def get_correlation_context() -> dict[str, str]:
 
 # ── Structured JSON formatter ────────────────────────────────────────────
 
+
 class StructuredFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects.
 
@@ -160,13 +147,32 @@ class StructuredFormatter(logging.Formatter):
     """
 
     # Fields from LogRecord that we handle explicitly or want to exclude
-    _SKIP_FIELDS = frozenset({
-        "name", "msg", "args", "created", "relativeCreated",
-        "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-        "filename", "module", "pathname", "levelname", "levelno",
-        "msecs", "thread", "threadName", "process", "processName",
-        "taskName", "message",
-    })
+    _SKIP_FIELDS = frozenset(
+        {
+            "name",
+            "msg",
+            "args",
+            "created",
+            "relativeCreated",
+            "exc_info",
+            "exc_text",
+            "stack_info",
+            "lineno",
+            "funcName",
+            "filename",
+            "module",
+            "pathname",
+            "levelname",
+            "levelno",
+            "msecs",
+            "thread",
+            "threadName",
+            "process",
+            "processName",
+            "taskName",
+            "message",
+        }
+    )
 
     def __init__(self, include_source: bool = False):
         super().__init__()
@@ -175,9 +181,7 @@ class StructuredFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         # Build the base entry
         entry: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(
-                record.created, tz=timezone.utc
-            ).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -216,9 +220,7 @@ class HumanReadableFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(
-            record.created, tz=timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         # Build correlation tag
         ctx = get_correlation_context()
@@ -235,6 +237,7 @@ class HumanReadableFormatter(logging.Formatter):
 
 
 # ── Setup function ───────────────────────────────────────────────────────
+
 
 def setup_logging(
     *,
@@ -270,9 +273,7 @@ def setup_logging(
 
     # Quiet down noisy third-party loggers
     for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp"):
-        logging.getLogger(noisy).setLevel(
-            max(log_level, logging.WARNING)
-        )
+        logging.getLogger(noisy).setLevel(max(log_level, logging.WARNING))
 
     # Attach the Discord rate-guard log handler so we can count 429
     # responses that discord.py retries internally (never reaching our

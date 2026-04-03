@@ -19,6 +19,7 @@ from src.models import AgentOutput, AgentResult, TaskContext
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_adapter(
     allowed_tools: list[str] | None = None,
     permission_mode: str = "bypassPermissions",
@@ -67,6 +68,7 @@ async def _run_agent(
 # Part 1: MCP Type Fix (no CLI needed)
 # ===========================================================================
 
+
 class TestMCPTypeFix:
     """Verify TaskContext.mcp_servers is dict[str, dict], not list[dict]."""
 
@@ -98,12 +100,15 @@ class TestMCPTypeFix:
 # Part 2: Tool Restriction — Positive (agent CAN use allowed tools)
 # ===========================================================================
 
+
 @pytest.mark.functional
 class TestToolRestrictionPositive:
     """Agent with Read + Bash allowed can read a file containing a canary value."""
 
     async def test_agent_reads_file_with_canary(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         canary = "CANARY_VALUE_7f3a9b2e"
         target = tmp_path / "canary.txt"
@@ -131,6 +136,7 @@ class TestToolRestrictionPositive:
 # Part 3: Tool Restriction — Negative (agent CANNOT use disallowed tools)
 # ===========================================================================
 
+
 @pytest.mark.functional
 class TestToolRestrictionNegative:
     """Agent with only Read allowed should not write a file.
@@ -142,7 +148,9 @@ class TestToolRestrictionNegative:
     """
 
     async def test_agent_cannot_write_with_read_only(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         output_file = tmp_path / "should_not_exist.txt"
 
@@ -171,12 +179,15 @@ class TestToolRestrictionNegative:
 # Part 4: Tool Restriction — Default (no profile, agent has full tools)
 # ===========================================================================
 
+
 @pytest.mark.functional
 class TestToolRestrictionDefault:
     """Agent with default tools can both read and write files."""
 
     async def test_default_tools_can_read_and_write(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         source = tmp_path / "source.txt"
         source.write_text("default-tools-work")
@@ -200,12 +211,15 @@ class TestToolRestrictionDefault:
 # Part 5: Skill Restriction
 # ===========================================================================
 
+
 @pytest.mark.functional
 class TestSkillRestriction:
     """Verify Skill tool availability is controlled by allowed_tools."""
 
     async def test_skill_tool_available(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         adapter = _make_adapter(allowed_tools=["Read", "Skill"])
         result, output, summary = await _run_agent(
@@ -223,7 +237,9 @@ class TestSkillRestriction:
         )
 
     async def test_no_skill_tool(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         adapter = _make_adapter(allowed_tools=["Read"])
         result, output, summary = await _run_agent(
@@ -243,13 +259,17 @@ class TestSkillRestriction:
 # Part 6: MCP Positive (real MCP server via npx)
 # ===========================================================================
 
+
 @pytest.mark.functional
 @pytest.mark.functional_mcp
 class TestMCPPositive:
     """Agent with MCP filesystem server can list/read files via MCP tools."""
 
     async def test_mcp_filesystem_reads_file(
-        self, claude_cli_authenticated, npm_available, tmp_path,
+        self,
+        claude_cli_authenticated,
+        npm_available,
+        tmp_path,
     ):
         # Create a file for the MCP filesystem server to expose
         canary = "MCP_CANARY_4e8b1d3c"
@@ -274,14 +294,13 @@ class TestMCPPositive:
         )
 
         full_text = output + " " + summary
-        assert canary in full_text, (
-            f"Expected MCP canary '{canary}' in output:\n{full_text[:500]}"
-        )
+        assert canary in full_text, f"Expected MCP canary '{canary}' in output:\n{full_text[:500]}"
 
 
 # ===========================================================================
 # Part 7: MCP Negative (no MCP servers, smoke test)
 # ===========================================================================
+
 
 @pytest.mark.functional
 @pytest.mark.functional_mcp
@@ -289,7 +308,9 @@ class TestMCPNegative:
     """Agent with empty mcp_servers completes normally."""
 
     async def test_no_mcp_servers_completes_normally(
-        self, claude_cli_authenticated, tmp_path,
+        self,
+        claude_cli_authenticated,
+        tmp_path,
     ):
         adapter = _make_adapter(allowed_tools=["Read", "Bash"])
         result, output, summary = await _run_agent(
@@ -305,6 +326,7 @@ class TestMCPNegative:
 # ===========================================================================
 # Part 8: Check Profile (real system state, no CLI needed)
 # ===========================================================================
+
 
 class TestCheckProfileFunctional:
     """Test install manifest validation against real system state."""
@@ -327,69 +349,97 @@ class TestCheckProfileFunctional:
         await orch.shutdown()
 
     async def test_valid_commands(self, handler):
-        await handler.execute("create_profile", {
-            "id": "cmd-valid", "name": "Cmd Valid",
-            "install": {"commands": ["python3", "git"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "cmd-valid",
+                "name": "Cmd Valid",
+                "install": {"commands": ["python3", "git"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "cmd-valid"})
         assert result["valid"] is True
         assert result["issues"] == []
 
     async def test_invalid_command(self, handler):
-        await handler.execute("create_profile", {
-            "id": "cmd-invalid", "name": "Cmd Invalid",
-            "install": {"commands": ["xyzzy-no-such-command-99"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "cmd-invalid",
+                "name": "Cmd Invalid",
+                "install": {"commands": ["xyzzy-no-such-command-99"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "cmd-invalid"})
         assert result["valid"] is False
         assert any("xyzzy-no-such-command-99" in i for i in result["issues"])
 
     async def test_valid_pip_package(self, handler):
-        await handler.execute("create_profile", {
-            "id": "pip-valid", "name": "Pip Valid",
-            "install": {"pip": ["pytest"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "pip-valid",
+                "name": "Pip Valid",
+                "install": {"pip": ["pytest"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "pip-valid"})
         assert result["valid"] is True
         assert result["issues"] == []
 
     async def test_invalid_pip_package(self, handler):
-        await handler.execute("create_profile", {
-            "id": "pip-invalid", "name": "Pip Invalid",
-            "install": {"pip": ["xyzzy-no-such-package-99"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "pip-invalid",
+                "name": "Pip Invalid",
+                "install": {"pip": ["xyzzy-no-such-package-99"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "pip-invalid"})
         assert result["valid"] is False
         assert any("xyzzy-no-such-package-99" in i for i in result["issues"])
 
     async def test_invalid_npm_package(self, handler):
-        await handler.execute("create_profile", {
-            "id": "npm-invalid", "name": "NPM Invalid",
-            "install": {"npm": ["@xyzzy/no-such-pkg-99"]},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "npm-invalid",
+                "name": "NPM Invalid",
+                "install": {"npm": ["@xyzzy/no-such-pkg-99"]},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "npm-invalid"})
         assert result["valid"] is False
         # Should fail whether npm is installed (package not found) or not (npm not available)
         assert len(result["issues"]) >= 1
 
     async def test_mixed_valid_and_invalid(self, handler):
-        await handler.execute("create_profile", {
-            "id": "mixed", "name": "Mixed",
-            "install": {
-                "commands": ["python3", "xyzzy-no-such-cmd"],
-                "pip": ["pytest", "xyzzy-no-such-pkg"],
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "mixed",
+                "name": "Mixed",
+                "install": {
+                    "commands": ["python3", "xyzzy-no-such-cmd"],
+                    "pip": ["pytest", "xyzzy-no-such-pkg"],
+                },
             },
-        })
+        )
         result = await handler.execute("check_profile", {"profile_id": "mixed"})
         assert result["valid"] is False
         # At least 2 issues: one bad command + one bad pip package
         assert len(result["issues"]) >= 2
 
     async def test_empty_manifest_always_valid(self, handler):
-        await handler.execute("create_profile", {
-            "id": "empty-install", "name": "Empty Install",
-            "install": {},
-        })
+        await handler.execute(
+            "create_profile",
+            {
+                "id": "empty-install",
+                "name": "Empty Install",
+                "install": {},
+            },
+        )
         result = await handler.execute("check_profile", {"profile_id": "empty-install"})
         assert result["valid"] is True
         assert result["issues"] == []

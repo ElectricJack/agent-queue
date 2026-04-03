@@ -20,10 +20,15 @@ from src.git.manager import GitManager
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _git(args: list[str], cwd: str) -> str:
     """Run a git command, returning stdout."""
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+        ["git"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -32,8 +37,7 @@ def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     """Create/update a file, commit it, and return the commit SHA."""
     pathlib.Path(cwd, filename).write_text(content)
     _git(["add", filename], cwd=cwd)
-    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-          "commit", "-m", message], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", message], cwd=cwd)
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
@@ -49,6 +53,7 @@ def _current_branch(cwd: str) -> str:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def two_agent_clones(tmp_path):
     """Set up a bare remote with two agent clones, each with an initial commit.
@@ -58,26 +63,39 @@ def two_agent_clones(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
     # Create agent1 clone with initial commit
     agent1 = str(tmp_path / "agent1")
     subprocess.run(
         ["git", "clone", str(remote), agent1],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (pathlib.Path(agent1) / "README.md").write_text("init")
     _git(["add", "."], cwd=agent1)
-    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
-          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(
+        [
+            "-c",
+            "user.name=Agent1",
+            "-c",
+            "user.email=a1@test.com",
+            "commit",
+            "-m",
+            "initial commit",
+        ],
+        cwd=agent1,
+    )
     _git(["push", "origin", "main"], cwd=agent1)
 
     # Create agent2 clone
     agent2 = str(tmp_path / "agent2")
     subprocess.run(
         ["git", "clone", str(remote), agent2],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
@@ -86,6 +104,7 @@ def two_agent_clones(tmp_path):
 # ---------------------------------------------------------------------------
 # Tests: Concurrent push with retry
 # ---------------------------------------------------------------------------
+
 
 class TestConcurrentMergeAndPush:
     """Integration tests with two agent clones pushing concurrently."""
@@ -119,18 +138,19 @@ class TestConcurrentMergeAndPush:
         # Agent 2 merges and pushes — first push will be rejected because
         # agent1 advanced origin/main.  With retries, agent2 should succeed.
         success2, err2 = mgr.sync_and_merge(
-            agent2, "task/agent2-feature", max_retries=2,
+            agent2,
+            "task/agent2-feature",
+            max_retries=2,
         )
         assert success2 is True
         assert err2 == ""
 
         # Verify both agents' work is on the remote
-        verify_clone = str(
-            pathlib.Path(two_agent_clones["remote"]).parent / "verify"
-        )
+        verify_clone = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify_clone],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify_clone)
         assert "agent1 feature" in log
@@ -164,7 +184,9 @@ class TestConcurrentMergeAndPush:
         # verify that sync_and_merge's fetch-before-merge prevents
         # the naive stale-main problem.
         success2, err2 = mgr.sync_and_merge(
-            agent2, "task/a2-work", max_retries=0,
+            agent2,
+            "task/a2-work",
+            max_retries=0,
         )
         # sync_and_merge fetches before merging, so this actually succeeds
         # even with max_retries=0 — the fetch+reset prevents stale state.
@@ -180,7 +202,8 @@ class TestConcurrentMergeAndPush:
         agent3 = str(tmp_path / "agent3")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], agent3],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         # Each agent does work on a different file
@@ -199,7 +222,8 @@ class TestConcurrentMergeAndPush:
         verify = str(tmp_path / "verify-seq")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         for i in range(1, 4):
@@ -209,6 +233,7 @@ class TestConcurrentMergeAndPush:
 # ---------------------------------------------------------------------------
 # Tests: Workspace recovery after failure
 # ---------------------------------------------------------------------------
+
 
 class TestWorkspaceRecoveryIntegration:
     """Integration tests verifying workspace recovery leaves clones clean."""
@@ -270,8 +295,10 @@ class TestWorkspaceRecoveryIntegration:
         mgr.create_branch(agent1, "task/failed-push")
         _git_commit(agent1, "failed.txt", "failed", "failed push commit")
         _git(["checkout", "main"], cwd=agent1)
-        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
-              "merge", "task/failed-push"], cwd=agent1)
+        _git(
+            ["-c", "user.name=Test", "-c", "user.email=t@t.com", "merge", "task/failed-push"],
+            cwd=agent1,
+        )
 
         # Local main is now ahead of origin (diverged)
         assert _head_sha(agent1) != origin_sha
@@ -335,12 +362,11 @@ class TestWorkspaceRecoveryIntegration:
         assert success is True
 
         # Verify both agents' work is on remote
-        verify = str(
-            pathlib.Path(two_agent_clones["remote"]).parent / "verify-prep"
-        )
+        verify = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify-prep")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent1 changes README" in log
@@ -377,12 +403,11 @@ class TestWorkspaceRecoveryIntegration:
             assert success is True, f"Failed on {branch}: {err}"
 
         # Verify all four tasks are on remote
-        verify = str(
-            pathlib.Path(two_agent_clones["remote"]).parent / "verify-interleave"
-        )
+        verify = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify-interleave")
         subprocess.run(
             ["git", "clone", two_agent_clones["remote"], verify],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         log = _git(["log", "--oneline"], cwd=verify)
         for _, _, _, message in tasks:
