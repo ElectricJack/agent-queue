@@ -50,13 +50,25 @@ class VibeCopPlugin(Plugin):
             "description": "Timeout in seconds for vibecop commands",
             "default": 60,
         },
+        "enforce_vibecop_checkout": {
+            "type": "boolean",
+            "description": (
+                "Inject a rule requiring agents to run vibecop before task completion. "
+                "Applies to code-related task types (feature, bugfix, refactor)."
+            ),
+            "default": True,
+        },
     }
 
     default_config = {
         "default_severity": "warning",
         "auto_install": False,
         "scan_timeout": 60,
+        "enforce_vibecop_checkout": True,
     }
+
+    # Rule ID used for the pre-completion vibecop check rule
+    _VIBECOP_RULE_ID = "rule-vibecop-pre-complete-check"
 
     def __init__(self) -> None:
         self._runner: VibeCopRunner | None = None
@@ -163,22 +175,99 @@ class VibeCopPlugin(Plugin):
         })
         ctx.register_command("vibecop_status", self._handle_status)
 
+        # --- Rule injection: remind agents to run vibecop before task completion ---
+        if merged.get("enforce_vibecop_checkout", True):
+            await self._inject_pre_complete_rule(ctx)
+
         logger.info("VibeCopPlugin initialized with config: %s", merged)
 
     async def shutdown(self, ctx: PluginContext) -> None:
         """Clean up resources."""
+        # Remove the injected rule if it was created by this plugin
+        await self._remove_pre_complete_rule(ctx)
         self._runner = None
         self._ctx = None
         logger.info("VibeCopPlugin shut down")
 
     async def on_config_changed(self, ctx: PluginContext, config: dict) -> None:
-        """Rebuild runner when config changes."""
+        """Rebuild runner and update rule injection when config changes."""
         merged = {**self.default_config, **config}
         self._runner = VibeCopRunner(
             vibecop_path=merged.get("vibecop_path"),
             node_path=merged.get("node_path"),
             timeout=merged.get("scan_timeout", 60),
         )
+
+        # Add or remove the pre-complete rule based on config
+        if merged.get("enforce_vibecop_checkout", True):
+            await self._inject_pre_complete_rule(ctx)
+        else:
+            await self._remove_pre_complete_rule(ctx)
+
+    # ----- Rule injection -----
+
+    async def _inject_pre_complete_rule(self, ctx: PluginContext) -> None:
+        """Inject a passive rule that reminds agents to run vibecop before completion.
+
+        The rule is saved via the command protocol (save_rule) so it gets
+        picked up by the PromptBuilder and injected into agent system prompts.
+        It applies only to code-related task types: feature, bugfix, refactor.
+        """
+        rule_content = (
+            "# Vibecop Pre-Completion Check\n"
+            "\n"
+            "Before marking your task complete, run `vibecop_scan` with `diff_ref` "
+            "set to the base branch to check your changes. Fix any error-severity "
+            "findings before completing the task.\n"
+            "\n"
+            "This rule applies to code-related tasks only: **feature**, **bugfix**, "
+            "and **refactor** task types. You may skip this check for docs, chore, "
+            "research, plan, test, or sync tasks.\n"
+            "\n"
+            "## Steps\n"
+            "\n"
+            "1. Run `vibecop_scan(diff_ref=\"main\")` (use your actual base branch)\n"
+            "2. Review the findings — prioritize errors over warnings\n"
+            "3. Fix all error-severity findings\n"
+            "4. Re-run the scan to confirm a clean result\n"
+            "5. Then mark the task complete\n"
+        )
+
+        try:
+            result = await ctx.execute_command("save_rule", {
+                "id": self._VIBECOP_RULE_ID,
+                "project_id": None,  # Global rule — applies to all projects
+                "type": "passive",
+                "content": rule_content,
+            })
+            if result.get("success"):
+                logger.info(
+                    "Injected vibecop pre-complete rule: %s",
+                    result.get("id", self._VIBECOP_RULE_ID),
+                )
+            else:
+                logger.warning(
+                    "Failed to inject vibecop rule: %s", result.get("error", "unknown")
+                )
+        except Exception:
+            # Rule injection is best-effort — don't block plugin initialization
+            logger.warning("Could not inject vibecop pre-complete rule", exc_info=True)
+
+    async def _remove_pre_complete_rule(self, ctx: PluginContext) -> None:
+        """Remove the vibecop pre-complete rule on plugin shutdown."""
+        try:
+            result = await ctx.execute_command("delete_rule", {
+                "id": self._VIBECOP_RULE_ID,
+            })
+            if result.get("success"):
+                logger.info("Removed vibecop pre-complete rule")
+            elif "not found" not in str(result.get("error", "")).lower():
+                logger.debug(
+                    "Could not remove vibecop rule: %s", result.get("error", "unknown")
+                )
+        except Exception:
+            # Best-effort cleanup — don't fail shutdown
+            logger.debug("Could not remove vibecop pre-complete rule", exc_info=True)
 
     # ----- Command handlers -----
 
