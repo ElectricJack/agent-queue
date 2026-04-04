@@ -1,4 +1,4 @@
-"""Tests for structured logging and correlation context."""
+"""Tests for structlog-powered logging and correlation context."""
 
 from __future__ import annotations
 
@@ -6,14 +6,21 @@ import json
 import logging
 
 import pytest
+import structlog
 
 from src.logging_config import (
     CorrelationContext,
-    HumanReadableFormatter,
-    StructuredFormatter,
     get_correlation_context,
     setup_logging,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_contextvars():
+    """Ensure each test starts with clean contextvars."""
+    structlog.contextvars.clear_contextvars()
+    yield
+    structlog.contextvars.clear_contextvars()
 
 
 class TestCorrelationContext:
@@ -116,145 +123,105 @@ class TestCorrelationContext:
             assert "hook_id" not in ctx
             assert "component" not in ctx
 
-
-class TestStructuredFormatter:
-    """Tests for JSON-lines output formatter."""
-
-    def _make_record(self, msg: str, level: int = logging.INFO, **extra) -> logging.LogRecord:
-        record = logging.LogRecord(
-            name="test.module",
-            level=level,
-            pathname="test.py",
-            lineno=42,
-            msg=msg,
-            args=(),
-            exc_info=None,
-        )
-        for k, v in extra.items():
-            setattr(record, k, v)
-        return record
-
-    def test_basic_json_output(self):
-        fmt = StructuredFormatter()
-        record = self._make_record("Hello world")
-        output = fmt.format(record)
-        parsed = json.loads(output)
-        assert parsed["level"] == "INFO"
-        assert parsed["logger"] == "test.module"
-        assert parsed["message"] == "Hello world"
-        assert "timestamp" in parsed
-
-    def test_correlation_context_in_output(self):
-        fmt = StructuredFormatter()
-        with CorrelationContext(task_id="swift-dawn", project_id="acme"):
-            record = self._make_record("Task started")
-            output = fmt.format(record)
-        parsed = json.loads(output)
-        assert parsed["task_id"] == "swift-dawn"
-        assert parsed["project_id"] == "acme"
-
-    def test_no_correlation_when_not_set(self):
-        fmt = StructuredFormatter()
-        record = self._make_record("No context")
-        output = fmt.format(record)
-        parsed = json.loads(output)
-        assert "task_id" not in parsed
-        assert "project_id" not in parsed
-
-    def test_include_source(self):
-        fmt = StructuredFormatter(include_source=True)
-        record = self._make_record("With source")
-        output = fmt.format(record)
-        parsed = json.loads(output)
-        assert parsed["filename"] == "test.py"
-        assert parsed["lineno"] == 42
-
-    def test_exclude_source_by_default(self):
-        fmt = StructuredFormatter(include_source=False)
-        record = self._make_record("No source")
-        output = fmt.format(record)
-        parsed = json.loads(output)
-        assert "filename" not in parsed
-        assert "lineno" not in parsed
-
-    def test_new_correlation_fields_in_output(self):
-        fmt = StructuredFormatter()
-        with CorrelationContext(hook_id="h1", agent_id="a1", command="deploy"):
-            record = self._make_record("Hook running")
-            output = fmt.format(record)
-        parsed = json.loads(output)
-        assert parsed["hook_id"] == "h1"
-        assert parsed["agent_id"] == "a1"
-        assert parsed["command"] == "deploy"
-
-    def test_exception_info(self):
-        fmt = StructuredFormatter()
-        try:
-            raise ValueError("test error")
-        except ValueError:
-            import sys
-
-            record = self._make_record("Error occurred")
-            record.exc_info = sys.exc_info()
-        output = fmt.format(record)
-        parsed = json.loads(output)
-        assert "exception" in parsed
-        assert "ValueError: test error" in parsed["exception"]
-
-
-class TestHumanReadableFormatter:
-    """Tests for human-readable text formatter."""
-
-    def _make_record(self, msg: str) -> logging.LogRecord:
-        return logging.LogRecord(
-            name="test.module",
-            level=logging.INFO,
-            pathname="test.py",
-            lineno=42,
-            msg=msg,
-            args=(),
-            exc_info=None,
-        )
-
-    def test_basic_text_output(self):
-        fmt = HumanReadableFormatter()
-        record = self._make_record("Hello world")
-        output = fmt.format(record)
-        assert "INFO" in output
-        assert "[test.module]" in output
-        assert "Hello world" in output
-
-    def test_correlation_in_text(self):
-        fmt = HumanReadableFormatter()
-        with CorrelationContext(task_id="swift-dawn"):
-            record = self._make_record("Task started")
-            output = fmt.format(record)
-        assert "task_id=swift-dawn" in output
+    def test_extra_kwargs(self):
+        """Arbitrary extra fields can be bound via **extra."""
+        with CorrelationContext(plugin="my-plugin", platform="discord"):
+            ctx = get_correlation_context()
+            assert ctx["plugin"] == "my-plugin"
+            assert ctx["platform"] == "discord"
+        assert get_correlation_context() == {}
 
 
 class TestSetupLogging:
     """Tests for the setup_logging function."""
 
-    def test_setup_text_format(self):
-        setup_logging(level="DEBUG", format="text")
+    def test_setup_dev_format(self):
+        setup_logging(level="DEBUG", format="dev")
         root = logging.getLogger()
         assert root.level == logging.DEBUG
         assert len(root.handlers) >= 1
-        assert isinstance(root.handlers[-1].formatter, HumanReadableFormatter)
+        fmt = root.handlers[0].formatter
+        assert isinstance(fmt, structlog.stdlib.ProcessorFormatter)
 
     def test_setup_json_format(self):
         setup_logging(level="WARNING", format="json")
         root = logging.getLogger()
         assert root.level == logging.WARNING
-        assert isinstance(root.handlers[-1].formatter, StructuredFormatter)
+        assert isinstance(root.handlers[0].formatter, structlog.stdlib.ProcessorFormatter)
+
+    def test_setup_plain_format(self):
+        setup_logging(level="INFO", format="plain")
+        root = logging.getLogger()
+        assert root.level == logging.INFO
+        assert isinstance(root.handlers[0].formatter, structlog.stdlib.ProcessorFormatter)
+
+    def test_text_backward_compat(self):
+        """'text' is accepted as alias for 'dev'."""
+        setup_logging(level="INFO", format="text")
+        root = logging.getLogger()
+        assert len(root.handlers) >= 1
+        assert isinstance(root.handlers[0].formatter, structlog.stdlib.ProcessorFormatter)
 
     def test_replaces_existing_handlers(self):
-        # Add a dummy handler
         root = logging.getLogger()
         dummy = logging.StreamHandler()
         root.addHandler(dummy)
-        handler_count = len(root.handlers)
 
-        setup_logging(level="INFO", format="text")
-        # Should have replaced all handlers with just one
-        assert len(root.handlers) == 1
+        setup_logging(level="INFO", format="dev")
+        # Should have replaced all handlers with just one (+ discord rate guard)
+        non_rate_guard = [
+            h for h in root.handlers if not type(h).__name__ == "DiscordHTTPLogHandler"
+        ]
+        assert len(non_rate_guard) == 1
+
+    def test_file_handler_created(self, tmp_path):
+        log_file = str(tmp_path / "test.log")
+        setup_logging(level="INFO", format="dev", log_file=log_file)
+
+        root = logging.getLogger()
+        file_handlers = [h for h in root.handlers if hasattr(h, "baseFilename")]
+        assert len(file_handlers) == 1
+
+    def test_no_file_handler_when_empty(self):
+        setup_logging(level="INFO", format="dev", log_file="")
+        root = logging.getLogger()
+        file_handlers = [h for h in root.handlers if hasattr(h, "baseFilename")]
+        assert len(file_handlers) == 0
+
+
+class TestStructlogOutput:
+    """Tests that log output contains expected fields."""
+
+    def test_json_output_contains_correlation(self, tmp_path):
+        """JSON output includes correlation context fields."""
+        log_file = str(tmp_path / "test.log")
+        setup_logging(level="INFO", format="json", log_file=log_file)
+
+        test_logger = logging.getLogger("test.json_output")
+        with CorrelationContext(task_id="swift-dawn", project_id="acme"):
+            test_logger.info("Task started")
+
+        # Read from the JSONL file
+        with open(log_file) as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        assert len(lines) >= 1
+        parsed = json.loads(lines[-1])
+        assert parsed["task_id"] == "swift-dawn"
+        assert parsed["project_id"] == "acme"
+        assert parsed["level"] == "info"
+        assert "Task started" in (parsed.get("event") or parsed.get("message", ""))
+
+    def test_json_output_no_context_when_unset(self, tmp_path):
+        log_file = str(tmp_path / "test.log")
+        setup_logging(level="INFO", format="json", log_file=log_file)
+
+        test_logger = logging.getLogger("test.no_context")
+        test_logger.info("No context here")
+
+        with open(log_file) as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        parsed = json.loads(lines[-1])
+        assert "task_id" not in parsed
+        assert "project_id" not in parsed

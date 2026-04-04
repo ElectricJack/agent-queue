@@ -351,15 +351,31 @@ class MemoryConfig:
 class LoggingConfig:
     """Configuration for structured logging and output format.
 
-    Controls the Python stdlib logging setup. When ``format`` is ``"json"``,
-    all log output is emitted as single-line JSON objects suitable for log
-    aggregation systems. The ``"text"`` format (default) is human-readable
-    with correlation context appended.
+    Controls the structlog-powered logging setup.  Three output modes:
+
+    - ``"dev"`` — Rich-colored console output (default, best for terminals)
+    - ``"json"`` — Single-line JSON objects for log aggregation / ``jq``
+    - ``"plain"`` — Human-readable text without ANSI codes (for piping)
+
+    The ``"text"`` value is accepted as a backward-compatible alias for ``"dev"``.
     """
 
     level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-    format: str = "text"  # "text" or "json"
-    include_source: bool = False  # Include filename/lineno in JSON output
+    format: str = "dev"  # "dev", "json", "plain" (also accepts "text" → "dev")
+    include_source: bool = False  # Include filename/lineno in output
+    log_file: str = ""  # Path for JSONL file; empty = auto
+    log_file_max_bytes: int = 50_000_000  # 50 MB per file
+    log_file_backup_count: int = 5  # rotated files to keep
+    console_format: str = ""  # Custom format template for dev/plain console output
+    # Uses {field} placeholders. Empty = default structlog layout.
+    # Examples:
+    #   "{timestamp} [{level}] {event} [{logger}:{lineno}] [{component}:{project_id}]"
+    #   "{timestamp} {level} {event} [{component}] {*}"
+    #   "[{level}] {event} [{component}:{task_id}] {*}"
+    # Available fields: timestamp, level, logger, event/message, lineno, filename,
+    #   and any context field (task_id, project_id, component, command, plugin, etc.)
+    # Special: {*} = all remaining context fields as key=value pairs
+    # Bracket groups like [{a}:{b}] collapse when all fields are empty
 
 
 @dataclass

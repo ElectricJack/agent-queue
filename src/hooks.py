@@ -73,7 +73,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
+from src.chat_providers import LoggedChatProvider, create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.database import Database
 from src.event_bus import EventBus
@@ -628,7 +628,7 @@ class HookEngine:
                 tokens_used=tokens,
                 completed_at=time.time(),
             )
-            logger.info("Hook %s completed, tokens=%d", hook.name, tokens)
+            logger.info("Hook %s completed", hook.name, extra={"tokens": tokens})
 
             # Build completion message
             parts = [f"🪝 Hook **{hook.name}** completed."]

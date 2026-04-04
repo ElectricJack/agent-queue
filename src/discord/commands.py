@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import os
-import re
-import traceback
 from pathlib import Path
 
 import discord
@@ -32,13 +31,48 @@ from src.discord.embeds import (
     status_embed,
     truncate,
     progress_bar,
-    format_tree_task,
-    TREE_PIPE,
-    TREE_SPACE,
     LIMIT_FIELD_VALUE,
 )
 from src.discord.project_wizard import ProjectInfoModal
-from src.models import TaskStatus
+
+logger = logging.getLogger(__name__)
+
+
+async def _send_error(
+    interaction,
+    message: str,
+    *,
+    followup: bool = False,
+    ephemeral: bool = True,
+):
+    """Send an error response as a rich embed."""
+    embed = error_embed("Error", description=message)
+    if followup:
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+
+async def _send_success(
+    interaction,
+    title: str,
+    *,
+    description: str | None = None,
+    fields: list[tuple[str, str, bool]] | None = None,
+    followup: bool = False,
+    ephemeral: bool = False,
+    result: dict | None = None,
+):
+    """Send a success response as a rich green embed."""
+    if result and result.get("warning"):
+        warning_text = f"\u26a0\ufe0f {result['warning']}"
+        description = f"{description}\n\n{warning_text}" if description else warning_text
+    embed = success_embed(title, description=description, fields=fields)
+    if followup:
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
 
 _NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
 
@@ -2801,7 +2835,7 @@ def setup_commands(bot: commands.Bot) -> None:
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
-            print(f"ERROR in /status: {e!r}\n{traceback.format_exc()}")
+            logger.error("Error in /status: %s", e, exc_info=True)
             try:
                 await interaction.followup.send(
                     embed=error_embed("Error", description=f"Failed to get status: {e}"),
@@ -3250,7 +3284,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if unassigned:
             lines.append(f"\n**Using global channels:** {', '.join(unassigned)}")
 
-        lines.append(f"\n_Use `/set-channel` or `/create-channel` to assign project channels._")
+        lines.append("\n_Use `/set-channel` or `/create-channel` to assign project channels._")
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="pause", description="Pause a project")
@@ -3366,7 +3400,7 @@ def setup_commands(bot: commands.Bot) -> None:
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
-            print(f"ERROR in /tasks: {e!r}\n{traceback.format_exc()}")
+            logger.error("Error in /tasks: %s", e, exc_info=True)
             try:
                 await interaction.followup.send(
                     embed=error_embed("Error", description=f"Failed to list tasks: {e}"),
@@ -6649,8 +6683,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
         # Plan found and queued for approval
         desc_lines = [
-            f"📋 Found plan in workspace and queued for approval.",
-            f"",
+            "📋 Found plan in workspace and queued for approval.",
+            "",
             f"**Task:** `{result['task_id']}`",
             f"**Title:** {result.get('title', 'N/A')}",
             f"**Source:** `{result.get('plan_path', 'N/A')}`",

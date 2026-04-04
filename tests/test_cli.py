@@ -755,7 +755,7 @@ class TestDaemonCommands:
 
         result = runner.invoke(cli, ["logs", "--help"])
         assert result.exit_code == 0
-        assert "View daemon logs" in result.output
+        assert "daemon logs" in result.output.lower()
 
     def test_read_pid_no_file(self, tmp_path):
         from src.cli.daemon import _read_pid

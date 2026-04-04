@@ -17,12 +17,16 @@ the codebase stays provider-agnostic.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 
 from .base import ChatProvider
 from .types import ChatResponse, TextBlock, ToolUseBlock
+
+
+logger = logging.getLogger(__name__)
 
 
 def _load_claude_oauth_token() -> str | None:
@@ -38,10 +42,10 @@ def _load_claude_oauth_token() -> str | None:
             if token:
                 expires = oauth.get("expiresAt", 0)
                 if expires and expires < time.time() * 1000:
-                    print("Warning: Claude OAuth token may be expired — trying anyway")
+                    logger.warning("Claude OAuth token may be expired — trying anyway")
                 return token
         except Exception as e:
-            print(f"Warning: could not read Claude credentials from {cred_path}: {e}")
+            logger.warning("Could not read Claude credentials from %s: %s", cred_path, e)
     return None
 
 

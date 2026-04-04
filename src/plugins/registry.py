@@ -25,6 +25,8 @@ import asyncio
 import json
 import logging
 import time
+
+import structlog
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -1064,7 +1066,12 @@ class PluginRegistry:
         """Execute a cron job with error handling and circuit breaker."""
         key = f"{job.plugin_name}.{job.method.__name__}"
         try:
-            await job.method(ctx)
+            with structlog.contextvars.bound_contextvars(
+                plugin=job.plugin_name,
+                component="plugin_cron",
+                cron_method=job.method.__name__,
+            ):
+                await job.method(ctx)
             self.record_success(job.plugin_name)
             logger.debug("Plugin cron job completed: %s", key)
         except Exception as e:

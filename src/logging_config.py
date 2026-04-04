@@ -1,21 +1,22 @@
-"""Structured logging with correlation IDs for the agent queue system.
+"""Structured logging with correlation context for the agent queue system.
 
-Provides JSON-lines structured logging via a custom ``StructuredFormatter``
-and task-level correlation context using ``contextvars``.  When configured,
-all log output is emitted as single-line JSON objects with consistent fields
-(timestamp, level, logger, message, plus any extra context).
+Uses ``structlog`` with a processor pipeline that supports three output modes:
 
-The ``CorrelationContext`` class manages per-task context that is automatically
-attached to every log record within that task's execution scope.  This enables
-filtering and tracing logs for a specific task_id, project_id, or cycle across
-all components without manual threading of IDs.
+- **dev** — Rich-colored console output with aligned columns (default)
+- **json** — Single-line JSON objects for log aggregation / ``jq``
+- **plain** — Human-readable text without ANSI escape codes (for piping)
+
+All existing ``logging.getLogger(__name__)`` loggers are bridged through
+the structlog pipeline via ``ProcessorFormatter``, so context fields bound
+with ``CorrelationContext`` (or ``structlog.contextvars``) appear on every
+log line automatically — no per-file changes required.
 
 Usage::
 
     from src.logging_config import setup_logging, CorrelationContext
 
     # At startup
-    setup_logging(config.logging)
+    setup_logging(level="INFO", format="dev")
 
     # In task execution
     with CorrelationContext(task_id="swift-dawn", project_id="my-project"):
@@ -27,42 +28,33 @@ See ``LoggingConfig`` in ``src/config.py`` for available configuration options.
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 import sys
-import time
-from contextvars import ContextVar
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
+import structlog
 
-# ── Correlation context (contextvars-based) ──────────────────────────────
 
-_correlation_task_id: ContextVar[str | None] = ContextVar("correlation_task_id", default=None)
-_correlation_project_id: ContextVar[str | None] = ContextVar("correlation_project_id", default=None)
-_correlation_cycle_id: ContextVar[str | None] = ContextVar("correlation_cycle_id", default=None)
-_correlation_component: ContextVar[str | None] = ContextVar("correlation_component", default=None)
-_correlation_hook_id: ContextVar[str | None] = ContextVar("correlation_hook_id", default=None)
-_correlation_agent_id: ContextVar[str | None] = ContextVar("correlation_agent_id", default=None)
-_correlation_command: ContextVar[str | None] = ContextVar("correlation_command", default=None)
+# ── Correlation context (structlog contextvars) ────────────────────────
 
 
 class CorrelationContext:
-    """Context manager that sets correlation fields on log records.
+    """Context manager that binds correlation fields to log records.
 
-    Fields are stored in ``contextvars`` so they automatically propagate
-    through ``await`` chains within the same task.  On exit the previous
-    values are restored (supports nesting).
+    Wraps ``structlog.contextvars.bound_contextvars`` for backward
+    compatibility with existing call sites.  Fields are stored in
+    ``contextvars`` so they automatically propagate through ``await``
+    chains within the same task.  On exit the previous values are
+    restored (supports nesting).
 
     Example::
 
         with CorrelationContext(task_id="swift-dawn", project_id="acme"):
             logger.info("Processing")  # includes task_id, project_id
     """
-
-    # Map of field names to their context variables, used for set/reset
-    _FIELDS: dict[str, ContextVar[str | None]] = {}  # populated after class body
 
     def __init__(
         self,
@@ -74,211 +66,320 @@ class CorrelationContext:
         hook_id: str | None = None,
         agent_id: str | None = None,
         command: str | None = None,
+        **extra: str | None,
     ):
-        self._values: dict[str, str] = {}
-        if task_id is not None:
-            self._values["task_id"] = task_id
-        if project_id is not None:
-            self._values["project_id"] = project_id
-        if cycle_id is not None:
-            self._values["cycle_id"] = cycle_id
-        if component is not None:
-            self._values["component"] = component
-        if hook_id is not None:
-            self._values["hook_id"] = hook_id
-        if agent_id is not None:
-            self._values["agent_id"] = agent_id
-        if command is not None:
-            self._values["command"] = command
-        self._tokens: list = []
+        self._kwargs = {
+            k: v
+            for k, v in {
+                "task_id": task_id,
+                "project_id": project_id,
+                "cycle_id": cycle_id,
+                "component": component,
+                "hook_id": hook_id,
+                "agent_id": agent_id,
+                "command": command,
+                **extra,
+            }.items()
+            if v is not None
+        }
+        self._ctx: contextmanager | None = None
 
     def __enter__(self) -> CorrelationContext:
-        for name, value in self._values.items():
-            var = self._FIELDS[name]
-            self._tokens.append((name, var.set(value)))
+        self._ctx = structlog.contextvars.bound_contextvars(**self._kwargs)
+        self._ctx.__enter__()
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        for name, token in reversed(self._tokens):
-            self._FIELDS[name].reset(token)
-        self._tokens.clear()
+        if self._ctx is not None:
+            self._ctx.__exit__(*exc)
+            self._ctx = None
 
 
-# Populate the field→contextvar mapping after the class is defined
-CorrelationContext._FIELDS = {
-    "task_id": _correlation_task_id,
-    "project_id": _correlation_project_id,
-    "cycle_id": _correlation_cycle_id,
-    "component": _correlation_component,
-    "hook_id": _correlation_hook_id,
-    "agent_id": _correlation_agent_id,
-    "command": _correlation_command,
-}
-
-
-def get_correlation_context() -> dict[str, str]:
+def get_correlation_context() -> dict[str, Any]:
     """Return current correlation fields as a dict (non-None values only)."""
-    ctx: dict[str, str] = {}
-    for name, var in CorrelationContext._FIELDS.items():
-        val = var.get()
-        if val is not None:
-            ctx[name] = val
-    return ctx
+    return structlog.contextvars.get_contextvars()
 
 
-# ── Structured JSON formatter ────────────────────────────────────────────
+# ── Shared processors ──────────────────────────────────────────────────
 
 
-class StructuredFormatter(logging.Formatter):
-    """Formats log records as single-line JSON objects.
+def _build_shared_processors(include_source: bool = False) -> list:
+    """Build the processor chain shared by structlog and stdlib bridge."""
+    processors: list = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.UnicodeDecoder(),
+    ]
+    if include_source:
+        processors.append(
+            structlog.processors.CallsiteParameterAdder(
+                [
+                    structlog.processors.CallsiteParameter.FILENAME,
+                    structlog.processors.CallsiteParameter.LINENO,
+                ]
+            )
+        )
+    return processors
 
-    Output fields:
-    - ``timestamp`` — ISO 8601 UTC
-    - ``level`` — log level name (INFO, WARNING, etc.)
-    - ``logger`` — logger name (usually module path)
-    - ``message`` — the formatted log message
-    - ``task_id``, ``project_id``, ``cycle_id``, ``component``,
-      ``hook_id``, ``agent_id``, ``command`` — from ``CorrelationContext``
-      (omitted when not set)
-    - Any extra fields passed via ``logger.info("msg", extra={...})``
 
-    When ``include_source`` is True (default for DEBUG level configs),
-    ``filename`` and ``lineno`` are included.
+def _shorten_timestamp(logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Shorten ISO timestamp to HH:MM:SS for console output."""
+    ts = event_dict.get("timestamp", "")
+    if isinstance(ts, str) and "T" in ts:
+        event_dict["timestamp"] = ts.split("T")[1][:8]
+    return event_dict
+
+
+def _shorten_logger_name(
+    logger: Any, method_name: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Strip 'src.' prefix from logger names for conciseness."""
+    name = event_dict.get("logger", "")
+    if isinstance(name, str) and name.startswith("src."):
+        event_dict["logger"] = name[4:]
+    return event_dict
+
+
+class _TemplateRenderer:
+    """Render log lines using a user-defined format template.
+
+    Template fields are ``{name}`` placeholders that expand to values from
+    the structlog event dict.  Grouped fields like ``[{component}:{project_id}]``
+    collapse gracefully — if all fields in a bracket group are missing, the
+    entire bracket group (including delimiters) is removed.
+
+    Special field names:
+
+    - ``{event}`` or ``{message}`` — the log message
+    - ``{level}`` — log level (info, warning, error, ...)
+    - ``{timestamp}`` — already shortened to HH:MM:SS by upstream processor
+    - ``{logger}`` — logger name (already shortened, without ``src.`` prefix)
+    - ``{*}`` — all remaining context fields as ``key=value`` pairs
+
+    Example templates::
+
+        {timestamp} [{level}] {event} [{logger}:{lineno}] [{component}:{project_id}]
+        {level} {event} [{component}] {*}
+        [{level}] {event} {*}
+
+    ANSI colors are applied based on the ``colors`` flag.
     """
 
-    # Fields from LogRecord that we handle explicitly or want to exclude
-    _SKIP_FIELDS = frozenset(
-        {
-            "name",
-            "msg",
-            "args",
-            "created",
-            "relativeCreated",
-            "exc_info",
-            "exc_text",
-            "stack_info",
-            "lineno",
-            "funcName",
-            "filename",
-            "module",
-            "pathname",
-            "levelname",
-            "levelno",
-            "msecs",
-            "thread",
-            "threadName",
-            "process",
-            "processName",
-            "taskName",
-            "message",
-        }
-    )
+    # ANSI color codes for levels
+    _LEVEL_ANSI = {
+        "debug": "\033[2m",  # dim
+        "info": "\033[32;1m",  # green bold
+        "warning": "\033[33;1m",  # yellow bold
+        "error": "\033[31;1m",  # red bold
+        "critical": "\033[37;1;41m",  # white bold on red
+    }
+    _RESET = "\033[0m"
+    _DIM = "\033[2m"
+    _CYAN = "\033[36m"
+    _MAGENTA = "\033[35m"
 
-    def __init__(self, include_source: bool = False):
-        super().__init__()
-        self._include_source = include_source
+    def __init__(self, template: str, colors: bool = True):
+        self._template = template
+        self._colors = colors
 
-    def format(self, record: logging.LogRecord) -> str:
-        # Build the base entry
-        entry: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
+    def __call__(self, logger: Any, method_name: str, event_dict: dict[str, Any]) -> str:
+        template = self._template
+        used_keys: set[str] = set()
 
-        # Add correlation context
-        entry.update(get_correlation_context())
+        # Collect all {field} references in the template
+        import re
 
-        # Add source location if configured
-        if self._include_source:
-            entry["filename"] = record.filename
-            entry["lineno"] = record.lineno
+        field_refs = set(re.findall(r"\{(\w+)\}", template))
 
-        # Add exception info if present
-        if record.exc_info and record.exc_info[1] is not None:
-            entry["exception"] = self.formatException(record.exc_info)
+        # "message" is an alias for "event" (structlog's key)
+        if "message" in field_refs:
+            field_refs.discard("message")
+            field_refs.add("event")
+            template = template.replace("{message}", "{event}")
 
-        if record.stack_info:
-            entry["stack_info"] = record.stack_info
+        # Track which keys we substitute
+        used_keys.update(field_refs)
+        used_keys.discard("*")
 
-        # Add any extra fields that aren't standard LogRecord attributes
-        for key, value in record.__dict__.items():
-            if key not in self._SKIP_FIELDS and not key.startswith("_"):
-                entry[key] = value
+        # Build substitution dict
+        subs: dict[str, str] = {}
+        for key in field_refs:
+            if key == "*":
+                continue
+            val = event_dict.get(key)
+            if val is not None:
+                sval = str(val)
+                # Apply colors to specific fields
+                if self._colors:
+                    if key == "level":
+                        color = self._LEVEL_ANSI.get(sval, "")
+                        sval = f"{color}{sval:<8s}{self._RESET}"
+                    elif key == "timestamp":
+                        sval = f"{self._DIM}{sval}{self._RESET}"
+                    elif key in ("logger", "lineno", "filename"):
+                        sval = f"{self._DIM}{sval}{self._RESET}"
+                    elif key == "event":
+                        level = event_dict.get("level", "")
+                        if level in ("error", "critical"):
+                            sval = f"\033[1m{sval}{self._RESET}"
+                subs[key] = sval
+            else:
+                subs[key] = ""
 
-        return json.dumps(entry, default=str, ensure_ascii=False)
+        # Expand {*} with remaining context fields
+        if "*" in self._template or "{*}" in template:
+            skip = used_keys | {"event", "level", "timestamp", "logger", "_record"}
+            remaining = []
+            for k, v in event_dict.items():
+                if k not in skip and not k.startswith("_") and v is not None:
+                    if self._colors:
+                        remaining.append(
+                            f"{self._CYAN}{k}{self._RESET}={self._MAGENTA}{v}{self._RESET}"
+                        )
+                    else:
+                        remaining.append(f"{k}={v}")
+            subs["*"] = " ".join(remaining)
 
+        # Substitute fields
+        result = template
+        for key, val in subs.items():
+            result = result.replace(f"{{{key}}}", val)
 
-class HumanReadableFormatter(logging.Formatter):
-    """Human-readable formatter that includes correlation context.
+        # Collapse empty bracket groups: [::] or [:] or [] → removed
+        result = re.sub(r"\[[:\s]*\]", "", result)
+        # Clean up multiple spaces
+        result = re.sub(r"  +", " ", result).strip()
 
-    Format: ``TIMESTAMP LEVEL [logger] [task_id=X project_id=Y] message``
-
-    Used when ``structured_logging.format`` is set to ``"text"`` (the default)
-    for easier local development and debugging.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Build correlation tag
-        ctx = get_correlation_context()
-        ctx_parts = [f"{k}={v}" for k, v in ctx.items()]
-        ctx_str = f" [{' '.join(ctx_parts)}]" if ctx_parts else ""
-
-        msg = record.getMessage()
-        base = f"{ts} {record.levelname:<8} [{record.name}]{ctx_str} {msg}"
-
-        if record.exc_info and record.exc_info[1] is not None:
-            base += "\n" + self.formatException(record.exc_info)
-
-        return base
+        return result
 
 
-# ── Setup function ───────────────────────────────────────────────────────
+def _get_console_processors(
+    fmt: str,
+    console_format: str = "",
+    console_columns: str = "",
+) -> list:
+    """Return the processor chain for console output."""
+    processors: list = [structlog.stdlib.ProcessorFormatter.remove_processors_meta]
+    if fmt != "json":
+        # Shorten timestamps and logger names for human-readable modes
+        processors.append(_shorten_timestamp)
+        processors.append(_shorten_logger_name)
+    if fmt == "json":
+        processors.append(structlog.processors.JSONRenderer())
+    elif console_format:
+        # User-defined format template — overrides default renderer
+        colors = fmt != "plain"
+        processors.append(_TemplateRenderer(console_format, colors=colors))
+    elif fmt == "plain":
+        processors.append(structlog.dev.ConsoleRenderer(colors=False))
+    else:
+        # "dev" (or "text" backward compat)
+        processors.append(structlog.dev.ConsoleRenderer(colors=True))
+    return processors
+
+
+# ── Setup function ──────────────────────────────────────────────────────
 
 
 def setup_logging(
     *,
     level: str = "INFO",
-    format: str = "text",
+    format: str = "dev",
     include_source: bool = False,
+    log_file: str = "",
+    log_file_max_bytes: int = 50_000_000,
+    log_file_backup_count: int = 5,
+    console_format: str = "",
 ) -> None:
-    """Configure the root logger with structured or human-readable output.
+    """Configure the root logger with structlog-powered output.
 
     Args:
         level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        format: Output format — ``"json"`` for JSON-lines, ``"text"`` for
-            human-readable (default).
-        include_source: Include filename/lineno in JSON output.
+        format: Output format — ``"dev"`` for colored Rich output,
+            ``"json"`` for JSON-lines, ``"plain"`` for uncolored text.
+            ``"text"`` is accepted as a backward-compatible alias for ``"dev"``.
+        include_source: Include filename/lineno in output.
+        log_file: Path for JSONL log file.  Empty string disables file output.
+        log_file_max_bytes: Max bytes per log file before rotation.
+        log_file_backup_count: Number of rotated log files to keep.
+        console_format: Custom format template for dev/plain output.
+            Uses ``{field}`` placeholders.  Empty string uses the default
+            structlog ConsoleRenderer.  Example:
+            ``"{timestamp} [{level}] {event} [{logger}:{lineno}] [{component}:{project_id}]"``
     """
+    # Normalize backward-compat alias
+    if format == "text":
+        format = "dev"
+
+    log_level = getattr(logging, level.upper(), logging.INFO)
+
+    # Clear structlog contextvars from any previous setup
+    structlog.contextvars.clear_contextvars()
+
+    # Build shared processor chain
+    shared_processors = _build_shared_processors(include_source=include_source)
+
+    # Configure structlog for structlog-native loggers
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    # ── Root stdlib logger ──────────────────────────────────────────
     root = logging.getLogger()
 
     # Remove existing handlers to avoid duplicate output
     for handler in root.handlers[:]:
         root.removeHandler(handler)
 
-    handler = logging.StreamHandler(sys.stderr)
+    # Console handler (stderr) — uses the user's chosen format
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=_get_console_processors(format, console_format=console_format),
+            foreign_pre_chain=shared_processors,
+        )
+    )
+    console_handler.setLevel(log_level)
+    root.addHandler(console_handler)
 
-    if format == "json":
-        handler.setFormatter(StructuredFormatter(include_source=include_source))
-    else:
-        handler.setFormatter(HumanReadableFormatter())
+    # File handler (JSONL) — always JSON regardless of console mode
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=log_file_max_bytes,
+            backupCount=log_file_backup_count,
+        )
+        file_handler.setFormatter(
+            structlog.stdlib.ProcessorFormatter(
+                processors=[
+                    structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    structlog.processors.JSONRenderer(),
+                ],
+                foreign_pre_chain=shared_processors,
+            )
+        )
+        file_handler.setLevel(log_level)
+        root.addHandler(file_handler)
 
-    log_level = getattr(logging, level.upper(), logging.INFO)
     root.setLevel(log_level)
-    handler.setLevel(log_level)
-    root.addHandler(handler)
 
     # Quiet down noisy third-party loggers
-    for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp"):
+    for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp", "uvicorn"):
         logging.getLogger(noisy).setLevel(max(log_level, logging.WARNING))
 
     # Attach the Discord rate-guard log handler so we can count 429
-    # responses that discord.py retries internally (never reaching our
-    # application code).  Uses a lazy import to avoid circular deps at
-    # module load time.
+    # responses that discord.py retries internally.  Lazy import to
+    # avoid circular deps at module load time.
     from src.discord.rate_guard import DiscordHTTPLogHandler, get_tracker
 
     discord_http_logger = logging.getLogger("discord.http")

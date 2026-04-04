@@ -31,7 +31,6 @@ import datetime
 import json
 import os
 import signal
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -54,7 +53,6 @@ from src.models import (
     VerificationType,
     TASK_TYPE_VALUES,
     Workspace,
-    WorkspaceAgent,
 )
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
@@ -625,7 +623,7 @@ def _format_task_tree(
         status_counts = _count_subtree_by_status(children)
         summary_line = f"  {_format_status_summary(status_counts, total)}"
     else:
-        completed, total = 0, 0
+        _, total = 0, 0
         status_counts = {}
         summary_line = None
 
@@ -958,14 +956,13 @@ class CommandHandler:
                 ):
                     plugin_handler = self.orchestrator.plugin_registry.get_command(name)
                     if plugin_handler:
+                        plugin_name = name.split(".")[0] if "." in name else name
                         try:
-                            result = await plugin_handler(args)
-                            self.orchestrator.plugin_registry.record_success(
-                                name.split(".")[0] if "." in name else name
-                            )
+                            with CorrelationContext(plugin=plugin_name):
+                                result = await plugin_handler(args)
+                            self.orchestrator.plugin_registry.record_success(plugin_name)
                             return result
                         except Exception as e:
-                            plugin_name = name.split(".")[0] if "." in name else name
                             await self.orchestrator.plugin_registry.record_failure(
                                 plugin_name, str(e)
                             )
@@ -1017,7 +1014,6 @@ class CommandHandler:
         ``~/.claude/.credentials.json``.
         """
         import json as _json
-        import glob as _glob
         from pathlib import Path as _Path
         from datetime import datetime as _dt, timezone as _tz
 
@@ -5803,7 +5799,6 @@ feature work stuck on feature branches across multiple workspaces.
                 fire_at = trigger.get("fire_at", 0)
                 from datetime import datetime as _dt, timezone as _tz
 
-                fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
                 remaining = fire_at - time.time()
                 if remaining > 0:
                     next_str = f"in {_format_interval(int(remaining))}"
@@ -7059,9 +7054,7 @@ feature work stuck on feature branches across multiple workspaces.
             await orch.wait_for_running_tasks(timeout=300)
 
         # Log the update/restart reason to the notification channel
-        await orch._notify_channel(
-            f"🔄 **Daemon update & restart initiated** — {reason}"
-        )
+        await orch._notify_channel(f"🔄 **Daemon update & restart initiated** — {reason}")
         # Trigger restart
         orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
@@ -7676,7 +7669,7 @@ feature work stuck on feature branches across multiple workspaces.
     async def _install_manifest(
         self,
         profile_id: str,
-        manifest: "InstallManifest",
+        manifest: "Any",  # noqa: F821 — type was removed, keeping signature stable
     ) -> dict:
         """Shared logic for installing an InstallManifest's dependencies."""
         import shutil
@@ -8009,7 +8002,6 @@ feature work stuck on feature branches across multiple workspaces.
         # Get all plugins from DB (includes disabled/errored)
         db_plugins = await self.db.list_plugins()
         loaded = self.orchestrator.plugin_registry.list_plugins()
-        loaded_names = {p["name"] for p in loaded}
 
         plugins = []
         for p in db_plugins:
