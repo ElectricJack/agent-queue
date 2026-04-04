@@ -291,3 +291,130 @@ Environment variables set in the process environment before `load_config` is cal
 1. Process environment (set externally before launch, or by the OS)
 2. `.env` file in the same directory as the config file
 3. Hardcoded defaults in the dataclasses
+
+---
+
+## 6. Logging Configuration
+
+### LoggingConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `level` | str | `"INFO"` | Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
+| `format` | str | `"dev"` | Output mode: `"dev"` (colored), `"json"` (JSONL), `"plain"` (no ANSI). `"text"` is accepted as an alias for `"dev"`. |
+| `include_source` | bool | `false` | Include filename and line number in log output |
+| `log_file` | str | `""` | Path for JSONL log file. Empty = auto (`~/.agent-queue/logs/agent-queue.log`) |
+| `log_file_max_bytes` | int | `50000000` | Max bytes per log file before rotation (50 MB) |
+| `log_file_backup_count` | int | `5` | Number of rotated log files to keep |
+| `console_format` | str | `""` | Custom format template (see below). Empty = default structlog layout. |
+
+### Environment Variables
+
+| Variable | Effect |
+|---|---|
+| `AGENT_QUEUE_LOG_LEVEL` | Override `logging.level` (used before config loads) |
+| `AGENT_QUEUE_LOG_FORMAT` | Override `logging.format` (`dev`, `json`, `plain`) |
+
+### Output Modes
+
+**dev** (default) — Rich-colored console output with aligned columns. Best for local terminal use. Timestamps are shortened to `HH:MM:SS`, logger names strip the `src.` prefix.
+
+**json** — Single-line JSON objects (JSONL). Every log line is a valid JSON object with `timestamp`, `level`, `logger`, `event`, and any bound context fields. Ideal for piping to `jq`, or shipping to log aggregation systems.
+
+**plain** — Same layout as `dev` but without ANSI escape codes. Use when piping to a file or a tool that doesn't support colors.
+
+### Custom Format Templates (`console_format`)
+
+When set, replaces the default structlog ConsoleRenderer with a user-defined template. Uses `{field}` placeholders that expand to values from the log event.
+
+**Available fields:**
+- `{timestamp}` — Time (HH:MM:SS in dev/plain, full ISO in json)
+- `{level}` — Log level (info, warning, error, ...)
+- `{logger}` — Logger name (with `src.` prefix stripped)
+- `{event}` or `{message}` — The log message
+- `{lineno}` — Source line number (requires `include_source: true`)
+- `{filename}` — Source filename (requires `include_source: true`)
+- Any context field: `{task_id}`, `{project_id}`, `{component}`, `{command}`, `{plugin}`, `{platform}`, `{hook_id}`, `{agent_id}`, `{route}`, `{request_id}`, `{cycle_id}`, etc.
+- `{*}` — All remaining context fields as colored `key=value` pairs
+
+**Bracket group collapsing:** Groups like `[{component}:{project_id}]` are removed entirely when all fields inside are empty, so output stays clean.
+
+**Coloring** is automatic in `dev` mode:
+- Level → green (info), yellow (warning), red (error)
+- Timestamp, logger, lineno → dim
+- Error/critical messages → bold
+- `{*}` key=value → cyan keys, magenta values
+- Colors disabled automatically in `plain` mode
+
+**Examples:**
+
+```yaml
+# Compact with source location
+logging:
+  console_format: "{timestamp} [{level}] {event} [{logger}:{lineno}] [{component}:{project_id}]"
+
+# Minimal with catch-all
+logging:
+  console_format: "[{level}] {event} [{component}] {*}"
+
+# Task-focused
+logging:
+  console_format: "{timestamp} {level} {event} [{task_id}] [{plugin}] {*}"
+```
+
+### Log File
+
+The daemon always writes a JSONL log file alongside console output. The file uses JSON format regardless of the console `format` setting, so `jq` and `aq logs` always work.
+
+Default path: `~/.agent-queue/logs/agent-queue.log`
+
+Rotation: `RotatingFileHandler` with configurable size and backup count. Default keeps up to ~300 MB total (50 MB × 6 files).
+
+### CLI: `aq logs`
+
+Reads the JSONL log file directly (no running daemon required).
+
+```
+aq logs                          # tail + follow with colors
+aq logs -F -n 100                # last 100 lines, no follow
+aq logs --level ERROR            # filter by minimum level
+aq logs --task-id swift-dawn     # filter by task_id
+aq logs --project-id acme        # filter by project_id
+aq logs --component hooks        # filter by component
+aq logs --plugin github-issues   # filter by plugin name
+aq logs --command create_task    # filter by command
+aq logs --since 5m               # last 5 minutes
+aq logs --json                   # raw JSONL (pipe to jq)
+aq logs --no-color               # disable colors
+```
+
+### Context Propagation
+
+Context fields are bound at system boundaries and automatically appear on all log lines within that scope:
+
+| Boundary | Fields bound |
+|---|---|
+| CommandHandler.execute() | `command`, `component="command_handler"` |
+| API middleware | `request_id`, `route`, `method`, `component="api"` |
+| Orchestrator task execution | `task_id`, `project_id`, `component="orchestrator"` |
+| Plugin command | `plugin` (nested inside command handler context) |
+| Plugin cron | `plugin`, `component="plugin_cron"`, `cron_method` |
+| Discord bot | `platform="discord"`, `discord_user`, `channel_id` |
+| Telegram bot | `platform="telegram"`, `telegram_user`, `chat_id` |
+| Supervisor | `component="supervisor"` |
+| Hook engine | `hook_id`, `project_id`, `component="hooks"` |
+
+Context propagates through async call chains via `contextvars`. A log call deep in `database/queries/tasks.py` automatically includes the `task_id` and `command` from the outer scope.
+
+### YAML Example
+
+```yaml
+logging:
+  level: INFO
+  format: dev
+  include_source: false
+  console_format: "{timestamp} [{level}] {event} [{component}:{task_id}] {*}"
+  log_file: ""  # auto
+  log_file_max_bytes: 50000000
+  log_file_backup_count: 5
+```

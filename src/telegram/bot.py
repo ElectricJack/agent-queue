@@ -25,9 +25,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from src.telegram.commands import register_commands
 from src.telegram.notifications import (
-    TELEGRAM_MESSAGE_LIMIT,
     escape_markdown,
     format_embed_as_text,
     split_message,
@@ -36,10 +37,6 @@ from src.telegram.views import (
     disable_keyboard_after_action,
     notification_actions_keyboard,
     parse_callback_data,
-    task_approval_keyboard,
-    task_blocked_keyboard,
-    task_failed_keyboard,
-    task_started_keyboard,
 )
 
 if TYPE_CHECKING:
@@ -323,6 +320,11 @@ class TelegramBot:
         if project_id:
             self.handler._active_project_id = project_id
 
+        structlog.contextvars.bind_contextvars(
+            platform="telegram",
+            telegram_user=user_name,
+            chat_id=str(chat_id),
+        )
         try:
             response = await self._supervisor.chat(history)
             if response:

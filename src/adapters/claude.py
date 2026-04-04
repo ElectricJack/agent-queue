@@ -72,8 +72,8 @@ async def _resilient_query(prompt, options, adapter=None):
     from claude_agent_sdk._internal.client import InternalClient
     from claude_agent_sdk._internal.message_parser import parse_message
     from claude_agent_sdk._errors import MessageParseError as _MPE
-    from claude_agent_sdk.types import ClaudeAgentOptions
-    import os, json
+    import os
+    import json
     from collections.abc import AsyncIterable
 
     os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
@@ -423,11 +423,12 @@ class ClaudeAdapter(AgentAdapter):
         duration_ms = int((time_mod.monotonic() - start) * 1000)
         task_id = self._task.task_id if self._task else ""
         logger.info(
-            "Claude session completed: task=%s result=%s tokens=%d duration=%dms",
-            task_id,
-            output.result.value,
-            output.tokens_used,
-            duration_ms,
+            "Claude session completed",
+            extra={
+                "result": output.result.value,
+                "tokens": output.tokens_used,
+                "duration_ms": duration_ms,
+            },
         )
         if not self._llm_logger:
             return

@@ -24,18 +24,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+import structlog
 
 from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.command_handler import CommandHandler
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
-from src.models import TaskStatus
 from src.orchestrator import Orchestrator
 from src.reflection import ReflectionEngine, ReflectionVerdict
+from src.tool_registry import ToolRegistry as _ToolRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +53,6 @@ from src.reflection import ReflectionEngine, ReflectionVerdict
 # ---------------------------------------------------------------------------
 # Tool definitions have moved to tool_registry.py.
 # TOOLS is kept as a backward-compatible alias.
-from src.tool_registry import ToolRegistry as _ToolRegistry
-
 TOOLS = _ToolRegistry().get_all_tools()
 
 # ---------------------------------------------------------------------------
@@ -334,6 +337,8 @@ class Supervisor:
         """
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
+
+        structlog.contextvars.bind_contextvars(component="supervisor")
 
         # Each chat() call gets its own cancel event on the stack so that
         # concurrent calls (hook LLM + user chat) or recursive calls
@@ -643,7 +648,7 @@ class Supervisor:
             parts = resp.text_parts
             return parts[0] if parts else None
         except Exception as e:
-            print(f"Summary generation failed: {e}")
+            logger.error("Summary generation failed: %s", e)
             return None
         finally:
             if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
@@ -705,7 +710,7 @@ class Supervisor:
             parts = resp.text_parts
             return parts[0] if parts else None
         except Exception as e:
-            print(f"Rule prompt expansion failed: {e}")
+            logger.error("Rule prompt expansion failed: %s", e)
             return None
         finally:
             if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
@@ -1094,7 +1099,7 @@ Read the plan below and create one task per implementation phase using the creat
 
         if text.startswith("```"):
             lines = text.split("\n")
-            text = "\n".join(l for l in lines if not l.startswith("```")).strip()
+            text = "\n".join(ln for ln in lines if not ln.startswith("```")).strip()
         try:
             result = _json.loads(text)
             if isinstance(result, dict) and "action" in result:

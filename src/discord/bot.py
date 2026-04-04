@@ -24,16 +24,16 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import hashlib
 import json
 import logging
 import os
 import time
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import discord
+import structlog
 from discord import app_commands
 from discord.ext import commands
 
@@ -44,6 +44,7 @@ from src.models import TaskStatus
 from src.orchestrator import Orchestrator
 from src.chat_observer import ChatObserver
 
+logger = logging.getLogger(__name__)
 
 MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
 COMPACT_THRESHOLD = 20  # Compact older messages beyond this count
@@ -156,7 +157,7 @@ class AgentQueueBot(commands.Bot):
                 toc = raw.get("toc_messages", {})
                 self._notes_toc_messages = {int(k): int(v) for k, v in toc.items()}
         except Exception as e:
-            print(f"Warning: could not load notes threads: {e}")
+            logger.warning("Could not load notes threads: %s", e)
 
     async def _load_notes_threads(self) -> None:
         """Non-blocking load — offloads file I/O to a thread."""
@@ -172,7 +173,7 @@ class AgentQueueBot(commands.Bot):
             with open(self._notes_threads_path, "w") as f:
                 json.dump(data, f)
         except Exception as e:
-            print(f"Warning: could not save notes threads: {e}")
+            logger.warning("Could not save notes threads: %s", e)
 
     async def _save_notes_threads(self) -> None:
         """Non-blocking save — offloads file I/O to a thread."""
@@ -262,7 +263,7 @@ class AgentQueueBot(commands.Bot):
                             )
                         viewers[note_filename] = msg.id
                     except Exception as e:
-                        print(f"Warning: note refresh failed: {e}")
+                        logger.warning("Note refresh failed: %s", e)
 
         # Schedule with 2-second debounce
         loop = asyncio.get_event_loop()
@@ -294,9 +295,9 @@ class AgentQueueBot(commands.Bot):
                 self.add_view(view, message_id=toc_msg_id)
                 reattached += 1
             except Exception as e:
-                print(f"Warning: could not reattach notes view for thread {thread_id}: {e}")
+                logger.warning("Could not reattach notes view for thread %d: %s", thread_id, e)
         if reattached:
-            print(f"Reattached {reattached} notes view(s)")
+            logger.info("Reattached %d notes view(s)", reattached)
 
     def update_project_channel(self, project_id: str, channel: discord.TextChannel) -> None:
         """Update the cached channel for a project at runtime.
@@ -382,12 +383,12 @@ class AgentQueueBot(commands.Bot):
                     try:
                         self.tree.add_command(cmd)
                     except Exception as e:
-                        print(f"WARNING: Failed to register plugin Discord command: {e}")
+                        logger.warning("Failed to register plugin Discord command: %s", e)
 
         # Log how many commands were registered on the tree.
         registered = self.tree.get_commands()
         cmd_names = sorted(c.name for c in registered)
-        print(f"Registered {len(registered)} slash commands on the command tree")
+        logger.info("Registered %d slash commands on the command tree", len(registered))
 
         # Global authorization guard for all slash commands.
         # Runs before every interaction — unauthorized users receive an
@@ -414,9 +415,11 @@ class AgentQueueBot(commands.Bot):
             error: app_commands.AppCommandError,
         ) -> None:
             original = getattr(error, "original", error)
-            print(
-                f"Slash command error in /{interaction.command.name if interaction.command else '?'}: "
-                f"{original!r}\n{traceback.format_exc()}"
+            logger.error(
+                "Slash command error in /%s: %r",
+                interaction.command.name if interaction.command else "?",
+                original,
+                exc_info=True,
             )
             try:
                 msg = f"An unexpected error occurred: {original}"
@@ -436,23 +439,29 @@ class AgentQueueBot(commands.Bot):
             self.tree.copy_global_to(guild=guild)
             try:
                 synced = await self.tree.sync(guild=guild)
-                print(
-                    f"Synced {len(synced)} slash commands to guild {self.config.discord.guild_id}"
+                logger.info(
+                    "Synced %d slash commands to guild %s",
+                    len(synced),
+                    self.config.discord.guild_id,
                 )
             except Exception as e:
-                print(f"ERROR: Failed to sync commands to guild: {e}")
-                print("Commands will NOT appear in Discord until sync succeeds.")
-                print(f"Registered commands were: {cmd_names}")
+                logger.error("Failed to sync commands to guild: %s", e)
+                logger.warning("Commands will NOT appear in Discord until sync succeeds.")
+                logger.error("Registered commands were: %s", cmd_names)
         else:
             # No guild_id configured — sync globally (takes up to 1 hour to propagate).
             try:
                 synced = await self.tree.sync()
-                print(f"Synced {len(synced)} slash commands globally (no guild_id configured)")
+                logger.info(
+                    "Synced %d slash commands globally (no guild_id configured)", len(synced)
+                )
             except Exception as e:
-                print(f"ERROR: Failed to sync commands globally: {e}")
+                logger.error("Failed to sync commands globally: %s", e)
 
     async def on_ready(self) -> None:
-        print(f"Discord bot connected as {self.user} (guild: {self.config.discord.guild_id})")
+        logger.info(
+            "Discord bot connected as %s (guild: %s)", self.user, self.config.discord.guild_id
+        )
         self._boot_time = discord.utils.utcnow().timestamp()
 
         # Make bot accessible to CommandHandler for tools like send_message
@@ -469,9 +478,9 @@ class AgentQueueBot(commands.Bot):
                         self._channel = ch
 
                 if self._channel:
-                    print(f"Bot channel: #{self._channel.name}")
+                    logger.info("Bot channel: #%s", self._channel.name)
                 else:
-                    print(f"Warning: bot channel '{channel_name}' not found")
+                    logger.warning("Bot channel '%s' not found", channel_name)
 
                 # Resolve per-project channels from database
                 await self._resolve_project_channels()
@@ -508,13 +517,13 @@ class AgentQueueBot(commands.Bot):
         # Initialize LLM client via Supervisor
         try:
             if self.agent.initialize():
-                print(f"Chat agent ready (model: {self.agent.model})")
+                logger.info("Chat agent ready (model: %s)", self.agent.model)
             else:
-                print(
-                    "Warning: No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`"
+                logger.warning(
+                    "No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`"
                 )
         except Exception as e:
-            print(f"Warning: Could not initialize LLM client: {e}")
+            logger.error("Could not initialize LLM client: %s", e)
 
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
@@ -756,11 +765,12 @@ class AgentQueueBot(commands.Bot):
                 if ch and isinstance(ch, discord.TextChannel):
                     self._project_channels[project.id] = ch
                     self._channel_to_project[ch.id] = project.id
-                    print(f"Project '{project.id}' channel: #{ch.name}")
+                    logger.info("Project '%s' channel: #%s", project.id, ch.name)
                 else:
-                    print(
-                        f"Warning: project '{project.id}' channel "
-                        f"{project.discord_channel_id} not found in guild — clearing stale ID"
+                    logger.warning(
+                        "Project '%s' channel %s not found in guild — clearing stale ID",
+                        project.id,
+                        project.discord_channel_id,
                     )
                     await self.orchestrator.db.update_project(project.id, discord_channel_id=None)
 
@@ -864,7 +874,7 @@ class AgentQueueBot(commands.Bot):
                 )
 
         except Exception as e:
-            print(f"Error processing observation batch: {e}")
+            logger.error("Error processing observation batch: %s", e, exc_info=True)
 
     async def _post_observation_suggestion(
         self, channel_id: int, project_id: str, suggestion: dict
@@ -891,7 +901,7 @@ class AgentQueueBot(commands.Bot):
                     suggestion_text=text,
                 )
             except Exception as e:
-                print(f"Error creating suggestion record: {e}")
+                logger.error("Error creating suggestion record: %s", e)
 
         embed = format_suggestion_embed(
             suggestion_type=suggestion_type,
@@ -922,7 +932,7 @@ class AgentQueueBot(commands.Bot):
                     source="chat_observation",
                 )
         except Exception as e:
-            print(f"Error storing observation memory: {e}")
+            logger.error("Error storing observation memory: %s", e)
 
     def _build_project_profiles(self) -> dict[str, set[str]]:
         """Build keyword sets from registered projects for the ChatObserver."""
@@ -961,7 +971,7 @@ class AgentQueueBot(commands.Bot):
         """
         channel = self._get_channel(project_id)
         if not channel:
-            print("Cannot create thread: no channel configured")
+            logger.warning("Cannot create thread: no channel configured")
             return None
 
         # Reuse an existing thread if one was already created for this task
@@ -973,14 +983,14 @@ class AgentQueueBot(commands.Bot):
                 await existing_thread.send(
                     f"🔄 **Task resumed** — agent is working on your feedback.\n{initial_message}"
                 )
-                print(f"Reusing existing thread {existing_thread.id} for task {task_id}")
+                logger.info("Reusing existing thread %d for task %s", existing_thread.id, task_id)
                 thread = existing_thread
 
                 async def send_to_thread(text: str) -> None:
                     try:
                         await self._send_long_message(thread, text)
                     except Exception as e:
-                        print(f"Thread send error: {e}")
+                        logger.error("Thread send error: %s", e)
 
                 async def notify_main_channel(
                     text: str, *, embed: discord.Embed | None = None
@@ -996,7 +1006,7 @@ class AgentQueueBot(commands.Bot):
 
                 return send_to_thread, notify_main_channel
             except Exception as e:
-                print(f"Could not reuse thread for task {task_id}: {e}, creating new one")
+                logger.error("Could not reuse thread for task %s: %s, creating new one", task_id, e)
                 # Fall through to create a new thread
 
         # When routing to the global channel, prepend a project tag so users
@@ -1006,10 +1016,12 @@ class AgentQueueBot(commands.Bot):
         if is_global and project_id:
             display_name = f"[{project_id}] {thread_name}"
 
-        print(
-            f"Creating thread: {thread_name}"
-            + (f" (project: {project_id})" if project_id else "")
-            + (f" → #{channel.name}" + (" (global)" if is_global else " (per-project)"))
+        logger.info(
+            "Creating thread: %s%s → #%s (%s)",
+            thread_name,
+            f" (project: {project_id})" if project_id else "",
+            channel.name,
+            "global" if is_global else "per-project",
         )
         # Create the thread-root message in the notifications channel, then open
         # a thread on it so all streaming output stays inside the thread.
@@ -1029,9 +1041,9 @@ class AgentQueueBot(commands.Bot):
             if thread is None:
                 return None
         except Exception as e:
-            print(f"Thread creation failed: {e}")
+            logger.error("Thread creation failed: %s", e)
             return None
-        print(f"Thread created: {thread.id}")
+        logger.info("Thread created: %d", thread.id)
 
         # Track the thread ↔ task mapping for thread message detection
         if task_id:
@@ -1043,7 +1055,7 @@ class AgentQueueBot(commands.Bot):
             try:
                 await self._send_long_message(thread, text)
             except Exception as e:
-                print(f"Thread send error: {e}")
+                logger.error("Thread send error: %s", e)
 
         async def notify_main_channel(text: str, *, embed: discord.Embed | None = None) -> None:
             """Reply to the thread-root message with a brief notification.
@@ -1058,7 +1070,7 @@ class AgentQueueBot(commands.Bot):
                 else:
                     await msg.reply(text)
             except Exception as e:
-                print(f"Main channel notify error: {e}")
+                logger.error("Main channel notify error: %s", e)
                 # Fallback: plain message in the notifications channel
                 try:
                     if embed is not None:
@@ -1066,7 +1078,7 @@ class AgentQueueBot(commands.Bot):
                     else:
                         await channel.send(text)
                 except Exception as e2:
-                    print(f"Fallback notify error: {e2}")
+                    logger.error("Fallback notify error: %s", e2)
 
         return send_to_thread, notify_main_channel
 
@@ -1100,7 +1112,7 @@ class AgentQueueBot(commands.Bot):
             if messages:
                 return messages[0].jump_url
         except Exception as e:
-            print(f"Could not get last message URL for task {task_id}: {e}")
+            logger.error("Could not get last message URL for task %s: %s", task_id, e)
         return None
 
     async def edit_thread_root_message(
@@ -1126,7 +1138,7 @@ class AgentQueueBot(commands.Bot):
             if kwargs:
                 await root_msg.edit(**kwargs)
         except Exception as e:
-            print(f"Could not edit thread root for task {task_id}: {e}")
+            logger.error("Could not edit thread root for task %s: %s", task_id, e)
 
     async def _handle_task_thread_message(self, message: discord.Message, task_id: str) -> None:
         """Handle a user message posted in a task's Discord thread.
@@ -1147,7 +1159,7 @@ class AgentQueueBot(commands.Bot):
         try:
             task = await self.orchestrator.db.get_task(task_id)
         except Exception as e:
-            print(f"Task thread message: could not fetch task {task_id}: {e}")
+            logger.error("Task thread message: could not fetch task %s: %s", task_id, e)
             return
 
         if not task:
@@ -1172,11 +1184,10 @@ class AgentQueueBot(commands.Bot):
                     await message.reply(f"⚠️ Could not reopen task: {result['error']}")
                 else:
                     await message.reply(
-                        f"📝 Task **reopened** with your feedback. "
-                        f"An agent will pick it up shortly."
+                        "📝 Task **reopened** with your feedback. An agent will pick it up shortly."
                     )
             except Exception as e:
-                print(f"Task thread reopen failed for {task_id}: {e}")
+                logger.error("Task thread reopen failed for %s: %s", task_id, e)
                 await message.reply(f"⚠️ Error reopening task: {e}")
 
         elif task.status == TaskStatus.IN_PROGRESS:
@@ -1199,7 +1210,7 @@ class AgentQueueBot(commands.Bot):
                     "the task is re-executed."
                 )
             except Exception as e:
-                print(f"Task thread context save failed for {task_id}: {e}")
+                logger.error("Task thread context save failed for %s: %s", task_id, e)
                 await message.reply(f"⚠️ Error saving feedback: {e}")
 
         else:
@@ -1219,7 +1230,7 @@ class AgentQueueBot(commands.Bot):
                     "💬 Feedback saved — the agent will see this when the task runs."
                 )
             except Exception as e:
-                print(f"Task thread context save failed for {task_id}: {e}")
+                logger.error("Task thread context save failed for %s: %s", task_id, e)
 
     # ------------------------------------------------------------------
     # Local message buffer
@@ -1263,7 +1274,7 @@ class AgentQueueBot(commands.Bot):
                 await att.save(dest)
                 paths.append(str(dest.resolve()))
             except Exception as e:
-                print(f"Failed to download attachment {att.filename}: {e}")
+                logger.error("Failed to download attachment %s: %s", att.filename, e)
 
         return paths
 
@@ -1320,7 +1331,7 @@ class AgentQueueBot(commands.Bot):
         def _cleanup(t: asyncio.Task, cid: int = channel_id) -> None:
             self._summarization_tasks.pop(cid, None)
             if t.exception():
-                print(f"Background summarization error (channel {cid}): {t.exception()}")
+                logger.error("Background summarization error (channel %d): %s", cid, t.exception())
 
         task.add_done_callback(_cleanup)
         self._summarization_tasks[channel_id] = task
@@ -1531,7 +1542,7 @@ class AgentQueueBot(commands.Bot):
                 text = (
                     f"[User sent {len(downloaded_paths)} image(s) with no text. "
                     f"Downloaded to:\n" + "\n".join(f"  - `{p}`" for p in downloaded_paths) + "\n"
-                    f"Ask the user what they'd like to do with these images.]"
+                    "Ask the user what they'd like to do with these images.]"
                 )
             else:
                 await message.reply("How can I help? Ask me about status, projects, or tasks.")
@@ -1540,6 +1551,11 @@ class AgentQueueBot(commands.Bot):
         # Serialize LLM processing per channel to avoid duplicate/concurrent responses
         lock = self._channel_locks.setdefault(message.channel.id, asyncio.Lock())
         async with lock:
+            structlog.contextvars.bind_contextvars(
+                platform="discord",
+                discord_user=message.author.display_name,
+                channel_id=str(message.channel.id),
+            )
             # Notify on cold model loads (Ollama first-call latency)
             try:
                 if not await self.agent.is_model_loaded():
@@ -1674,7 +1690,7 @@ class AgentQueueBot(commands.Bot):
 
                         if isinstance(e, anthropic.AuthenticationError):
                             # Token may have been refreshed — reload and retry once
-                            print(f"Auth error — reloading credentials: {e}")
+                            logger.warning("Auth error, reloading credentials: %s", e)
                             if self.agent.reload_credentials():
                                 response = await self.agent.chat(
                                     user_text,
@@ -1716,7 +1732,7 @@ class AgentQueueBot(commands.Bot):
                         thinking_view.stop()
                     await self._delete_thinking_msg(thinking_msg)
                     thinking_msg = None
-                    print(f"LLM error: {e}\n{traceback.format_exc()}")
+                    logger.error("LLM error", exc_info=True)
                     await message.reply(f"**LLM error:** {e}")
                 finally:
                     # Restore previous active project to avoid leaking
@@ -1932,9 +1948,11 @@ class AgentQueueBot(commands.Bot):
             scanned = stats.get("rules_scanned", 0)
             regen = stats.get("hooks_regenerated", 0)
             if scanned > 0:
-                print(f"Rule reconciliation: {scanned} rules scanned, {regen} hooks regenerated")
+                logger.info(
+                    "Rule reconciliation: %d rules scanned, %d hooks regenerated", scanned, regen
+                )
         except Exception as e:
-            print(f"Rule reconciliation failed: {e}")
+            logger.error("Rule reconciliation failed: %s", e)
 
     async def _periodic_buffer_cleanup(self) -> None:
         """Background loop that evicts idle channel buffers every 10 minutes."""
@@ -1945,7 +1963,7 @@ class AgentQueueBot(commands.Bot):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"Buffer cleanup error: {e}")
+                logger.error("Buffer cleanup error: %s", e)
 
     def _cleanup_stale_buffers(self) -> None:
         """Drop buffers for channels idle longer than ``BUFFER_IDLE_TIMEOUT``."""
@@ -1963,4 +1981,4 @@ class AgentQueueBot(commands.Bot):
             if task and not task.done():
                 task.cancel()
         if stale:
-            print(f"Cleaned up {len(stale)} idle channel buffer(s)")
+            logger.info("Cleaned up %d idle channel buffer(s)", len(stale))

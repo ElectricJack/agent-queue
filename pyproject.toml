@@ -10,6 +10,8 @@ dependencies = [
     "claude-agent-sdk>=0.1.55",
     "pyyaml>=6.0",
     "fastapi>=0.135.0",
+    "structlog>=25.1.0",
+    "rich>=13.9",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +26,6 @@ mcp = [
 ]
 cli = [
     "click>=8.1",
-    "rich>=13.0",
     "prompt-toolkit>=3.0",
     "agent-queue-api-client",
 ]

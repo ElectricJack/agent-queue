@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
+from src.api.middleware import RequestContextMiddleware
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -69,6 +70,9 @@ def create_app(
         if hasattr(config, "health_check") and config.health_check.base_url
         else ""
     )
+
+    # Add request context middleware for structured logging
+    app.add_middleware(RequestContextMiddleware)
 
     # Register routers — backward-compat and health first
     app.include_router(execute_router)

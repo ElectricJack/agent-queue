@@ -48,7 +48,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     # Set up structured logging early (before any other import logs)
     setup_logging(
         level=os.environ.get("AGENT_QUEUE_LOG_LEVEL", "INFO"),
-        format="json" if os.environ.get("AGENT_QUEUE_LOG_FORMAT") == "json" else "text",
+        format=os.environ.get("AGENT_QUEUE_LOG_FORMAT", "dev"),
     )
 
     config = load_config(config_path, profile=profile)
@@ -58,11 +58,16 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         config.profile or "no profile",
     )
 
-    # Configure structured logging before anything else
+    # Configure structured logging with full config (including file output)
+    log_file = config.logging.log_file or os.path.join(config.data_dir, "logs", "agent-queue.log")
     setup_logging(
         level=config.logging.level,
         format=config.logging.format,
         include_source=config.logging.include_source,
+        log_file=log_file,
+        log_file_max_bytes=config.logging.log_file_max_bytes,
+        log_file_backup_count=config.logging.log_file_backup_count,
+        console_format=config.logging.console_format,
     )
 
     # Ensure database directory exists (SQLite only)

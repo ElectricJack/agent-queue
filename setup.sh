@@ -75,6 +75,54 @@ source .venv/bin/activate
 echo "Installing agent-queue and dependencies..."
 pip install -e ".[dev]" --quiet
 
+# --- Shell completion for `aq` CLI ---
+SHELL_NAME="$(basename "$SHELL")"
+case "$SHELL_NAME" in
+    bash)
+        COMP_FILE="$HOME/.aq-complete.bash"
+        RC_FILE="$HOME/.bashrc"
+        _AQ_COMPLETE=bash_source aq > "$COMP_FILE" 2>/dev/null
+        SOURCE_LINE="source $COMP_FILE"
+        ;;
+    zsh)
+        COMP_FILE="$HOME/.aq-complete.zsh"
+        RC_FILE="$HOME/.zshrc"
+        _AQ_COMPLETE=zsh_source aq > "$COMP_FILE" 2>/dev/null
+        SOURCE_LINE="source $COMP_FILE"
+        ;;
+    fish)
+        COMP_FILE="$HOME/.config/fish/completions/aq.fish"
+        RC_FILE=""
+        mkdir -p "$(dirname "$COMP_FILE")"
+        _AQ_COMPLETE=fish_source aq > "$COMP_FILE" 2>/dev/null
+        SOURCE_LINE=""
+        ;;
+    *)
+        COMP_FILE=""
+        RC_FILE=""
+        SOURCE_LINE=""
+        ;;
+esac
+
+if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
+    if [[ -n "$SOURCE_LINE" && -n "$RC_FILE" ]]; then
+        if ! grep -qF "$SOURCE_LINE" "$RC_FILE" 2>/dev/null; then
+            echo ""
+            echo "Shell completion for 'aq' is available."
+            read -rp "Add tab-completion to $RC_FILE? [Y/n] " answer
+            if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+                echo "$SOURCE_LINE" >> "$RC_FILE"
+                echo "Added to $RC_FILE. Restart your shell or run: $SOURCE_LINE"
+            else
+                echo "Skipped. To enable later, add this to $RC_FILE:"
+                echo "  $SOURCE_LINE"
+            fi
+        fi
+    elif [[ "$SHELL_NAME" == "fish" ]]; then
+        echo "Fish shell completion for 'aq' installed to $COMP_FILE"
+    fi
+fi
+
 # --- Run setup wizard ---
 echo ""
 .venv/bin/python src/setup_wizard.py
