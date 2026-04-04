@@ -7,7 +7,7 @@ not set.
 To run locally::
 
     docker compose up -d
-    POSTGRES_TEST_DSN=postgresql://agent_queue:agent_queue_dev@localhost:5432/agent_queue \
+    POSTGRES_TEST_DSN=postgresql://agent_queue:agent_queue_dev@localhost:5533/agent_queue \
         pytest tests/test_database_postgresql.py -v
 """
 
@@ -23,6 +23,7 @@ from src.models import (
     AgentProfile,
     AgentState,
     Project,
+    RepoSourceType,
     Task,
     TaskStatus,
     Workspace,
@@ -51,18 +52,18 @@ async def db():
     yield adapter
 
     # Clean up all tables after each test (reverse FK order)
-    if adapter._pool:
-        async with adapter._pool.acquire() as conn:
+    if adapter._engine:
+        from sqlalchemy import text
+
+        async with adapter._engine.begin() as conn:
             await conn.execute(
-                """
-                DO $$ DECLARE
-                    r RECORD;
-                BEGIN
-                    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
-                        EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
-                    END LOOP;
-                END $$;
-                """
+                text(
+                    "DO $$ DECLARE r RECORD; BEGIN "
+                    "FOR r IN (SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tablename != 'alembic_version') LOOP "
+                    "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+                    "END LOOP; END $$;"
+                )
             )
 
     await adapter.close()
@@ -164,7 +165,12 @@ class TestAgentCRUD:
 class TestWorkspaces:
     async def test_create_and_list(self, db):
         pid = await _make_project(db)
-        ws = Workspace(id=f"ws-{_uid()}", project_id=pid, workspace_path="/tmp/test-ws")
+        ws = Workspace(
+            id=f"ws-{_uid()}",
+            project_id=pid,
+            workspace_path="/tmp/test-ws",
+            source_type=RepoSourceType.CLONE,
+        )
         await db.create_workspace(ws)
         workspaces = await db.list_workspaces(project_id=pid)
         assert len(workspaces) == 1
@@ -209,5 +215,5 @@ class TestEvents:
     async def test_log_event(self, db):
         pid = await _make_project(db)
         await db.log_event("test_event", project_id=pid)
-        events = await db.get_events(project_id=pid)
+        events = await db.get_recent_events(limit=50)
         assert len(events) >= 1

@@ -226,14 +226,14 @@ def _load_existing_config() -> dict:
 # ── Step 1: Directories ──────────────────────────────────────────────────────
 
 
-def step_directories(existing: dict) -> tuple[str, str]:
-    """Step 1: Configure workspace and database paths.
+def step_directories(existing: dict) -> str:
+    """Step 1a: Configure workspace directory.
 
     Args:
         existing: Pre-loaded config values from ``_load_existing_config()``.
 
     Returns:
-        Tuple of ``(workspace_dir, db_path)``.
+        Workspace directory path.
     """
     yaml_cfg = existing.get("_yaml", {})
     default_workspace = (
@@ -241,42 +241,282 @@ def step_directories(existing: dict) -> tuple[str, str]:
         or yaml_cfg.get("workspace_dir")
         or os.path.expanduser("~/agent-queue-workspaces")
     )
-    default_db = (
-        existing.get("DATABASE_PATH")
-        or yaml_cfg.get("database_path")
-        or os.path.expanduser("~/.agent-queue/agent-queue.db")
-    )
 
-    # Skip step if values are saved, or if defaults already exist on disk
     has_workspace = existing.get("WORKSPACE_DIR") or yaml_cfg.get("workspace_dir")
-    has_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
-    defaults_exist = os.path.isdir(os.path.expanduser(default_workspace)) and os.path.isdir(
-        os.path.dirname(os.path.expanduser(default_db))
-    )
-    if (has_workspace and has_db) or defaults_exist:
+    if has_workspace or os.path.isdir(os.path.expanduser(default_workspace)):
         workspace = os.path.expanduser(default_workspace)
-        db_path = os.path.expanduser(default_db)
-        for d in [workspace, os.path.dirname(db_path)]:
-            os.makedirs(d, exist_ok=True)
+        os.makedirs(workspace, exist_ok=True)
         success(f"Workspace: {workspace}")
-        success(f"Database: {db_path}")
-        return workspace, db_path
+        return workspace
 
-    step_header(1, "Workspace & Database")
+    step_header(1, "Workspace Directory")
 
     workspace = prompt("Workspace directory", default_workspace)
     workspace = os.path.expanduser(workspace)
     _save_env_value("WORKSPACE_DIR", workspace)
+    os.makedirs(workspace, exist_ok=True)
+    success(f"Directory ready: {workspace}")
 
+    return workspace
+
+
+def _check_pg_running(host: str = "localhost", port: int = 5533) -> bool:
+    """Check if PostgreSQL is reachable on the given host:port."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _find_docker_compose() -> str | None:
+    """Find docker-compose.yml in the project repo (if installed from source)."""
+    # Check relative to this file (src/setup_wizard.py → project root)
+    project_root = Path(__file__).resolve().parent.parent
+    compose_file = project_root / "docker-compose.yml"
+    if compose_file.exists():
+        return str(compose_file)
+    return None
+
+
+def _boot_docker_postgres(compose_file: str) -> bool:
+    """Start the PostgreSQL container via docker compose."""
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", compose_file, "up", "-d", "postgres"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        success("PostgreSQL container started")
+        # Wait for it to be ready
+        info("Waiting for PostgreSQL to be ready...")
+        for _ in range(30):
+            result = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    compose_file,
+                    "exec",
+                    "-T",
+                    "postgres",
+                    "pg_isready",
+                    "-U",
+                    "agent_queue",
+                ],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                success("PostgreSQL is ready")
+                return True
+            import time
+
+            time.sleep(1)
+        error("PostgreSQL did not become ready in time")
+        return False
+    except FileNotFoundError:
+        error("docker or docker compose not found")
+        return False
+    except subprocess.CalledProcessError as e:
+        error(f"Failed to start PostgreSQL: {e.stderr}")
+        return False
+
+
+def _ensure_asyncpg() -> bool:
+    """Ensure asyncpg is installed, offering to install it if missing."""
+    try:
+        import asyncpg  # noqa: F401
+
+        return True
+    except ImportError:
+        info("asyncpg (PostgreSQL driver) is not installed")
+        install = prompt_yes_no("Install it now?")
+        if install:
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "asyncpg>=0.29.0"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                success("asyncpg installed")
+                return True
+            except subprocess.CalledProcessError as e:
+                error(f"Failed to install asyncpg: {e.stderr}")
+                return False
+        error("asyncpg is required for PostgreSQL. Install with: pip install asyncpg")
+        return False
+
+
+def _test_pg_dsn(dsn: str) -> bool:
+    """Test PostgreSQL connectivity using asyncpg."""
+    try:
+        import asyncpg
+    except ImportError:
+        error("asyncpg not installed")
+        return False
+
+    async def _connect():
+        conn = await asyncpg.connect(dsn)
+        await conn.close()
+
+    try:
+        asyncio.run(_connect())
+        return True
+    except Exception as e:
+        error(f"Connection failed: {e}")
+        return False
+
+
+def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
+    """Interactive PostgreSQL selection sub-flow.
+
+    Returns:
+        Dict with ``backend``, ``url``, ``pool_min_size``, ``pool_max_size``.
+    """
+    if not _ensure_asyncpg():
+        raise SystemExit(1)
+
+    default_dsn = "postgresql://agent_queue:agent_queue_dev@localhost:5533/agent_queue"
+
+    if _check_pg_running():
+        info("PostgreSQL detected on localhost:5533")
+        use_local = prompt_yes_no("Use this PostgreSQL instance?")
+        if use_local:
+            dsn = prompt("PostgreSQL DSN", default_dsn)
+            if _test_pg_dsn(dsn):
+                success("Connected to PostgreSQL")
+                return _build_pg_config(dsn, existing_sqlite_path)
+            else:
+                warn("Could not connect. Enter a different DSN or check credentials.")
+                dsn = prompt("PostgreSQL DSN", dsn)
+                if not _test_pg_dsn(dsn):
+                    error("Still cannot connect. Aborting PostgreSQL setup.")
+                    raise SystemExit(1)
+                return _build_pg_config(dsn, existing_sqlite_path)
+
+    # No PG running — try Docker
+    compose_file = _find_docker_compose()
+    if compose_file:
+        # Check if docker is available
+        docker_available = subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+
+        if docker_available:
+            info("No PostgreSQL running, but docker-compose.yml found")
+            boot = prompt_yes_no("Start PostgreSQL via Docker?")
+            if boot:
+                if _boot_docker_postgres(compose_file):
+                    if _test_pg_dsn(default_dsn):
+                        success("Connected to Docker PostgreSQL")
+                        return _build_pg_config(default_dsn, existing_sqlite_path)
+                    else:
+                        error("Container started but connection failed")
+
+    # Manual DSN entry
+    print()
+    info("Enter your PostgreSQL connection DSN:")
+    info("  Format: postgresql://user:password@host:port/dbname")
+    dsn = prompt("PostgreSQL DSN")
+    if not dsn:
+        error("No DSN provided. Aborting.")
+        raise SystemExit(1)
+    if _test_pg_dsn(dsn):
+        success("Connected to PostgreSQL")
+        return _build_pg_config(dsn, existing_sqlite_path)
+    else:
+        error("Cannot connect to PostgreSQL. Check your DSN and try again.")
+        raise SystemExit(1)
+
+
+def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
+    """Build PG config dict and optionally migrate SQLite data."""
+    config = {
+        "backend": "postgresql",
+        "url": dsn,
+        "pool_min_size": 2,
+        "pool_max_size": 10,
+    }
+
+    if existing_sqlite_path and os.path.exists(existing_sqlite_path):
+        print()
+        info(f"Existing SQLite database found at: {existing_sqlite_path}")
+        migrate = prompt_yes_no("Migrate existing data to PostgreSQL?")
+        if migrate:
+            config["_migrate_from"] = existing_sqlite_path
+
+    return config
+
+
+def step_database(existing: dict) -> dict:
+    """Step 1b: Configure database backend.
+
+    Handles re-run detection: if an existing config specifies PostgreSQL,
+    confirms it. If SQLite, offers to switch. If no config, prompts for choice.
+
+    Args:
+        existing: Pre-loaded config values from ``_load_existing_config()``.
+
+    Returns:
+        Dict with ``backend``, ``url``, and optionally ``pool_min_size``,
+        ``pool_max_size``, ``_migrate_from``.
+    """
+    yaml_cfg = existing.get("_yaml", {})
+    db_section = yaml_cfg.get("database", {})
+    existing_url = db_section.get("url", "") if isinstance(db_section, dict) else ""
+    existing_sqlite = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path") or ""
+
+    # Re-run: existing PostgreSQL config
+    if existing_url.startswith(("postgresql://", "postgres://")):
+        success(
+            f"Database: PostgreSQL ({existing_url.split('@')[-1] if '@' in existing_url else existing_url})"
+        )
+        keep = prompt_yes_no("Keep current PostgreSQL configuration?")
+        if keep:
+            return {
+                "backend": "postgresql",
+                "url": existing_url,
+                "pool_min_size": db_section.get("pool_min_size", 2),
+                "pool_max_size": db_section.get("pool_max_size", 10),
+            }
+        # Fall through to re-select
+
+    # Re-run: existing SQLite config
+    elif existing_sqlite:
+        default_db = os.path.expanduser(existing_sqlite)
+        # Check if this is just defaults that already exist
+        has_saved_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
+        defaults_exist = os.path.isdir(os.path.dirname(default_db))
+        if has_saved_db or defaults_exist:
+            success(f"Database: SQLite ({default_db})")
+            switch = prompt_yes_no("Switch to PostgreSQL?", default=False)
+            if not switch:
+                os.makedirs(os.path.dirname(default_db), exist_ok=True)
+                return {"backend": "sqlite", "url": default_db}
+            return _select_postgresql(existing_sqlite_path=default_db)
+
+    # Fresh install
+    step_header(1, "Database Backend")
+
+    print(f"  {BOLD}Database options:{RESET}")
+    print(f"    1) SQLite {DIM}(default — zero config, file-based){RESET}")
+    print(f"    2) PostgreSQL {DIM}(recommended for production){RESET}")
+    print()
+    choice = prompt("Select database backend", "1")
+
+    if choice == "2":
+        return _select_postgresql()
+
+    # SQLite
+    default_db = os.path.expanduser("~/.agent-queue/agent-queue.db")
     db_path = prompt("Database path", default_db)
     db_path = os.path.expanduser(db_path)
     _save_env_value("DATABASE_PATH", db_path)
-
-    for d in [workspace, os.path.dirname(db_path)]:
-        os.makedirs(d, exist_ok=True)
-        success(f"Directory ready: {d}")
-
-    return workspace, db_path
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    success(f"Directory ready: {os.path.dirname(db_path)}")
+    return {"backend": "sqlite", "url": db_path}
 
 
 # ── Step 2: Discord ──────────────────────────────────────────────────────────
@@ -519,12 +759,12 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
     # ── Summary ──
     print()
     success("Per-project channel configuration:")
-    info(f"  Auto-create:         enabled")
+    info("  Auto-create:         enabled")
     info(f"  Channel pattern:     {naming_convention}")
     if category_name:
         info(f"  Category:            {category_name}")
     else:
-        info(f"  Category:            (none — channels created at top level)")
+        info("  Category:            (none — channels created at top level)")
     info(f"  Private:             {'yes' if private else 'no'}")
 
     if discord_ok:
@@ -609,7 +849,7 @@ def _test_discord(
                 print()
                 warn("You need to enable Message Content Intent in the Discord Developer Portal:")
                 info(f"  1. Go to {BOLD}https://discord.com/developers/applications/{RESET}")
-                info(f"  2. Select your bot application")
+                info("  2. Select your bot application")
                 info(f"  3. Go to the {BOLD}Bot{RESET} tab")
                 info(f"  4. Scroll to {BOLD}Privileged Gateway Intents{RESET}")
                 info(f"  5. Enable {BOLD}Message Content Intent{RESET}")
@@ -856,7 +1096,7 @@ def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
 def _test_claude_agent_sdk() -> bool:
     """Test that the claude-agent-sdk is installed and can initialize."""
     try:
-        from claude_agent_sdk import query, ClaudeAgentOptions
+        from claude_agent_sdk import query, ClaudeAgentOptions  # noqa: F401
 
         # Verify we can construct options (doesn't make a network call)
         # Don't specify model — let the SDK use its default, which respects
@@ -1183,7 +1423,7 @@ def step_scheduling(existing: dict) -> dict:
 
 def step_write_config(
     workspace: str,
-    db_path: str,
+    db_config: dict,
     discord_cfg: dict,
     agents_cfg: dict,
     sched_cfg: dict,
@@ -1212,7 +1452,20 @@ def step_write_config(
     channels = discord_cfg["channels"]
     yaml_lines = [
         f"workspace_dir: {workspace}",
-        f"database_path: {db_path}",
+    ]
+
+    if db_config.get("backend") == "postgresql":
+        yaml_lines += [
+            "",
+            "database:",
+            f"  url: {db_config['url']}",
+            f"  pool_min_size: {db_config.get('pool_min_size', 2)}",
+            f"  pool_max_size: {db_config.get('pool_max_size', 10)}",
+        ]
+    else:
+        yaml_lines.append(f"database_path: {db_config['url']}")
+
+    yaml_lines += [
         "",
         "discord:",
         "  bot_token: ${DISCORD_BOT_TOKEN}",
@@ -1232,7 +1485,7 @@ def step_write_config(
     ppc = discord_cfg.get("per_project_channels", {})
     if ppc.get("auto_create"):
         yaml_lines.append("  per_project_channels:")
-        yaml_lines.append(f"    auto_create: true")
+        yaml_lines.append("    auto_create: true")
         yaml_lines.append(f'    naming_convention: "{ppc["naming_convention"]}"')
 
         if ppc.get("category_name"):
@@ -1255,7 +1508,7 @@ def step_write_config(
         yaml_lines.append("")
     elif cp.get("model"):
         yaml_lines.append("chat_provider:")
-        yaml_lines.append(f"  provider: anthropic")
+        yaml_lines.append("  provider: anthropic")
         yaml_lines.append(f"  model: {cp['model']}")
         yaml_lines.append("")
 
@@ -1267,7 +1520,7 @@ def step_write_config(
     yaml_lines += [
         "scheduling:",
         f"  rolling_window_hours: {sched['rolling_window_hours']}",
-        f"  min_task_guarantee: true",
+        "  min_task_guarantee: true",
         "",
     ]
 
@@ -1344,7 +1597,7 @@ def step_test_connectivity(discord_cfg: dict, agents_cfg: dict, chat_provider_cf
         if _is_ollama_running(check_url):
             success(f"Chat provider: Ollama ({cp.get('model', 'default')})")
         else:
-            warn(f"Chat provider: Ollama (not running — start with: ollama serve)")
+            warn("Chat provider: Ollama (not running — start with: ollama serve)")
     else:
         success("Chat provider: Anthropic (default)")
 
@@ -1394,15 +1647,38 @@ def main():
         info("Found existing configuration — values will be pre-filled as defaults")
         print()
 
-    workspace, db_path = step_directories(existing)
+    workspace = step_directories(existing)
+    db_config = step_database(existing)
     discord_cfg = step_discord(existing)
     agents_cfg = step_agents(existing)
     chat_provider_cfg = step_chat_provider(existing)
     sched_cfg = step_scheduling(existing)
 
     config_path = step_write_config(
-        workspace, db_path, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg
+        workspace, db_config, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg
     )
+
+    # Run data migration if switching from SQLite to PostgreSQL
+    migrate_from = db_config.get("_migrate_from")
+    if migrate_from:
+        info("Migrating data from SQLite to PostgreSQL...")
+        try:
+            from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+
+            def _progress(table: str, count: int):
+                if count:
+                    success(f"  {table}: {count} rows")
+                else:
+                    info(f"  {table}: empty")
+
+            counts = asyncio.run(
+                migrate_sqlite_to_postgres(migrate_from, db_config["url"], progress_cb=_progress)
+            )
+            total = sum(counts.values())
+            success(f"Migration complete: {total} total rows across {len(counts)} tables")
+        except Exception as e:
+            error(f"Migration failed: {e}")
+            warn("Your SQLite database is unchanged. You can retry migration later.")
 
     step_test_connectivity(discord_cfg, agents_cfg, chat_provider_cfg)
     step_launch(config_path)

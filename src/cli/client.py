@@ -259,25 +259,23 @@ class PluginClient:
     """
 
     def __init__(self, db_path: str | None = None):
-        self._db_path = db_path or _default_plugin_db_path()
+        self._db_url = db_path or _resolve_db_url()
         self._db = None
 
     async def connect(self) -> None:
-        db_config = _resolve_db_config()
-        if db_config and db_config.get("url", "").startswith(("postgresql://", "postgres://")):
-            raise NotImplementedError(
-                "PostgreSQL backend is not yet implemented for the CLI. "
-                "Use a SQLite database path for now."
-            )
+        if self._db_url.startswith(("postgresql://", "postgres://")):
+            from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
 
-        from src.database import Database
+            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+        else:
+            from src.database import Database
 
-        if not os.path.exists(self._db_path):
-            raise FileNotFoundError(
-                f"Database not found at {self._db_path}. "
-                "Is AgentQueue running? Set AGENT_QUEUE_DB to override."
-            )
-        self._db = Database(self._db_path)
+            if not os.path.exists(self._db_url):
+                raise FileNotFoundError(
+                    f"Database not found at {self._db_url}. "
+                    "Is AgentQueue running? Set AGENT_QUEUE_DB to override."
+                )
+            self._db = Database(self._db_url)
         await self._db.initialize()
 
     async def close(self) -> None:
@@ -340,11 +338,18 @@ def _resolve_db_config() -> dict | None:
     return None
 
 
-def _default_plugin_db_path() -> str:
-    """Resolve the database path for plugin operations."""
-    env_path = os.environ.get("AGENT_QUEUE_DB")
-    if env_path:
-        return env_path
+def _resolve_db_url() -> str:
+    """Resolve the database URL (DSN or file path) for CLI operations."""
+    env_url = os.environ.get("AGENT_QUEUE_DB")
+    if env_url:
+        return env_url
+
+    db_config = _resolve_db_config()
+    if db_config and db_config.get("url"):
+        url = db_config["url"]
+        if url.startswith(("postgresql://", "postgres://")):
+            return url
+        return os.path.expanduser(url)
 
     config_dir = os.path.expanduser("~/.agent-queue")
     config_file = os.path.join(config_dir, "config.yaml")
@@ -354,7 +359,7 @@ def _default_plugin_db_path() -> str:
 
             with open(config_file) as f:
                 cfg = yaml.safe_load(f) or {}
-            db_path = cfg.get("database", {}).get("path")
+            db_path = cfg.get("database_path")
             if db_path:
                 return os.path.expanduser(db_path)
         except Exception:

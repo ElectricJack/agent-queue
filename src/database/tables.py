@@ -80,7 +80,9 @@ tasks = Table(
     Column("is_plan_subtask", Integer, nullable=False, server_default="0"),
     Column("task_type", Text, nullable=True),
     Column("profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
-    Column("preferred_workspace_id", Text, ForeignKey("workspaces.id"), nullable=True),
+    Column(
+        "preferred_workspace_id", Text, ForeignKey("workspaces.id", use_alter=True), nullable=True
+    ),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
@@ -133,7 +135,7 @@ agents = Table(
     Column("name", Text, nullable=False),
     Column("agent_type", Text, nullable=False),
     Column("state", Text, nullable=False, server_default="'IDLE'"),
-    Column("current_task_id", Text, ForeignKey("tasks.id"), nullable=True),
+    Column("current_task_id", Text, ForeignKey("tasks.id", use_alter=True), nullable=True),
     Column("checkout_path", Text, nullable=True),
     Column("repo_id", Text, ForeignKey("repos.id"), nullable=True),
     Column("pid", Integer, nullable=True),

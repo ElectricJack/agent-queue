@@ -8,7 +8,7 @@ Agent Queue is a task queue and orchestrator for AI coding agents (primarily Cla
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL planned). Discord bot for the control plane. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL supported). Discord bot for the control plane. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
@@ -98,8 +98,8 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 
 ## Design Decisions
 
-### Why SQLite (with PostgreSQL planned)?
-Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability for future PostgreSQL support.
+### Why SQLite (with PostgreSQL supported)?
+Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL is fully supported via asyncpg for production deployments.
 
 ### Why zero LLM for orchestration?
 On throttled plans, every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution, (2) Supervisor chat, (3) hooks, (4) memory revision, (5) reflection.
