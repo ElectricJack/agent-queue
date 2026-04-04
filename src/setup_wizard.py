@@ -1096,7 +1096,7 @@ def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
 def _test_claude_agent_sdk() -> bool:
     """Test that the claude-agent-sdk is installed and can initialize."""
     try:
-        from claude_agent_sdk import query, ClaudeAgentOptions  # noqa: F401
+        from claude_agent_sdk import ClaudeAgentOptions
 
         # Verify we can construct options (doesn't make a network call)
         # Don't specify model — let the SDK use its default, which respects
