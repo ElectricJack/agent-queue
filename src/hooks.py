@@ -385,6 +385,9 @@ class HookEngine:
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
 
+        # Batch-fetch paused-project status to avoid N queries per event
+        checked_projects: dict[str, bool] = {}
+
         for hook in hooks:
             if hook.id in self._running:
                 continue
@@ -400,14 +403,19 @@ class HookEngine:
             if event_project and hook.project_id != event_project:
                 continue
 
-            # Skip hooks for paused projects
-            project = await self.db.get_project(hook.project_id)
-            if project and project.status == ProjectStatus.PAUSED:
+            # Skip hooks for paused projects (cached per project)
+            pid = hook.project_id
+            if pid not in checked_projects:
+                project = await self.db.get_project(pid)
+                checked_projects[pid] = (
+                    project is not None and project.status == ProjectStatus.PAUSED
+                )
+            if checked_projects[pid]:
                 logger.debug(
                     "Skipping hook %s (%s): project %s is paused",
                     hook.id,
                     hook.name,
-                    hook.project_id,
+                    pid,
                 )
                 continue
 

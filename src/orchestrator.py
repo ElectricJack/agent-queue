@@ -619,18 +619,24 @@ class Orchestrator:
         await self._notify_stuck_chain(task)
         return None
 
+    async def _emit_task_event(self, event_type: str, task, **extra) -> None:
+        """Emit a task lifecycle event for hooks."""
+        payload = {
+            "task_id": task.id,
+            "project_id": task.project_id,
+            "title": getattr(task, "title", ""),
+        }
+        payload.update(extra)
+        await self.bus.emit(event_type, payload)
+
     async def _emit_task_failure(self, task, context: str, error: str = "") -> None:
         """Emit ``task.failed`` event so hooks can react to task failures."""
-        await self.bus.emit(
+        await self._emit_task_event(
             "task.failed",
-            {
-                "task_id": task.id,
-                "project_id": task.project_id,
-                "title": getattr(task, "title", ""),
-                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-                "context": context,
-                "error": error,
-            },
+            task,
+            status=task.status.value if hasattr(task.status, "value") else str(task.status),
+            context=context,
+            error=error,
         )
 
     async def _notify_channel(
@@ -3568,6 +3574,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
         task = await self.db.get_task(action.task_id)
         agent = await self.db.get_agent(action.agent_id)
+        await self._emit_task_event("task.started", task, agent_id=action.agent_id)
 
         # ── Sync workflow interception ───────────────────────────────────
         # Sync tasks (task_type=SYNC) are orchestrator-managed workflows,
@@ -3600,6 +3607,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 action.task_id,
                 TaskStatus.PAUSED,
                 context="no_workspace_available",
+                resume_after=time.time() + no_ws_backoff,
+            )
+            await self._emit_task_event(
+                "task.paused",
+                task,
+                reason="no_workspace",
                 resume_after=time.time() + no_ws_backoff,
             )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
@@ -4408,6 +4421,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
                 else "token exhaustion"
             )
+            await self._emit_task_event(
+                "task.paused",
+                task,
+                reason=reason,
+                resume_after=time.time() + retry_secs,
+            )
             await _post(
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
@@ -4421,6 +4440,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 action.task_id,
                 TaskStatus.WAITING_INPUT,
                 context="agent_question",
+            )
+            await self._emit_task_event(
+                "task.waiting_input",
+                task,
+                question=question_text,
             )
             await self.db.log_event(
                 "agent_question",
