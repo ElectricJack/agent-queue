@@ -367,23 +367,34 @@ class PluginContext:
     # --- Configuration ---
 
     def get_config(self) -> dict:
-        """Load the plugin's instance configuration.
+        """Return the plugin's instance configuration.
 
-        Returns:
-            Config dict from ``config.yaml`` in the plugin data directory.
+        Returns the cached config loaded from the database. The cache is
+        populated by :meth:`load_config` (called during plugin init) and
+        refreshed by :meth:`save_config`.
         """
-        import yaml
+        return getattr(self, "_config_cache", {})
 
-        config_path = self._data_path / "config.yaml"
-        if config_path.exists():
-            with open(config_path) as f:
-                return yaml.safe_load(f) or {}
-        # Fall back to install dir for backwards compatibility
-        legacy_path = self._install_path / "config.yaml"
-        if legacy_path.exists():
-            with open(legacy_path) as f:
-                return yaml.safe_load(f) or {}
-        return {}
+    async def load_config(self) -> dict:
+        """Load the plugin's configuration from the database.
+
+        Populates the internal cache and returns the config dict.
+        Plugins should call this during ``initialize()``.
+        """
+        import json
+
+        if not self._db:
+            self._config_cache: dict = {}
+            return self._config_cache
+        row = await self._db.get_plugin(self._plugin_name)
+        if not row:
+            self._config_cache = {}
+            return self._config_cache
+        try:
+            self._config_cache = json.loads(row.get("config", "{}") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            self._config_cache = {}
+        return self._config_cache
 
     def get_config_value(self, key: str, default: Any = None) -> Any:
         """Get a single configuration value by key.
@@ -398,17 +409,16 @@ class PluginContext:
         return self.get_config().get(key, default)
 
     async def save_config(self, config: dict) -> None:
-        """Save the plugin's instance configuration.
+        """Save the plugin's instance configuration to the database.
 
         Args:
-            config: Config dict to write to ``config.yaml``.
+            config: Config dict to persist.
         """
-        import yaml
+        import json
 
-        self._data_path.mkdir(parents=True, exist_ok=True)
-        config_path = self._data_path / "config.yaml"
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config, f, default_flow_style=False)
+        if self._db:
+            await self._db.update_plugin(self._plugin_name, config=json.dumps(config))
+        self._config_cache = config
 
     async def set_config_value(self, key: str, value: Any) -> None:
         """Set a single configuration value by key.
