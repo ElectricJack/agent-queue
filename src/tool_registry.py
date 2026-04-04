@@ -37,6 +37,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class CategoryMeta:
     """Metadata for a tool category."""
+
     name: str
     description: str
 
@@ -45,43 +46,27 @@ class CategoryMeta:
 CATEGORIES: dict[str, CategoryMeta] = {
     "git": CategoryMeta(
         name="git",
-        description=(
-            "Branch, commit, push, PR, and merge operations "
-            "for project repositories"
-        ),
+        description=("Branch, commit, push, PR, and merge operations for project repositories"),
     ),
     "project": CategoryMeta(
         name="project",
-        description=(
-            "Project CRUD, workspace management, channel configuration"
-        ),
+        description=("Project CRUD, workspace management, channel configuration"),
     ),
     "agent": CategoryMeta(
         name="agent",
-        description=(
-            "Agent management, agent profiles, profile import/export"
-        ),
+        description=("Agent management, agent profiles, profile import/export"),
     ),
     "hooks": CategoryMeta(
         name="hooks",
-        description=(
-            "Direct hook management -- create, edit, list, delete, "
-            "fire hooks"
-        ),
+        description=("Direct hook management -- create, edit, list, delete, fire hooks"),
     ),
     "memory": CategoryMeta(
         name="memory",
-        description=(
-            "Semantic memory — search, project profiles, "
-            "compaction, reindexing"
-        ),
+        description=("Semantic memory — search, project profiles, compaction, reindexing"),
     ),
     "notes": CategoryMeta(
         name="notes",
-        description=(
-            "Project notes — list, read, write, append, delete, "
-            "promote notes to specs"
-        ),
+        description=("Project notes — list, read, write, append, delete, promote notes to specs"),
     ),
     "files": CategoryMeta(
         name="files",
@@ -92,22 +77,15 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "task": CategoryMeta(
         name="task",
-        description=(
-            "Task lifecycle, approval, dependencies, archives, and results"
-        ),
+        description=("Task lifecycle, approval, dependencies, archives, and results"),
     ),
     "plugin": CategoryMeta(
         name="plugin",
-        description=(
-            "Plugin installation, configuration, and lifecycle management"
-        ),
+        description=("Plugin installation, configuration, and lifecycle management"),
     ),
     "system": CategoryMeta(
         name="system",
-        description=(
-            "Token usage, config reload, diagnostics, prompt management, "
-            "daemon control"
-        ),
+        description=("Token usage, config reload, diagnostics, prompt management, daemon control"),
     ),
 }
 
@@ -218,6 +196,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_status": "system",
     "get_recent_events": "system",
     "get_token_usage": "system",
+    "token_audit": "system",
     "claude_usage": "system",
     "reload_config": "system",
     "orchestrator_control": "system",
@@ -247,7 +226,6 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
     "get_task": "task",
     "edit_task": "task",
 }
-
 
 
 _ALL_TOOL_DEFINITIONS = [
@@ -335,12 +313,30 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
                 "name": {"type": "string", "description": "New project name (optional)"},
-                "credit_weight": {"type": "number", "description": "New scheduling weight (optional)"},
-                "max_concurrent_agents": {"type": "integer", "description": "New max concurrent agents (optional)"},
-                "budget_limit": {"type": ["integer", "null"], "description": "Token budget limit (optional, null to clear)"},
-                "discord_channel_id": {"type": ["string", "null"], "description": "Discord channel ID to link (optional, null to unlink)"},
-                "default_profile_id": {"type": ["string", "null"], "description": "Default agent profile ID for tasks in this project (optional, null to clear)"},
-                "repo_default_branch": {"type": "string", "description": "Default git branch for the project (e.g. main, dev, master)"},
+                "credit_weight": {
+                    "type": "number",
+                    "description": "New scheduling weight (optional)",
+                },
+                "max_concurrent_agents": {
+                    "type": "integer",
+                    "description": "New max concurrent agents (optional)",
+                },
+                "budget_limit": {
+                    "type": ["integer", "null"],
+                    "description": "Token budget limit (optional, null to clear)",
+                },
+                "discord_channel_id": {
+                    "type": ["string", "null"],
+                    "description": "Discord channel ID to link (optional, null to unlink)",
+                },
+                "default_profile_id": {
+                    "type": ["string", "null"],
+                    "description": "Default agent profile ID for tasks in this project (optional, null to clear)",
+                },
+                "repo_default_branch": {
+                    "type": "string",
+                    "description": "Default git branch for the project (e.g. main, dev, master)",
+                },
             },
             "required": ["project_id"],
         },
@@ -357,7 +353,10 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
-                "branch": {"type": "string", "description": "Branch name to use as the new default (e.g. dev, main, master)"},
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name to use as the new default (e.g. dev, main, master)",
+                },
             },
             "required": ["project_id", "branch"],
         },
@@ -442,8 +441,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "completed_only": {
                     "type": "boolean",
                     "description": (
-                        "When true, return ONLY completed/failed/blocked tasks. "
-                        "Default false."
+                        "When true, return ONLY completed/failed/blocked tasks. Default false."
                     ),
                 },
                 "display_mode": {
@@ -565,7 +563,16 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "task_type": {
                     "type": "string",
-                    "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"],
+                    "enum": [
+                        "feature",
+                        "bugfix",
+                        "refactor",
+                        "test",
+                        "docs",
+                        "chore",
+                        "research",
+                        "plan",
+                    ],
                     "description": "Categorize the task type for display and filtering (optional)",
                 },
                 "profile_id": {
@@ -774,13 +781,26 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID"},
-                "project_id": {"type": "string", "description": "Move task to a different project (optional)"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Move task to a different project (optional)",
+                },
                 "title": {"type": "string", "description": "New title (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
                 "priority": {"type": "integer", "description": "New priority (optional)"},
                 "task_type": {
                     "type": ["string", "null"],
-                    "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", None],
+                    "enum": [
+                        "feature",
+                        "bugfix",
+                        "refactor",
+                        "test",
+                        "docs",
+                        "chore",
+                        "research",
+                        "plan",
+                        None,
+                    ],
                     "description": "New task type (optional, set to null to clear)",
                 },
                 "status": {
@@ -883,8 +903,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "include_failed": {
                     "type": "boolean",
                     "description": (
-                        "If true, also archive FAILED and BLOCKED tasks. "
-                        "Default false."
+                        "If true, also archive FAILED and BLOCKED tasks. Default false."
                     ),
                 },
             },
@@ -964,7 +983,10 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID that completed"},
-                "workspace_path": {"type": "string", "description": "Path to the workspace where the task was executed"},
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Path to the workspace where the task was executed",
+                },
             },
             "required": ["task_id", "workspace_path"],
         },
@@ -987,7 +1009,10 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID whose plan to reject"},
-                "feedback": {"type": "string", "description": "Feedback describing what changes are needed in the plan"},
+                "feedback": {
+                    "type": "string",
+                    "description": "Feedback describing what changes are needed in the plan",
+                },
             },
             "required": ["task_id", "feedback"],
         },
@@ -1009,8 +1034,14 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID to scan for plan files. Uses active project if omitted."},
-                "task_id": {"type": "string", "description": "Optional existing task ID to attach the plan to. If omitted, a new task is created."},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to scan for plan files. Uses active project if omitted.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional existing task ID to attach the plan to. If omitted, a new task is created.",
+                },
             },
         },
     },
@@ -1100,8 +1131,14 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": {"type": "string", "description": "(Optional) Check a specific blocked task"},
-                "project_id": {"type": "string", "description": "(Optional) Check all blocked chains in a project"},
+                "task_id": {
+                    "type": "string",
+                    "description": "(Optional) Check a specific blocked task",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "(Optional) Check all blocked chains in a project",
+                },
             },
         },
     },
@@ -1198,6 +1235,26 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "token_audit",
+        "description": (
+            "Comprehensive token usage audit over a time range. "
+            "Shows totals by project, top tasks, and daily breakdown."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to audit (default: 7)",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Filter to a specific project (optional)",
+                },
+            },
+        },
+    },
+    {
         "name": "list_hooks",
         "description": (
             "List hooks (generated from rules), optionally filtered by project. "
@@ -1217,7 +1274,11 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "hook_id": {"type": "string", "description": "Hook ID"},
-                "limit": {"type": "integer", "description": "Number of runs to show (default 10)", "default": 10},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of runs to show (default 10)",
+                    "default": 10,
+                },
             },
             "required": ["hook_id"],
         },
@@ -1407,7 +1468,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": (
                         "Key-value pairs for template variables "
-                        "(e.g. {\"task_title\": \"Fix login bug\"})"
+                        '(e.g. {"task_title": "Fix login bug"})'
                     ),
                 },
             },
@@ -1536,7 +1597,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "New display name (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
                 "model": {"type": "string", "description": "New model override (optional)"},
-                "permission_mode": {"type": "string", "description": "New permission mode (optional)"},
+                "permission_mode": {
+                    "type": "string",
+                    "description": "New permission mode (optional)",
+                },
                 "allowed_tools": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1603,9 +1667,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "export_profile",
-        "description": (
-            "Export an agent profile as YAML. Optionally create a public GitHub gist."
-        ),
+        "description": ("Export an agent profile as YAML. Optionally create a public GitHub gist."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1650,7 +1712,6 @@ _ALL_TOOL_DEFINITIONS = [
     # Memory tools (memory_search, memory_stats, memory_reindex, view_profile,
     # edit_project_profile, regenerate_profile, compact_memory) migrated to
     # aq-memory internal plugin.
-
     # ------------------------------------------------------------------
     # Rule management tools — primary automation interface exposed via MCP
     # ------------------------------------------------------------------
@@ -1667,10 +1728,7 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project ID (optional, defaults to "
-                        "active project)"
-                    ),
+                    "description": ("Project ID (optional, defaults to active project)"),
                 },
             },
         },
@@ -1678,8 +1736,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "load_rule",
         "description": (
-            "Load a specific rule's full content and metadata, "
-            "including its generated hook IDs."
+            "Load a specific rule's full content and metadata, including its generated hook IDs."
         ),
         "input_schema": {
             "type": "object",
@@ -1708,15 +1765,11 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": (
-                        "Rule ID (auto-generated if omitted)"
-                    ),
+                    "description": ("Rule ID (auto-generated if omitted)"),
                 },
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project ID (null = global rule visible to all projects)"
-                    ),
+                    "description": ("Project ID (null = global rule visible to all projects)"),
                 },
                 "type": {
                     "type": "string",
@@ -1834,8 +1887,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "status": {
                     "type": "string",
                     "description": (
-                        "New status value (e.g. READY, DEFINED, COMPLETED, "
-                        "FAILED, BLOCKED)"
+                        "New status value (e.g. READY, DEFINED, COMPLETED, FAILED, BLOCKED)"
                     ),
                 },
             },
@@ -1936,8 +1988,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "delete_agent",
         "description": (
-            "Deprecated — agents are now derived from workspaces. "
-            "Use remove_workspace instead."
+            "Deprecated — agents are now derived from workspaces. Use remove_workspace instead."
         ),
         "input_schema": {
             "type": "object",
@@ -1949,9 +2000,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "pause_agent",
-        "description": (
-            "Deprecated — agents are now derived from workspaces."
-        ),
+        "description": ("Deprecated — agents are now derived from workspaces."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1962,9 +2011,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "resume_agent",
-        "description": (
-            "Deprecated — agents are now derived from workspaces."
-        ),
+        "description": ("Deprecated — agents are now derived from workspaces."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2049,9 +2096,7 @@ _ALL_TOOL_DEFINITIONS = [
     # --- Rule aliases ---
     {
         "name": "browse_rules",
-        "description": (
-            "List rules for a project (plus globals). Alias for list_rules."
-        ),
+        "description": ("List rules for a project (plus globals). Alias for list_rules."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2089,8 +2134,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "shutdown",
         "description": (
-            "Shut down the bot and all running agents. "
-            "Excluded from MCP by default for safety."
+            "Shut down the bot and all running agents. Excluded from MCP by default for safety."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -2141,6 +2185,7 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
 ]
+
 
 class ToolRegistry:
     """Registry that categorizes tools into core and on-demand categories.
@@ -2214,10 +2259,7 @@ class ToolRegistry:
                     "properties": {
                         "category": {
                             "type": "string",
-                            "description": (
-                                "Category name to load "
-                                "(e.g. 'git', 'project')"
-                            ),
+                            "description": ("Category name to load (e.g. 'git', 'project')"),
                         },
                     },
                     "required": ["category"],
@@ -2236,9 +2278,7 @@ class ToolRegistry:
                     "properties": {
                         "channel_id": {
                             "type": "string",
-                            "description": (
-                                "Discord channel ID to post to"
-                            ),
+                            "description": ("Discord channel ID to post to"),
                         },
                         "content": {
                             "type": "string",
@@ -2303,10 +2343,7 @@ class ToolRegistry:
                     "properties": {
                         "project_id": {
                             "type": "string",
-                            "description": (
-                                "Project ID (optional, defaults to "
-                                "active project)"
-                            ),
+                            "description": ("Project ID (optional, defaults to active project)"),
                         },
                     },
                 },
@@ -2344,9 +2381,7 @@ class ToolRegistry:
                     "properties": {
                         "id": {
                             "type": "string",
-                            "description": (
-                                "Rule ID (auto-generated if omitted)"
-                            ),
+                            "description": ("Rule ID (auto-generated if omitted)"),
                         },
                         "project_id": {
                             "type": "string",
@@ -2421,7 +2456,7 @@ class ToolRegistry:
         # Take first sentence
         for sep in [". ", ".\n", ".  "]:
             if sep in desc:
-                desc = desc[:desc.index(sep) + 1]
+                desc = desc[: desc.index(sep) + 1]
                 break
         # Truncate if still long
         if len(desc) > 80:
@@ -2485,10 +2520,7 @@ class ToolRegistry:
         """
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
-        tools = [
-            t for name, t in merged.items()
-            if self._tool_category(name, t) is None
-        ]
+        tools = [t for name, t in merged.items() if self._tool_category(name, t) is None]
         if compressed:
             return [self.compress_tool_schema(t) for t in tools]
         return tools
@@ -2503,15 +2535,19 @@ class ToolRegistry:
         result = []
         for cat_name, meta in CATEGORIES.items():
             tools = self.get_category_tools(cat_name)
-            result.append({
-                "name": meta.name,
-                "description": meta.description,
-                "tool_count": len(tools) if tools else 0,
-            })
+            result.append(
+                {
+                    "name": meta.name,
+                    "description": meta.description,
+                    "tool_count": len(tools) if tools else 0,
+                }
+            )
         return result
 
     def get_category_tools(
-        self, category: str, compressed: bool = False,
+        self,
+        category: str,
+        compressed: bool = False,
     ) -> list[dict] | None:
         """Return all tool definitions for a category.
 
@@ -2532,17 +2568,12 @@ class ToolRegistry:
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
 
-        tools = [
-            t for name, t in merged.items()
-            if self._tool_category(name, t) == category
-        ]
+        tools = [t for name, t in merged.items() if self._tool_category(name, t) == category]
         if compressed:
             return [self.compress_tool_schema(t) for t in tools]
         return tools
 
-    def get_category_tool_names(
-        self, category: str
-    ) -> list[str] | None:
+    def get_category_tool_names(self, category: str) -> list[str] | None:
         """Return tool names for a category.
 
         Args:
@@ -2558,10 +2589,7 @@ class ToolRegistry:
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
 
-        return [
-            name for name, t in merged.items()
-            if self._tool_category(name, t) == category
-        ]
+        return [name for name, t in merged.items() if self._tool_category(name, t) == category]
 
     def get_all_tools(self) -> list[dict]:
         """Return all tool definitions (core + all categories + plugins).
@@ -2585,12 +2613,40 @@ class ToolRegistry:
         Filters out very short tokens (len < 3) and common stop words to
         reduce noise in keyword matching.
         """
-        _STOP_WORDS = frozenset({
-            "the", "and", "for", "this", "that", "with", "from", "are",
-            "was", "were", "been", "have", "has", "had", "not", "but",
-            "can", "will", "all", "its", "use", "set", "get", "new",
-            "one", "two", "any", "our", "you", "your",
-        })
+        _STOP_WORDS = frozenset(
+            {
+                "the",
+                "and",
+                "for",
+                "this",
+                "that",
+                "with",
+                "from",
+                "are",
+                "was",
+                "were",
+                "been",
+                "have",
+                "has",
+                "had",
+                "not",
+                "but",
+                "can",
+                "will",
+                "all",
+                "its",
+                "use",
+                "set",
+                "get",
+                "new",
+                "one",
+                "two",
+                "any",
+                "our",
+                "you",
+                "your",
+            }
+        )
         # Split on non-alphanumeric, underscores, and hyphens
         words = re.split(r"[^a-zA-Z0-9]+", text.lower())
         return {w for w in words if len(w) >= 3 and w not in _STOP_WORDS}
@@ -2671,7 +2727,4 @@ class ToolRegistry:
             key=lambda x: (x[1], category_sum.get(x[0], 0.0)),
             reverse=True,
         )
-        return [
-            cat for cat, score in ranked[:max_categories]
-            if score >= min_score
-        ]
+        return [cat for cat, score in ranked[:max_categories] if score >= min_score]

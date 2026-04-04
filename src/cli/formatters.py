@@ -445,8 +445,18 @@ def format_confirmation(data: dict) -> Text:
     text = Text()
     # Detect the action and primary ID
     action_keys = [
-        "created", "deleted", "archived", "updated", "paused", "resumed",
-        "restored", "skipped", "rejected", "approved", "reopened", "fired",
+        "created",
+        "deleted",
+        "archived",
+        "updated",
+        "paused",
+        "resumed",
+        "restored",
+        "skipped",
+        "rejected",
+        "approved",
+        "reopened",
+        "fired",
     ]
     action = None
     primary_id = None
@@ -478,9 +488,18 @@ def format_confirmation(data: dict) -> Text:
 
     # Show extra detail fields
     detail_keys = [
-        "new_status", "old_status", "status", "fields", "message",
-        "subtask_count", "unblocked_count", "draft_subtasks_deleted",
-        "feedback_added", "archived_count", "warning", "note",
+        "new_status",
+        "old_status",
+        "status",
+        "fields",
+        "message",
+        "subtask_count",
+        "unblocked_count",
+        "draft_subtasks_deleted",
+        "feedback_added",
+        "archived_count",
+        "warning",
+        "note",
     ]
     for key in detail_keys:
         val = data.get(key)
@@ -769,8 +788,10 @@ def format_available_tools(data: dict) -> Group:
 
     if tools:
         table = Table(
-            title="Tools", title_style="bold bright_white",
-            border_style="bright_black", expand=True,
+            title="Tools",
+            title_style="bold bright_white",
+            border_style="bright_black",
+            expand=True,
         )
         table.add_column("Name", style="bold bright_cyan")
         table.add_column("Description", style="white", ratio=1)
@@ -780,15 +801,18 @@ def format_available_tools(data: dict) -> Group:
 
     if mcp:
         mcp_table = Table(
-            title="MCP Servers", title_style="bold bright_white",
-            border_style="bright_black", expand=True,
+            title="MCP Servers",
+            title_style="bold bright_white",
+            border_style="bright_black",
+            expand=True,
         )
         mcp_table.add_column("Name", style="bold bright_cyan")
         mcp_table.add_column("Package", style="dim")
         mcp_table.add_column("Description", style="white", ratio=1)
         for s in mcp:
             mcp_table.add_row(
-                s.get("name", ""), s.get("npm_package", ""),
+                s.get("name", ""),
+                s.get("npm_package", ""),
                 _truncate(s.get("description", ""), 50),
             )
         parts.append(mcp_table)
@@ -805,8 +829,10 @@ def format_rule_list(data: dict) -> Table:
     """Format browse_rules / list_rules response as a table."""
     rules = data.get("rules", [])
     table = Table(
-        title="Rules", title_style="bold bright_white",
-        border_style="bright_black", expand=True,
+        title="Rules",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
     )
     table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=20)
     table.add_column("Name", style="white", ratio=1)
@@ -827,8 +853,10 @@ def format_schedule_list(data: dict) -> Table:
     """Format hook_schedules / list_scheduled response as a table."""
     hooks = data.get("hooks", data.get("scheduled", []))
     table = Table(
-        title="Scheduled Hooks", title_style="bold bright_white",
-        border_style="bright_black", expand=True,
+        title="Scheduled Hooks",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
     )
     table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=16)
     table.add_column("Name", style="white", ratio=1)
@@ -853,8 +881,10 @@ def format_event_list(data: dict) -> Table:
     """Format get_recent_events response as a table."""
     events = data.get("events", [])
     table = Table(
-        title="Recent Events", title_style="bold bright_white",
-        border_style="bright_black", expand=True,
+        title="Recent Events",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
     )
     table.add_column("Time", style="dim", no_wrap=True)
     table.add_column("Type", style="bold bright_cyan")
@@ -887,12 +917,128 @@ def format_token_usage(data: dict) -> Group:
             style = "bold bright_cyan" if col in ("task_id", "project_id", "agent_id") else "white"
             table.add_column(col, style=style)
         for row in breakdown:
-            table.add_row(*[
-                f"{v:,}" if isinstance(v, (int, float)) else str(v or "")
-                for v in row.values()
-            ])
+            table.add_row(
+                *[f"{v:,}" if isinstance(v, (int, float)) else str(v or "") for v in row.values()]
+            )
         return Group(header, table)
     return Group(*lines)
+
+
+def format_token_audit(data: dict) -> Group:
+    """Format token_audit response with project, task, and daily breakdowns."""
+    total = data.get("total", 0)
+    since = data.get("since", "")
+    until = data.get("until", "")
+    days = data.get("days", 7)
+    project_filter = data.get("project_id")
+    by_project = data.get("by_project", [])
+    top_tasks = data.get("top_tasks", [])
+    daily = data.get("daily", [])
+
+    parts = []
+
+    # -- Header --
+    header = Text()
+    header.append("\n  Token Audit", style="bold bright_white")
+    header.append(f"  {since} to {until} ({days}d)", style="dim")
+    if project_filter:
+        header.append(f"  project={project_filter}", style="dim italic")
+    parts.append(header)
+
+    total_line = Text()
+    total_line.append("  Total: ", style="dim")
+    total_line.append(f"{total:,}", style="bold bright_cyan")
+    total_line.append(" tokens", style="dim")
+    parts.append(total_line)
+    parts.append(Text())
+
+    if not total:
+        parts.append(Text("  No token usage recorded in this period.", style="dim"))
+        return Group(*parts)
+
+    # -- By Project --
+    if by_project:
+        proj_table = Table(
+            title="By Project",
+            title_style="bold bright_white",
+            border_style="bright_black",
+            expand=True,
+            padding=(0, 1),
+        )
+        proj_table.add_column("Project", style="bold bright_cyan", ratio=2)
+        proj_table.add_column("Tokens", style="white", justify="right")
+        proj_table.add_column("Share", style="dim", justify="right")
+        proj_table.add_column("Tasks", style="dim", justify="right")
+
+        for p in by_project:
+            tokens = p.get("tokens", 0)
+            share = (tokens / total * 100) if total else 0
+            name = p.get("project_name") or p.get("project_id", "?")
+            proj_table.add_row(
+                name,
+                f"{tokens:,}",
+                f"{share:.1f}%",
+                str(p.get("task_count", 0)),
+            )
+        parts.append(proj_table)
+        parts.append(Text())
+
+    # -- Top Tasks --
+    if top_tasks:
+        task_table = Table(
+            title="Top Tasks",
+            title_style="bold bright_white",
+            border_style="bright_black",
+            expand=True,
+            padding=(0, 1),
+        )
+        task_table.add_column("Task", style="white", ratio=3)
+        task_table.add_column("Project", style="dim", ratio=1)
+        task_table.add_column("Status", style="dim")
+        task_table.add_column("Tokens", style="white", justify="right")
+        task_table.add_column("Share", style="dim", justify="right")
+
+        for t in top_tasks:
+            tokens = t.get("tokens", 0)
+            share = (tokens / total * 100) if total else 0
+            title = t.get("title", t.get("task_id", "?"))
+            status = (t.get("status") or "").upper()
+            status_style = STATUS_STYLES.get(status, "dim")
+            task_table.add_row(
+                _truncate(title, 50),
+                t.get("project_id", ""),
+                Text(status, style=status_style),
+                f"{tokens:,}",
+                f"{share:.1f}%",
+            )
+        parts.append(task_table)
+        parts.append(Text())
+
+    # -- Daily --
+    if daily:
+        daily_table = Table(
+            title="Daily Usage",
+            title_style="bold bright_white",
+            border_style="bright_black",
+            expand=True,
+            padding=(0, 1),
+        )
+        daily_table.add_column("Date", style="dim")
+        daily_table.add_column("Tokens", style="white", justify="right")
+        daily_table.add_column("", ratio=1)  # bar chart column
+
+        max_tokens = max((d.get("tokens", 0) for d in daily), default=1) or 1
+        bar_width = 30
+
+        for d in daily:
+            tokens = d.get("tokens", 0)
+            bar_len = int((tokens / max_tokens) * bar_width)
+            bar = Text("█" * bar_len, style="bright_cyan")
+            daily_table.add_row(d.get("date", ""), f"{tokens:,}", bar)
+        parts.append(daily_table)
+
+    parts.append(Text())
+    return Group(*parts)
 
 
 def format_prompt_list(data: dict) -> Table:
@@ -923,8 +1069,10 @@ def format_workspace_list(data: dict) -> Table:
     """Format list_workspaces response as a table."""
     workspaces = data.get("workspaces", [])
     table = Table(
-        title="Workspaces", title_style="bold bright_white",
-        border_style="bright_black", expand=True,
+        title="Workspaces",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
     )
     table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=20)
     table.add_column("Name", style="white")
@@ -957,8 +1105,10 @@ def format_active_tasks_all(data: dict) -> Group:
 
     for proj_id, tasks in by_project.items():
         table = Table(
-            title=proj_id, title_style="bold bright_magenta",
-            border_style="bright_black", expand=True,
+            title=proj_id,
+            title_style="bold bright_magenta",
+            border_style="bright_black",
+            expand=True,
         )
         table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=20)
         table.add_column("Status", max_width=18)

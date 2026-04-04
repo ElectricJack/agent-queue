@@ -169,6 +169,7 @@ def _register_all():
         format_task_table,
         format_task_tree,
         format_text_content,
+        format_token_audit,
         format_token_usage,
         format_workspace_list,
     )
@@ -266,40 +267,69 @@ def _register_all():
     # -- Task extra commands ---------------------------------------------------
 
     FORMATTERS["get_task_tree"] = FormatterSpec(
-        render=format_task_tree, extract=None, many=False,
+        render=format_task_tree,
+        extract=None,
+        many=False,
     )
     for _dep_cmd in ("task_deps", "get_task_dependencies"):
         FORMATTERS[_dep_cmd] = FormatterSpec(
-            render=format_task_deps, extract=None, many=False,
+            render=format_task_deps,
+            extract=None,
+            many=False,
         )
     FORMATTERS["list_archived"] = FormatterSpec(
-        render=format_archived_tasks, extract=None, many=False,
+        render=format_archived_tasks,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_chain_health"] = FormatterSpec(
-        render=format_chain_health, extract=None, many=False,
+        render=format_chain_health,
+        extract=None,
+        many=False,
     )
     FORMATTERS["list_active_tasks_all_projects"] = FormatterSpec(
-        render=format_active_tasks_all, extract=None, many=False,
+        render=format_active_tasks_all,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_task_result"] = FormatterSpec(
-        render=format_entity_detail, extract=None, many=False,
+        render=format_entity_detail,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_task_diff"] = FormatterSpec(
-        render=format_text_content, extract=None, many=False,
+        render=format_text_content,
+        extract=None,
+        many=False,
     )
     FORMATTERS["archive_settings"] = FormatterSpec(
-        render=format_key_value, extract=None, many=False,
+        render=format_key_value,
+        extract=None,
+        many=False,
     )
 
     # Task status-change confirmations
     for _task_confirm in (
-        "archive_task", "archive_tasks", "restore_task", "delete_task",
-        "set_task_status", "skip_task", "edit_task", "approve_plan",
-        "reject_plan", "delete_plan", "process_plan", "reopen_with_feedback",
-        "process_task_completion", "add_dependency", "remove_dependency",
+        "archive_task",
+        "archive_tasks",
+        "restore_task",
+        "delete_task",
+        "set_task_status",
+        "skip_task",
+        "edit_task",
+        "approve_plan",
+        "reject_plan",
+        "delete_plan",
+        "process_plan",
+        "reopen_with_feedback",
+        "process_task_completion",
+        "add_dependency",
+        "remove_dependency",
     ):
         FORMATTERS[_task_confirm] = FormatterSpec(
-            render=format_confirmation, extract=None, many=False,
+            render=format_confirmation,
+            extract=None,
+            many=False,
         )
 
     # -- Agent commands ------------------------------------------------------
@@ -312,26 +342,45 @@ def _register_all():
         empty_message="No agents found.",
     )
     FORMATTERS["list_profiles"] = FormatterSpec(
-        render=format_profile_list, extract=None, many=False,
+        render=format_profile_list,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_profile"] = FormatterSpec(
-        render=format_profile_detail, extract=None, many=False,
+        render=format_profile_detail,
+        extract=None,
+        many=False,
     )
     FORMATTERS["list_available_tools"] = FormatterSpec(
-        render=format_available_tools, extract=None, many=False,
+        render=format_available_tools,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_agent_error"] = FormatterSpec(
-        render=format_entity_detail, extract=None, many=False,
+        render=format_entity_detail,
+        extract=None,
+        many=False,
     )
 
     # Agent confirmations
     for _agent_confirm in (
-        "create_agent", "delete_agent", "edit_agent", "pause_agent",
-        "resume_agent", "create_profile", "edit_profile", "delete_profile",
-        "check_profile", "install_profile", "export_profile", "import_profile",
+        "create_agent",
+        "delete_agent",
+        "edit_agent",
+        "pause_agent",
+        "resume_agent",
+        "create_profile",
+        "edit_profile",
+        "delete_profile",
+        "check_profile",
+        "install_profile",
+        "export_profile",
+        "import_profile",
     ):
         FORMATTERS[_agent_confirm] = FormatterSpec(
-            render=format_confirmation, extract=None, many=False,
+            render=format_confirmation,
+            extract=None,
+            many=False,
         )
 
     # -- Hook/rule commands --------------------------------------------------
@@ -354,24 +403,40 @@ def _register_all():
 
     for _rule_list_cmd in ("browse_rules", "list_rules"):
         FORMATTERS[_rule_list_cmd] = FormatterSpec(
-            render=format_rule_list, extract=None, many=False,
+            render=format_rule_list,
+            extract=None,
+            many=False,
         )
     FORMATTERS["load_rule"] = FormatterSpec(
-        render=format_entity_detail, extract=None, many=False,
+        render=format_entity_detail,
+        extract=None,
+        many=False,
     )
     for _sched_cmd in ("hook_schedules", "list_scheduled"):
         FORMATTERS[_sched_cmd] = FormatterSpec(
-            render=format_schedule_list, extract=None, many=False,
+            render=format_schedule_list,
+            extract=None,
+            many=False,
         )
 
     # Hook/rule confirmations
     for _hook_confirm in (
-        "create_hook", "edit_hook", "delete_hook", "fire_hook",
-        "save_rule", "delete_rule", "refresh_hooks", "schedule_hook",
-        "cancel_scheduled", "fire_all_scheduled_hooks", "toggle_project_hooks",
+        "create_hook",
+        "edit_hook",
+        "delete_hook",
+        "fire_hook",
+        "save_rule",
+        "delete_rule",
+        "refresh_hooks",
+        "schedule_hook",
+        "cancel_scheduled",
+        "fire_all_scheduled_hooks",
+        "toggle_project_hooks",
     ):
         FORMATTERS[_hook_confirm] = FormatterSpec(
-            render=format_confirmation, extract=None, many=False,
+            render=format_confirmation,
+            extract=None,
+            many=False,
         )
 
     # -- Project commands ----------------------------------------------------
@@ -384,53 +449,89 @@ def _register_all():
         empty_message="No projects found.",
     )
     FORMATTERS["list_workspaces"] = FormatterSpec(
-        render=format_workspace_list, extract=None, many=False,
+        render=format_workspace_list,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_project_channels"] = FormatterSpec(
-        render=format_key_value, extract=None, many=False,
+        render=format_key_value,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_project_for_channel"] = FormatterSpec(
-        render=format_key_value, extract=None, many=False,
+        render=format_key_value,
+        extract=None,
+        many=False,
     )
     FORMATTERS["find_merge_conflict_workspaces"] = FormatterSpec(
-        render=format_entity_detail, extract=None, many=False,
+        render=format_entity_detail,
+        extract=None,
+        many=False,
     )
 
     # Project confirmations
     for _proj_confirm in (
-        "create_project", "delete_project", "pause_project", "resume_project",
-        "add_workspace", "remove_workspace", "release_workspace",
-        "queue_sync_workspaces", "set_active_project", "set_control_interface",
+        "create_project",
+        "delete_project",
+        "pause_project",
+        "resume_project",
+        "add_workspace",
+        "remove_workspace",
+        "release_workspace",
+        "queue_sync_workspaces",
+        "set_active_project",
+        "set_control_interface",
     ):
         FORMATTERS[_proj_confirm] = FormatterSpec(
-            render=format_confirmation, extract=None, many=False,
+            render=format_confirmation,
+            extract=None,
+            many=False,
         )
 
     # -- System commands -----------------------------------------------------
 
     FORMATTERS["get_recent_events"] = FormatterSpec(
-        render=format_event_list, extract=None, many=False,
+        render=format_event_list,
+        extract=None,
+        many=False,
     )
     FORMATTERS["get_token_usage"] = FormatterSpec(
-        render=format_token_usage, extract=None, many=False,
+        render=format_token_usage,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["token_audit"] = FormatterSpec(
+        render=format_token_audit,
+        extract=None,
+        many=False,
     )
     FORMATTERS["claude_usage"] = FormatterSpec(
-        render=format_token_usage, extract=None, many=False,
+        render=format_token_usage,
+        extract=None,
+        many=False,
     )
     FORMATTERS["list_prompts"] = FormatterSpec(
-        render=format_prompt_list, extract=None, many=False,
+        render=format_prompt_list,
+        extract=None,
+        many=False,
     )
     FORMATTERS["read_prompt"] = FormatterSpec(
-        render=format_text_content, extract=None, many=False,
+        render=format_text_content,
+        extract=None,
+        many=False,
     )
     FORMATTERS["render_prompt"] = FormatterSpec(
-        render=format_text_content, extract=None, many=False,
+        render=format_text_content,
+        extract=None,
+        many=False,
     )
 
     # System confirmations
     for _sys_confirm in ("reload_config", "orchestrator_control", "provide_input"):
         FORMATTERS[_sys_confirm] = FormatterSpec(
-            render=format_confirmation, extract=None, many=False,
+            render=format_confirmation,
+            extract=None,
+            many=False,
         )
 
     # -- Internal plugin formatters (auto-discovered) -------------------------

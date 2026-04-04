@@ -29,8 +29,6 @@ from src.models import (
     RepoConfig,
     Task,
     TaskStatus,
-    TaskType,
-    VerificationType,
     Workspace,
 )
 
@@ -191,6 +189,11 @@ class DatabaseBackend(Protocol):
         project_id: str,
         since: float | None = None,
     ) -> int: ...
+    async def get_token_audit(
+        self,
+        days: int = 7,
+        project_id: str | None = None,
+    ) -> dict: ...
 
     # --- Task Results ---
 

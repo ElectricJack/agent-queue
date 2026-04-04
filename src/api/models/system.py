@@ -37,6 +37,17 @@ class GetTokenUsageResponse(BaseModel):
     total: int = 0
 
 
+class TokenAuditResponse(BaseModel):
+    total: int = 0
+    days: int = 7
+    since: str = ""
+    until: str = ""
+    project_id: str | None = None
+    by_project: list[dict[str, Any]] = []
+    top_tasks: list[dict[str, Any]] = []
+    daily: list[dict[str, Any]] = []
+
+
 class ClaudeUsageResponse(BaseModel):
     model_config = {"extra": "allow"}
     subscription: str | None = None
@@ -125,6 +136,7 @@ class RunCommandResponse(BaseModel):
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
+    "token_audit": TokenAuditResponse,
     "claude_usage": ClaudeUsageResponse,
     "get_recent_events": GetRecentEventsResponse,
     "orchestrator_control": OrchestratorControlResponse,
