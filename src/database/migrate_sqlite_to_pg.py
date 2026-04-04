@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from sqlalchemy import select, text, insert, update
+from sqlalchemy import select, text, insert, update, Integer
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.database.engine import create_postgres_engine, create_sqlite_engine
@@ -115,6 +115,7 @@ async def migrate_sqlite_to_postgres(
         await _check_pg_empty(pg_engine)
         counts = await _copy_tables(sqlite_engine, pg_engine, progress_cb)
         await _fixup_agent_task_ids(sqlite_engine, pg_engine)
+        await _reset_sequences(pg_engine)
         return counts
     finally:
         await sqlite_engine.dispose()
@@ -198,3 +199,20 @@ async def _fixup_agent_task_ids(src: AsyncEngine, dst: AsyncEngine) -> None:
                 update(agents).where(agents.c.id == agent_id).values(current_task_id=task_id)
             )
     logger.info("Restored current_task_id for %d agents", len(rows))
+
+
+async def _reset_sequences(engine: AsyncEngine) -> None:
+    """Reset PostgreSQL sequences for tables with auto-increment integer PKs."""
+    async with engine.begin() as conn:
+        for table in _ORDERED_TABLES:
+            # Find columns that are autoincrement Integer PKs
+            for col in table.columns:
+                if col.primary_key and isinstance(col.type, Integer) and col.autoincrement:
+                    seq_name = f"{table.name}_{col.name}_seq"
+                    max_val = await conn.execute(
+                        text(f"SELECT COALESCE(MAX({col.name}), 0) FROM {table.name}")
+                    )
+                    max_id = max_val.scalar()
+                    if max_id and max_id > 0:
+                        await conn.execute(text(f"SELECT setval('{seq_name}', {max_id})"))
+                        logger.info("Reset sequence %s to %d", seq_name, max_id)
