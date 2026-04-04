@@ -268,6 +268,13 @@ class PluginClient:
         self._db = None
 
     async def connect(self) -> None:
+        db_config = _resolve_db_config()
+        if db_config and db_config.get("url", "").startswith(("postgresql://", "postgres://")):
+            raise NotImplementedError(
+                "PostgreSQL backend is not yet implemented for the CLI. "
+                "Use a SQLite database path for now."
+            )
+
         from src.database import Database
 
         if not os.path.exists(self._db_path):
@@ -318,6 +325,24 @@ class PluginClient:
 
     async def list_hook_runs(self, hook_id: str, limit: int = 20):
         return await self.db.list_hook_runs(hook_id, limit=limit)
+
+
+def _resolve_db_config() -> dict | None:
+    """Read the database section from config.yaml, if present."""
+    config_dir = os.path.expanduser("~/.agent-queue")
+    config_file = os.path.join(config_dir, "config.yaml")
+    if os.path.exists(config_file):
+        try:
+            import yaml
+
+            with open(config_file) as f:
+                cfg = yaml.safe_load(f) or {}
+            db_section = cfg.get("database")
+            if isinstance(db_section, dict) and db_section.get("url"):
+                return db_section
+        except Exception:
+            pass
+    return None
 
 
 def _default_plugin_db_path() -> str:

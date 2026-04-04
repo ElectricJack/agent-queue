@@ -11,8 +11,7 @@ import pytest
 import time
 
 from src.database import Database, DatabaseBackend, SQLiteDatabaseAdapter
-from src.database.base import DatabaseBackend as BaseProtocol
-from src.database.schema import SCHEMA, MIGRATIONS, INDEXES
+from src.database.tables import metadata
 from src.models import (
     Agent,
     AgentProfile,
@@ -25,8 +24,6 @@ from src.models import (
     RepoSourceType,
     Task,
     TaskStatus,
-    TaskType,
-    VerificationType,
     Workspace,
 )
 
@@ -86,19 +83,14 @@ class TestProtocolCompliance:
         """Database should be the same class as SQLiteDatabaseAdapter."""
         assert Database is SQLiteDatabaseAdapter
 
-    def test_schema_not_empty(self):
-        """Schema DDL should be non-empty."""
-        assert len(SCHEMA) > 100
-        assert "CREATE TABLE" in SCHEMA
-
-    def test_migrations_list(self):
-        """Migrations should be a non-empty list of ALTER TABLE statements."""
-        assert len(MIGRATIONS) > 10
-        assert all("ALTER TABLE" in m for m in MIGRATIONS)
-
-    def test_indexes_list(self):
-        """Indexes should be a non-empty list."""
-        assert len(INDEXES) >= 2
+    def test_metadata_has_tables(self):
+        """SQLAlchemy metadata should define all expected tables."""
+        table_names = set(metadata.tables.keys())
+        assert "projects" in table_names
+        assert "tasks" in table_names
+        assert "agents" in table_names
+        assert "workspaces" in table_names
+        assert len(table_names) >= 18
 
 
 # ── Backward Compatibility ───────────────────────────────────────────────
@@ -301,7 +293,7 @@ class TestTaskQueries:
     async def test_task_context(self, db):
         await _make_project(db)
         await _make_task(db)
-        ctx_id = await db.add_task_context("t-1", type="note", label="hint", content="foo")
+        await db.add_task_context("t-1", type="note", label="hint", content="foo")
         contexts = await db.get_task_contexts("t-1")
         assert len(contexts) == 1
         assert contexts[0]["content"] == "foo"

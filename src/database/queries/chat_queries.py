@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import func, insert, select, update
+
+from src.database.tables import chat_analyzer_suggestions as cas
+
 
 class ChatQueryMixin:
-    """Query mixin for chat analyzer suggestion operations.  Expects ``self._db``."""
+    """Query mixin for chat analyzer suggestion operations.  Expects ``self._engine``."""
 
     async def create_chat_analyzer_suggestion(
         self,
@@ -19,23 +23,20 @@ class ChatQueryMixin:
     ) -> int:
         """Insert a new chat analyzer suggestion and return its row ID."""
         now = time.time()
-        cursor = await self._db.execute(
-            "INSERT INTO chat_analyzer_suggestions "
-            "(project_id, channel_id, suggestion_type, suggestion_text, "
-            "suggestion_hash, status, created_at, context_snapshot) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (
-                project_id,
-                channel_id,
-                suggestion_type,
-                suggestion_text,
-                suggestion_hash,
-                now,
-                context_snapshot,
-            ),
-        )
-        await self._db.commit()
-        return cursor.lastrowid
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                insert(cas).values(
+                    project_id=project_id,
+                    channel_id=channel_id,
+                    suggestion_type=suggestion_type,
+                    suggestion_text=suggestion_text,
+                    suggestion_hash=suggestion_hash,
+                    status="pending",
+                    created_at=now,
+                    context_snapshot=context_snapshot,
+                )
+            )
+            return result.lastrowid
 
     async def resolve_chat_analyzer_suggestion(
         self,
@@ -44,11 +45,10 @@ class ChatQueryMixin:
     ) -> None:
         """Mark a suggestion as accepted or dismissed."""
         now = time.time()
-        await self._db.execute(
-            "UPDATE chat_analyzer_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
-            (status, now, suggestion_id),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(cas).where(cas.c.id == suggestion_id).values(status=status, resolved_at=now)
+            )
 
     async def get_suggestion_hash_exists(
         self,
@@ -56,12 +56,15 @@ class ChatQueryMixin:
         suggestion_hash: str,
     ) -> bool:
         """Check if a suggestion with this hash already exists (for dedup)."""
-        cursor = await self._db.execute(
-            "SELECT 1 FROM chat_analyzer_suggestions "
-            "WHERE project_id = ? AND suggestion_hash = ? LIMIT 1",
-            (project_id, suggestion_hash),
-        )
-        return (await cursor.fetchone()) is not None
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(cas.c.id)
+                .where(
+                    (cas.c.project_id == project_id) & (cas.c.suggestion_hash == suggestion_hash)
+                )
+                .limit(1)
+            )
+            return result.fetchone() is not None
 
     async def count_recent_suggestions(
         self,
@@ -69,35 +72,23 @@ class ChatQueryMixin:
         since: float,
     ) -> int:
         """Count suggestions created since the given timestamp (rate limiting)."""
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) FROM chat_analyzer_suggestions "
-            "WHERE project_id = ? AND created_at >= ?",
-            (project_id, since),
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(func.count())
+                .select_from(cas)
+                .where((cas.c.project_id == project_id) & (cas.c.created_at >= since))
+            )
+            row = result.fetchone()
+            return row[0] if row else 0
 
     async def get_suggestion(self, suggestion_id: int) -> dict | None:
         """Return a single chat analyzer suggestion by ID, or None."""
-        cursor = await self._db.execute(
-            "SELECT * FROM chat_analyzer_suggestions WHERE id = ?",
-            (suggestion_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "id": row["id"],
-            "project_id": row["project_id"],
-            "channel_id": row["channel_id"],
-            "suggestion_type": row["suggestion_type"],
-            "suggestion_text": row["suggestion_text"],
-            "suggestion_hash": row["suggestion_hash"],
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "resolved_at": row["resolved_at"],
-            "context_snapshot": row["context_snapshot"],
-        }
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(cas).where(cas.c.id == suggestion_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return dict(row)
 
     async def get_recent_suggestions(
         self,
@@ -106,28 +97,13 @@ class ChatQueryMixin:
     ) -> list[dict]:
         """Return suggestions for a channel created within the last N hours."""
         since = time.time() - (hours * 3600)
-        cursor = await self._db.execute(
-            "SELECT * FROM chat_analyzer_suggestions "
-            "WHERE channel_id = ? AND created_at >= ? "
-            "ORDER BY created_at DESC",
-            (channel_id, since),
-        )
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "project_id": row["project_id"],
-                "channel_id": row["channel_id"],
-                "suggestion_type": row["suggestion_type"],
-                "suggestion_text": row["suggestion_text"],
-                "suggestion_hash": row["suggestion_hash"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "resolved_at": row["resolved_at"],
-                "context_snapshot": row["context_snapshot"],
-            }
-            for row in rows
-        ]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(cas)
+                .where((cas.c.channel_id == channel_id) & (cas.c.created_at >= since))
+                .order_by(cas.c.created_at.desc())
+            )
+            return [dict(r) for r in result.mappings().fetchall()]
 
     async def update_suggestion_status(
         self,
@@ -138,11 +114,12 @@ class ChatQueryMixin:
         """Update a suggestion's status and optional resolved_at timestamp."""
         if resolved_at is None:
             resolved_at = time.time()
-        await self._db.execute(
-            "UPDATE chat_analyzer_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
-            (status, resolved_at, suggestion_id),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(cas)
+                .where(cas.c.id == suggestion_id)
+                .values(status=status, resolved_at=resolved_at)
+            )
 
     async def get_last_dismiss_time(
         self,
@@ -150,38 +127,36 @@ class ChatQueryMixin:
         channel_id: int,
     ) -> float | None:
         """Return the timestamp of the most recent dismissal, or None."""
-        cursor = await self._db.execute(
-            "SELECT MAX(resolved_at) FROM chat_analyzer_suggestions "
-            "WHERE project_id = ? AND channel_id = ? AND status = 'dismissed'",
-            (project_id, channel_id),
-        )
-        row = await cursor.fetchone()
-        return row[0] if row and row[0] else None
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(func.max(cas.c.resolved_at)).where(
+                    (cas.c.project_id == project_id)
+                    & (cas.c.channel_id == channel_id)
+                    & (cas.c.status == "dismissed")
+                )
+            )
+            row = result.fetchone()
+            return row[0] if row and row[0] else None
 
     async def get_analyzer_suggestion_stats(
         self,
         project_id: str | None = None,
     ) -> dict:
         """Return aggregate stats for chat analyzer suggestions."""
-        where = ""
-        params: tuple = ()
+        stmt = select(cas.c.status, func.count().label("cnt"))
         if project_id:
-            where = " WHERE project_id = ?"
-            params = (project_id,)
-
-        cursor = await self._db.execute(
-            f"SELECT status, COUNT(*) as cnt FROM chat_analyzer_suggestions{where} GROUP BY status",
-            params,
-        )
-        rows = await cursor.fetchall()
-        stats = {"total": 0, "pending": 0, "accepted": 0, "dismissed": 0, "auto_executed": 0}
-        for row in rows:
-            status = row["status"]
-            count = row["cnt"]
-            stats["total"] += count
-            if status in stats:
-                stats[status] = count
-        return stats
+            stmt = stmt.where(cas.c.project_id == project_id)
+        stmt = stmt.group_by(cas.c.status)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            stats = {"total": 0, "pending": 0, "accepted": 0, "dismissed": 0, "auto_executed": 0}
+            for row in result.mappings().fetchall():
+                status = row["status"]
+                count = row["cnt"]
+                stats["total"] += count
+                if status in stats:
+                    stats[status] = count
+            return stats
 
     async def get_analyzer_suggestion_history(
         self,
@@ -189,28 +164,19 @@ class ChatQueryMixin:
         limit: int = 20,
     ) -> list[dict]:
         """Return recent analyzer suggestions, newest first."""
-        where = ""
-        params: list = []
-        if project_id:
-            where = " WHERE project_id = ?"
-            params.append(project_id)
-
-        params.append(limit)
-        cursor = await self._db.execute(
-            f"SELECT * FROM chat_analyzer_suggestions{where} ORDER BY created_at DESC LIMIT ?",
-            tuple(params),
+        stmt = select(
+            cas.c.id,
+            cas.c.project_id,
+            cas.c.channel_id,
+            cas.c.suggestion_type,
+            cas.c.suggestion_text,
+            cas.c.status,
+            cas.c.created_at,
+            cas.c.resolved_at,
         )
-        rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "project_id": row["project_id"],
-                "channel_id": row["channel_id"],
-                "suggestion_type": row["suggestion_type"],
-                "suggestion_text": row["suggestion_text"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "resolved_at": row["resolved_at"],
-            }
-            for row in rows
-        ]
+        if project_id:
+            stmt = stmt.where(cas.c.project_id == project_id)
+        stmt = stmt.order_by(cas.c.created_at.desc()).limit(limit)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [dict(r) for r in result.mappings().fetchall()]

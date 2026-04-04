@@ -4,66 +4,63 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import delete, insert, select, update
+
+from src.database.tables import agents, task_results, tasks, token_ledger, workspaces
 from src.models import Agent, AgentState
 
 
 class AgentQueryMixin:
-    """Query mixin for agent operations.  Expects ``self._db``."""
+    """Query mixin for agent operations.  Expects ``self._engine``."""
 
     async def create_agent(self, agent: Agent) -> None:
         """Insert a new agent record."""
-        await self._db.execute(
-            "INSERT INTO agents (id, name, agent_type, state, current_task_id, "
-            "pid, last_heartbeat, total_tokens_used, "
-            "session_tokens_used, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                agent.id,
-                agent.name,
-                agent.agent_type,
-                agent.state.value,
-                agent.current_task_id,
-                agent.pid,
-                agent.last_heartbeat,
-                agent.total_tokens_used,
-                agent.session_tokens_used,
-                time.time(),
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(agents).values(
+                    id=agent.id,
+                    name=agent.name,
+                    agent_type=agent.agent_type,
+                    state=agent.state.value,
+                    current_task_id=agent.current_task_id,
+                    pid=agent.pid,
+                    last_heartbeat=agent.last_heartbeat,
+                    total_tokens_used=agent.total_tokens_used,
+                    session_tokens_used=agent.session_tokens_used,
+                    created_at=time.time(),
+                )
+            )
 
     async def get_agent(self, agent_id: str) -> Agent | None:
         """Fetch a single agent by ID."""
-        cursor = await self._db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_agent(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(agents).where(agents.c.id == agent_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_agent(row)
 
     async def list_agents(
         self,
         state: AgentState | None = None,
     ) -> list[Agent]:
         """List agents, optionally filtered by state."""
+        stmt = select(agents)
         if state:
-            cursor = await self._db.execute("SELECT * FROM agents WHERE state = ?", (state.value,))
-        else:
-            cursor = await self._db.execute("SELECT * FROM agents")
-        rows = await cursor.fetchall()
-        return [self._row_to_agent(r) for r in rows]
+            stmt = stmt.where(agents.c.state == state.value)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_agent(r) for r in result.mappings().fetchall()]
 
     async def update_agent(self, agent_id: str, **kwargs) -> None:
         """Update arbitrary agent fields."""
-        sets = []
-        vals = []
+        values = {}
         for key, value in kwargs.items():
             if isinstance(value, AgentState):
                 value = value.value
-            sets.append(f"{key} = ?")
-            vals.append(value)
-        vals.append(agent_id)
-        await self._db.execute(f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", vals)
-        await self._db.commit()
+            values[key] = value
+        async with self._engine.begin() as conn:
+            await conn.execute(update(agents).where(agents.c.id == agent_id).values(**values))
 
     async def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all dependent records.
@@ -75,29 +72,20 @@ class AgentQueryMixin:
         4. tasks.assigned_agent_id (NULLify)
         5. agent record
         """
-        await self._db.execute(
-            "DELETE FROM token_ledger WHERE agent_id = ?",
-            (agent_id,),
-        )
-        await self._db.execute(
-            "DELETE FROM task_results WHERE agent_id = ?",
-            (agent_id,),
-        )
-        await self._db.execute(
-            "UPDATE workspaces SET locked_by_agent_id = NULL, "
-            "locked_by_task_id = NULL, locked_at = NULL "
-            "WHERE locked_by_agent_id = ?",
-            (agent_id,),
-        )
-        await self._db.execute(
-            "UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?",
-            (agent_id,),
-        )
-        await self._db.execute(
-            "DELETE FROM agents WHERE id = ?",
-            (agent_id,),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(delete(token_ledger).where(token_ledger.c.agent_id == agent_id))
+            await conn.execute(delete(task_results).where(task_results.c.agent_id == agent_id))
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+            )
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.assigned_agent_id == agent_id)
+                .values(assigned_agent_id=None)
+            )
+            await conn.execute(delete(agents).where(agents.c.id == agent_id))
 
     @staticmethod
     def _row_to_agent(row) -> Agent:

@@ -5,41 +5,48 @@ from __future__ import annotations
 import logging
 import time
 
+from sqlalchemy import case, delete, func, insert, select, update
+
+from src.database.tables import workspaces
 from src.models import RepoSourceType, Workspace
 
 logger = logging.getLogger(__name__)
 
+# Ordering expression: clones first, then links
+_source_type_order = case(
+    (workspaces.c.source_type == "clone", 0),
+    else_=1,
+)
+
 
 class WorkspaceQueryMixin:
-    """Query mixin for workspace operations.  Expects ``self._db``."""
+    """Query mixin for workspace operations.  Expects ``self._engine``."""
 
     async def create_workspace(self, workspace: Workspace) -> None:
         """Insert a new workspace record."""
-        await self._db.execute(
-            "INSERT INTO workspaces (id, project_id, workspace_path, source_type, "
-            "name, locked_by_agent_id, locked_by_task_id, locked_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                workspace.id,
-                workspace.project_id,
-                workspace.workspace_path,
-                workspace.source_type.value,
-                workspace.name,
-                workspace.locked_by_agent_id,
-                workspace.locked_by_task_id,
-                workspace.locked_at,
-                time.time(),
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(workspaces).values(
+                    id=workspace.id,
+                    project_id=workspace.project_id,
+                    workspace_path=workspace.workspace_path,
+                    source_type=workspace.source_type.value,
+                    name=workspace.name,
+                    locked_by_agent_id=workspace.locked_by_agent_id,
+                    locked_by_task_id=workspace.locked_by_task_id,
+                    locked_at=workspace.locked_at,
+                    created_at=time.time(),
+                )
+            )
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
         """Fetch a single workspace by ID."""
-        cursor = await self._db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_workspace(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(workspaces).where(workspaces.c.id == workspace_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_workspace(row)
 
     async def get_workspace_by_name(
         self,
@@ -47,38 +54,34 @@ class WorkspaceQueryMixin:
         name: str,
     ) -> Workspace | None:
         """Find a workspace by name within a project."""
-        cursor = await self._db.execute(
-            "SELECT * FROM workspaces WHERE project_id = ? AND name = ?",
-            (project_id, name),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_workspace(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces).where(
+                    (workspaces.c.project_id == project_id) & (workspaces.c.name == name)
+                )
+            )
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_workspace(row)
 
     async def list_workspaces(
         self,
         project_id: str | None = None,
     ) -> list[Workspace]:
         """List workspaces, clone before link, optionally filtered by project."""
+        stmt = select(workspaces)
         if project_id:
-            cursor = await self._db.execute(
-                "SELECT * FROM workspaces WHERE project_id = ? "
-                "ORDER BY CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid",
-                (project_id,),
-            )
-        else:
-            cursor = await self._db.execute(
-                "SELECT * FROM workspaces ORDER BY "
-                "CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid"
-            )
-        rows = await cursor.fetchall()
-        return [self._row_to_workspace(r) for r in rows]
+            stmt = stmt.where(workspaces.c.project_id == project_id)
+        stmt = stmt.order_by(_source_type_order, workspaces.c.id)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
 
     async def delete_workspace(self, workspace_id: str) -> None:
         """Delete a workspace record."""
-        await self._db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(delete(workspaces).where(workspaces.c.id == workspace_id))
 
     async def acquire_workspace(
         self,
@@ -95,144 +98,157 @@ class WorkspaceQueryMixin:
 
         Returns the locked workspace, or None if all are locked.
         """
-        candidate_ids: list[str] = []
+        async with self._engine.begin() as conn:
+            candidate_ids: list[str] = []
 
-        if preferred_workspace_id:
-            cursor = await self._db.execute(
-                "SELECT id FROM workspaces "
-                "WHERE id = ? AND project_id = ? AND locked_by_agent_id IS NULL",
-                (preferred_workspace_id, project_id),
-            )
-            row = await cursor.fetchone()
-            if row:
-                candidate_ids.append(row["id"])
-
-        cursor = await self._db.execute(
-            "SELECT id FROM workspaces "
-            "WHERE project_id = ? AND locked_by_agent_id IS NULL "
-            "ORDER BY id",
-            (project_id,),
-        )
-        for row in await cursor.fetchall():
-            if row["id"] not in candidate_ids:
-                candidate_ids.append(row["id"])
-
-        if not candidate_ids:
-            return None
-
-        now = time.time()
-        for ws_id in candidate_ids:
-            cursor = await self._db.execute(
-                "SELECT * FROM workspaces WHERE id = ? AND locked_by_agent_id IS NULL",
-                (ws_id,),
-            )
-            row = await cursor.fetchone()
-            if not row:
-                continue
-
-            # Path-level lock check
-            cursor = await self._db.execute(
-                "SELECT id FROM workspaces "
-                "WHERE workspace_path = ? AND locked_by_agent_id IS NOT NULL "
-                "AND id != ?",
-                (row["workspace_path"], row["id"]),
-            )
-            conflict = await cursor.fetchone()
-            if conflict:
-                logger.warning(
-                    "Workspace path %s already locked by workspace %s — skipping %s",
-                    row["workspace_path"],
-                    conflict["id"],
-                    row["id"],
+            if preferred_workspace_id:
+                result = await conn.execute(
+                    select(workspaces.c.id).where(
+                        (workspaces.c.id == preferred_workspace_id)
+                        & (workspaces.c.project_id == project_id)
+                        & (workspaces.c.locked_by_agent_id.is_(None))
+                    )
                 )
-                continue
+                row = result.fetchone()
+                if row:
+                    candidate_ids.append(row[0])
 
-            # Optimistic lock
-            cursor = await self._db.execute(
-                "UPDATE workspaces SET locked_by_agent_id = ?, "
-                "locked_by_task_id = ?, locked_at = ? "
-                "WHERE id = ? AND locked_by_agent_id IS NULL",
-                (agent_id, task_id, now, row["id"]),
+            result = await conn.execute(
+                select(workspaces.c.id)
+                .where(
+                    (workspaces.c.project_id == project_id)
+                    & (workspaces.c.locked_by_agent_id.is_(None))
+                )
+                .order_by(workspaces.c.id)
             )
-            await self._db.commit()
+            for row in result.fetchall():
+                if row[0] not in candidate_ids:
+                    candidate_ids.append(row[0])
 
-            if cursor.rowcount != 1:
-                continue
+            if not candidate_ids:
+                return None
 
-            ws = self._row_to_workspace(row)
-            ws.locked_by_agent_id = agent_id
-            ws.locked_by_task_id = task_id
-            ws.locked_at = now
-            return ws
+            now = time.time()
+            for ws_id in candidate_ids:
+                result = await conn.execute(
+                    select(workspaces).where(
+                        (workspaces.c.id == ws_id) & (workspaces.c.locked_by_agent_id.is_(None))
+                    )
+                )
+                row = result.mappings().fetchone()
+                if not row:
+                    continue
 
-        return None
+                # Path-level lock check
+                conflict_result = await conn.execute(
+                    select(workspaces.c.id).where(
+                        (workspaces.c.workspace_path == row["workspace_path"])
+                        & (workspaces.c.locked_by_agent_id.isnot(None))
+                        & (workspaces.c.id != row["id"])
+                    )
+                )
+                conflict = conflict_result.fetchone()
+                if conflict:
+                    logger.warning(
+                        "Workspace path %s already locked by workspace %s — skipping %s",
+                        row["workspace_path"],
+                        conflict[0],
+                        row["id"],
+                    )
+                    continue
+
+                # Optimistic lock
+                lock_result = await conn.execute(
+                    update(workspaces)
+                    .where(
+                        (workspaces.c.id == row["id"]) & (workspaces.c.locked_by_agent_id.is_(None))
+                    )
+                    .values(
+                        locked_by_agent_id=agent_id,
+                        locked_by_task_id=task_id,
+                        locked_at=now,
+                    )
+                )
+
+                if lock_result.rowcount != 1:
+                    continue
+
+                ws = self._row_to_workspace(row)
+                ws.locked_by_agent_id = agent_id
+                ws.locked_by_task_id = task_id
+                ws.locked_at = now
+                return ws
+
+            return None
 
     async def release_workspace(self, workspace_id: str) -> None:
         """Clear lock columns on a workspace."""
-        await self._db.execute(
-            "UPDATE workspaces SET locked_by_agent_id = NULL, "
-            "locked_by_task_id = NULL, locked_at = NULL "
-            "WHERE id = ?",
-            (workspace_id,),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == workspace_id)
+                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+            )
 
     async def release_workspaces_for_agent(self, agent_id: str) -> int:
         """Release all workspace locks held by an agent. Returns count released."""
-        cursor = await self._db.execute(
-            "UPDATE workspaces SET locked_by_agent_id = NULL, "
-            "locked_by_task_id = NULL, locked_at = NULL "
-            "WHERE locked_by_agent_id = ?",
-            (agent_id,),
-        )
-        await self._db.commit()
-        return cursor.rowcount
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+            )
+            return result.rowcount
 
     async def release_workspaces_for_task(self, task_id: str) -> int:
         """Release all workspace locks held by a task. Returns count released."""
-        cursor = await self._db.execute(
-            "UPDATE workspaces SET locked_by_agent_id = NULL, "
-            "locked_by_task_id = NULL, locked_at = NULL "
-            "WHERE locked_by_task_id = ?",
-            (task_id,),
-        )
-        await self._db.commit()
-        return cursor.rowcount
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_task_id == task_id)
+                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+            )
+            return result.rowcount
 
     async def get_workspace_for_task(self, task_id: str) -> Workspace | None:
         """Find the workspace currently locked by a task."""
-        cursor = await self._db.execute(
-            "SELECT * FROM workspaces WHERE locked_by_task_id = ?",
-            (task_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_workspace(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces).where(workspaces.c.locked_by_task_id == task_id)
+            )
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_workspace(row)
 
     async def get_project_workspace_path(self, project_id: str) -> str | None:
         """Return the workspace_path of the first workspace for a project.
 
         Non-locking read. Prefers clone workspaces over link workspaces.
         """
-        cursor = await self._db.execute(
-            "SELECT workspace_path FROM workspaces WHERE project_id = ? "
-            "ORDER BY CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid "
-            "LIMIT 1",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
-        return row["workspace_path"] if row else None
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces.c.workspace_path)
+                .where(workspaces.c.project_id == project_id)
+                .order_by(_source_type_order, workspaces.c.id)
+                .limit(1)
+            )
+            row = result.fetchone()
+            return row[0] if row else None
 
     async def count_available_workspaces(self, project_id: str) -> int:
         """Count unlocked workspaces for a project."""
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) AS cnt FROM workspaces "
-            "WHERE project_id = ? AND locked_by_agent_id IS NULL",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
-        return row["cnt"]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(func.count())
+                .select_from(workspaces)
+                .where(
+                    (workspaces.c.project_id == project_id)
+                    & (workspaces.c.locked_by_agent_id.is_(None))
+                )
+            )
+            row = result.fetchone()
+            return row[0]
 
     @staticmethod
     def _row_to_workspace(row) -> Workspace:
