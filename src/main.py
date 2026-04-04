@@ -65,8 +65,10 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         include_source=config.logging.include_source,
     )
 
-    # Ensure database directory exists
-    os.makedirs(os.path.dirname(config.database_path), exist_ok=True)
+    # Ensure database directory exists (SQLite only)
+    if config.database.backend == "sqlite":
+        db_path = config.database.url or config.database_path
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     orch = Orchestrator(config, adapter_factory=None)
     adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)

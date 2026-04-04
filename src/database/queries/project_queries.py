@@ -4,109 +4,120 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import delete, insert, select, update
+
+from src.database.tables import (
+    chat_analyzer_suggestions,
+    events,
+    hooks,
+    hook_runs,
+    projects,
+    repos,
+    task_context,
+    task_criteria,
+    task_dependencies,
+    task_results,
+    task_tools,
+    tasks,
+    token_ledger,
+    workspaces,
+)
 from src.models import Project, ProjectStatus
 
 
 class ProjectQueryMixin:
-    """Query mixin for project operations.  Expects ``self._db``."""
+    """Query mixin for project operations.  Expects ``self._engine``."""
 
     async def create_project(self, project: Project) -> None:
         """Insert a new project row."""
-        await self._db.execute(
-            "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
-            "status, total_tokens_used, budget_limit, "
-            "discord_channel_id, repo_url, repo_default_branch, "
-            "default_profile_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                project.id,
-                project.name,
-                project.credit_weight,
-                project.max_concurrent_agents,
-                project.status.value,
-                project.total_tokens_used,
-                project.budget_limit,
-                project.discord_channel_id,
-                project.repo_url,
-                project.repo_default_branch,
-                project.default_profile_id,
-                time.time(),
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(projects).values(
+                    id=project.id,
+                    name=project.name,
+                    credit_weight=project.credit_weight,
+                    max_concurrent_agents=project.max_concurrent_agents,
+                    status=project.status.value,
+                    total_tokens_used=project.total_tokens_used,
+                    budget_limit=project.budget_limit,
+                    discord_channel_id=project.discord_channel_id,
+                    repo_url=project.repo_url,
+                    repo_default_branch=project.repo_default_branch,
+                    default_profile_id=project.default_profile_id,
+                    created_at=time.time(),
+                )
+            )
 
     async def get_project(self, project_id: str) -> Project | None:
         """Fetch a single project by ID."""
-        cursor = await self._db.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_project(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(projects).where(projects.c.id == project_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_project(row)
 
     async def list_projects(
         self,
         status: ProjectStatus | None = None,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
+        stmt = select(projects)
         if status:
-            cursor = await self._db.execute(
-                "SELECT * FROM projects WHERE status = ?", (status.value,)
-            )
-        else:
-            cursor = await self._db.execute("SELECT * FROM projects")
-        rows = await cursor.fetchall()
-        return [self._row_to_project(r) for r in rows]
+            stmt = stmt.where(projects.c.status == status.value)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_project(r) for r in result.mappings().fetchall()]
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
-        sets = []
-        vals = []
+        values = {}
         for key, value in kwargs.items():
             if isinstance(value, ProjectStatus):
                 value = value.value
-            sets.append(f"{key} = ?")
-            vals.append(value)
-        vals.append(project_id)
-        await self._db.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", vals)
-        await self._db.commit()
+            values[key] = value
+        async with self._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == project_id).values(**values))
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
-        # Get all task IDs for this project
-        cursor = await self._db.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
-        task_rows = await cursor.fetchall()
-        task_ids = [r["id"] for r in task_rows]
+        async with self._engine.begin() as conn:
+            # Get all task IDs for this project
+            result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
+            task_ids = [r[0] for r in result.fetchall()]
 
-        for tid in task_ids:
-            await self._db.execute("DELETE FROM task_results WHERE task_id = ?", (tid,))
-            await self._db.execute(
-                "DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
-                (tid, tid),
+            for tid in task_ids:
+                await conn.execute(delete(task_results).where(task_results.c.task_id == tid))
+                await conn.execute(
+                    delete(task_dependencies).where(
+                        (task_dependencies.c.task_id == tid)
+                        | (task_dependencies.c.depends_on_task_id == tid)
+                    )
+                )
+                await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == tid))
+                await conn.execute(delete(task_context).where(task_context.c.task_id == tid))
+                await conn.execute(delete(task_tools).where(task_tools.c.task_id == tid))
+
+            await conn.execute(
+                delete(chat_analyzer_suggestions).where(
+                    chat_analyzer_suggestions.c.project_id == project_id
+                )
             )
-            await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", (tid,))
-            await self._db.execute("DELETE FROM task_context WHERE task_id = ?", (tid,))
-            await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", (tid,))
-
-        await self._db.execute(
-            "DELETE FROM chat_analyzer_suggestions WHERE project_id = ?", (project_id,)
-        )
-        await self._db.execute("DELETE FROM hook_runs WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM hooks WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM workspaces WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-        await self._db.commit()
+            await conn.execute(delete(hook_runs).where(hook_runs.c.project_id == project_id))
+            await conn.execute(delete(hooks).where(hooks.c.project_id == project_id))
+            await conn.execute(delete(token_ledger).where(token_ledger.c.project_id == project_id))
+            await conn.execute(delete(tasks).where(tasks.c.project_id == project_id))
+            await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
+            await conn.execute(delete(repos).where(repos.c.project_id == project_id))
+            await conn.execute(delete(events).where(events.c.project_id == project_id))
+            await conn.execute(delete(projects).where(projects.c.id == project_id))
 
     @staticmethod
     def _row_to_project(row) -> Project:
         """Convert a database row to a Project model."""
-        keys = row.keys()
-        channel_id = row["discord_channel_id"] if "discord_channel_id" in keys else None
-        if not channel_id and "discord_control_channel_id" in keys:
-            channel_id = row["discord_control_channel_id"]
+        channel_id = row.get("discord_channel_id")
+        if not channel_id:
+            channel_id = row.get("discord_control_channel_id")
         return Project(
             id=row["id"],
             name=row["name"],
@@ -116,13 +127,9 @@ class ProjectQueryMixin:
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
             discord_channel_id=channel_id,
-            repo_url=row["repo_url"] if "repo_url" in keys and row["repo_url"] else "",
-            repo_default_branch=(
-                row["repo_default_branch"]
-                if "repo_default_branch" in keys and row["repo_default_branch"]
-                else "main"
-            ),
-            default_profile_id=(
-                row["default_profile_id"] if "default_profile_id" in keys else None
-            ),
+            repo_url=row["repo_url"] if row.get("repo_url") else "",
+            repo_default_branch=row["repo_default_branch"]
+            if row.get("repo_default_branch")
+            else "main",
+            default_profile_id=row.get("default_profile_id"),
         )

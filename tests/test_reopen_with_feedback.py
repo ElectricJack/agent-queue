@@ -1,6 +1,7 @@
 """Unit tests for _cmd_reopen_with_feedback command handler."""
 
 import pytest
+from sqlalchemy import text
 from unittest.mock import MagicMock
 
 from src.command_handler import CommandHandler
@@ -215,10 +216,14 @@ class TestReopenWithFeedback:
             {"task_id": "t-1", "feedback": "Audit trail test"},
         )
         # Verify event was logged by checking the events table
-        cursor = await db._db.execute(
-            "SELECT * FROM events WHERE event_type = 'reopen_with_feedback' AND task_id = 't-1'"
-        )
-        rows = await cursor.fetchall()
+        async with db._engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT * FROM events WHERE event_type = 'reopen_with_feedback'"
+                    " AND task_id = 't-1'"
+                )
+            )
+            rows = result.mappings().fetchall()
         assert len(rows) == 1
         assert "Audit trail test" in rows[0]["payload"]
 

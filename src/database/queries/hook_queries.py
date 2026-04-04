@@ -4,48 +4,48 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import delete, insert, select, update
+
+from src.database.tables import hook_runs, hooks
 from src.models import Hook, HookRun
 
 
 class HookQueryMixin:
-    """Query mixin for hook and hook_run operations.  Expects ``self._db``."""
+    """Query mixin for hook and hook_run operations.  Expects ``self._engine``."""
 
     # --- Hooks ---
 
     async def create_hook(self, hook: Hook) -> None:
         """Insert a new hook definition."""
         now = time.time()
-        await self._db.execute(
-            "INSERT INTO hooks (id, project_id, name, enabled, trigger, "
-            "context_steps, prompt_template, llm_config, cooldown_seconds, "
-            "max_tokens_per_run, last_triggered_at, source_hash, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                hook.id,
-                hook.project_id,
-                hook.name,
-                int(hook.enabled),
-                hook.trigger,
-                hook.context_steps,
-                hook.prompt_template,
-                hook.llm_config,
-                hook.cooldown_seconds,
-                hook.max_tokens_per_run,
-                hook.last_triggered_at,
-                hook.source_hash,
-                now,
-                now,
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(hooks).values(
+                    id=hook.id,
+                    project_id=hook.project_id,
+                    name=hook.name,
+                    enabled=int(hook.enabled),
+                    trigger=hook.trigger,
+                    context_steps=hook.context_steps,
+                    prompt_template=hook.prompt_template,
+                    llm_config=hook.llm_config,
+                    cooldown_seconds=hook.cooldown_seconds,
+                    max_tokens_per_run=hook.max_tokens_per_run,
+                    last_triggered_at=hook.last_triggered_at,
+                    source_hash=hook.source_hash,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
 
     async def get_hook(self, hook_id: str) -> Hook | None:
         """Fetch a single hook by ID."""
-        cursor = await self._db.execute("SELECT * FROM hooks WHERE id = ?", (hook_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_hook(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(hooks).where(hooks.c.id == hook_id))
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_hook(row)
 
     async def list_hooks(
         self,
@@ -53,58 +53,48 @@ class HookQueryMixin:
         enabled: bool | None = None,
     ) -> list[Hook]:
         """List hooks with optional project/enabled filters."""
-        conditions = []
-        vals = []
+        stmt = select(hooks)
         if project_id:
-            conditions.append("project_id = ?")
-            vals.append(project_id)
+            stmt = stmt.where(hooks.c.project_id == project_id)
         if enabled is not None:
-            conditions.append("enabled = ?")
-            vals.append(int(enabled))
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(f"SELECT * FROM hooks {where}", vals)
-        rows = await cursor.fetchall()
-        return [self._row_to_hook(r) for r in rows]
+            stmt = stmt.where(hooks.c.enabled == int(enabled))
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [self._row_to_hook(r) for r in result.mappings().fetchall()]
 
     async def update_hook(self, hook_id: str, **kwargs) -> None:
         """Update arbitrary hook fields."""
-        sets = []
-        vals = []
+        values = {}
         for key, value in kwargs.items():
             if key == "enabled":
                 value = int(value)
-            sets.append(f"{key} = ?")
-            vals.append(value)
-        sets.append("updated_at = ?")
-        vals.append(time.time())
-        vals.append(hook_id)
-        await self._db.execute(f"UPDATE hooks SET {', '.join(sets)} WHERE id = ?", vals)
-        await self._db.commit()
+            values[key] = value
+        values["updated_at"] = time.time()
+        async with self._engine.begin() as conn:
+            await conn.execute(update(hooks).where(hooks.c.id == hook_id).values(**values))
 
     async def delete_hook(self, hook_id: str) -> None:
         """Delete a hook and its run history."""
-        await self._db.execute("DELETE FROM hook_runs WHERE hook_id = ?", (hook_id,))
-        await self._db.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(delete(hook_runs).where(hook_runs.c.hook_id == hook_id))
+            await conn.execute(delete(hooks).where(hooks.c.id == hook_id))
 
     async def list_hooks_by_id_prefix(self, prefix: str) -> list[Hook]:
         """Return all hooks whose ID starts with *prefix*."""
-        cursor = await self._db.execute("SELECT * FROM hooks WHERE id LIKE ?", (prefix + "%",))
-        rows = await cursor.fetchall()
-        return [self._row_to_hook(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(hooks).where(hooks.c.id.like(prefix + "%")))
+            return [self._row_to_hook(r) for r in result.mappings().fetchall()]
 
     async def delete_hooks_by_id_prefix(self, prefix: str) -> int:
         """Delete all hooks whose ID starts with *prefix*. Returns count deleted."""
-        cursor = await self._db.execute("SELECT id FROM hooks WHERE id LIKE ?", (prefix + "%",))
-        rows = await cursor.fetchall()
-        if not rows:
-            return 0
-        ids = [r["id"] for r in rows]
-        placeholders = ",".join("?" * len(ids))
-        await self._db.execute(f"DELETE FROM hook_runs WHERE hook_id IN ({placeholders})", ids)
-        await self._db.execute(f"DELETE FROM hooks WHERE id IN ({placeholders})", ids)
-        await self._db.commit()
-        return len(ids)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(hooks.c.id).where(hooks.c.id.like(prefix + "%")))
+            ids = [r[0] for r in result.fetchall()]
+            if not ids:
+                return 0
+            await conn.execute(delete(hook_runs).where(hook_runs.c.hook_id.in_(ids)))
+            await conn.execute(delete(hooks).where(hooks.c.id.in_(ids)))
+            return len(ids)
 
     @staticmethod
     def _row_to_hook(row) -> Hook:
@@ -121,7 +111,7 @@ class HookQueryMixin:
             cooldown_seconds=row["cooldown_seconds"],
             max_tokens_per_run=row["max_tokens_per_run"],
             last_triggered_at=row["last_triggered_at"],
-            source_hash=row["source_hash"] if "source_hash" in row.keys() else None,
+            source_hash=row.get("source_hash"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -130,51 +120,44 @@ class HookQueryMixin:
 
     async def create_hook_run(self, run: HookRun) -> None:
         """Insert a new hook run record."""
-        await self._db.execute(
-            "INSERT INTO hook_runs (id, hook_id, project_id, trigger_reason, "
-            "event_data, context_results, prompt_sent, llm_response, "
-            "actions_taken, skipped_reason, tokens_used, status, started_at, "
-            "completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                run.id,
-                run.hook_id,
-                run.project_id,
-                run.trigger_reason,
-                run.event_data,
-                run.context_results,
-                run.prompt_sent,
-                run.llm_response,
-                run.actions_taken,
-                run.skipped_reason,
-                run.tokens_used,
-                run.status,
-                run.started_at,
-                run.completed_at,
-            ),
-        )
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(hook_runs).values(
+                    id=run.id,
+                    hook_id=run.hook_id,
+                    project_id=run.project_id,
+                    trigger_reason=run.trigger_reason,
+                    event_data=run.event_data,
+                    context_results=run.context_results,
+                    prompt_sent=run.prompt_sent,
+                    llm_response=run.llm_response,
+                    actions_taken=run.actions_taken,
+                    skipped_reason=run.skipped_reason,
+                    tokens_used=run.tokens_used,
+                    status=run.status,
+                    started_at=run.started_at,
+                    completed_at=run.completed_at,
+                )
+            )
 
     async def update_hook_run(self, run_id: str, **kwargs) -> None:
         """Update arbitrary hook run fields."""
-        sets = []
-        vals = []
-        for key, value in kwargs.items():
-            sets.append(f"{key} = ?")
-            vals.append(value)
-        vals.append(run_id)
-        await self._db.execute(f"UPDATE hook_runs SET {', '.join(sets)} WHERE id = ?", vals)
-        await self._db.commit()
+        async with self._engine.begin() as conn:
+            await conn.execute(update(hook_runs).where(hook_runs.c.id == run_id).values(**kwargs))
 
     async def get_last_hook_run(self, hook_id: str) -> HookRun | None:
         """Return the most recent run for a hook."""
-        cursor = await self._db.execute(
-            "SELECT * FROM hook_runs WHERE hook_id = ? ORDER BY started_at DESC LIMIT 1",
-            (hook_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return self._row_to_hook_run(row)
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(hook_runs)
+                .where(hook_runs.c.hook_id == hook_id)
+                .order_by(hook_runs.c.started_at.desc())
+                .limit(1)
+            )
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_hook_run(row)
 
     async def list_hook_runs(
         self,
@@ -182,12 +165,14 @@ class HookQueryMixin:
         limit: int = 20,
     ) -> list[HookRun]:
         """Return recent runs for a hook, newest first."""
-        cursor = await self._db.execute(
-            "SELECT * FROM hook_runs WHERE hook_id = ? ORDER BY started_at DESC LIMIT ?",
-            (hook_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_hook_run(r) for r in rows]
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(hook_runs)
+                .where(hook_runs.c.hook_id == hook_id)
+                .order_by(hook_runs.c.started_at.desc())
+                .limit(limit)
+            )
+            return [self._row_to_hook_run(r) for r in result.mappings().fetchall()]
 
     @staticmethod
     def _row_to_hook_run(row) -> HookRun:

@@ -115,6 +115,9 @@ class RuleManager:
         Args:
             project_id: Project ID, or ``None`` for global scope.
         """
+        # Guard against stringified "None" being treated as a real project ID
+        if project_id == "None":
+            project_id = None
         scope = project_id or _GLOBAL_SCOPE
         return os.path.join(self._storage_root, "memory", scope, "rules")
 
@@ -793,7 +796,6 @@ class RuleManager:
         Returns:
             Dict with ``migrated``, ``skipped``, and ``errors`` counts.
         """
-        import json
 
         stats = {"migrated": 0, "skipped": 0, "errors": 0}
 
@@ -1090,7 +1092,7 @@ class RuleManager:
             if not os.path.isdir(rules_dir):
                 continue
 
-            pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
+            pid = None if scope_dir in (_GLOBAL_SCOPE, "None") else scope_dir
 
             for filename in os.listdir(rules_dir):
                 if not filename.endswith(".md"):
@@ -1203,7 +1205,7 @@ class RuleManager:
         for scope_dir in os.listdir(memory_root):
             rules_dir = os.path.join(memory_root, scope_dir, "rules")
             if os.path.isdir(rules_dir):
-                pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
+                pid = None if scope_dir in (_GLOBAL_SCOPE, "None") else scope_dir
                 result.append((rules_dir, pid))
         return result
 

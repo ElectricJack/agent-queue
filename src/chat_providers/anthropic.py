@@ -49,7 +49,12 @@ class AnthropicChatProvider(ChatProvider):
     """Chat provider using the Anthropic SDK (direct API, Vertex AI, Bedrock, or OAuth)."""
 
     def __init__(self, model: str = ""):
-        import anthropic
+        try:
+            import anthropic
+        except ModuleNotFoundError:
+            self._client = None
+            self._model = model
+            return
 
         self._client = None
         self._model = model

@@ -474,6 +474,9 @@ class PluginRegistry:
             invoke_llm_callback=self._invoke_llm_callback,
         )
 
+        # Load config from DB before plugin init so get_config() works
+        await ctx.load_config()
+
         # Initialize plugin
         try:
             await instance.initialize(ctx)
