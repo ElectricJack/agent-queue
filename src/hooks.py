@@ -804,8 +804,10 @@ class HookEngine:
         )
 
         if self._supervisor:
-            # Handle per-hook LLM config overrides
-            original_provider = None
+            # Build per-hook provider override (if configured) — passed as a
+            # parameter instead of swapping on the shared Supervisor, so
+            # concurrent hooks don't race on self._supervisor._provider.
+            hook_provider = None
             if hook.llm_config:
                 llm_cfg = json.loads(hook.llm_config)
                 provider_config = ChatProviderConfig(
@@ -813,7 +815,6 @@ class HookEngine:
                     model=llm_cfg.get("model", self.config.chat_provider.model),
                     base_url=llm_cfg.get("base_url", self.config.chat_provider.base_url),
                 )
-                original_provider = self._supervisor._provider
                 hook_provider = create_chat_provider(provider_config)
                 if hook_provider:
                     orchestrator = self._orchestrator
@@ -821,20 +822,15 @@ class HookEngine:
                         hook_provider = LoggedChatProvider(
                             hook_provider, orchestrator.llm_logger, caller="hook_engine"
                         )
-                    self._supervisor._provider = hook_provider
 
-            try:
-                response = await self._supervisor.process_hook_llm(
-                    hook_context=context_preamble,
-                    rendered_prompt=prompt,
-                    project_id=hook.project_id,
-                    hook_name=hook.name,
-                    on_progress=on_progress,
-                )
-            finally:
-                # Restore original provider if we swapped it
-                if original_provider is not None:
-                    self._supervisor._provider = original_provider
+            response = await self._supervisor.process_hook_llm(
+                hook_context=context_preamble,
+                rendered_prompt=prompt,
+                project_id=hook.project_id,
+                hook_name=hook.name,
+                on_progress=on_progress,
+                provider=hook_provider,
+            )
 
             tokens = len(context_preamble + prompt) // 4 + len(response) // 4
             return response, tokens
