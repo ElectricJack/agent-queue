@@ -32,6 +32,7 @@ def create_sqlite_engine(path: str) -> AsyncEngine:
     engine = create_async_engine(
         url,
         poolclass=StaticPool,
+        pool_pre_ping=True,
         connect_args={"check_same_thread": False},
     )
 

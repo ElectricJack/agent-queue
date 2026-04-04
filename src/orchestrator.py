@@ -557,10 +557,16 @@ class Orchestrator:
 
         # Cancel the background asyncio Task so the finally block in
         # _resilient_query fires even if the transport close didn't
-        # immediately take effect.
+        # immediately take effect.  We must await the task after cancelling
+        # so that any in-flight DB transaction rollback completes before we
+        # issue our own DB queries — otherwise the StaticPool's single
+        # aiosqlite connection can be left in a closed/corrupt state.
         bg_task = self._running_tasks.get(task_id)
         if bg_task and not bg_task.done():
             bg_task.cancel()
+            # Wait for the task's cleanup (transaction rollback, etc.) to finish
+            # before we issue our own DB queries.
+            await asyncio.wait({bg_task}, timeout=5.0)
 
         # Clean up sentinel and release workspace lock
         ws = await self.db.get_workspace_for_task(task_id)
