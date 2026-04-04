@@ -621,13 +621,47 @@ class HookEngine:
                     if thread_send:
                         await thread_send(f"🔧 `{detail}`")
 
-            response, tokens = await self._invoke_llm(
-                hook,
-                prompt,
-                trigger_reason=trigger_reason,
-                on_progress=_on_hook_progress,
-                event_data=event_data,
-            )
+            timeout = self.config.hook_engine.hook_timeout_seconds
+            try:
+                response, tokens = await asyncio.wait_for(
+                    self._invoke_llm(
+                        hook,
+                        prompt,
+                        trigger_reason=trigger_reason,
+                        on_progress=_on_hook_progress,
+                        event_data=event_data,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                elapsed = int(time.time() - run.started_at)
+                logger.warning(
+                    "Hook %s timed out after %ds (limit: %ds)",
+                    hook.name,
+                    elapsed,
+                    timeout,
+                )
+                await self.db.update_hook_run(
+                    run.id,
+                    status="failed",
+                    llm_response=f"Hook execution timed out after {elapsed}s (limit: {timeout}s)",
+                    completed_at=time.time(),
+                )
+                timeout_msg = f"🪝 Hook **{hook.name}** timed out after {elapsed}s."
+                if thread_send:
+                    try:
+                        await thread_send(timeout_msg)
+                    except Exception:
+                        pass
+                elif orchestrator:
+                    try:
+                        await orchestrator._notify_channel(
+                            timeout_msg,
+                            project_id=hook.project_id,
+                        )
+                    except Exception:
+                        pass
+                return
 
             await self.db.update_hook_run(
                 run.id,

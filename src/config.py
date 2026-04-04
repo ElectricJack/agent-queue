@@ -450,6 +450,7 @@ class HookEngineConfig:
     file_watcher_enabled: bool = True
     file_watcher_poll_interval: float = 10.0
     file_watcher_debounce_seconds: float = 5.0
+    hook_timeout_seconds: int = 300  # 5 minutes
 
 
 @dataclass
