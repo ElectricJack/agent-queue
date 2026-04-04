@@ -175,21 +175,14 @@ class CLIClient:
     async def execute(self, command: str, args: dict[str, Any] | None = None) -> Any:
         """Execute a CommandHandler command via the REST API.
 
-        Routes through the typed endpoint when available, falls back to /api/execute.
+        Uses the generic ``/api/execute`` endpoint which handles all commands
+        including plugin-contributed ones.  The typed endpoint dispatch is
+        disabled until the daemon's FastAPI routes are stable — building the
+        dispatch map imports ~150 modules (7s) and the routes currently 404.
 
-        Returns the typed response model when the generated client handles the
-        command, or a plain dict from the generic ``/api/execute`` fallback.
         Raises ``CommandError`` if the command returns an error.
         Raises ``DaemonNotRunningError`` on connection failure.
         """
-        # Try typed endpoint first
-        if self._generated_client is not None:
-            dispatch = _get_typed_dispatch()
-            entry = dispatch.get(command)
-            if entry is not None:
-                return await self._execute_typed(command, args or {}, entry)
-
-        # Fallback to generic /api/execute
         return await self._execute_generic(command, args or {})
 
     async def _execute_typed(
@@ -215,7 +208,9 @@ class CLIClient:
             return await self._execute_generic(command, args)
 
         if result is None:
-            raise CommandError(command, "No response from server")
+            # Typed client couldn't parse the response — fall back to generic
+            logger.debug("Typed call for %s returned None, falling back to generic", command)
+            return await self._execute_generic(command, args)
 
         # Check for error response (422 models have an 'error' field)
         if hasattr(result, "error") and result.error is not None:

@@ -97,6 +97,12 @@ class PluginPermission(Enum):
     SHELL = "shell"  # Subprocess execution
 
 
+class TrustLevel(Enum):
+    """Trust level controlling what services a plugin can access."""
+    EXTERNAL = "external"    # Standard third-party plugins
+    INTERNAL = "internal"    # Ships with the repo, full service access
+
+
 # ---------------------------------------------------------------------------
 # PluginInfo — metadata from plugin.yaml
 # ---------------------------------------------------------------------------
@@ -180,6 +186,9 @@ class PluginContext:
         notify_callback: Callable | None = None,
         execute_command_callback: Callable | None = None,
         invoke_llm_callback: Callable | None = None,
+        trust_level: TrustLevel = TrustLevel.EXTERNAL,
+        services: dict[str, Any] | None = None,
+        active_project_id_getter: Callable | None = None,
     ):
         self._plugin_name = plugin_name
         self._install_path = Path(install_path)
@@ -193,6 +202,9 @@ class PluginContext:
         self._notify_callback = notify_callback
         self._execute_command_callback = execute_command_callback
         self._invoke_llm_callback = invoke_llm_callback
+        self._trust_level = trust_level
+        self._services: dict[str, Any] = services or {}
+        self._active_project_id_getter = active_project_id_getter
 
         # Ensure instance directories exist
         self._data_dir = self._data_path / "data"
@@ -216,6 +228,51 @@ class PluginContext:
         """Plugin-scoped persistent data directory."""
         return self._data_dir
 
+    @property
+    def trust_level(self) -> TrustLevel:
+        """The trust level of this plugin context."""
+        return self._trust_level
+
+    @property
+    def active_project_id(self) -> str | None:
+        """The currently active project ID (shared conversational context)."""
+        if self._active_project_id_getter:
+            return self._active_project_id_getter()
+        return None
+
+    # --- Service Access ---
+
+    def get_service(self, name: str) -> Any:
+        """Get a service by name.
+
+        Internal plugins (``TrustLevel.INTERNAL``) can access all services.
+        External plugins can only access services allowed by their permissions.
+
+        Available services for internal plugins:
+        ``"git"``, ``"db"``, ``"memory"``, ``"workspace"``, ``"config"``.
+
+        Args:
+            name: Service name.
+
+        Returns:
+            The service object.
+
+        Raises:
+            ValueError: If the service is unknown.
+            PermissionError: If the plugin lacks access.
+        """
+        service = self._services.get(name)
+        if service is None:
+            available = list(self._services.keys())
+            raise ValueError(
+                f"Unknown service: {name!r}. Available: {available}"
+            )
+        if self._trust_level == TrustLevel.EXTERNAL:
+            raise PermissionError(
+                f"Service {name!r} requires TrustLevel.INTERNAL"
+            )
+        return service
+
     # --- Command Registration ---
 
     def register_command(self, name: str, handler: Callable) -> None:
@@ -237,7 +294,7 @@ class PluginContext:
 
     # --- Tool Registration ---
 
-    def register_tool(self, definition: dict) -> None:
+    def register_tool(self, definition: dict, *, category: str | None = None) -> None:
         """Register a tool definition (JSON Schema format).
 
         The tool will appear in the supervisor's tool list. Execution
@@ -246,12 +303,18 @@ class PluginContext:
         Args:
             definition: Tool definition dict with 'name', 'description',
                        and 'input_schema' keys.
+            category: Optional tool category for tiered loading (e.g.
+                      ``"git"``, ``"files"``, ``"memory"``).  When set,
+                      the tool appears in ``browse_tools``/``load_tools``
+                      under this category.
         """
         name = definition.get("name", "")
         if not name:
             raise ValueError("Tool definition must have a 'name' field")
         # Tag the tool with its source plugin
         definition["_plugin"] = self._plugin_name
+        if category:
+            definition["_category"] = category
         self._tool_registry[name] = definition
         logger.debug("Plugin '%s' registered tool: %s", self._plugin_name, name)
 
@@ -654,3 +717,33 @@ class Plugin(abc.ABC):
             extension is provided.
         """
         return None
+
+
+# ---------------------------------------------------------------------------
+# InternalPlugin — base class for commands extracted from CommandHandler
+# ---------------------------------------------------------------------------
+
+
+class InternalPlugin(Plugin):
+    """Base class for internal plugins that ship with the repository.
+
+    Internal plugins are command groups extracted from CommandHandler.
+    They receive ``TrustLevel.INTERNAL`` contexts with full service access,
+    are always loaded, cannot be disabled by users, and are exempt from
+    reserved name checks and circuit breaker logic.
+
+    Subclasses must implement ``initialize()`` and ``shutdown()``::
+
+        class FilesPlugin(InternalPlugin):
+            async def initialize(self, ctx: PluginContext) -> None:
+                ctx.register_command("read_file", self.cmd_read_file)
+                ctx.register_tool({...}, category="files")
+
+            async def shutdown(self, ctx: PluginContext) -> None:
+                pass
+
+            async def cmd_read_file(self, args: dict) -> dict:
+                ws = ctx.get_service("workspace")
+                ...
+    """
+    _internal: bool = True

@@ -79,11 +79,24 @@ def mock_git():
 
 @pytest.fixture
 async def handler(db, config, mock_git):
-    """Create a CommandHandler with a mocked GitManager."""
+    """Create a CommandHandler with a mocked GitManager and internal plugins."""
+    from src.event_bus import EventBus
+    from src.plugins.registry import PluginRegistry
+    from src.plugins.services import build_internal_services
+
     orchestrator = Orchestrator(config)
     orchestrator.db = db
     orchestrator.git = mock_git
-    return CommandHandler(orchestrator, config)
+
+    services = build_internal_services(db=db, git=mock_git, config=config)
+    registry = PluginRegistry(db=db, bus=EventBus(), config=config)
+    registry._internal_services = services
+    await registry.load_internal_plugins()
+    orchestrator.plugin_registry = registry
+
+    handler = CommandHandler(orchestrator, config)
+    registry.set_active_project_id_getter(lambda: handler._active_project_id)
+    return handler
 
 
 @pytest.fixture

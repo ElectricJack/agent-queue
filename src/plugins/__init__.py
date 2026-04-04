@@ -20,21 +20,25 @@ Usage::
 """
 
 from src.plugins.base import (
+    InternalPlugin,
     Plugin,
     PluginContext,
     PluginInfo,
     PluginStatus,
     PluginPermission,
+    TrustLevel,
     cron,
 )
 from src.plugins.registry import PluginRegistry
 
 __all__ = [
+    "InternalPlugin",
     "Plugin",
     "PluginContext",
     "PluginInfo",
     "PluginRegistry",
     "PluginStatus",
     "PluginPermission",
+    "TrustLevel",
     "cron",
 ]

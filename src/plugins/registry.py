@@ -37,6 +37,7 @@ from src.plugins.base import (
     PluginContext,
     PluginInfo,
     PluginStatus,
+    TrustLevel,
 )
 from src.plugins.loader import (
     clone_plugin_repo,
@@ -167,6 +168,10 @@ class PluginRegistry:
         self._cron_jobs: list[_CronJob] = []
         self._cron_tasks: dict[str, asyncio.Task] = {}
 
+        # Internal plugin support
+        self._internal_services: dict | None = None
+        self._active_project_id_getter: Callable | None = None
+
         # Plugins base directory (git clones)
         self._plugins_dir = Path(config.data_dir) / "plugins"
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -250,13 +255,97 @@ class PluginRegistry:
 
         return discovered
 
+    async def load_internal_plugins(self) -> int:
+        """Load internal plugins that ship with the repository.
+
+        Internal plugins are discovered from ``src.plugins.internal``
+        and receive ``TrustLevel.INTERNAL`` contexts with full service
+        access.  They are always loaded, not tracked in the DB, and
+        exempt from reserved name checks and circuit breaker logic.
+
+        Returns:
+            Number of internal plugins loaded.
+        """
+        from src.plugins.internal import discover_internal_plugins
+
+        loaded = 0
+        for modname, plugin_class in discover_internal_plugins():
+            name = modname.rsplit(".", 1)[-1]  # e.g. "files" from "src.plugins.internal.files"
+            plugin_name = f"aq-{name}"
+
+            if plugin_name in self._plugins:
+                logger.debug("Internal plugin '%s' already loaded", plugin_name)
+                continue
+
+            try:
+                instance = plugin_class()
+
+                # Build services dict for internal context
+                services = self._build_internal_services()
+
+                ctx = PluginContext(
+                    plugin_name=plugin_name,
+                    install_path=str(self._plugins_dir),
+                    data_path=str(self._plugin_data_dir / plugin_name),
+                    db=self._db,
+                    bus=self._bus,
+                    command_registry=self._commands,
+                    tool_registry=self._tools,
+                    event_type_registry=self._event_types,
+                    notify_callback=self._notify_callback,
+                    execute_command_callback=self._execute_command_callback,
+                    invoke_llm_callback=self._invoke_llm_callback,
+                    trust_level=TrustLevel.INTERNAL,
+                    services=services,
+                    active_project_id_getter=self._active_project_id_getter,
+                )
+
+                await instance.initialize(ctx)
+
+                info = PluginInfo(
+                    name=plugin_name,
+                    version="0.0.0",
+                    description=f"Internal plugin: {name}",
+                )
+
+                self._plugins[plugin_name] = _LoadedPlugin(
+                    info=info,
+                    instance=instance,
+                    context=ctx,
+                    install_path="<internal>",
+                    status=PluginStatus.ACTIVE,
+                )
+
+                loaded += 1
+                logger.info("Loaded internal plugin: %s", plugin_name)
+
+            except Exception as e:
+                logger.error(
+                    "Failed to load internal plugin '%s': %s",
+                    plugin_name,
+                    e,
+                    exc_info=True,
+                )
+
+        return loaded
+
+    def _build_internal_services(self) -> dict:
+        """Build services dict for internal plugin contexts."""
+        if self._internal_services is not None:
+            return self._internal_services
+        return {}
+
     async def load_all(self) -> int:
-        """Load all discovered plugins that are not disabled or errored.
+        """Load all plugins: internal first, then external.
 
         Returns:
             Number of plugins successfully loaded.
         """
-        loaded = 0
+        # Load internal plugins first (they may register commands that
+        # external plugins depend on via execute_command)
+        internal_loaded = await self.load_internal_plugins()
+
+        loaded = internal_loaded
         plugins = await self._db.list_plugins()
 
         for plugin_row in plugins:
@@ -1009,6 +1098,24 @@ class PluginRegistry:
         self._invoke_llm_callback = callback
         for loaded in self._plugins.values():
             loaded.context._invoke_llm_callback = callback
+
+    def set_internal_services(self, services: dict) -> None:
+        """Set the services dict for internal plugin contexts.
+
+        Must be called before ``load_all()`` so that internal plugins
+        receive their service providers during initialization.
+        """
+        self._internal_services = services
+        # Update already-loaded internal plugins
+        for loaded in self._plugins.values():
+            if loaded.context._trust_level == TrustLevel.INTERNAL:
+                loaded.context._services = services
+
+    def set_active_project_id_getter(self, getter: Callable) -> None:
+        """Set the active project ID getter for all plugin contexts."""
+        self._active_project_id_getter = getter
+        for loaded in self._plugins.values():
+            loaded.context._active_project_id_getter = getter
 
     # ------------------------------------------------------------------
     # Cron Scheduling

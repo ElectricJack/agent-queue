@@ -50,11 +50,24 @@ def mock_git():
 
 @pytest.fixture
 async def handler(db, config, mock_git):
-    """Create a CommandHandler with mocked orchestrator."""
+    """Create a CommandHandler with mocked orchestrator and internal plugins."""
+    from src.event_bus import EventBus
+    from src.plugins.registry import PluginRegistry
+    from src.plugins.services import build_internal_services
+
     orchestrator = Orchestrator(config)
     orchestrator.db = db
     orchestrator.git = mock_git
-    return CommandHandler(orchestrator, config)
+
+    services = build_internal_services(db=db, git=mock_git, config=config)
+    registry = PluginRegistry(db=db, bus=EventBus(), config=config)
+    registry._internal_services = services
+    await registry.load_internal_plugins()
+    orchestrator.plugin_registry = registry
+
+    handler = CommandHandler(orchestrator, config)
+    registry.set_active_project_id_getter(lambda: handler._active_project_id)
+    return handler
 
 
 @pytest.fixture
@@ -680,20 +693,32 @@ class TestPathValidation:
 
 
 class TestFilesCategoryRegistry:
-    def test_files_category_exists(self):
-        """The 'files' category should exist in the tool registry."""
+    def _registry_with_plugins(self):
+        """Create a ToolRegistry with plugin tools included."""
+        from unittest.mock import MagicMock
         from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
-        registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+        mock_pr = MagicMock()
+        mock_pr.get_all_tool_definitions.return_value = [
+            {"name": n, "description": f"Tool: {n}",
+             "input_schema": {"type": "object", "properties": {}}, "_category": "files"}
+            for n in ["read_file", "write_file", "edit_file", "glob_files",
+                       "grep", "search_files", "list_directory", "run_command"]
+        ]
+        reg = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+        reg.set_plugin_registry(mock_pr)
+        return reg
+
+    def test_files_category_exists(self):
+        """The 'files' category should exist in the tool registry."""
+        registry = self._registry_with_plugins()
         categories = registry.get_categories()
         cat_names = {c["name"] for c in categories}
         assert "files" in cat_names
 
     def test_files_category_tools(self):
         """The 'files' category should contain the expected tools."""
-        from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
-
-        registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+        registry = self._registry_with_plugins()
         file_tools = registry.get_category_tools("files")
         assert file_tools is not None
 

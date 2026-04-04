@@ -321,6 +321,15 @@ class Orchestrator:
 
             self.plugin_registry.set_invoke_llm_callback(_plugin_invoke_llm)
 
+        # Wire active project getter so internal plugins can resolve context
+        if hasattr(self, "plugin_registry") and self.plugin_registry:
+            self.plugin_registry.set_active_project_id_getter(
+                lambda: supervisor.handler._active_project_id
+            )
+            self.plugin_registry.set_execute_command_callback(
+                supervisor.handler.execute
+            )
+
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
 
@@ -805,12 +814,23 @@ class Orchestrator:
 
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
-
+        from src.plugins.services import build_internal_services
         self.plugin_registry = PluginRegistry(
             db=self.db,
             bus=self.bus,
             config=self.config,
         )
+
+        # Build and inject services for internal plugins
+        memory_mgr = getattr(self, "memory_manager", None)
+        internal_services = build_internal_services(
+            db=self.db,
+            git=self.git,
+            config=self.config,
+            memory_manager=memory_mgr,
+        )
+        self.plugin_registry.set_internal_services(internal_services)
+
         try:
             discovered = await self.plugin_registry.discover_plugins()
             if discovered:
