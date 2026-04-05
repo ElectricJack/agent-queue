@@ -1786,6 +1786,11 @@ class CommandHandler:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        # Normalize show_all → include_completed so all downstream helpers
+        # only need to check include_completed.
+        if args.get("show_all") and not args.get("include_completed"):
+            args = {**args, "include_completed": True}
+
         display_mode: str = args.get("display_mode", "flat")
         show_dependencies: bool = args.get("show_dependencies", False)
 
