@@ -167,9 +167,14 @@ Maps to `ChatProviderConfig`. The YAML key is `chat_provider`.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `provider` | `str` | `"anthropic"` | LLM provider to use for the chat agent. Valid values are `"anthropic"` and `"ollama"`. |
+| `provider` | `str` | `"anthropic"` | LLM provider to use for the chat agent. Valid values are `"anthropic"`, `"ollama"`, and `"gemini"`. |
 | `model` | `str` | `""` | Model name to use. An empty string means the provider's own default model is used. |
 | `base_url` | `str` | `""` | Base URL for the provider's API endpoint. Primarily used for Ollama installations. Empty string means the provider SDK's default URL is used. |
+| `api_key` | `str` | `""` | API key for the provider. Currently used by Gemini (falls back to `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars). |
+| `keep_alive` | `str` | `"1h"` | Ollama only: how long to keep the model loaded in memory after the last request. Accepts Go-style durations (`"1h"`, `"30m"`, `"-1"` for infinite, `"0"` for immediate unload). |
+| `num_ctx` | `int` | `0` | Ollama only: context window size override. `0` means use the model's default. |
+
+**Note:** The `__post_init__` method coerces `model` to a string, since YAML may parse numeric model names (e.g., `model: 4`) as integers.
 
 ### 4.7 `hook_engine` Section
 
@@ -229,8 +234,40 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `recall_top_k` | `int` | `5` | Number of memory chunks to inject during automatic recall. |
 | `compact_enabled` | `bool` | `False` | Whether periodic LLM-based memory compaction is active. |
 | `compact_interval_hours` | `int` | `24` | Hours between compaction runs when `compact_enabled` is `true`. |
+| `compact_llm_provider` | `str` | `""` | LLM provider for compaction (defaults to `revision_provider` or `chat_provider`). |
+| `compact_llm_model` | `str` | `""` | Model override for compaction. |
+| `compact_recent_days` | `int` | `7` | Task memories younger than this many days are kept as-is during compaction. |
+| `compact_archive_days` | `int` | `30` | Task memories older than this many days are deleted after digesting during compaction. |
 | `index_notes` | `bool` | `True` | When `true`, markdown files in the project's `notes/` directory are included in the memory index. |
+| `index_specs` | `bool` | `True` | When `true`, the workspace `specs/` directory is included in the memory index. |
+| `index_docs` | `bool` | `True` | When `true`, the workspace `docs/` directory (published documentation) is included in the memory index. |
+| `index_project_docs` | `bool` | `True` | When `true`, individual project doc files are indexed separately for targeted retrieval. |
+| `project_docs_files` | `tuple[str, ...]` | `("CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
 | `index_sessions` | `bool` | `False` | When `true`, session transcripts are included in the memory index. |
+| `profile_enabled` | `bool` | `True` | Toggle project profiles — auto-generated summaries of each project. |
+| `profile_max_size` | `int` | `5000` | Maximum characters for project profile content. |
+| `revision_enabled` | `bool` | `True` | Toggle post-task profile revision — updates the project profile after each task completes. |
+| `revision_provider` | `str` | `""` | LLM provider for profile revision (defaults to `chat_provider`). |
+| `revision_model` | `str` | `""` | Model override for profile revision. |
+| `auto_generate_notes` | `bool` | `False` | Auto-note generation after tasks. Off by default as it can be noisy. |
+| `notes_inform_profile` | `bool` | `True` | Include notes in profile revision context for richer profiles. |
+| `fact_extraction_enabled` | `bool` | `True` | Extract structured facts after task completion into staging files for consolidation. |
+| `index_knowledge` | `bool` | `True` | When `true`, the `knowledge/` directory is included in the vector index. |
+| `knowledge_topics` | `tuple[str, ...]` | `("architecture", "api-and-endpoints", "deployment", "dependencies", "gotchas", "conventions", "decisions")` | Default topic files in the knowledge base. |
+| `consolidation_enabled` | `bool` | `False` | Master switch for knowledge consolidation (daily + weekly). |
+| `consolidation_schedule` | `str` | `"0 3 * * *"` | Cron expression for daily consolidation runs. |
+| `deep_consolidation_schedule` | `str` | `"0 4 * * 0"` | Cron expression for weekly deep consolidation. |
+| `consolidation_provider` | `str` | `""` | LLM provider for consolidation (defaults to `revision_provider`). |
+| `consolidation_model` | `str` | `""` | Model override for consolidation LLM calls. |
+| `factsheet_in_context` | `bool` | `True` | Include the project factsheet in agent context as Tier 0 (always included). |
+| `context_max_tokens` | `int` | `4000` | Soft budget for total memory context injected into agent prompts. |
+| `context_include_recent` | `int` | `3` | Number of recent same-project task results to include in context. |
+| `consolidation_auto_trigger` | `bool` | `True` | Auto-run consolidation when growth thresholds are met (independent of cron schedule). |
+| `consolidation_growth_threshold` | `int` | `10` | Number of staging files that triggers auto-consolidation. |
+| `consolidation_min_age_hours` | `float` | `1.0` | Minimum age (hours) of staging facts before they are eligible for consolidation. |
+| `consolidation_max_batch_size` | `int` | `50` | Maximum staging files processed per consolidation run. |
+| `consolidation_similarity_threshold` | `float` | `0.7` | Similarity threshold for clustering related facts during consolidation. |
+| `consolidation_cooldown_minutes` | `int` | `30` | Minimum minutes between auto-triggered consolidation runs. |
 
 #### Storage Layout
 
