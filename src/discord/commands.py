@@ -1165,6 +1165,12 @@ class _EditRuleModal(discord.ui.Modal, title="Edit Rule"):
             )
             return
 
+        # Defer immediately — save_rule may trigger hook generation for active
+        # rules (DB operations) and the 3-second Discord timeout is too tight.
+        # Using thinking=False sends DEFERRED_UPDATE_MESSAGE so we can later
+        # edit the parent message that holds the rule content view.
+        await interaction.response.defer()
+
         content = self.content_input.value
         result = await self._handler.execute(
             "save_rule",
@@ -1176,7 +1182,7 @@ class _EditRuleModal(discord.ui.Modal, title="Edit Rule"):
             },
         )
         if "error" in result:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"❌ Error saving rule: {result['error']}",
                 ephemeral=True,
             )
@@ -1191,17 +1197,31 @@ class _EditRuleModal(discord.ui.Modal, title="Edit Rule"):
             if loaded.get("name"):
                 self._parent_view._rule["name"] = loaded["name"]
             self._parent_view._rebuild()
-            await interaction.response.edit_message(
-                content=self._parent_view.build_content(),
-                view=self._parent_view,
-            )
-        else:
-            hooks = result.get("hooks", [])
-            hook_msg = f" ({len(hooks)} hook(s) regenerated)" if hooks else ""
-            await interaction.response.send_message(
-                f"✅ Rule `{self._rule_id}` updated{hook_msg}.",
-                ephemeral=True,
-            )
+            try:
+                await interaction.edit_original_response(
+                    content=self._parent_view.build_content(),
+                    view=self._parent_view,
+                )
+                return
+            except Exception:
+                pass  # Fall through to followup message below
+
+        hooks = result.get("hooks_generated", [])
+        hook_msg = f" ({len(hooks)} hook(s) regenerated)" if hooks else ""
+        await interaction.followup.send(
+            f"✅ Rule `{self._rule_id}` updated{hook_msg}.",
+            ephemeral=True,
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        try:
+            msg = f"❌ Error editing rule: {error}"
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass  # interaction may have expired
 
 
 class _RuleContentView(discord.ui.View):
