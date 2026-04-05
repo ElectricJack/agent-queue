@@ -220,7 +220,8 @@ def _convert_schema(schema: dict):
         kwargs["description"] = schema["description"]
 
     if "enum" in schema:
-        kwargs["enum"] = schema["enum"]
+        # Gemini requires enum values to be strings — filter out None
+        kwargs["enum"] = [v for v in schema["enum"] if v is not None]
 
     if schema_type == "object" and "properties" in schema:
         kwargs["properties"] = {
