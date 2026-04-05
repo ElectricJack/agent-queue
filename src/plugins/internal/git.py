@@ -6,12 +6,9 @@ The largest internal plugin — 19 commands covering all git operations.
 
 from __future__ import annotations
 
-import logging
 import os
 
 from src.plugins.base import InternalPlugin, PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -20,6 +17,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TOOL_CATEGORY = "git"
+
 
 def _build_tool_definitions() -> list[dict]:
     """Return git tool definitions (JSON Schema format)."""
@@ -43,7 +41,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "message": {"type": "string", "description": "Commit message"},
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["message"],
             },
@@ -55,8 +56,14 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "branch": {"type": "string", "description": "Branch to pull (optional, defaults to current)"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch to pull (optional, defaults to current)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
             },
         },
@@ -67,8 +74,14 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "branch": {"type": "string", "description": "Branch to push (optional, defaults to current)"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch to push (optional, defaults to current)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
             },
         },
@@ -80,7 +93,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "branch_name": {"type": "string", "description": "New branch name"},
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["branch_name"],
             },
@@ -92,9 +108,15 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "branch_name": {"type": "string", "description": "Branch to merge"},
-                    "default_branch": {"type": "string", "description": "Target branch (default: project default)"},
+                    "default_branch": {
+                        "type": "string",
+                        "description": "Target branch (default: project default)",
+                    },
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["branch_name"],
             },
@@ -108,9 +130,15 @@ def _build_tool_definitions() -> list[dict]:
                     "title": {"type": "string", "description": "PR title"},
                     "body": {"type": "string", "description": "PR body/description"},
                     "branch": {"type": "string", "description": "Source branch (default: current)"},
-                    "base": {"type": "string", "description": "Target branch (default: project default)"},
+                    "base": {
+                        "type": "string",
+                        "description": "Target branch (default: project default)",
+                    },
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["title"],
             },
@@ -121,9 +149,15 @@ def _build_tool_definitions() -> list[dict]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "base_branch": {"type": "string", "description": "Base branch to compare (default: project default)"},
+                    "base_branch": {
+                        "type": "string",
+                        "description": "Base branch to compare (default: project default)",
+                    },
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
             },
         },
@@ -134,8 +168,15 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "count": {"type": "integer", "description": "Number of commits (default 10)", "default": 10},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of commits (default 10)",
+                        "default": 10,
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["project_id"],
             },
@@ -147,8 +188,14 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "base_branch": {"type": "string", "description": "Base branch to diff against (optional, defaults to working tree diff)"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "base_branch": {
+                        "type": "string",
+                        "description": "Base branch to diff against (optional, defaults to working tree diff)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["project_id"],
             },
@@ -160,8 +207,14 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "name": {"type": "string", "description": "New branch name (optional -- omit to list)"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "name": {
+                        "type": "string",
+                        "description": "New branch name (optional -- omit to list)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["project_id"],
             },
@@ -174,7 +227,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch": {"type": "string", "description": "Branch name to switch to"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["project_id", "branch"],
             },
@@ -187,7 +243,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch_name": {"type": "string", "description": "Branch name"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["branch_name"],
             },
@@ -200,7 +259,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch_name": {"type": "string", "description": "New branch name"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["branch_name"],
             },
@@ -213,7 +275,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "message": {"type": "string", "description": "Commit message"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["message"],
             },
@@ -225,8 +290,14 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
-                    "branch_name": {"type": "string", "description": "Branch to push (optional, defaults to current)"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Branch to push (optional, defaults to current)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
             },
         },
@@ -238,7 +309,10 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch_name": {"type": "string", "description": "Branch to merge"},
-                    "workspace": {"type": "string", "description": "Workspace name or ID (optional)"},
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
                 },
                 "required": ["branch_name"],
             },
@@ -250,7 +324,11 @@ def _build_tool_definitions() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Repository name"},
-                    "private": {"type": "boolean", "description": "Create private repo (default true)", "default": True},
+                    "private": {
+                        "type": "boolean",
+                        "description": "Create private repo (default true)",
+                        "default": True,
+                    },
                     "org": {"type": "string", "description": "GitHub org (omit for personal repo)"},
                     "description": {"type": "string", "description": "Repo description"},
                 },
@@ -283,6 +361,7 @@ def _fmt_git_status(data: dict):
     from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
+
     repos = data.get("repos", [])
     project = data.get("project_name", data.get("project_id", ""))
     panels = []
@@ -312,13 +391,21 @@ def _fmt_git_status(data: dict):
         if lock:
             lines.append(Text(f"🔒 Locked by task: {lock}", style="yellow"))
         title = workspace if workspace else repo.get("path", "")
-        panels.append(Panel(Group(*lines), title=f"[bold]{title}[/]", border_style="bright_black", padding=(0, 1)))
+        panels.append(
+            Panel(
+                Group(*lines),
+                title=f"[bold]{title}[/]",
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+        )
     header = Text(f"  {project} — {len(repos)} workspace(s)", style="bold bright_white")
     return Group(header, *panels)
 
 
 def _fmt_git_log(data: dict):
     from rich.text import Text
+
     log = data.get("log", "")
     branch = data.get("branch", "")
     text = Text()
@@ -338,6 +425,7 @@ def _fmt_git_diff(data: dict):
     from rich.panel import Panel
     from rich.syntax import Syntax
     from rich.text import Text
+
     diff = data.get("diff", "")
     base = data.get("base_branch", "")
     if not diff.strip():
@@ -349,6 +437,7 @@ def _fmt_git_diff(data: dict):
 
 def _fmt_git_action(data: dict):
     from rich.text import Text
+
     status = data.get("status", "")
     text = Text()
     text.append("✅ ", style="bold")
@@ -364,16 +453,28 @@ def _fmt_git_action(data: dict):
 def _build_cli_formatters():
     """Return CLI formatter specs for git commands."""
     from src.cli.formatter_registry import FormatterSpec
+
     formatters = {
         "get_git_status": FormatterSpec(render=_fmt_git_status, extract=None, many=False),
         "git_log": FormatterSpec(render=_fmt_git_log, extract=None, many=False),
         "git_diff": FormatterSpec(render=_fmt_git_diff, extract=None, many=False),
     }
     for cmd in (
-        "git_commit", "git_pull", "git_push", "git_create_branch",
-        "git_merge", "git_create_pr", "create_branch", "checkout_branch",
-        "commit_changes", "push_branch", "merge_branch", "git_checkout",
-        "create_github_repo", "generate_readme", "git_branch",
+        "git_commit",
+        "git_pull",
+        "git_push",
+        "git_create_branch",
+        "git_merge",
+        "git_create_pr",
+        "create_branch",
+        "checkout_branch",
+        "commit_changes",
+        "push_branch",
+        "merge_branch",
+        "git_checkout",
+        "create_github_repo",
+        "generate_readme",
+        "git_branch",
         "git_changed_files",
     ):
         formatters[cmd] = FormatterSpec(render=_fmt_git_action, extract=None, many=False)
@@ -437,8 +538,10 @@ class GitPlugin(InternalPlugin):
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
+
         in_progress = await self._db._db.list_tasks(
-            project_id=project_id, status=TaskStatus.IN_PROGRESS,
+            project_id=project_id,
+            status=TaskStatus.IN_PROGRESS,
         )
         if in_progress:
             return (
@@ -493,6 +596,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_get_git_status(self, args: dict) -> dict:
         from src.models import RepoSourceType
+
         project_id = args.get("project_id") or self._ctx.active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
@@ -508,10 +612,14 @@ class GitPlugin(InternalPlugin):
             for ws in workspaces:
                 ws_path = ws.workspace_path
                 if not os.path.isdir(ws_path):
-                    repo_statuses.append({"workspace_id": ws.id, "error": f"Path not found: {ws_path}"})
+                    repo_statuses.append(
+                        {"workspace_id": ws.id, "error": f"Path not found: {ws_path}"}
+                    )
                     continue
                 if not await git.avalidate_checkout(ws_path):
-                    repo_statuses.append({"workspace_id": ws.id, "error": f"Not a valid git repository: {ws_path}"})
+                    repo_statuses.append(
+                        {"workspace_id": ws.id, "error": f"Not a valid git repository: {ws_path}"}
+                    )
                     continue
                 branch = await git.aget_current_branch(ws_path)
                 status_output = await git.aget_status(ws_path)
@@ -530,22 +638,24 @@ class GitPlugin(InternalPlugin):
                     if task:
                         current_task_title = task.title
 
-                repo_statuses.append({
-                    "workspace_id": ws.id,
-                    "workspace_name": ws.name or "",
-                    "path": ws_path,
-                    "branch": branch,
-                    "status": status_output or "(clean)",
-                    "recent_commits": recent_commits,
-                    "lock": lock_info,
-                    "ahead": ahead_behind[0],
-                    "behind": ahead_behind[1],
-                    "stash_count": stash_count,
-                    "diff_stat": diff_stat,
-                    "locked_by_agent_id": ws.locked_by_agent_id,
-                    "locked_by_task_id": ws.locked_by_task_id,
-                    "current_task_title": current_task_title,
-                })
+                repo_statuses.append(
+                    {
+                        "workspace_id": ws.id,
+                        "workspace_name": ws.name or "",
+                        "path": ws_path,
+                        "branch": branch,
+                        "status": status_output or "(clean)",
+                        "recent_commits": recent_commits,
+                        "lock": lock_info,
+                        "ahead": ahead_behind[0],
+                        "behind": ahead_behind[1],
+                        "stash_count": stash_count,
+                        "diff_stat": diff_stat,
+                        "locked_by_agent_id": ws.locked_by_agent_id,
+                        "locked_by_task_id": ws.locked_by_task_id,
+                        "current_task_title": current_task_title,
+                    }
+                )
         else:
             repos = await self._db.list_repos(project_id)
             if repos:
@@ -557,28 +667,40 @@ class GitPlugin(InternalPlugin):
                     else:
                         continue
                     if not os.path.isdir(repo_path):
-                        repo_statuses.append({"repo_id": repo.id, "error": f"Path not found: {repo_path}"})
+                        repo_statuses.append(
+                            {"repo_id": repo.id, "error": f"Path not found: {repo_path}"}
+                        )
                         continue
                     if not await git.avalidate_checkout(repo_path):
-                        repo_statuses.append({"repo_id": repo.id, "error": f"Not a valid git repository: {repo_path}"})
+                        repo_statuses.append(
+                            {
+                                "repo_id": repo.id,
+                                "error": f"Not a valid git repository: {repo_path}",
+                            }
+                        )
                         continue
                     branch = await git.aget_current_branch(repo_path)
                     status_output = await git.aget_status(repo_path)
                     recent_commits = await git.aget_recent_commits(repo_path, count=5)
-                    repo_statuses.append({
-                        "repo_id": repo.id,
-                        "path": repo_path,
-                        "branch": branch,
-                        "status": status_output or "(clean)",
-                        "recent_commits": recent_commits,
-                    })
+                    repo_statuses.append(
+                        {
+                            "repo_id": repo.id,
+                            "path": repo_path,
+                            "branch": branch,
+                            "status": status_output or "(clean)",
+                            "recent_commits": recent_commits,
+                        }
+                    )
             else:
-                return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+                return {
+                    "error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."
+                }
 
         return {"project_id": project_id, "project_name": project.name, "repos": repo_statuses}
 
     async def cmd_git_commit(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         message = args["message"]
         checkout_path, project, err = await self._resolve(args)
         if err:
@@ -589,11 +711,16 @@ class GitPlugin(InternalPlugin):
         except GitError as e:
             return {"error": str(e)}
         if not committed:
-            return {"project_id": project_id, "committed": False, "message": "Nothing to commit -- working tree clean"}
+            return {
+                "project_id": project_id,
+                "committed": False,
+                "message": "Nothing to commit -- working tree clean",
+            }
         return {"project_id": project_id, "committed": True, "commit_message": message}
 
     async def cmd_git_pull(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -606,6 +733,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_git_push(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -621,6 +749,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_git_create_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         branch_name = args["branch_name"]
         checkout_path, project, err = await self._resolve(args)
         if err:
@@ -633,23 +762,38 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_git_merge(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         branch_name = args["branch_name"]
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
         project_id = args.get("project_id", "")
-        default_branch = args.get("default_branch") or (project.repo_default_branch if project else "main") or "main"
+        default_branch = (
+            args.get("default_branch")
+            or (project.repo_default_branch if project else "main")
+            or "main"
+        )
         try:
             success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
         except GitError as e:
             return {"error": str(e)}
         if not success:
-            return {"project_id": project_id, "merged": False, "into": default_branch,
-                    "message": f"Merge conflict -- merge of '{branch_name}' into '{default_branch}' was aborted"}
-        return {"project_id": project_id, "merged": True, "branch": branch_name, "into": default_branch}
+            return {
+                "project_id": project_id,
+                "merged": False,
+                "into": default_branch,
+                "message": f"Merge conflict -- merge of '{branch_name}' into '{default_branch}' was aborted",
+            }
+        return {
+            "project_id": project_id,
+            "merged": True,
+            "branch": branch_name,
+            "into": default_branch,
+        }
 
     async def cmd_git_create_pr(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         title = args["title"]
         body = args.get("body", "")
         checkout_path, project, err = await self._resolve(args)
@@ -664,15 +808,29 @@ class GitPlugin(InternalPlugin):
             pr_url = await git.acreate_pr(checkout_path, branch, title, body, base)
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args.get("project_id", ""), "pr_url": pr_url, "branch": branch, "base": base}
+        return {
+            "project_id": args.get("project_id", ""),
+            "pr_url": pr_url,
+            "branch": branch,
+            "base": base,
+        }
 
     async def cmd_git_changed_files(self, args: dict) -> dict:
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
-        base_branch = args.get("base_branch") or (project.repo_default_branch if project else "main") or "main"
+        base_branch = (
+            args.get("base_branch")
+            or (project.repo_default_branch if project else "main")
+            or "main"
+        )
         files = await self._git.aget_changed_files(checkout_path, base_branch)
-        return {"project_id": args.get("project_id", ""), "base_branch": base_branch, "files": files, "count": len(files)}
+        return {
+            "project_id": args.get("project_id", ""),
+            "base_branch": base_branch,
+            "files": files,
+            "count": len(files),
+        }
 
     async def cmd_git_log(self, args: dict) -> dict:
         checkout_path, project, err = await self._resolve(args)
@@ -681,10 +839,15 @@ class GitPlugin(InternalPlugin):
         count = args.get("count", 10)
         log_output = await self._git.aget_recent_commits(checkout_path, count=count)
         branch = await self._git.aget_current_branch(checkout_path)
-        return {"project_id": args["project_id"], "branch": branch, "log": log_output or "(no commits)"}
+        return {
+            "project_id": args["project_id"],
+            "branch": branch,
+            "log": log_output or "(no commits)",
+        }
 
     async def cmd_git_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -695,14 +858,23 @@ class GitPlugin(InternalPlugin):
                 await git.acreate_branch(checkout_path, new_branch)
             except GitError as e:
                 return {"error": str(e)}
-            return {"project_id": args["project_id"], "created": new_branch, "message": f"Created and switched to branch '{new_branch}'"}
+            return {
+                "project_id": args["project_id"],
+                "created": new_branch,
+                "message": f"Created and switched to branch '{new_branch}'",
+            }
         else:
             branches = await git.alist_branches(checkout_path)
             current = await git.aget_current_branch(checkout_path)
-            return {"project_id": args["project_id"], "current_branch": current, "branches": branches}
+            return {
+                "project_id": args["project_id"],
+                "current_branch": current,
+                "branches": branches,
+            }
 
     async def cmd_git_checkout(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -714,11 +886,16 @@ class GitPlugin(InternalPlugin):
         except GitError as e:
             return {"error": str(e)}
         new_branch = await git.aget_current_branch(checkout_path)
-        return {"project_id": args["project_id"], "old_branch": old_branch, "new_branch": new_branch,
-                "message": f"Switched from '{old_branch}' to '{new_branch}'"}
+        return {
+            "project_id": args["project_id"],
+            "old_branch": old_branch,
+            "new_branch": new_branch,
+            "message": f"Switched from '{old_branch}' to '{new_branch}'",
+        }
 
     async def cmd_git_diff(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -731,10 +908,15 @@ class GitPlugin(InternalPlugin):
                 diff = await git._arun(["diff"], cwd=checkout_path)
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args["project_id"], "base_branch": base or "(working tree)", "diff": diff or "(no changes)"}
+        return {
+            "project_id": args["project_id"],
+            "base_branch": base or "(working tree)",
+            "diff": diff or "(no changes)",
+        }
 
     async def cmd_create_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         branch_name = args.get("branch_name")
         if not branch_name:
             return {"error": "branch_name is required"}
@@ -749,6 +931,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_checkout_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         branch_name = args.get("branch_name")
         if not branch_name:
             return {"error": "branch_name is required"}
@@ -767,6 +950,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_commit_changes(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         message = args.get("message")
         if not message:
             return {"error": "message is required"}
@@ -778,8 +962,16 @@ class GitPlugin(InternalPlugin):
         except GitError as e:
             return {"error": str(e)}
         if not committed:
-            return {"project_id": args["project_id"], "status": "nothing_to_commit", "message": "No changes to commit"}
-        result = {"project_id": args["project_id"], "commit_message": message, "status": "committed"}
+            return {
+                "project_id": args["project_id"],
+                "status": "nothing_to_commit",
+                "message": "No changes to commit",
+            }
+        result = {
+            "project_id": args["project_id"],
+            "commit_message": message,
+            "status": "committed",
+        }
         warning = await self._warn_if_in_progress(args["project_id"])
         if warning:
             result["warning"] = warning
@@ -787,6 +979,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_push_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
@@ -804,6 +997,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_merge_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         branch_name = args.get("branch_name")
         if not branch_name:
             return {"error": "branch_name is required"}
@@ -817,18 +1011,29 @@ class GitPlugin(InternalPlugin):
             return {"error": str(e)}
         warning = await self._warn_if_in_progress(args["project_id"])
         if not success:
-            result = {"project_id": args["project_id"], "branch": branch_name, "target": default_branch,
-                      "status": "conflict", "message": "Merge conflict -- merge was aborted"}
+            result = {
+                "project_id": args["project_id"],
+                "branch": branch_name,
+                "target": default_branch,
+                "status": "conflict",
+                "message": "Merge conflict -- merge was aborted",
+            }
             if warning:
                 result["warning"] = warning
             return result
-        result = {"project_id": args["project_id"], "branch": branch_name, "target": default_branch, "status": "merged"}
+        result = {
+            "project_id": args["project_id"],
+            "branch": branch_name,
+            "target": default_branch,
+            "status": "merged",
+        }
         if warning:
             result["warning"] = warning
         return result
 
     async def cmd_create_github_repo(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         name = args.get("name")
         if not name:
             return {"error": "name is required"}
@@ -837,15 +1042,20 @@ class GitPlugin(InternalPlugin):
         description = args.get("description", "")
         git = self._git
         if not await git.acheck_gh_auth():
-            return {"error": "GitHub CLI is not authenticated. Run `gh auth login` on the host to configure credentials."}
+            return {
+                "error": "GitHub CLI is not authenticated. Run `gh auth login` on the host to configure credentials."
+            }
         try:
-            url = await git.acreate_github_repo(name, private=private, org=org, description=description)
+            url = await git.acreate_github_repo(
+                name, private=private, org=org, description=description
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"created": True, "repo_url": url, "name": name}
 
     async def cmd_generate_readme(self, args: dict) -> dict:
         from src.git.manager import GitError
+
         project_name = args.get("name")
         if not project_name:
             return {"error": "name is required"}
@@ -863,7 +1073,16 @@ class GitPlugin(InternalPlugin):
             for tech in (t.strip() for t in tech_stack.split(",") if t.strip()):
                 lines.append(f"- {tech}")
             lines.append("")
-        lines += ["## Getting Started", "", "TODO: Add setup instructions.", "", "## License", "", "TODO: Add license information.", ""]
+        lines += [
+            "## Getting Started",
+            "",
+            "TODO: Add setup instructions.",
+            "",
+            "## License",
+            "",
+            "TODO: Add license information.",
+            "",
+        ]
 
         readme_content = "\n".join(lines)
         readme_path = os.path.join(checkout_path, "README.md")
@@ -881,8 +1100,13 @@ class GitPlugin(InternalPlugin):
             return {"error": f"Failed to commit README.md: {e}"}
 
         if not committed:
-            return {"project_id": args.get("project_id", ""), "readme_path": readme_path,
-                    "committed": False, "pushed": False, "message": "README.md written but nothing new to commit"}
+            return {
+                "project_id": args.get("project_id", ""),
+                "readme_path": readme_path,
+                "committed": False,
+                "pushed": False,
+                "message": "README.md written but nothing new to commit",
+            }
 
         pushed = False
         try:
@@ -892,5 +1116,10 @@ class GitPlugin(InternalPlugin):
         except GitError:
             pass
 
-        return {"project_id": args.get("project_id", ""), "readme_path": readme_path,
-                "committed": True, "pushed": pushed, "status": "generated"}
+        return {
+            "project_id": args.get("project_id", ""),
+            "readme_path": readme_path,
+            "committed": True,
+            "pushed": pushed,
+            "status": "generated",
+        }
