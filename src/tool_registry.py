@@ -50,7 +50,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "project": CategoryMeta(
         name="project",
-        description=("Project CRUD, workspace management, channel configuration"),
+        description=(
+            "Project CRUD, workspace management, channel configuration, "
+            "project metadata (repo URL, GitHub URL, workspace path)"
+        ),
     ),
     "agent": CategoryMeta(
         name="agent",
@@ -356,9 +359,10 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "get_project",
         "description": (
-            "Get full details for a single project, including repo URL, workspace path, "
+            "Get full details for a single project, including repo/GitHub URL, workspace path, "
             "default branch, token usage, and configuration. Use this when you need "
-            "project metadata like the GitHub/git URL, workspace location, or budget info."
+            "project metadata like the GitHub/git repository URL, workspace location, or budget info. "
+            "This is the go-to tool for answering questions about a project's URL, location, or setup."
         ),
         "input_schema": {
             "type": "object",

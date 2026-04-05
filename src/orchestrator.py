@@ -3233,6 +3233,10 @@ class Orchestrator:
         sys_parts = [f"- Workspace directory: {workspace}"]
         if project:
             sys_parts.append(f"- Project: {project.name} (id: {project.id})")
+            if project.repo_url:
+                sys_parts.append(f"- Repository URL: {project.repo_url}")
+            if project.repo_default_branch:
+                sys_parts.append(f"- Default branch: {project.repo_default_branch}")
         if task.branch_name:
             sys_parts.append(f"- Git branch: {task.branch_name}")
         builder.add_context("system_context", "## System Context\n" + "\n".join(sys_parts))
