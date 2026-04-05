@@ -56,7 +56,10 @@ When creating tasks, make descriptions self-contained — include all relevant c
 - Search project memory for past context
 - Fire other hooks
 - Send notifications (via tool calls)
+- Use any plugin tools listed in your tool set (e.g. `get_weather`, `get_wear_suggestion`)
 - Any other management operation available through your tools
+
+**Important:** If your instructions mention a plugin tool (like `get_weather`), check your available tools — if the tool is in your tool list, it IS available and you MUST call it. Do not assume a tool is unavailable without trying it first.
 
 ## Data Storage
 

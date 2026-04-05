@@ -663,10 +663,25 @@ class HookEngine:
                         pass
                 return
 
+            # Log tool usage summary for debugging
+            if tool_labels:
+                logger.info(
+                    "Hook %s used tools: %s",
+                    hook.name,
+                    ", ".join(tool_labels),
+                )
+            else:
+                logger.warning(
+                    "Hook %s completed without calling any tools — "
+                    "the LLM may have hallucinated its response",
+                    hook.name,
+                )
+
             await self.db.update_hook_run(
                 run.id,
                 status="completed",
                 llm_response=response,
+                actions_taken=json.dumps(tool_labels) if tool_labels else None,
                 tokens_used=tokens,
                 completed_at=time.time(),
             )
@@ -805,6 +820,33 @@ class HookEngine:
                 parts.append("Last run: *first run*")
             timing_line = "\n".join(parts) + "\n"
 
+        # Build available plugin tools context so the LLM knows which
+        # plugin tools it can call (prevents hallucinating "unavailable").
+        plugin_tools_line = ""
+        orchestrator = getattr(self, "_orchestrator", None)
+        if orchestrator and hasattr(orchestrator, "plugin_registry"):
+            registry = orchestrator.plugin_registry
+            if registry:
+                loaded = registry.list_plugins()
+                if loaded:
+                    parts = ["## Available Plugin Tools\n"]
+                    parts.append(
+                        "The following plugin tools are loaded and ready to use. "
+                        "Call them directly — they ARE available.\n"
+                    )
+                    for p in loaded:
+                        status = p.get("status", "unknown")
+                        if status != "active":
+                            continue
+                        tools = p.get("tools", [])
+                        if tools:
+                            parts.append(
+                                f"- **{p['name']}** v{p.get('version', '?')}: "
+                                f"{', '.join(f'`{t}`' for t in tools)}"
+                            )
+                    if len(parts) > 2:  # Has at least one active plugin with tools
+                        plugin_tools_line = "\n".join(parts) + "\n\n"
+
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
@@ -822,6 +864,11 @@ class HookEngine:
             },
         )
         result, _ = builder.build()
+
+        # Append plugin tools context after the main context
+        if plugin_tools_line:
+            result += plugin_tools_line
+
         return result
 
     async def _invoke_llm(
