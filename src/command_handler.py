@@ -4755,6 +4755,11 @@ feature work stuck on feature branches across multiple workspaces.
                 "total": sum(r["total"] for r in rows),
             }
 
+    async def _cmd_token_audit(self, args: dict) -> dict:
+        days = args.get("days", 7)
+        project_id = args.get("project_id")
+        return await self.db.get_token_audit(days=days, project_id=project_id)
+
     # -----------------------------------------------------------------------
     # Git commands -- full git workflow via GitManager.
     # Two generations of git commands coexist here: the newer "git_*" set

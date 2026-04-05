@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import func, insert, select
 
-from src.database.tables import token_ledger
+from src.database.tables import projects, tasks, token_ledger
 
 
 class TokenQueryMixin:
@@ -48,3 +49,112 @@ class TokenQueryMixin:
             result = await conn.execute(stmt)
             row = result.fetchone()
             return row[0]
+
+    async def get_token_audit(
+        self,
+        days: int = 7,
+        project_id: str | None = None,
+    ) -> dict:
+        """Return a comprehensive token audit for a time range.
+
+        Returns a dict with keys: total, since, until, by_project, top_tasks, daily.
+        """
+        now = time.time()
+        since = now - (days * 86400)
+
+        base = token_ledger.c.timestamp >= since
+        if project_id:
+            base = (token_ledger.c.timestamp >= since) & (token_ledger.c.project_id == project_id)
+
+        async with self._engine.begin() as conn:
+            # -- Grand total --
+            stmt = select(func.coalesce(func.sum(token_ledger.c.tokens_used), 0)).where(base)
+            row = (await conn.execute(stmt)).fetchone()
+            grand_total = row[0]
+
+            # -- By project --
+            stmt = (
+                select(
+                    token_ledger.c.project_id,
+                    projects.c.name.label("project_name"),
+                    func.sum(token_ledger.c.tokens_used).label("tokens"),
+                    func.count(func.distinct(token_ledger.c.task_id)).label("task_count"),
+                )
+                .join(projects, token_ledger.c.project_id == projects.c.id)
+                .where(base)
+                .group_by(token_ledger.c.project_id, projects.c.name)
+                .order_by(func.sum(token_ledger.c.tokens_used).desc())
+            )
+            rows = (await conn.execute(stmt)).fetchall()
+            by_project = [
+                {
+                    "project_id": r.project_id,
+                    "project_name": r.project_name,
+                    "tokens": r.tokens,
+                    "task_count": r.task_count,
+                }
+                for r in rows
+            ]
+
+            # -- Top tasks --
+            stmt = (
+                select(
+                    token_ledger.c.project_id,
+                    token_ledger.c.task_id,
+                    tasks.c.title.label("task_title"),
+                    tasks.c.status.label("task_status"),
+                    func.sum(token_ledger.c.tokens_used).label("tokens"),
+                )
+                .join(tasks, token_ledger.c.task_id == tasks.c.id)
+                .where(base)
+                .group_by(
+                    token_ledger.c.project_id,
+                    token_ledger.c.task_id,
+                    tasks.c.title,
+                    tasks.c.status,
+                )
+                .order_by(func.sum(token_ledger.c.tokens_used).desc())
+                .limit(20)
+            )
+            rows = (await conn.execute(stmt)).fetchall()
+            top_tasks = [
+                {
+                    "project_id": r.project_id,
+                    "task_id": r.task_id,
+                    "title": r.task_title,
+                    "status": r.task_status,
+                    "tokens": r.tokens,
+                }
+                for r in rows
+            ]
+
+            # -- Daily totals --
+            # Group in Python to avoid dialect-specific date functions
+            stmt = (
+                select(
+                    token_ledger.c.timestamp,
+                    token_ledger.c.tokens_used,
+                )
+                .where(base)
+                .order_by(token_ledger.c.timestamp)
+            )
+            rows = (await conn.execute(stmt)).fetchall()
+            daily_map: dict[str, int] = {}
+            for r in rows:
+                day = datetime.fromtimestamp(r.timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+                daily_map[day] = daily_map.get(day, 0) + r.tokens_used
+            daily = [{"date": d, "tokens": t} for d, t in sorted(daily_map.items())]
+
+        since_str = datetime.fromtimestamp(since, tz=timezone.utc).strftime("%Y-%m-%d")
+        until_str = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        return {
+            "total": grand_total,
+            "days": days,
+            "since": since_str,
+            "until": until_str,
+            "project_id": project_id,
+            "by_project": by_project,
+            "top_tasks": top_tasks,
+            "daily": daily,
+        }
