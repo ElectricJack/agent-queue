@@ -105,9 +105,9 @@ Summarizes a conversation transcript.
 
 ### Direct Work vs. Task Delegation
 
-You are an orchestrator, not a code worker. Your primary value is reasoning about
-*what* needs to be done, then delegating execution to agents who have full context
-windows, isolated workspaces, and comprehensive tool suites.
+The Supervisor is an orchestrator, not a code worker. Its primary value is reasoning
+about *what* needs to be done, then delegating execution to agents who have full
+context windows, isolated workspaces, and comprehensive tool suites.
 
 **Delegate to an agent (create a task) for:**
 - ANY code change, no matter how small — even single-line fixes
@@ -117,9 +117,10 @@ windows, isolated workspaces, and comprehensive tool suites.
 - Multi-step investigations that require file modifications
 - Anything involving git operations (commits, branches, PRs)
 - When a user describes work that could be a task — create it proactively
+- When a user says something "should", "could", or "needs to" work differently — this is a change request, not a question. Create a task to investigate and implement.
+- When a user reports unexpected behavior — even if the current behavior can be explained, create a task to investigate whether a change is needed
 
 **Do it yourself (no task needed) ONLY for:**
-- Reading files to answer a question (grep, glob, read — investigation only)
 - Running a quick status command to report results
 - Management operations: task/project/agent/rule/hook CRUD
 - Answering questions about system state (list tasks, check status)
@@ -130,6 +131,37 @@ windows, isolated workspaces, and comprehensive tool suites.
 - **Parallelize.** Creating 3 focused tasks costs no more wall-clock time than 1. Break decomposable work into parallel tasks.
 - **Don't load `files` tools to make edits.** If you're reaching for write/edit tools, you should be creating a task instead.
 - **Self-contained descriptions.** Task descriptions must include all context the agent needs — file paths, requirements, error messages, design decisions. The agent has never seen this conversation.
+- **Don't explain away requests.** If a user says something should work differently, do NOT investigate current behavior and then reply "it already works that way." The user had a reason for asking — create a task to investigate the gap between their expectation and the actual behavior.
+
+### System Prompt Architecture
+
+The system prompt (`src/prompts/supervisor_system.md`) is assembled dynamically
+by `_build_system_prompt()` using `PromptBuilder`. It combines the static prompt
+template with runtime context injected at each conversation turn.
+
+**Tool Name Index** (`ToolRegistry.get_tool_index()`)
+- A compact markdown listing of all registered tools grouped by category is
+  injected into the system prompt at build time.
+- Format: `**category**: tool1, tool2, tool3` — one line per category.
+- Eliminates the need for a `browse_tools` round-trip at the start of every
+  conversation, saving ~2–5 seconds of latency per interaction.
+- The index is always current because it is regenerated from the live registry
+  on every `_build_system_prompt()` call.
+- Implementation: `src/tool_registry.py` → `get_tool_index()`,
+  called from `src/supervisor.py` → `_build_system_prompt()`.
+
+**Memory Search Guidance for Tool Usage**
+- The system prompt includes a "Tool Usage Lookup" section that teaches the
+  Supervisor to use `memory_search` when unsure of a tool's exact parameters.
+- Past task results and notes contain examples of successful tool invocations,
+  making `memory_search` a fast alternative to guessing or asking the user.
+- Supports batch lookups via the `queries` array parameter.
+- Reduces failed tool calls and retry loops caused by incorrect parameter names.
+
+**Active Project Context**
+- When an active project is set, `_build_system_prompt()` injects an
+  `active_project` context block so the LLM knows the default `project_id`
+  for all tool calls.
 
 ### Invariants
 - Only one Supervisor instance per bot (created by AgentQueueBot)
