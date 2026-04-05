@@ -1606,7 +1606,10 @@ _ALL_TOOL_DEFINITIONS = [
             "in response to events. Passive rules influence reasoning without "
             "triggering actions. "
             "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
-            "'When a task is completed'), and ## Logic section in the content."
+            "'When a task is completed'), and ## Logic section in the content. "
+            "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
+            "save_rule to store data, timestamps, or key-value state. Use "
+            "write_note or update_note for persistent data storage."
         ),
         "input_schema": {
             "type": "object",
@@ -2205,7 +2208,10 @@ class ToolRegistry:
                     "in response to events. Passive rules influence reasoning without "
                     "triggering actions. "
                     "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
-                    "'When a task is completed'), and ## Logic section in the content."
+                    "'When a task is completed'), and ## Logic section in the content. "
+                    "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
+                    "save_rule to store data, timestamps, or key-value state. Use "
+                    "write_note or update_note for persistent data storage."
                 ),
                 "input_schema": {
                     "type": "object",
