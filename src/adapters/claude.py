@@ -205,6 +205,8 @@ class ClaudeAdapter(AgentAdapter):
         self._config = config or ClaudeAdapterConfig()
         self._task: TaskContext | None = None
         self._cancel_event = asyncio.Event()
+        self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._inject_event = asyncio.Event()
         self._session_id: str | None = None
         self._llm_logger = llm_logger
         # References to the active SDK transport/query so stop() can force-kill
@@ -311,124 +313,156 @@ class ClaudeAdapter(AgentAdapter):
                 f"prompt={len(current_prompt)} chars, "
                 f"allowed_tools={allowed}, mcp_servers={mcp_names})"
             )
-            cli_error: str | None = None
-            try:
-                async for message in _resilient_query(
-                    prompt=current_prompt, options=options, adapter=self
-                ):
-                    # Log only messages with meaningful subtypes to reduce noise
-                    msg_subtype = getattr(message, "subtype", "")
-                    if msg_subtype and msg_subtype not in ("", None):
-                        msg_type = getattr(message, "type", "unknown")
-                        print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
 
-                    if self._cancel_event.is_set():
+            # Main query loop — runs once normally, but repeats when a
+            # message is injected mid-execution (cancel → resume cycle).
+            while True:
+                cli_error: str | None = None
+                _interrupted_by_inject = False
+                try:
+                    async for message in _resilient_query(
+                        prompt=current_prompt, options=options, adapter=self
+                    ):
+                        msg_subtype = getattr(message, "subtype", "")
+                        if msg_subtype and msg_subtype not in ("", None):
+                            msg_type = getattr(message, "type", "unknown")
+                            print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
+
+                        if self._cancel_event.is_set():
+                            output = AgentOutput(
+                                result=AgentResult.FAILED,
+                                summary="Cancelled",
+                                error_message="Agent was stopped",
+                            )
+                            self._log_session(current_prompt, output, _wait_start, _time)
+                            return output
+
+                        # Capture session ID from init message.
+                        if hasattr(message, "subtype") and message.subtype == "init":
+                            data = getattr(message, "data", {})
+                            self._session_id = (
+                                data.get("session_id")
+                                if isinstance(data, dict)
+                                else getattr(message, "session_id", None)
+                            )
+                            print(f"Claude adapter: session started ({self._session_id})")
+
+                        # Forward interesting messages to the callback
+                        if on_message:
+                            text = self._extract_message_text(message)
+                            if text:
+                                await on_message(text)
+
+                        # Capture result and token usage from ResultMessage
+                        if isinstance(message, ResultMessage):
+                            if getattr(message, "is_error", False):
+                                err_subtype = getattr(message, "subtype", "") or "unknown"
+                                err_result = str(getattr(message, "result", "") or "")
+                                cli_error = (
+                                    f"{err_subtype}: {err_result}".strip(": ") or err_subtype
+                                )
+                                print(f"Claude adapter: CLI returned error result: {cli_error}")
+                            else:
+                                if message.result:
+                                    summary_parts.append(str(message.result))
+                            usage = getattr(message, "usage", None)
+                            if usage and isinstance(usage, dict):
+                                tokens_used += usage.get("input_tokens", 0) + usage.get(
+                                    "output_tokens", 0
+                                )
+                        elif hasattr(message, "result") and message.result:
+                            summary_parts.append(str(message.result))
+
+                except Exception as e:
+                    # If inject closed the transport, the stream may raise.
+                    # Check inject_event before treating as a real error.
+                    if self._inject_event.is_set() and not self._cancel_event.is_set():
+                        _interrupted_by_inject = True
+                    else:
+                        import traceback
+
+                        error_msg = str(e)
+                        full_traceback = traceback.format_exc()
+                        print(f"Claude adapter error: {error_msg}")
+                        print(full_traceback)
+                        if "token" in error_msg.lower() or "quota" in error_msg.lower():
+                            output = AgentOutput(
+                                result=AgentResult.PAUSED_TOKENS,
+                                error_message=error_msg,
+                            )
+                            self._log_session(current_prompt, output, _wait_start, _time)
+                            return output
                         output = AgentOutput(
                             result=AgentResult.FAILED,
-                            summary="Cancelled",
-                            error_message="Agent was stopped",
+                            error_message=f"{error_msg}\n{full_traceback}",
                         )
                         self._log_session(current_prompt, output, _wait_start, _time)
                         return output
 
-                    # Capture session ID from init message.
-                    # SystemMessage only has .subtype and .data (a raw dict);
-                    # the session_id lives in .data, not as a top-level attribute.
-                    if hasattr(message, "subtype") and message.subtype == "init":
-                        data = getattr(message, "data", {})
-                        self._session_id = (
-                            data.get("session_id")
-                            if isinstance(data, dict)
-                            else getattr(message, "session_id", None)
-                        )
-                        print(f"Claude adapter: session started ({self._session_id})")
+                # Check if an injected message interrupted the query.
+                # Also handle the case where the stream ended cleanly but
+                # an inject arrived between messages.
+                if not _interrupted_by_inject and self._inject_event.is_set():
+                    _interrupted_by_inject = True
 
-                    # Forward interesting messages to the callback
+                if _interrupted_by_inject and not self._inject_queue.empty():
+                    injected = self._inject_queue.get_nowait()
+                    self._inject_event.clear()
+                    print(
+                        f"Claude adapter: injecting message into session "
+                        f"{self._session_id} ({len(injected)} chars)"
+                    )
                     if on_message:
-                        text = self._extract_message_text(message)
-                        if text:
-                            await on_message(text)
+                        await on_message("💬 **User message received** — resuming session")
+                    # Resume same session with the injected message as prompt
+                    from dataclasses import replace as _replace
 
-                    # Capture result and token usage from ResultMessage
-                    if isinstance(message, ResultMessage):
-                        # Check for error result BEFORE treating as success
-                        if getattr(message, "is_error", False):
-                            err_subtype = getattr(message, "subtype", "") or "unknown"
-                            err_result = str(getattr(message, "result", "") or "")
-                            cli_error = f"{err_subtype}: {err_result}".strip(": ") or err_subtype
-                            print(f"Claude adapter: CLI returned error result: {cli_error}")
-                        else:
-                            if message.result:
-                                summary_parts.append(str(message.result))
-                        usage = getattr(message, "usage", None)
-                        if usage and isinstance(usage, dict):
-                            tokens_used += usage.get("input_tokens", 0) + usage.get(
-                                "output_tokens", 0
-                            )
-                    elif hasattr(message, "result") and message.result:
-                        summary_parts.append(str(message.result))
+                    options = _replace(
+                        options,
+                        resume=self._session_id,
+                        fork_session=False,
+                    )
+                    current_prompt = injected
+                    continue  # loop back to run a new query
 
-            except Exception as e:
-                import traceback
-
-                error_msg = str(e)
-                full_traceback = traceback.format_exc()
-                print(f"Claude adapter error: {error_msg}")
-                print(full_traceback)
-                if "token" in error_msg.lower() or "quota" in error_msg.lower():
+                # Normal exit — no injection pending
+                if cli_error:
+                    print(f"Claude adapter: query failed with CLI error: {cli_error}")
                     output = AgentOutput(
-                        result=AgentResult.PAUSED_TOKENS,
-                        error_message=error_msg,
+                        result=AgentResult.FAILED,
+                        error_message=cli_error,
+                        tokens_used=tokens_used,
                     )
                     self._log_session(current_prompt, output, _wait_start, _time)
                     return output
-                output = AgentOutput(
-                    result=AgentResult.FAILED,
-                    error_message=f"{error_msg}\n{full_traceback}",
-                )
-                self._log_session(current_prompt, output, _wait_start, _time)
-                return output
 
-            # If the CLI reported an error result, propagate it as FAILED
-            if cli_error:
-                print(f"Claude adapter: query failed with CLI error: {cli_error}")
+                print(
+                    f"Claude adapter: query completed, {len(summary_parts)} result parts, "
+                    f"{tokens_used} tokens"
+                )
+
+                if tokens_used == 0 and not summary_parts:
+                    print("Claude adapter: 0 tokens and no output — treating as failure")
+                    output = AgentOutput(
+                        result=AgentResult.FAILED,
+                        error_message=(
+                            "Agent session ended with 0 tokens and no output. "
+                            "Possible causes: rate limit on subscription, "
+                            "authentication failure, or Claude CLI crash. "
+                            "Check `claude login` status and subscription limits."
+                        ),
+                        tokens_used=0,
+                    )
+                    self._log_session(current_prompt, output, _wait_start, _time)
+                    return output
+
                 output = AgentOutput(
-                    result=AgentResult.FAILED,
-                    error_message=cli_error,
+                    result=AgentResult.COMPLETED,
+                    summary="\n".join(summary_parts) or "Completed",
                     tokens_used=tokens_used,
                 )
                 self._log_session(current_prompt, output, _wait_start, _time)
                 return output
-
-            print(
-                f"Claude adapter: query completed, {len(summary_parts)} result parts, "
-                f"{tokens_used} tokens"
-            )
-
-            # If the agent used 0 tokens and produced no meaningful output,
-            # something went wrong (e.g. auth failure, rate limit, CLI crash).
-            if tokens_used == 0 and not summary_parts:
-                print("Claude adapter: 0 tokens and no output — treating as failure")
-                output = AgentOutput(
-                    result=AgentResult.FAILED,
-                    error_message=(
-                        "Agent session ended with 0 tokens and no output. "
-                        "Possible causes: rate limit on subscription, "
-                        "authentication failure, or Claude CLI crash. "
-                        "Check `claude login` status and subscription limits."
-                    ),
-                    tokens_used=0,
-                )
-                self._log_session(current_prompt, output, _wait_start, _time)
-                return output
-
-            output = AgentOutput(
-                result=AgentResult.COMPLETED,
-                summary="\n".join(summary_parts) or "Completed",
-                tokens_used=tokens_used,
-            )
-            self._log_session(current_prompt, output, _wait_start, _time)
-            return output
         except ImportError as e:
             return AgentOutput(
                 result=AgentResult.FAILED,
@@ -468,6 +502,26 @@ class ClaudeAdapter(AgentAdapter):
         self._cancel_event.set()
         # Force-close the subprocess transport so the CLI actually terminates,
         # rather than just hoping the cancel flag is checked between messages.
+        if self._active_query:
+            try:
+                await self._active_query.close()
+            except Exception:
+                pass
+        if self._active_transport:
+            try:
+                await self._active_transport.close()
+            except Exception:
+                pass
+
+    async def inject_message(self, msg: str) -> None:
+        """Inject a message into the running session.
+
+        Queues the message and interrupts the current SDK query so that
+        ``_wait()`` can resume the session with the new prompt.
+        """
+        self._inject_queue.put_nowait(msg)
+        self._inject_event.set()
+        # Gracefully close the active query so the session is saved to disk
         if self._active_query:
             try:
                 await self._active_query.close()
