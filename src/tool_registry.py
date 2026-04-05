@@ -2404,6 +2404,34 @@ class ToolRegistry:
             return [self.compress_tool_schema(t) for t in tools]
         return tools
 
+    def get_tool_index(self) -> str:
+        """Return a compact tool name index grouped by category.
+
+        Lists all tool names (no descriptions or schemas) organized by
+        category, one line per category.  Intended for injection into the
+        supervisor system prompt so the LLM always knows which tools exist
+        without calling ``browse_tools``.
+
+        Returns:
+            Markdown-formatted string, e.g.::
+
+                **git**: git_status, git_commit, git_push, ...
+                **memory**: memory_search, memory_stats, ...
+        """
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+
+        lines: list[str] = []
+        for cat_name in CATEGORIES:
+            names = sorted(
+                name
+                for name, t in merged.items()
+                if self._tool_category(name, t) == cat_name
+            )
+            if names:
+                lines.append(f"**{cat_name}**: {', '.join(names)}")
+        return "\n".join(lines)
+
     def get_category_tool_names(self, category: str) -> list[str] | None:
         """Return tool names for a category.
 

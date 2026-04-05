@@ -238,6 +238,9 @@ class Supervisor:
                 f"explicitly specifies a different project. When creating tasks, "
                 f"listing notes, or any project-scoped operation, use this project.",
             )
+        tool_index = self._registry.get_tool_index()
+        if tool_index:
+            builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
         system_prompt, _ = builder.build()
         return system_prompt
 
