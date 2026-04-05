@@ -16,5 +16,5 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 vibecop = "aq_vibecop:VibeCopPlugin"
 
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=78.1.1"]
 build-backend = "setuptools.build_meta"

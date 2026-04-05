@@ -108,7 +108,7 @@ dependencies = ["httpx"]
 email-reviewer = "email_reviewer:EmailReviewerPlugin"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=78.1.1"]
 build-backend = "setuptools.build_meta"
 ```
 
