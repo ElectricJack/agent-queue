@@ -14,7 +14,6 @@ See specs/event-bus.md for the full specification.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 from collections import defaultdict
 from typing import Any, Callable
@@ -31,8 +30,17 @@ class EventBus:
     def __init__(self):
         self._handlers: dict[str, list[Callable]] = defaultdict(list)
 
-    def subscribe(self, event_type: str, handler: Callable) -> None:
+    def subscribe(self, event_type: str, handler: Callable) -> Callable[[], None]:
+        """Subscribe a handler and return an unsubscribe callable."""
         self._handlers[event_type].append(handler)
+
+        def unsubscribe() -> None:
+            try:
+                self._handlers[event_type].remove(handler)
+            except ValueError:
+                pass  # already removed
+
+        return unsubscribe
 
     async def emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         data = data or {}
