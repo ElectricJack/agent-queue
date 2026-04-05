@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import and_, delete, func, insert, select, update
+from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import (
     agents,
@@ -36,10 +38,12 @@ class ArchiveQueryMixin:
 
         now = time.time()
         async with self._engine.begin() as conn:
-            # Insert into archive
+            # Insert into archive (skip if already archived).
+            # on_conflict_do_nothing requires dialect-specific insert.
+            _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
             await conn.execute(
-                insert(archived_tasks)
-                .prefix_with("OR IGNORE")
+                _insert(archived_tasks)
+                .on_conflict_do_nothing()
                 .values(
                     id=task.id,
                     project_id=task.project_id,
