@@ -1369,7 +1369,7 @@ class RulesListView(discord.ui.View):
             self.add_item(next_btn)
 
     def build_embed(self) -> discord.Embed:
-        """Build an embed with markdown-formatted rules list."""
+        """Build an embed with a markdown table of rules."""
         if not self._rules:
             return make_embed(
                 EmbedStyle.INFO,
@@ -1383,46 +1383,39 @@ class RulesListView(discord.ui.View):
         # Status emoji mapping
         _status_emoji = {True: "\u2705", False: "\u23f8\ufe0f", "mixed": "\u26a0\ufe0f"}
 
-        entries: list[str] = []
+        # Build markdown table
+        rows: list[str] = []
+        rows.append("| Rule | Scope | Status | Description |")
+        rows.append("|------|-------|--------|-------------|")
+
         for r in page_rules:
             name = r.get("name") or r.get("id", "?")
             rule_type = r.get("type", "passive")
             scope = r.get("project_id") or "global"
-            hook_count = r.get("hook_count", 0)
             summary = r.get("summary", "")
             enabled = r.get("enabled")
+            hook_count = r.get("hook_count", 0)
 
-            # Type emoji
+            # Type emoji prefix
             type_icon = "\u26a1" if rule_type == "active" else "\U0001f4d6"
 
-            # Status badge
-            status_icon = _status_emoji.get(enabled, "")
-            status_text = (
-                "on" if enabled is True else "off" if enabled is False
-                else "mixed" if enabled == "mixed" else ""
-            )
-            status_part = f" {status_icon} {status_text}" if status_text else ""
+            # Status cell
+            status_icon = _status_emoji.get(enabled, "\u2796")
+            hook_note = f" · {hook_count}h" if hook_count else ""
+            status_cell = f"{status_icon}{hook_note}"
 
-            # Metadata line: scope · hooks · status
-            meta_parts = [f"`{scope}`"]
-            if hook_count:
-                meta_parts.append(f"{hook_count} hook{'s' if hook_count != 1 else ''}")
-            if status_part:
-                meta_parts.append(status_part.strip())
-            meta_line = " \u00b7 ".join(meta_parts)
-
-            # Truncate description for display
-            desc = summary[:120].rstrip() if summary else "*No description*"
-            if summary and len(summary) > 120:
+            # Truncate description for table cell
+            desc = summary[:100].rstrip() if summary else "*No description*"
+            if summary and len(summary) > 100:
                 desc += "\u2026"
+            # Escape pipes in description to avoid breaking markdown table
+            desc = desc.replace("|", "\\|")
 
-            entries.append(
-                f"{type_icon} **{name}**\n"
-                f"{meta_line}\n"
-                f"> {desc}"
+            rows.append(
+                f"| {type_icon} **{name}** | `{scope}` | {status_cell} | {desc} |"
             )
 
-        body = "\n\n".join(entries)
+        body = "\n".join(rows)
 
         # Footer
         footer_parts = []
