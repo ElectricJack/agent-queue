@@ -1,11 +1,85 @@
 """Prompts for the memory consolidation system.
 
+Phase 1: Project Factsheet — structured YAML-frontmatter metadata layer
+that surfaces key project facts (URLs, tech stack, contacts, etc.) for
+instant lookup.
+
 Phase 2: Post-task fact extraction — after each completed task, extract
 structured facts (URLs, tech stack decisions, architectural patterns, etc.)
 into staging JSON files for later consolidation into the project factsheet
 and knowledge base.
 
 Future phases will add consolidation and knowledge-base prompts here.
+"""
+
+# ---------------------------------------------------------------------------
+# Phase 1: Project Factsheet
+# ---------------------------------------------------------------------------
+
+FACTSHEET_SEED_TEMPLATE = """\
+---
+# Auto-maintained by consolidation system
+# Manual edits are preserved; consolidation merges, not overwrites
+last_updated: "{last_updated}"
+consolidation_version: 1
+
+project:
+  name: "{project_name}"
+  id: "{project_id}"
+  description: ""
+
+urls:
+  github: {github_url}
+  docs: null
+  ci: null
+  deploy: null
+
+tech_stack:
+  language: null
+  framework: null
+  build_system: null
+  test_framework: null
+  key_dependencies: []
+
+environments: []
+
+contacts:
+  owner: null
+
+key_paths:
+  source: null
+  tests: null
+  config: null
+  entry_point: null
+---
+
+# {project_name} — Quick Reference
+
+## What It Does
+*(to be filled in by consolidation or manually)*
+
+## Current State
+*(to be filled in by consolidation or manually)*
+
+## Recent Focus Areas
+*(to be filled in by consolidation or manually)*
+"""
+
+FACTSHEET_EXTRACTION_PROMPT = """\
+You are updating a project factsheet with newly discovered facts. The \
+factsheet uses YAML frontmatter for structured data and a markdown body \
+for human-readable summary.
+
+Given the current factsheet and a set of new facts, produce an updated \
+YAML frontmatter block. Rules:
+1. MERGE new values into existing structure — never remove manually-set fields.
+2. Only update fields where the new information is more specific or more \
+   current than the existing value.
+3. null fields should be filled in if a fact provides the information.
+4. For list fields (key_dependencies, environments), append new entries \
+   and deduplicate.
+5. Output ONLY the updated YAML frontmatter (between --- delimiters), \
+   nothing else.
 """
 
 FACT_EXTRACTION_SYSTEM_PROMPT = """\

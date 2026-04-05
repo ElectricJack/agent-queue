@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class TaskStatus(Enum):
@@ -386,16 +387,97 @@ class AgentOutput:
 
 
 @dataclass
+class ProjectFactsheet:
+    """Typed access to a project's factsheet YAML frontmatter.
+
+    The factsheet is a structured YAML-frontmatter + markdown file at
+    ``memory/{project_id}/factsheet.md`` that serves as the quick-reference
+    card for a project.  This dataclass provides typed access to the YAML
+    frontmatter fields for programmatic use.
+
+    Fields correspond to the YAML structure defined in
+    ``FACTSHEET_SEED_TEMPLATE`` (see ``src/prompts/memory_consolidation.py``).
+    """
+
+    raw_yaml: dict[str, Any] = field(default_factory=dict)
+    body_markdown: str = ""
+
+    # Convenience accessors for common fields
+    @property
+    def project_name(self) -> str:
+        return self.raw_yaml.get("project", {}).get("name", "")
+
+    @property
+    def project_id(self) -> str:
+        return self.raw_yaml.get("project", {}).get("id", "")
+
+    @property
+    def urls(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("urls", {})
+
+    @property
+    def tech_stack(self) -> dict[str, Any]:
+        return self.raw_yaml.get("tech_stack", {})
+
+    @property
+    def contacts(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("contacts", {})
+
+    @property
+    def key_paths(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("key_paths", {})
+
+    @property
+    def environments(self) -> list[dict[str, Any]]:
+        return self.raw_yaml.get("environments", [])
+
+    @property
+    def last_updated(self) -> str:
+        return self.raw_yaml.get("last_updated", "")
+
+    def get_field(self, dotted_key: str, default: Any = None) -> Any:
+        """Retrieve a nested YAML value using dot notation.
+
+        Example: ``get_field("urls.github")`` returns the GitHub URL.
+        """
+        keys = dotted_key.split(".")
+        current: Any = self.raw_yaml
+        for key in keys:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return default
+            if current is None:
+                return default
+        return current
+
+    def set_field(self, dotted_key: str, value: Any) -> None:
+        """Set a nested YAML value using dot notation.
+
+        Creates intermediate dicts as needed.
+        Example: ``set_field("urls.github", "https://github.com/user/repo")``
+        """
+        keys = dotted_key.split(".")
+        current = self.raw_yaml
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+
+@dataclass
 class MemoryContext:
     """Structured memory context with tiered priority for agent injection.
 
     Each field contains pre-formatted markdown text ready for injection into
     the agent's context. The orchestrator assembles these tiers in priority
-    order (profile first, then notes, recent tasks, and semantic search)
-    and trims to fit the configured token budget.
+    order (factsheet first, then profile, notes, recent tasks, and semantic
+    search) and trims to fit the configured token budget.
     """
 
-    profile: str = ""  # Project profile (highest priority, always included)
+    factsheet: str = ""  # Project factsheet (Tier 0, highest priority)
+    profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
@@ -405,6 +487,8 @@ class MemoryContext:
     def to_context_block(self) -> str:
         """Assemble all tiers into a single markdown context block."""
         sections = []
+        if self.factsheet:
+            sections.append(f"## Project Factsheet\n{self.factsheet}")
         if self.profile:
             sections.append(f"## Project Profile\n{self.profile}")
         if self.project_docs:
@@ -424,7 +508,8 @@ class MemoryContext:
                 "If you need additional historical context, you can browse markdown files "
                 "in the memory folder using the Read tool:\n"
                 f"- **Task memories:** `{self.memory_folder}tasks/`\n"
-                f"- **Project profile:** `{self.memory_folder}profile.md`"
+                f"- **Project profile:** `{self.memory_folder}profile.md`\n"
+                f"- **Factsheet:** `{self.memory_folder}factsheet.md`"
             )
         return "\n\n".join(sections)
 
@@ -432,6 +517,7 @@ class MemoryContext:
     def is_empty(self) -> bool:
         return not any(
             [
+                self.factsheet,
                 self.profile,
                 self.project_docs,
                 self.notes,

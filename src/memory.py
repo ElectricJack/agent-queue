@@ -36,7 +36,7 @@ import time
 from typing import Any
 
 from src.config import MemoryConfig
-from src.models import MemoryContext
+from src.models import MemoryContext, ProjectFactsheet
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,224 @@ class MemoryManager:
                     logger.warning(f"Profile indexing failed for project {project_id}: {e}")
 
         return path
+
+    # ------------------------------------------------------------------
+    # Phase 1.5: Project Factsheet (Structured Metadata Layer)
+    # ------------------------------------------------------------------
+
+    def _factsheet_path(self, project_id: str) -> str:
+        """Path to the project factsheet file.
+
+        Returns ``{data_dir}/memory/{project_id}/factsheet.md``.
+        """
+        return os.path.join(self._project_memory_dir(project_id), "factsheet.md")
+
+    def _parse_factsheet(self, raw: str) -> ProjectFactsheet:
+        """Parse a factsheet file into a ``ProjectFactsheet`` dataclass.
+
+        Splits on YAML frontmatter delimiters (``---``) and parses the
+        YAML block.  Returns a ``ProjectFactsheet`` with empty defaults
+        if parsing fails.
+        """
+        try:
+            import yaml as _yaml
+        except ImportError:
+            # PyYAML not available — return raw content as body only
+            logger.debug("PyYAML not installed; factsheet YAML parsing unavailable")
+            return ProjectFactsheet(body_markdown=raw)
+
+        # Split on frontmatter delimiters
+        parts = raw.split("---", 2)
+        if len(parts) < 3:
+            # No valid frontmatter — treat entire content as markdown body
+            return ProjectFactsheet(body_markdown=raw)
+
+        yaml_text = parts[1]
+        body = parts[2].strip()
+
+        try:
+            yaml_data = _yaml.safe_load(yaml_text)
+            if not isinstance(yaml_data, dict):
+                yaml_data = {}
+        except Exception as e:
+            logger.warning(f"Failed to parse factsheet YAML: {e}")
+            yaml_data = {}
+
+        return ProjectFactsheet(raw_yaml=yaml_data, body_markdown=body)
+
+    def _serialize_factsheet(self, factsheet: ProjectFactsheet) -> str:
+        """Serialize a ``ProjectFactsheet`` back to YAML-frontmatter + markdown."""
+        try:
+            import yaml as _yaml
+        except ImportError:
+            logger.debug("PyYAML not installed; cannot serialize factsheet")
+            return factsheet.body_markdown
+
+        yaml_text = _yaml.dump(
+            factsheet.raw_yaml,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+        )
+        body = factsheet.body_markdown
+        return f"---\n{yaml_text}---\n\n{body}\n"
+
+    async def read_factsheet(self, project_id: str) -> ProjectFactsheet | None:
+        """Read and parse the project factsheet.
+
+        Returns ``None`` if no factsheet exists yet.
+        """
+        path = self._factsheet_path(project_id)
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path) as f:
+                raw = f.read()
+            return self._parse_factsheet(raw)
+        except Exception as e:
+            logger.warning(f"Failed to read factsheet for project {project_id}: {e}")
+            return None
+
+    async def read_factsheet_raw(self, project_id: str) -> str | None:
+        """Read the raw factsheet content as a string.
+
+        Returns ``None`` if no factsheet exists.  This is used for context
+        injection where the full markdown is needed, not parsed fields.
+        """
+        path = self._factsheet_path(project_id)
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path) as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read factsheet for project {project_id}: {e}")
+            return None
+
+    async def write_factsheet(
+        self,
+        project_id: str,
+        factsheet: ProjectFactsheet,
+        workspace_path: str = "",
+    ) -> str | None:
+        """Write a factsheet to disk and optionally re-index.
+
+        Updates the ``last_updated`` timestamp automatically.
+        Returns the file path on success, ``None`` on failure.
+        """
+        # Update the timestamp
+        factsheet.raw_yaml["last_updated"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        )
+
+        content = self._serialize_factsheet(factsheet)
+        path = self._factsheet_path(project_id)
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(f"Failed to write factsheet for project {project_id}: {e}")
+            return None
+
+        # Re-index the factsheet if we have a memsearch instance
+        if workspace_path:
+            instance = await self.get_instance(project_id, workspace_path)
+            if instance:
+                try:
+                    await instance.index_file(path)
+                except Exception as e:
+                    logger.warning(f"Factsheet indexing failed for project {project_id}: {e}")
+
+        logger.info(f"Factsheet written for project {project_id}")
+        return path
+
+    async def update_factsheet_field(
+        self,
+        project_id: str,
+        dotted_key: str,
+        value: Any,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> str | None:
+        """Update a single field in the project factsheet.
+
+        Creates the factsheet from the seed template if it doesn't exist yet.
+        Uses dot notation for nested keys (e.g. ``"urls.github"``).
+
+        Returns the file path on success, ``None`` on failure.
+        """
+        factsheet = await self.read_factsheet(project_id)
+        if factsheet is None:
+            # Bootstrap from seed template
+            factsheet = await self._seed_factsheet(
+                project_id,
+                project_name=project_name,
+                repo_url=repo_url,
+            )
+
+        factsheet.set_field(dotted_key, value)
+        return await self.write_factsheet(project_id, factsheet, workspace_path)
+
+    async def _seed_factsheet(
+        self,
+        project_id: str,
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> ProjectFactsheet:
+        """Create a new factsheet from the seed template.
+
+        Auto-populates ``urls.github`` from the project's ``repo_url``
+        database field when available.
+        """
+        from src.prompts.memory_consolidation import FACTSHEET_SEED_TEMPLATE
+
+        # Format the github_url as a YAML value (quoted string or null)
+        github_url_yaml = f'"{repo_url}"' if repo_url else "null"
+
+        raw = FACTSHEET_SEED_TEMPLATE.format(
+            last_updated=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            project_name=project_name or project_id,
+            project_id=project_id,
+            github_url=github_url_yaml,
+        )
+
+        return self._parse_factsheet(raw)
+
+    async def ensure_factsheet(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> ProjectFactsheet:
+        """Ensure a factsheet exists for the project, creating one if needed.
+
+        This is the primary bootstrap entry point — call it during context
+        building to guarantee a factsheet exists.  If the factsheet already
+        exists, returns it as-is.
+
+        Returns the (possibly newly created) ``ProjectFactsheet``.
+        """
+        existing = await self.read_factsheet(project_id)
+        if existing is not None:
+            return existing
+
+        # Seed a new factsheet
+        factsheet = await self._seed_factsheet(
+            project_id,
+            project_name=project_name,
+            repo_url=repo_url,
+        )
+        await self.write_factsheet(project_id, factsheet, workspace_path)
+        return factsheet
 
     # ------------------------------------------------------------------
     # Phase 2: Post-Task Profile Revision
@@ -1058,10 +1276,19 @@ class MemoryManager:
             logger.warning(f"Digest summarization failed: {e}")
             return ""
 
-    async def build_context(self, project_id: str, task: Any, workspace_path: str) -> MemoryContext:
+    async def build_context(
+        self,
+        project_id: str,
+        task: Any,
+        workspace_path: str,
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> MemoryContext:
         """Build a structured, tiered memory context for a task.
 
         Returns a ``MemoryContext`` with fields for each priority tier:
+        0. Project factsheet (structured metadata — instant lookup)
         1. Project profile (always included, highest priority)
         1.5. Project documentation (CLAUDE.md — foundational context)
         2. Relevant notes (semantic search matched)
@@ -1076,6 +1303,14 @@ class MemoryManager:
         memory_dir = self._project_memory_dir(project_id)
         if os.path.isdir(memory_dir):
             ctx.memory_folder = memory_dir if memory_dir.endswith("/") else memory_dir + "/"
+
+        # Tier 0: Project Factsheet (structured metadata for instant lookup)
+        try:
+            factsheet_raw = await self.read_factsheet_raw(project_id)
+            if factsheet_raw:
+                ctx.factsheet = factsheet_raw
+        except Exception as e:
+            logger.warning(f"Factsheet load failed for project {project_id}: {e}")
 
         # Tier 1: Project Profile
         if self.config.profile_enabled:
