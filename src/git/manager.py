@@ -1032,7 +1032,6 @@ class GitManager:
         full_name = f"{org}/{name}" if org else name
         cmd = ["gh", "repo", "create", full_name]
         cmd.append("--private" if private else "--public")
-        cmd.append("--yes")
         if description:
             cmd.extend(["--description", description])
         try:
@@ -1662,7 +1661,6 @@ class GitManager:
         full_name = f"{org}/{name}" if org else name
         cmd = ["gh", "repo", "create", full_name]
         cmd.append("--private" if private else "--public")
-        cmd.append("--yes")
         if description:
             cmd.extend(["--description", description])
         try:
@@ -1712,8 +1710,7 @@ class GitManager:
     # is defined above (after the synchronous methods), starting at the
     # "Async public API" comment block around line 1018.
     # The removed block was an older copy that lacked plan-file exclusion
-    # in acommit_all, TimeoutExpired handling in acreate_pr/acheck_pr_merged,
-    # and the --yes flag in acreate_github_repo.
+    # in acommit_all and TimeoutExpired handling in acreate_pr/acheck_pr_merged.
     #
     # If you need to add a new async method, add it in the block above,
     # alongside the existing async methods.

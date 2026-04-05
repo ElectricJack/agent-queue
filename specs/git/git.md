@@ -388,7 +388,7 @@ Checks whether the `gh` CLI is authenticated. Returns `True` if `gh auth status`
 
 Creates a GitHub repository via the `gh` CLI. Returns the HTTPS URL of the newly created repository. Async counterpart: `acreate_github_repo`.
 
-- Constructs `gh repo create <org/name or name>` with `--private` or `--public` and `--yes` (non-interactive).
+- Constructs `gh repo create <org/name or name>` with `--private` or `--public`.
 - Optionally includes `--description <description>`.
 - Uses a 60-second timeout.
 - Parses the URL from stdout (or stderr for some `gh` versions) by scanning for lines starting with `https://` or `http://`.
