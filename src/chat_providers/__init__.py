@@ -36,6 +36,14 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
             num_ctx=config.num_ctx or 0,
         )
 
+    if config.provider == "gemini":
+        from .gemini import GeminiChatProvider
+
+        return GeminiChatProvider(
+            model=config.model or "gemini-2.5-flash",
+            api_key=config.api_key,
+        )
+
     # Default: anthropic
     provider = AnthropicChatProvider(model=config.model)
     if not provider.is_configured:

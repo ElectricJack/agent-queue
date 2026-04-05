@@ -19,6 +19,9 @@ dependencies = [
 anthropic = [
     "anthropic>=0.42.0",
 ]
+gemini = [
+    "google-genai>=1.0.0",
+]
 postgresql = [
     "asyncpg>=0.29.0",
 ]

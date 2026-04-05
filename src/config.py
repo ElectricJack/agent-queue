@@ -495,9 +495,10 @@ class HookEngineConfig:
 class ChatProviderConfig:
     """LLM provider settings for the Discord chat agent (not the coding agents)."""
 
-    provider: str = "anthropic"  # "anthropic" or "ollama"
+    provider: str = "anthropic"  # "anthropic", "ollama", or "gemini"
     model: str = ""  # Empty = provider default
     base_url: str = ""  # For Ollama
+    api_key: str = ""  # For Gemini (falls back to GEMINI_API_KEY / GOOGLE_API_KEY env vars)
     keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
     num_ctx: int = 0  # Ollama: context window size (0 = model default)
 
@@ -511,7 +512,7 @@ class ChatProviderConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        valid_providers = {"anthropic", "ollama"}
+        valid_providers = {"anthropic", "ollama", "gemini"}
         if self.provider and self.provider not in valid_providers:
             errors.append(
                 ConfigError(
@@ -1358,6 +1359,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             provider=cp.get("provider", "anthropic"),
             model=str(raw_model) if raw_model else "",
             base_url=cp.get("base_url", ""),
+            api_key=cp.get("api_key", ""),
             keep_alive=cp.get("keep_alive", "1h"),
             num_ctx=cp.get("num_ctx", 0),
         )
