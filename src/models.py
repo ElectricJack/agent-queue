@@ -476,7 +476,7 @@ class MemoryContext:
     search) and trims to fit the configured token budget.
     """
 
-    factsheet: str = ""  # Project factsheet (Tier 0, highest priority)
+    factsheet: str = ""  # Project factsheet (Tier 0, highest priority — always included)
     profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
     notes: str = ""  # Relevant notes matched by semantic search

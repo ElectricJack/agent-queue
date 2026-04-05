@@ -350,6 +350,24 @@ class MemoryConfig:
     # Phase 4b: Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include
+    # Phase 5: Knowledge Consolidation
+    consolidation_enabled: bool = False  # master switch for consolidation
+    fact_extraction_enabled: bool = True  # extract facts after each task
+    consolidation_schedule: str = "0 3 * * *"  # daily consolidation cron
+    deep_consolidation_schedule: str = "0 4 * * 0"  # weekly deep consolidation
+    consolidation_provider: str = ""  # LLM provider (defaults to revision_provider)
+    consolidation_model: str = ""  # model override for consolidation
+    index_knowledge: bool = True  # index knowledge/ in vector DB
+    factsheet_in_context: bool = True  # include factsheet in agent context (Tier 0)
+    knowledge_topics: tuple[str, ...] = (
+        "architecture",
+        "api-and-endpoints",
+        "deployment",
+        "dependencies",
+        "gotchas",
+        "conventions",
+        "decisions",
+    )
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

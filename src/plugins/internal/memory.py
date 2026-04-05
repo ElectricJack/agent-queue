@@ -245,6 +245,118 @@ TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    # --- Knowledge Consolidation Tools (Phase 5) ---
+    {
+        "name": "project_factsheet",
+        "description": (
+            "View or update the project's quick-reference factsheet — structured "
+            "YAML metadata (URLs, tech stack, contacts, environments, key paths) "
+            "plus a short markdown summary. The factsheet is the fastest way to "
+            "look up project metadata without searching through task history."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to view/update factsheet for",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["view", "update"],
+                    "description": (
+                        "Action to perform: 'view' returns the current factsheet, "
+                        "'update' merges specific field updates into the YAML frontmatter"
+                    ),
+                    "default": "view",
+                },
+                "updates": {
+                    "type": "object",
+                    "description": (
+                        "For action='update': dict of dot-notation field paths to new values. "
+                        "Example: {\"urls.github\": \"https://...\", \"tech_stack.language\": \"Python\"}"
+                    ),
+                    "additionalProperties": {"type": "string"},
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "For action='update': full replacement content for the factsheet "
+                        "(YAML frontmatter + markdown body). Use 'updates' for field-level "
+                        "changes instead when possible."
+                    ),
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "project_knowledge",
+        "description": (
+            "Read organized knowledge about a specific topic for a project. "
+            "Topics include: architecture, api-and-endpoints, deployment, "
+            "dependencies, gotchas, conventions, decisions. Each topic file "
+            "contains sourced facts with references to their origin tasks. "
+            "Use 'list' action to see available topics."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to read knowledge for",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["read", "list"],
+                    "description": (
+                        "'read' returns a specific topic's content, "
+                        "'list' returns all available topics with content status"
+                    ),
+                    "default": "read",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Topic to read (required for action='read'). One of: "
+                        "architecture, api-and-endpoints, deployment, dependencies, "
+                        "gotchas, conventions, decisions"
+                    ),
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "search_all_projects",
+        "description": (
+            "Search across all project factsheets for specific metadata. "
+            "Use this for cross-project queries like 'which projects use "
+            "PostgreSQL?' or 'what's the GitHub URL for project X?'. "
+            "Can search by text query or extract a specific YAML field."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Natural language or keyword query to search across all "
+                        "project factsheets. Case-insensitive text match."
+                    ),
+                },
+                "field": {
+                    "type": "string",
+                    "description": (
+                        "Specific YAML field to extract from all factsheets using "
+                        "dot-notation (e.g. 'urls.github', 'tech_stack.language', "
+                        "'project.name'). Returns only projects that have this field set."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -372,6 +484,11 @@ def _build_cli_formatters():
         "edit_project_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "regenerate_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "view_profile": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
+        "project_factsheet": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
+        "project_knowledge": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
+        "search_all_projects": FormatterSpec(
+            render=_fmt_confirmation, extract=None, many=False
+        ),
     }
 
 
@@ -401,6 +518,9 @@ class MemoryPlugin(InternalPlugin):
         ctx.register_command("regenerate_profile", self.cmd_regenerate_profile)
         ctx.register_command("compact_memory", self.cmd_compact_memory)
         ctx.register_command("consolidate", self.cmd_consolidate)
+        ctx.register_command("project_factsheet", self.cmd_project_factsheet)
+        ctx.register_command("project_knowledge", self.cmd_project_knowledge)
+        ctx.register_command("search_all_projects", self.cmd_search_all_projects)
 
         for tool_def in TOOL_DEFINITIONS:
             ctx.register_tool(dict(tool_def), category="memory")
@@ -714,3 +834,202 @@ class MemoryPlugin(InternalPlugin):
             return {"error": f"Memory consolidation ({mode}) failed: {e}"}
 
         return {"project_id": project_id, "mode": mode, **result}
+
+    # --- Knowledge Consolidation Commands (Phase 5) ---
+
+    async def cmd_project_factsheet(self, args: dict) -> dict:
+        """View or update the project's quick-reference factsheet."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        action = args.get("action", "view")
+
+        if action == "view":
+            try:
+                content = await self._mem.read_factsheet_raw(project_id)
+            except Exception as e:
+                return {"error": f"Failed to read factsheet: {e}"}
+
+            if content is None:
+                return {
+                    "project_id": project_id,
+                    "factsheet": None,
+                    "message": (
+                        "No factsheet exists yet for this project. "
+                        "Use action='update' with 'content' or 'updates' to create one, "
+                        "or wait for the consolidation system to generate one automatically."
+                    ),
+                }
+
+            # Also parse out the YAML data for structured access
+            yaml_data = self._mem.parse_factsheet_yaml(content)
+
+            return {
+                "project_id": project_id,
+                "factsheet": content,
+                "yaml_data": yaml_data,
+            }
+
+        elif action == "update":
+            workspace, err = await self._require_workspace(project_id)
+            if err:
+                return err
+
+            updates = args.get("updates")
+            content = args.get("content")
+
+            if not updates and not content:
+                return {
+                    "error": (
+                        "Either 'updates' (dict of field_path: value) or "
+                        "'content' (full factsheet text) is required for action='update'"
+                    )
+                }
+
+            # Full content replacement
+            if content:
+                try:
+                    path = await self._mem.write_factsheet_raw(project_id, content, workspace)
+                except Exception as e:
+                    return {"error": f"Failed to write factsheet: {e}"}
+
+                if not path:
+                    return {"error": "Factsheet write failed"}
+
+                return {
+                    "project_id": project_id,
+                    "status": "factsheet_updated",
+                    "path": path,
+                }
+
+            # Field-level updates via dot-notation
+            if updates:
+                last_path = None
+                for field_path, value in updates.items():
+                    try:
+                        last_path = await self._mem.update_factsheet_field(
+                            project_id, field_path, value, workspace
+                        )
+                    except Exception as e:
+                        return {
+                            "error": f"Failed to update field '{field_path}': {e}"
+                        }
+
+                    if not last_path:
+                        return {
+                            "error": (
+                                f"Failed to update field '{field_path}'. "
+                                "PyYAML may not be installed."
+                            )
+                        }
+
+                return {
+                    "project_id": project_id,
+                    "status": "factsheet_fields_updated",
+                    "fields_updated": list(updates.keys()),
+                    "path": last_path,
+                }
+
+        return {"error": f"Unknown action '{action}'. Use 'view' or 'update'."}
+
+    async def cmd_project_knowledge(self, args: dict) -> dict:
+        """Read organized knowledge about a specific topic for a project."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        action = args.get("action", "read")
+
+        if action == "list":
+            try:
+                topics = await self._mem.list_knowledge_topics(project_id)
+            except Exception as e:
+                return {"error": f"Failed to list knowledge topics: {e}"}
+
+            return {
+                "project_id": project_id,
+                "topics": topics,
+                "total": len(topics),
+                "with_content": sum(1 for t in topics if t.get("has_content")),
+            }
+
+        elif action == "read":
+            topic = args.get("topic")
+            if not topic:
+                return {
+                    "error": (
+                        "topic is required for action='read'. "
+                        "Use action='list' to see available topics."
+                    )
+                }
+
+            try:
+                content = await self._mem.read_knowledge_topic(project_id, topic)
+            except Exception as e:
+                return {"error": f"Failed to read knowledge topic '{topic}': {e}"}
+
+            if content is None:
+                return {
+                    "project_id": project_id,
+                    "topic": topic,
+                    "content": None,
+                    "message": (
+                        f"No knowledge file exists for topic '{topic}'. "
+                        "It will be created when the consolidation system processes "
+                        "relevant facts from completed tasks."
+                    ),
+                }
+
+            return {
+                "project_id": project_id,
+                "topic": topic,
+                "content": content,
+            }
+
+        return {"error": f"Unknown action '{action}'. Use 'read' or 'list'."}
+
+    async def cmd_search_all_projects(self, args: dict) -> dict:
+        """Search across all project factsheets for specific metadata."""
+        query = args.get("query", "")
+        field = args.get("field", "")
+
+        if not query and not field:
+            return {
+                "error": (
+                    "At least one of 'query' (text search) or 'field' "
+                    "(YAML field extraction) is required"
+                )
+            }
+
+        # Get all active projects from the database
+        try:
+            from src.models import ProjectStatus
+
+            projects = await self._db.list_projects(status=ProjectStatus.ACTIVE)
+        except Exception as e:
+            return {"error": f"Failed to list projects: {e}"}
+
+        project_ids = [p.id for p in projects]
+        if not project_ids:
+            return {
+                "query": query,
+                "field": field,
+                "results": [],
+                "message": "No active projects found",
+            }
+
+        try:
+            results = await self._mem.search_all_project_factsheets(
+                project_ids, query=query, field=field
+            )
+        except Exception as e:
+            return {"error": f"Cross-project search failed: {e}"}
+
+        return {
+            "query": query or None,
+            "field": field or None,
+            "results": results,
+            "projects_searched": len(project_ids),
+            "matches": len(results),
+        }
