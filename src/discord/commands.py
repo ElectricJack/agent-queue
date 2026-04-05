@@ -1035,54 +1035,6 @@ class MenuView(discord.ui.View):
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @discord.ui.button(
-        label="Hooks",
-        style=discord.ButtonStyle.secondary,
-        emoji="🪝",
-        row=1,
-    )
-    async def hooks_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        """Show all configured hooks across all projects with inline edit buttons."""
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute("list_hooks", {})
-        hooks = result.get("hooks", [])
-        if not hooks:
-            await interaction.followup.send("No hooks configured.", ephemeral=True)
-            return
-
-        view = HooksListView(hooks, self._handler)
-        msg = view.build_content()
-        await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
-
-    @discord.ui.button(
-        label="Schedules",
-        style=discord.ButtonStyle.secondary,
-        emoji="📅",
-        row=1,
-    )
-    async def schedules_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        """Show upcoming hook executions with next-run times."""
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute("hook_schedules", {})
-        hooks = result.get("hooks", [])
-        if not hooks:
-            await interaction.followup.send("No scheduled periodic hooks found.", ephemeral=True)
-            return
-
-        lines = ["**📅 Hook Schedules**\n"]
-        for h in hooks:
-            status_icon = "🟢" if "imminent" in h["next_run"] or "in 0m" in h["next_run"] else "🕐"
-            lines.append(
-                f"{status_icon} **{h['name']}** (`{h['hook_id']}`)\n"
-                f"    Schedule: {h['schedule']}\n"
-                f"    Last run: {h['last_run']} · Next: {h['next_run']}"
-            )
-        await _send_long_interaction("\n".join(lines), interaction.followup.send, ephemeral=True)
-
-    @discord.ui.button(
         label="Toggle Orchestrator",
         style=discord.ButtonStyle.secondary,
         emoji="⏯️",
@@ -1133,737 +1085,6 @@ class MenuView(discord.ui.View):
         view = RulesListView(rules, self._handler)
         msg = view.build_content()
         await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
-
-
-# ---------------------------------------------------------------------------
-# Hooks list view with inline Edit buttons
-# ---------------------------------------------------------------------------
-
-_HOOKS_PER_PAGE = 10  # max hooks per page (Discord allows 5 rows × 5 items)
-
-# Common event types for the event hook selection menu (used by both wizard and edit UI).
-_HOOK_EVENT_CATEGORIES: list[tuple[str, list[str]]] = [
-    (
-        "Task",
-        [
-            "task.created",
-            "task.started",
-            "task.completed",
-            "task.failed",
-            "task.blocked",
-            "task.paused",
-            "task.resumed",
-            "task.retried",
-        ],
-    ),
-    (
-        "Agent",
-        [
-            "agent.registered",
-            "agent.idle",
-            "agent.error",
-            "agent.heartbeat_lost",
-        ],
-    ),
-    (
-        "Project",
-        [
-            "project.created",
-            "project.paused",
-            "project.resumed",
-            "project.budget_warning",
-            "project.budget_exhausted",
-        ],
-    ),
-    (
-        "Git",
-        [
-            "git.commit_created",
-            "git.pr_created",
-            "git.pr_merged",
-        ],
-    ),
-    (
-        "Error",
-        [
-            "error.agent_crash",
-            "error.adapter_failure",
-            "error.dependency_cycle",
-        ],
-    ),
-]
-
-
-class _HookInlineEditModal(discord.ui.Modal, title="Edit Hook"):
-    """Modal for editing a hook's properties inline from the hooks list."""
-
-    name_input = discord.ui.TextInput(
-        label="Name",
-        placeholder="Hook name",
-        required=False,
-        max_length=100,
-    )
-    enabled_input = discord.ui.TextInput(
-        label="Enabled (true / false)",
-        placeholder="true",
-        required=False,
-        max_length=5,
-    )
-    prompt_input = discord.ui.TextInput(
-        label="Prompt template",
-        style=discord.TextStyle.long,
-        placeholder="Use {{step_0}}, {{event}} placeholders…",
-        required=False,
-        max_length=2000,
-    )
-    cooldown_input = discord.ui.TextInput(
-        label="Cooldown (seconds)",
-        placeholder="3600",
-        required=False,
-        max_length=10,
-    )
-
-    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
-        super().__init__()
-        self._hook_id = hook["id"]
-        self._handler = handler
-        self._refresh_callback = refresh_callback
-        # Pre-fill with current values
-        self.name_input.default = hook.get("name", "")
-        self.enabled_input.default = str(hook.get("enabled", True)).lower()
-        if hook.get("prompt_template"):
-            self.prompt_input.default = hook["prompt_template"]
-        if hook.get("cooldown_seconds") is not None:
-            self.cooldown_input.default = str(hook["cooldown_seconds"])
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        args: dict = {"hook_id": self._hook_id}
-        if self.name_input.value:
-            args["name"] = self.name_input.value
-        enabled_val = self.enabled_input.value.strip().lower()
-        if enabled_val in ("true", "false"):
-            args["enabled"] = enabled_val == "true"
-        if self.prompt_input.value:
-            args["prompt_template"] = self.prompt_input.value
-        if self.cooldown_input.value:
-            try:
-                cd = int(self.cooldown_input.value)
-                if cd >= 0:
-                    args["cooldown_seconds"] = cd
-            except ValueError:
-                pass
-
-        if len(args) <= 1:
-            await interaction.response.send_message(
-                "No changes provided.",
-                ephemeral=True,
-            )
-            return
-
-        result = await self._handler.execute("edit_hook", args)
-        if "error" in result:
-            await interaction.response.send_message(
-                f"❌ {result['error']}",
-                ephemeral=True,
-            )
-            return
-
-        fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Hook `{self._hook_id}` updated: {fields}",
-            ephemeral=True,
-        )
-        # Refresh the hooks list if a callback is provided
-        if self._refresh_callback:
-            await self._refresh_callback(interaction)
-
-
-class _HookScheduleEditModal(discord.ui.Modal, title="Edit Schedule"):
-    """Modal for editing a periodic hook's interval."""
-
-    interval_input = discord.ui.TextInput(
-        label="Interval (e.g. 30s, 5m, 2h, 1d)",
-        placeholder="5m",
-        required=True,
-        max_length=20,
-    )
-
-    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
-        super().__init__()
-        self._hook_id = hook["id"]
-        self._handler = handler
-        self._refresh_callback = refresh_callback
-        # Pre-fill with current interval
-        trigger = hook.get("trigger", {})
-        if isinstance(trigger, dict) and trigger.get("type") == "periodic":
-            secs = trigger.get("interval_seconds", 0)
-            if secs >= 86400 and secs % 86400 == 0:
-                self.interval_input.default = f"{secs // 86400}d"
-            elif secs >= 3600 and secs % 3600 == 0:
-                self.interval_input.default = f"{secs // 3600}h"
-            elif secs >= 60 and secs % 60 == 0:
-                self.interval_input.default = f"{secs // 60}m"
-            else:
-                self.interval_input.default = f"{secs}s"
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = self.interval_input.value.strip().lower()
-        # Parse interval string like "30s", "5m", "2h", "1d" or plain seconds
-        seconds: int | None = None
-        if raw.endswith("d"):
-            try:
-                seconds = int(raw[:-1]) * 86400
-            except ValueError:
-                pass
-        elif raw.endswith("h"):
-            try:
-                seconds = int(raw[:-1]) * 3600
-            except ValueError:
-                pass
-        elif raw.endswith("m"):
-            try:
-                seconds = int(raw[:-1]) * 60
-            except ValueError:
-                pass
-        elif raw.endswith("s"):
-            try:
-                seconds = int(raw[:-1])
-            except ValueError:
-                pass
-        else:
-            try:
-                seconds = int(raw)
-            except ValueError:
-                pass
-
-        if seconds is None or seconds <= 0:
-            await interaction.response.send_message(
-                "❌ Invalid interval. Use a format like `30s`, `5m`, `2h`, `1d` or a number of seconds.",
-                ephemeral=True,
-            )
-            return
-
-        trigger = {"type": "periodic", "interval_seconds": seconds}
-        result = await self._handler.execute(
-            "edit_hook",
-            {
-                "hook_id": self._hook_id,
-                "trigger": trigger,
-            },
-        )
-        if "error" in result:
-            await interaction.response.send_message(
-                f"❌ {result['error']}",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_message(
-            f"✅ Hook `{self._hook_id}` schedule updated to every {seconds}s.",
-            ephemeral=True,
-        )
-        if self._refresh_callback:
-            await self._refresh_callback(interaction)
-
-
-class _HookTriggerEditView(discord.ui.View):
-    """View shown when editing a hook — lets the user change trigger or open the details modal."""
-
-    # Pull event categories from the wizard constant defined later in this file.
-    # We reference the module-level list via a lazy accessor in _rebuild.
-
-    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
-        super().__init__(timeout=300)
-        self._hook = hook
-        self._handler = handler
-        self._refresh_callback = refresh_callback
-        self._rebuild()
-
-    def _rebuild(self) -> None:
-        self.clear_items()
-        trigger = self._hook.get("trigger", {})
-        ttype = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
-
-        if ttype == "event":
-            # Show a dropdown with all event types
-            current_event = (
-                (trigger.get("event_type") or trigger.get("event", ""))
-                if isinstance(trigger, dict)
-                else ""
-            )
-            options: list[discord.SelectOption] = []
-            for cat, events in _HOOK_EVENT_CATEGORIES:
-                for evt in events:
-                    options.append(
-                        discord.SelectOption(
-                            label=evt,
-                            value=evt,
-                            description=f"{cat} event",
-                            default=(evt == current_event),
-                        )
-                    )
-            select = discord.ui.Select(
-                placeholder="Change event type…",
-                options=options,
-                row=0,
-            )
-            select.callback = self._event_select_callback
-            self.add_item(select)
-
-            # Custom event type button
-            custom_btn = discord.ui.Button(
-                label="Custom event type…",
-                style=discord.ButtonStyle.secondary,
-                row=1,
-            )
-            custom_btn.callback = self._custom_event_callback
-            self.add_item(custom_btn)
-
-        elif ttype == "periodic":
-            # Show a button to change the schedule
-            schedule_btn = discord.ui.Button(
-                label="⏱️ Change Schedule",
-                style=discord.ButtonStyle.primary,
-                row=0,
-            )
-            schedule_btn.callback = self._schedule_callback
-            self.add_item(schedule_btn)
-
-        # Always show an "Edit Details" button to open the original modal
-        details_btn = discord.ui.Button(
-            label="📝 Edit Details",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        details_btn.callback = self._details_callback
-        self.add_item(details_btn)
-
-        # Delete button
-        delete_btn = discord.ui.Button(
-            label="🗑️ Delete Hook",
-            style=discord.ButtonStyle.danger,
-            row=2,
-        )
-        delete_btn.callback = self._delete_callback
-        self.add_item(delete_btn)
-
-        # Close button
-        close_btn = discord.ui.Button(
-            label="Close",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        close_btn.callback = self._close_callback
-        self.add_item(close_btn)
-
-    def build_content(self) -> str:
-        h = self._hook
-        trigger = h.get("trigger", {})
-        ttype = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
-        if ttype == "periodic":
-            interval = trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
-            trigger_desc = f"every {interval}s"
-        elif ttype == "event":
-            event = (
-                (trigger.get("event_type") or trigger.get("event", "?"))
-                if isinstance(trigger, dict)
-                else "?"
-            )
-            trigger_desc = f"on `{event}`"
-        else:
-            trigger_desc = ttype
-        status = "✅" if h.get("enabled") else "❌"
-        return (
-            f"**✏️ Editing Hook: {h.get('name', h['id'])}**\n"
-            f"{status} Trigger: {trigger_desc}\n\n"
-            f"Use the controls below to change the trigger or edit other details."
-        )
-
-    async def _event_select_callback(self, interaction: discord.Interaction) -> None:
-        event_type = interaction.data.get("values", [None])[0]
-        if not event_type:
-            return
-        trigger = {"type": "event", "event_type": event_type}
-        result = await self._handler.execute(
-            "edit_hook",
-            {
-                "hook_id": self._hook["id"],
-                "trigger": trigger,
-            },
-        )
-        if "error" in result:
-            await interaction.response.send_message(
-                f"❌ {result['error']}",
-                ephemeral=True,
-            )
-            return
-
-        # Update local hook data and refresh
-        self._hook["trigger"] = trigger
-        self._rebuild()
-        await interaction.response.edit_message(
-            content=self.build_content(),
-            view=self,
-        )
-        if self._refresh_callback:
-            await self._refresh_callback(interaction)
-
-    async def _custom_event_callback(self, interaction: discord.Interaction) -> None:
-        modal = _HookCustomEventEditModal(
-            self._hook,
-            self._handler,
-            refresh_callback=self._refresh_callback,
-            parent_view=self,
-        )
-        await interaction.response.send_modal(modal)
-
-    async def _schedule_callback(self, interaction: discord.Interaction) -> None:
-        modal = _HookScheduleEditModal(
-            self._hook,
-            self._handler,
-            refresh_callback=self._refresh_callback,
-        )
-        await interaction.response.send_modal(modal)
-
-    async def _details_callback(self, interaction: discord.Interaction) -> None:
-        modal = _HookInlineEditModal(
-            self._hook,
-            self._handler,
-            refresh_callback=self._refresh_callback,
-        )
-        await interaction.response.send_modal(modal)
-
-    async def _delete_callback(self, interaction: discord.Interaction) -> None:
-        """Show a confirmation prompt before deleting the hook."""
-        confirm_view = discord.ui.View(timeout=60)
-        yes_btn = discord.ui.Button(
-            label="Yes, delete it",
-            style=discord.ButtonStyle.danger,
-        )
-        no_btn = discord.ui.Button(
-            label="Cancel",
-            style=discord.ButtonStyle.secondary,
-        )
-
-        async def _confirm(confirm_interaction: discord.Interaction) -> None:
-            result = await self._handler.execute(
-                "delete_hook",
-                {
-                    "hook_id": self._hook["id"],
-                },
-            )
-            if "error" in result:
-                await confirm_interaction.response.edit_message(
-                    content=f"❌ {result['error']}",
-                    view=None,
-                )
-                return
-            hook_name = self._hook.get("name", self._hook["id"])
-            await confirm_interaction.response.edit_message(
-                content=f"🗑️ Hook **{hook_name}** deleted.",
-                view=None,
-            )
-            if self._refresh_callback:
-                await self._refresh_callback(confirm_interaction)
-
-        async def _cancel(cancel_interaction: discord.Interaction) -> None:
-            self._rebuild()
-            await cancel_interaction.response.edit_message(
-                content=self.build_content(),
-                view=self,
-            )
-
-        yes_btn.callback = _confirm
-        no_btn.callback = _cancel
-        confirm_view.add_item(yes_btn)
-        confirm_view.add_item(no_btn)
-
-        hook_name = self._hook.get("name", self._hook["id"])
-        await interaction.response.edit_message(
-            content=f"⚠️ Are you sure you want to delete hook **{hook_name}**? This cannot be undone.",
-            view=confirm_view,
-        )
-
-    async def _close_callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.edit_message(
-            content="Hook edit closed.",
-            view=None,
-        )
-
-
-class _HookCustomEventEditModal(discord.ui.Modal, title="Custom Event Type"):
-    """Modal for entering a custom event type when editing a hook."""
-
-    event_input = discord.ui.TextInput(
-        label="Event type",
-        placeholder="e.g. my.custom.event",
-        required=True,
-        max_length=100,
-    )
-
-    def __init__(self, hook: dict, handler, *, refresh_callback=None, parent_view=None) -> None:
-        super().__init__()
-        self._hook = hook
-        self._hook_id = hook["id"]
-        self._handler = handler
-        self._refresh_callback = refresh_callback
-        self._parent_view = parent_view
-        # Pre-fill with current event type
-        trigger = hook.get("trigger", {})
-        if isinstance(trigger, dict) and trigger.get("type") == "event":
-            self.event_input.default = trigger.get("event_type", "")
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        event_type = self.event_input.value.strip()
-        if not event_type:
-            await interaction.response.send_message(
-                "❌ Event type cannot be empty.",
-                ephemeral=True,
-            )
-            return
-
-        trigger = {"type": "event", "event_type": event_type}
-        result = await self._handler.execute(
-            "edit_hook",
-            {
-                "hook_id": self._hook_id,
-                "trigger": trigger,
-            },
-        )
-        if "error" in result:
-            await interaction.response.send_message(
-                f"❌ {result['error']}",
-                ephemeral=True,
-            )
-            return
-
-        # Update parent view if available
-        if self._parent_view:
-            self._hook["trigger"] = trigger
-            self._parent_view._rebuild()
-
-        await interaction.response.send_message(
-            f"✅ Hook `{self._hook_id}` event type changed to `{event_type}`.",
-            ephemeral=True,
-        )
-        if self._refresh_callback:
-            await self._refresh_callback(interaction)
-
-
-class _HookViewSourceRuleButton(discord.ui.Button):
-    """Button to view the source rule for a rule-backed hook."""
-
-    def __init__(self, hook: dict, handler, *, row: int = 0) -> None:
-        label = hook.get("name", hook["id"])
-        if len(label) > 50:
-            label = label[:47] + "..."
-        super().__init__(
-            style=discord.ButtonStyle.primary,
-            label=f"📏 {label}",
-            custom_id=f"hooks:rule:{hook['id']}",
-            row=row,
-        )
-        self._hook = hook
-        self._handler = handler
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        hook_id = self._hook["id"]
-        # Extract rule ID from hook ID: "rule-{rule_id}-{6hex}"
-        # Rule IDs themselves start with "rule-", so we strip the leading "rule-"
-        # prefix and the trailing "-{6hex}" suffix.
-        rule_id = None
-        if hook_id.startswith("rule-") and len(hook_id) > 12:
-            # Strip "rule-" prefix, then remove the last "-{6hex}" suffix
-            without_prefix = hook_id[5:]  # remove "rule-"
-            last_dash = without_prefix.rfind("-")
-            if last_dash > 0:
-                rule_id = without_prefix[:last_dash]
-        if not rule_id:
-            await interaction.response.send_message(
-                f"⚠️ Could not determine source rule for hook `{hook_id}`.",
-                ephemeral=True,
-            )
-            return
-        result = await self._handler.execute("load_rule", {"id": rule_id})
-        if "error" in result:
-            await interaction.response.send_message(
-                f"⚠️ {result['error']}",
-                ephemeral=True,
-            )
-            return
-        rule_type = result.get("type", "passive")
-        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
-        scope = result.get("project_id") or "global"
-        hooks = result.get("hooks", [])
-        content = result.get("content", "")
-        if len(content) > 1500:
-            content = content[:1500] + "\n\n_...truncated_"
-        lines = [
-            f"## 📏 Source Rule: {rule_id}",
-            f"**Type:** {type_label}",
-            f"**Scope:** `{scope}`",
-            f"**Hooks:** {len(hooks)}",
-            "",
-            content,
-        ]
-        await interaction.response.send_message(
-            "\n".join(lines),
-            ephemeral=True,
-        )
-
-
-class _HookEditButton(discord.ui.Button):
-    """Per-hook ✏️ Edit button shown for legacy (non-rule-backed) hooks only."""
-
-    def __init__(self, hook: dict, handler, *, row: int = 0, refresh_callback=None) -> None:
-        label = hook.get("name", hook["id"])
-        if len(label) > 50:
-            label = label[:47] + "..."
-        super().__init__(
-            style=discord.ButtonStyle.secondary,
-            label=f"✏️ {label}",
-            custom_id=f"hooks:edit:{hook['id']}",
-            row=row,
-        )
-        self._hook = hook
-        self._handler = handler
-        self._refresh_callback = refresh_callback
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        view = _HookTriggerEditView(
-            self._hook,
-            self._handler,
-            refresh_callback=self._refresh_callback,
-        )
-        await interaction.response.send_message(
-            content=view.build_content(),
-            view=view,
-            ephemeral=True,
-        )
-
-
-class HooksListView(discord.ui.View):
-    """Interactive hooks list with per-hook Edit buttons."""
-
-    def __init__(self, hooks: list[dict], handler, *, page: int = 0) -> None:
-        super().__init__(timeout=300)
-        self._hooks = hooks
-        self._handler = handler
-        self.page = page
-        self.total_pages = max(1, (len(hooks) + _HOOKS_PER_PAGE - 1) // _HOOKS_PER_PAGE)
-        self._rebuild_components()
-
-    def _rebuild_components(self) -> None:
-        self.clear_items()
-        start = self.page * _HOOKS_PER_PAGE
-        page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
-
-        # Add buttons — rule-backed hooks get "View Source Rule",
-        # legacy hooks get "Edit"
-        for i, h in enumerate(page_hooks):
-            row = i // 3  # 3 buttons per row, up to ~4 rows
-            if row > 3:
-                break  # Reserve row 4 for nav buttons
-            hook_id = h.get("id", "")
-            if hook_id.startswith("rule-"):
-                self.add_item(_HookViewSourceRuleButton(h, self._handler, row=row))
-            else:
-                self.add_item(
-                    _HookEditButton(
-                        h,
-                        self._handler,
-                        row=row,
-                        refresh_callback=self._refresh_list,
-                    )
-                )
-
-        # Navigation row (row 4)
-        if self.total_pages > 1:
-            prev_btn = discord.ui.Button(
-                style=discord.ButtonStyle.secondary,
-                label="◀ Prev",
-                custom_id="hooks:page:prev",
-                disabled=(self.page == 0),
-                row=4,
-            )
-            prev_btn.callback = self._prev_page
-            self.add_item(prev_btn)
-
-            next_btn = discord.ui.Button(
-                style=discord.ButtonStyle.secondary,
-                label="Next ▶",
-                custom_id="hooks:page:next",
-                disabled=(self.page >= self.total_pages - 1),
-                row=4,
-            )
-            next_btn.callback = self._next_page
-            self.add_item(next_btn)
-
-    def build_content(self) -> str:
-        """Build the text content for the hooks list message."""
-        if not self._hooks:
-            return "**No hooks configured.**"
-        lines = [f"**🪝 Hooks ({len(self._hooks)}):** _(generated from rules)_"]
-        start = self.page * _HOOKS_PER_PAGE
-        page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
-        for h in page_hooks:
-            status = "✅" if h.get("enabled") else "❌"
-            trigger = h.get("trigger", {})
-            trigger_type = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
-            if trigger_type == "periodic":
-                interval = (
-                    trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
-                )
-                trigger_desc = f"every {interval}s"
-            elif trigger_type == "event":
-                event = (
-                    (trigger.get("event_type") or trigger.get("event", "?"))
-                    if isinstance(trigger, dict)
-                    else "?"
-                )
-                trigger_desc = f"on `{event}`"
-            else:
-                trigger_desc = trigger_type
-            hook_id = h.get("id", "")
-            source = "📏 rule" if hook_id.startswith("rule-") else "⚠️ legacy"
-            lines.append(
-                f"{status} **{h['name']}** (`{hook_id}`) — {trigger_desc} "
-                f"• {source} • project: `{h.get('project_id', '?')}`"
-            )
-        if self.total_pages > 1:
-            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
-        return "\n".join(lines)
-
-    async def _refresh_list(self, interaction: discord.Interaction) -> None:
-        """Refresh the hooks list after an edit."""
-        result = await self._handler.execute("list_hooks", {})
-        self._hooks = result.get("hooks", [])
-        self.total_pages = max(1, (len(self._hooks) + _HOOKS_PER_PAGE - 1) // _HOOKS_PER_PAGE)
-        if self.page >= self.total_pages:
-            self.page = max(0, self.total_pages - 1)
-        self._rebuild_components()
-        try:
-            msg = interaction.message
-            if msg:
-                await msg.edit(content=self.build_content(), view=self)
-        except Exception:
-            pass
-
-    async def _prev_page(self, interaction: discord.Interaction) -> None:
-        self.page = max(0, self.page - 1)
-        self._rebuild_components()
-        await interaction.response.edit_message(
-            content=self.build_content(),
-            view=self,
-        )
-
-    async def _next_page(self, interaction: discord.Interaction) -> None:
-        self.page = min(self.total_pages - 1, self.page + 1)
-        self._rebuild_components()
-        await interaction.response.edit_message(
-            content=self.build_content(),
-            view=self,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1918,6 +1139,24 @@ class _RuleContentView(discord.ui.View):
 
     def _rebuild(self) -> None:
         self.clear_items()
+        fire_btn = discord.ui.Button(
+            label="Fire",
+            style=discord.ButtonStyle.primary,
+            emoji="🔥",
+            row=0,
+        )
+        fire_btn.callback = self._fire_callback
+        self.add_item(fire_btn)
+
+        toggle_btn = discord.ui.Button(
+            label="Toggle",
+            style=discord.ButtonStyle.secondary,
+            emoji="⏯️",
+            row=0,
+        )
+        toggle_btn.callback = self._toggle_callback
+        self.add_item(toggle_btn)
+
         delete_btn = discord.ui.Button(
             label="Delete Rule",
             style=discord.ButtonStyle.danger,
@@ -1953,10 +1192,72 @@ class _RuleContentView(discord.ui.View):
             f"**Scope:** `{scope}`",
             f"**Hooks:** {len(hooks)}",
             f"**Updated:** {result.get('updated', 'unknown')}",
-            "",
-            content,
         ]
+
+        # Show execution info if available
+        exec_info = result.get("execution_info", {})
+        if exec_info:
+            enabled = exec_info.get("enabled")
+            if enabled is False:
+                lines.append("**Status:** ⏸️ Disabled")
+            elif enabled == "mixed":
+                lines.append("**Status:** ⚠️ Mixed (some hooks disabled)")
+            else:
+                lines.append("**Status:** ✅ Enabled")
+            hook_count = exec_info.get("hook_count")
+            if hook_count is not None:
+                lines.append(f"**Active hooks:** {hook_count}")
+            last_run = exec_info.get("last_run")
+            if last_run:
+                lines.append(f"**Last run:** {last_run}")
+
+        lines.append("")
+        lines.append(content)
         return "\n".join(lines)
+
+    async def _fire_callback(self, interaction: discord.Interaction) -> None:
+        """Fire all hooks for this rule."""
+        rule_id = self._rule.get("id")
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("fire_rule", {"id": rule_id})
+        if "error" in result:
+            await interaction.followup.send(f"\u274c {result['error']}", ephemeral=True)
+            return
+        fired = result.get("fired", 0)
+        skipped = result.get("skipped", 0)
+        msg = f"\ud83d\udd25 Rule `{rule_id}` triggered \u2014 **{fired}** hook(s) fired"
+        if skipped:
+            msg += f", {skipped} already running"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    async def _toggle_callback(self, interaction: discord.Interaction) -> None:
+        """Toggle rule enabled state."""
+        rule_id = self._rule.get("id")
+        # Determine current state and flip it
+        exec_info = self._result.get("execution_info", {})
+        current_enabled = exec_info.get("enabled", True)
+        # If mixed or True, disable; if False, enable
+        new_enabled = current_enabled is False
+        result = await self._handler.execute(
+            "toggle_rule", {"id": rule_id, "enabled": new_enabled}
+        )
+        if "error" in result:
+            await interaction.response.send_message(
+                f"\u274c {result['error']}", ephemeral=True
+            )
+            return
+        action = result.get("action", "toggled")
+        updated = result.get("hooks_updated", 0)
+        total = result.get("total_hooks", 0)
+        # Update local state so rebuild reflects it
+        if "execution_info" not in self._result:
+            self._result["execution_info"] = {}
+        self._result["execution_info"]["enabled"] = new_enabled
+        self._rebuild()
+        await interaction.response.edit_message(
+            content=self.build_content(),
+            view=self,
+        )
 
     async def _delete_callback(self, interaction: discord.Interaction) -> None:
         """Show confirmation before deleting the rule and its hooks."""
@@ -2078,9 +1379,21 @@ class RulesListView(discord.ui.View):
             scope = r.get("project_id") or "global"
             hook_count = r.get("hook_count", 0)
             name = r.get("name") or r.get("id", "?")
+            # Enabled status indicator
+            enabled = r.get("enabled")
+            status_indicator = ""
+            if enabled is False:
+                status_indicator = " ⏸️"
+            elif enabled == "mixed":
+                status_indicator = " ⚠️"
+            # Last run relative time
+            last_run = r.get("last_run")
+            last_run_str = ""
+            if last_run:
+                last_run_str = f" • ran {last_run}"
             lines.append(
-                f"{type_icon} **{name}** (`{r['id']}`) — "
-                f"{rule_type} • scope: `{scope}` • hooks: {hook_count}"
+                f"{type_icon} **{name}** (`{r['id']}`){status_indicator} — "
+                f"{rule_type} • scope: `{scope}` • hooks: {hook_count}{last_run_str}"
             )
         if self.total_pages > 1:
             lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
@@ -5327,32 +4640,6 @@ def setup_commands(bot: commands.Bot) -> None:
         else:
             await interaction.response.send_message(f"{header}```diff\n{diff}\n```")
 
-    # ===================================================================
-    # HOOK COMMANDS
-    # ===================================================================
-
-    @bot.tree.command(
-        name="hooks", description="List automation hooks (read-only — manage via /rules)"
-    )
-    async def hooks_command(interaction: discord.Interaction):
-        project_id = await _resolve_project_from_context(interaction, None)
-        args = {}
-        if project_id:
-            args["project_id"] = project_id
-        result = await handler.execute("list_hooks", args)
-        hooks = result.get("hooks", [])
-        if not hooks:
-            await _send_info(interaction, "No Hooks", description="No hooks configured.")
-            return
-        view = HooksListView(hooks, handler)
-        msg = view.build_content()
-        await _send_long_interaction(msg, interaction.response.send_message, view=view)
-
-    # --- Hook wizard REMOVED ---
-    # Direct hook creation is no longer supported. All automation goes through rules.
-    # The old wizard classes (_HookWizardStartView, _HookPeriodicUnitView, etc.)
-    # have been removed. Use /create-rule or save_rule instead.
-
     # ---- /create-rule slash command with modal ----
 
     class _CreateRuleModal(discord.ui.Modal, title="Create Automation Rule"):
@@ -5441,85 +4728,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await interaction.response.send_modal(_CreateRuleModal(project_id))
 
-    # Legacy /create-hook and /add-hook removed — use /create-rule instead.
-    # Legacy /edit-hook removed — edit the source rule via /rule <id>.
-    # Legacy /delete-hook removed — delete the source rule via /delete-rule.
-
-    @bot.tree.command(name="hook-runs", description="Show recent execution history for a hook")
-    @app_commands.describe(
-        hook_id="Hook ID",
-        limit="Number of runs to show (default 10)",
-    )
-    async def hook_runs_command(interaction: discord.Interaction, hook_id: str, limit: int = 10):
-        result = await handler.execute("list_hook_runs", {"hook_id": hook_id, "limit": limit})
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        runs = result.get("runs", [])
-        hook_name = result.get("hook_name", hook_id)
-        if not runs:
-            await _send_info(
-                interaction,
-                "No Hook Runs",
-                description=f"No runs found for hook **{hook_name}**.",
-            )
-            return
-        lines = [f"## Hook Runs: {hook_name}"]
-        for r in runs:
-            status_emoji = {"completed": "✅", "failed": "❌", "skipped": "⏭️"}.get(
-                r.get("status", ""), "🔄"
-            )
-            line = f"• {status_emoji} {r.get('trigger_reason', '?')} — tokens: {r.get('tokens_used', 0):,}"
-            if r.get("skipped_reason"):
-                line += f" (skipped: {r['skipped_reason'][:50]})"
-            lines.append(line)
-        msg = "\n".join(lines)
-        await _send_long_interaction(msg, interaction.response.send_message)
-
-    @bot.tree.command(name="fire-hook", description="Manually trigger a hook immediately")
-    @app_commands.describe(hook_id="Hook ID to fire")
-    async def fire_hook_command(interaction: discord.Interaction, hook_id: str):
-        result = await handler.execute("fire_hook", {"hook_id": hook_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        await _send_success(
-            interaction,
-            "Hook Fired",
-            description=f"Hook `{hook_id}` fired — status: {result.get('status', 'running')}",
-        )
-
-    @bot.tree.command(
-        name="toggle-hooks",
-        description="Enable or disable all hooks in a project",
-    )
-    @app_commands.describe(
-        project="Project ID",
-        enabled="True to enable all hooks, False to disable all hooks",
-    )
-    async def toggle_hooks_command(interaction: discord.Interaction, project: str, enabled: bool):
-        result = await handler.execute(
-            "toggle_project_hooks", {"project_id": project, "enabled": enabled}
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        action = result["action"]
-        total = result["total_hooks"]
-        changed = result["updated_count"]
-        if changed == 0:
-            await _send_info(
-                interaction,
-                "No Changes",
-                description=f"All **{total}** hook(s) in `{project}` were already {action}.",
-            )
-        else:
-            await _send_success(
-                interaction,
-                f"Hooks {action.title()}",
-                description=(f"**{changed}** of **{total}** hook(s) in `{project}` {action}."),
-            )
-
     # ===================================================================
     # RULES COMMANDS
     # ===================================================================
@@ -5595,32 +4803,112 @@ def setup_commands(bot: commands.Bot) -> None:
             ),
         )
 
-    @bot.tree.command(
-        name="refresh-hooks",
-        description="Reconcile hooks from current rule files",
-    )
-    async def refresh_hooks_command(interaction: discord.Interaction):
-        await interaction.response.defer()
-        result = await handler.execute("refresh_hooks", {})
+    @bot.tree.command(name="fire-rule", description="Manually trigger all hooks for a rule")
+    @app_commands.describe(rule_id="Rule ID to fire")
+    async def fire_rule_command(interaction: discord.Interaction, rule_id: str):
+        await interaction.response.defer(ephemeral=True)
+        result = await handler.execute("fire_rule", {"id": rule_id})
         if "error" in result:
-            await _send_error(interaction, result["error"])
+            await interaction.followup.send(
+                embed=error_embed(title="Error", description=result["error"]),
+                ephemeral=True,
+            )
             return
-        scanned = result.get("rules_scanned", 0)
-        active = result.get("active_rules", 0)
-        regenerated = result.get("hooks_regenerated", 0)
-        unchanged = result.get("hooks_unchanged", 0)
+        fired = result.get("fired", 0)
+        skipped = result.get("skipped", 0)
+        msg = f"Rule `{rule_id}` triggered — **{fired}** hook(s) fired"
+        if skipped:
+            msg += f", {skipped} already running"
+        await interaction.followup.send(
+            embed=success_embed(title="Rule Fired", description=msg),
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="rule-runs", description="Show execution history for a rule")
+    @app_commands.describe(rule_id="Rule ID", limit="Number of runs to show (default 10)")
+    async def rule_runs_command(
+        interaction: discord.Interaction, rule_id: str, limit: int = 10
+    ):
+        result = await handler.execute("rule_runs", {"id": rule_id, "limit": limit})
+        if "error" in result:
+            await interaction.response.send_message(
+                embed=error_embed(title="Error", description=result["error"]),
+                ephemeral=True,
+            )
+            return
+        runs = result.get("runs", [])
+        rule_name = result.get("rule_name", rule_id)
+        if not runs:
+            await interaction.response.send_message(
+                f"No execution history for rule `{rule_id}`.",
+                ephemeral=True,
+            )
+            return
+        lines = [f"**Execution history for {rule_name}** (`{rule_id}`)\n"]
+        for r in runs[:15]:
+            status_icon = {
+                "completed": "\u2705",
+                "failed": "\u274c",
+                "skipped": "\u23ed\ufe0f",
+                "running": "\ud83d\udd04",
+            }.get(r.get("status", ""), "\u2753")
+            tokens = r.get("tokens_used", 0)
+            reason = r.get("trigger_reason", "")
+            skip = r.get("skipped_reason")
+            line = f"{status_icon} {reason}"
+            if tokens:
+                line += f" \u2022 {tokens} tokens"
+            if skip:
+                line += f" \u2022 skip: {skip}"
+            lines.append(line)
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @bot.tree.command(name="toggle-rule", description="Enable or disable a rule")
+    @app_commands.describe(rule_id="Rule ID", enabled="True to enable, False to disable")
+    async def toggle_rule_command(
+        interaction: discord.Interaction, rule_id: str, enabled: bool
+    ):
+        result = await handler.execute("toggle_rule", {"id": rule_id, "enabled": enabled})
+        if "error" in result:
+            await interaction.response.send_message(
+                embed=error_embed(title="Error", description=result["error"]),
+                ephemeral=True,
+            )
+            return
+        action = result.get("action", "toggled")
+        updated = result.get("hooks_updated", 0)
+        total = result.get("total_hooks", 0)
+        await interaction.response.send_message(
+            embed=success_embed(
+                title=f"Rule {action.title()}",
+                description=f"Rule `{rule_id}` {action} — {updated}/{total} hooks updated",
+            ),
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="refresh-rules", description="Reconcile rules and regenerate hooks")
+    async def refresh_rules_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        result = await handler.execute("refresh_rules", {})
+        if "error" in result:
+            await interaction.followup.send(
+                embed=error_embed(title="Error", description=result["error"]),
+                ephemeral=True,
+            )
+            return
+        lines = [
+            f"Rules scanned: **{result.get('rules_scanned', 0)}**",
+            f"Active rules: **{result.get('active_rules', 0)}**",
+            f"Hooks regenerated: **{result.get('hooks_regenerated', 0)}**",
+            f"Hooks unchanged: **{result.get('hooks_unchanged', 0)}**",
+        ]
         errors = result.get("errors", 0)
-        parts = [f"Scanned **{scanned}** rule(s) (**{active}** active)"]
-        if regenerated:
-            parts.append(f"regenerated **{regenerated}** hook(s)")
-        if unchanged:
-            parts.append(f"**{unchanged}** hook(s) unchanged")
-        if not regenerated and not unchanged:
-            parts.append("no hooks to update")
-        desc = ", ".join(parts) + "."
         if errors:
-            desc += f"\n⚠️ {errors} error(s) during reconciliation."
-        await interaction.followup.send(f"✅ **Hooks Refreshed**\n{desc}")
+            lines.append(f"Errors: **{errors}**")
+        await interaction.followup.send(
+            embed=success_embed(title="Rules Refreshed", description="\n".join(lines)),
+            ephemeral=True,
+        )
 
     # ===================================================================
     # NOTES COMMANDS

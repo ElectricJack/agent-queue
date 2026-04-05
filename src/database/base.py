@@ -246,6 +246,11 @@ class DatabaseBackend(Protocol):
         hook_id: str,
         limit: int = 20,
     ) -> list[HookRun]: ...
+    async def list_hook_runs_by_prefix(
+        self,
+        hook_id_prefix: str,
+        limit: int = 20,
+    ) -> list[HookRun]: ...
 
     # --- Atomic Operations ---
 

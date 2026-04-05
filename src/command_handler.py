@@ -4801,193 +4801,8 @@ feature work stuck on feature branches across multiple workspaces.
     # actions (like creating fix-up tasks when tests fail).
     # -----------------------------------------------------------------------
 
-    async def _cmd_create_hook(self, args: dict) -> dict:
-        """DEPRECATED: Redirects to save_rule.  Direct hook creation is no longer
-        supported — all automation must be created through rules."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized — cannot create automation"}
-
-        project_id = args.get("project_id")
-        name = args.get("name", "Untitled Hook")
-        trigger = args.get("trigger", {})
-        prompt_template = args.get("prompt_template", "")
-        cooldown_seconds = args.get("cooldown_seconds", 3600)
-
-        # Build rule markdown from hook parameters
-        lines = [f"# {name}", ""]
-
-        # Convert trigger to natural language for ## Trigger section
-        trigger_type = trigger.get("type", "event") if isinstance(trigger, dict) else "event"
-        if trigger_type == "periodic":
-            secs = trigger.get("interval_seconds", 300) if isinstance(trigger, dict) else 300
-            if secs >= 86400 and secs % 86400 == 0:
-                interval_desc = f"every {secs // 86400} day(s)"
-            elif secs >= 3600 and secs % 3600 == 0:
-                interval_desc = f"every {secs // 3600} hour(s)"
-            elif secs >= 60 and secs % 60 == 0:
-                interval_desc = f"every {secs // 60} minute(s)"
-            else:
-                interval_desc = f"every {secs} seconds"
-            lines.append(f"## Trigger\n\nCheck {interval_desc}")
-        elif trigger_type == "event":
-            event_type = (
-                trigger.get("event_type", "unknown") if isinstance(trigger, dict) else "unknown"
-            )
-            lines.append(f"## Trigger\n\nWhen {event_type}")
-        else:
-            lines.append(f"## Trigger\n\n{trigger_type}")
-
-        if cooldown_seconds and cooldown_seconds != 3600:
-            lines.append(f"\nCooldown: {cooldown_seconds}s")
-
-        lines.append(f"\n## Logic\n\n{prompt_template}")
-        content = "\n".join(lines)
-
-        result = await rm.async_save_rule(
-            id=None,
-            project_id=project_id,
-            rule_type="active",
-            content=content,
-        )
-        if "error" in result:
-            return result
-
-        return {
-            "created": result.get("id", "unknown"),
-            "name": name,
-            "project_id": project_id,
-            "note": "Created as a rule — hooks will be generated automatically via reconciliation.",
-        }
-
-    async def _cmd_list_hooks(self, args: dict) -> dict:
-        project_id = args.get("project_id")
-        hooks = await self.db.list_hooks(project_id=project_id)
-        return {
-            "hooks": [
-                {
-                    "id": h.id,
-                    "project_id": h.project_id,
-                    "name": h.name,
-                    "enabled": h.enabled,
-                    "trigger": json.loads(h.trigger),
-                    "cooldown_seconds": h.cooldown_seconds,
-                    "prompt_template": h.prompt_template,
-                }
-                for h in hooks
-            ]
-        }
-
-    async def _cmd_edit_hook(self, args: dict) -> dict:
-        """Edit a hook. For rule-backed hooks (id starts with 'rule-'), redirects
-        to editing the source rule instead. Legacy direct hooks can still be edited
-        but with a deprecation warning."""
-        hook_id = args["hook_id"]
-        hook = await self.db.get_hook(hook_id)
-        if not hook:
-            return {"error": f"Hook '{hook_id}' not found"}
-
-        # Rule-backed hooks should be edited via their source rule
-        if hook_id.startswith("rule-"):
-            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
-            # Rule IDs themselves start with "rule-", so strip prefix and suffix
-            without_prefix = hook_id[5:]  # remove "rule-"
-            last_dash = without_prefix.rfind("-")
-            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
-            return {
-                "error": (
-                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
-                    f"Edit the source rule instead using save_rule or /rule {rule_id}. "
-                    "Changes to rule-backed hooks are overwritten on reconciliation."
-                ),
-            }
-
-        # Legacy direct hook — allow edit but warn
-        updates = {}
-        if "name" in args:
-            updates["name"] = args["name"]
-        if "enabled" in args:
-            updates["enabled"] = args["enabled"]
-        if "trigger" in args:
-            updates["trigger"] = json.dumps(args["trigger"])
-        if "context_steps" in args:
-            updates["context_steps"] = json.dumps(args["context_steps"])
-        if "prompt_template" in args:
-            updates["prompt_template"] = args["prompt_template"]
-        if "cooldown_seconds" in args:
-            updates["cooldown_seconds"] = args["cooldown_seconds"]
-        if "llm_config" in args:
-            llm_cfg = args["llm_config"]
-            if isinstance(llm_cfg, dict) and "model" in llm_cfg:
-                llm_cfg["model"] = str(llm_cfg["model"])
-            updates["llm_config"] = json.dumps(llm_cfg)
-        if "max_tokens_per_run" in args:
-            updates["max_tokens_per_run"] = args["max_tokens_per_run"]
-        if not updates:
-            return {"error": "No fields to update"}
-        await self.db.update_hook(hook_id, **updates)
-        return {
-            "updated": hook_id,
-            "fields": list(updates.keys()),
-            "warning": (
-                "This is a legacy direct hook. Consider converting it to a rule "
-                "using save_rule for better management. Direct hooks may be "
-                "auto-migrated to rules in the future."
-            ),
-        }
-
-    async def _cmd_delete_hook(self, args: dict) -> dict:
-        """Delete a hook. Rule-backed hooks (id starts with 'rule-') must be
-        deleted via their source rule. Only orphan/legacy hooks can be deleted
-        directly."""
-        hook_id = args["hook_id"]
-        hook = await self.db.get_hook(hook_id)
-        if not hook:
-            return {"error": f"Hook '{hook_id}' not found"}
-
-        # Rule-backed hooks must be deleted via the rule
-        if hook_id.startswith("rule-"):
-            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
-            without_prefix = hook_id[5:]  # remove "rule-"
-            last_dash = without_prefix.rfind("-")
-            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
-            return {
-                "error": (
-                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
-                    f"Delete the source rule instead using delete_rule. "
-                    "Rule-backed hooks are managed automatically."
-                ),
-            }
-
-        # Allow deletion of orphan/legacy/scheduled hooks
-        await self.db.delete_hook(hook_id)
-        return {"deleted": hook_id, "name": hook.name}
-
-    async def _cmd_list_hook_runs(self, args: dict) -> dict:
-        hook_id = args["hook_id"]
-        hook = await self.db.get_hook(hook_id)
-        if not hook:
-            return {"error": f"Hook '{hook_id}' not found"}
-        limit = args.get("limit", 10)
-        runs = await self.db.list_hook_runs(hook_id, limit=limit)
-        return {
-            "hook_id": hook_id,
-            "hook_name": hook.name,
-            "runs": [
-                {
-                    "id": r.id,
-                    "trigger_reason": r.trigger_reason,
-                    "status": r.status,
-                    "tokens_used": r.tokens_used,
-                    "skipped_reason": r.skipped_reason,
-                    "started_at": r.started_at,
-                    "completed_at": r.completed_at,
-                }
-                for r in runs
-            ],
-        }
-
     async def _cmd_fire_hook(self, args: dict) -> dict:
+        """Internal: fire a single hook. Used by _cmd_fire_rule."""
         hook_id = args["hook_id"]
         hooks_engine = self.orchestrator.hooks
         if not hooks_engine:
@@ -4998,335 +4813,9 @@ feature work stuck on feature branches across multiple workspaces.
         except ValueError as e:
             return {"error": str(e)}
 
-    async def _cmd_hook_schedules(self, args: dict) -> dict:
-        """Show upcoming hook executions with human-readable next-run times.
-
-        Lists all enabled periodic hooks and their schedule constraints,
-        last run time, and when they are expected to fire next.
-        """
-        from src.schedule import (
-            describe_schedule,
-            format_next_run,
-            next_run_time,
-            parse_schedule,
-        )
-
-        project_id = args.get("project_id")
-        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
-        if not hooks:
-            return {"hooks": [], "message": "No enabled hooks found."}
-
-        results = []
-        for h in hooks:
-            try:
-                trigger = json.loads(h.trigger)
-            except (json.JSONDecodeError, TypeError):
-                trigger = {}
-
-            trigger_type = trigger.get("type")
-
-            # Include scheduled (one-shot) hooks in the schedule view
-            if trigger_type == "scheduled":
-                fire_at = trigger.get("fire_at", 0)
-                from datetime import datetime as _dt, timezone as _tz
-
-                remaining = fire_at - time.time()
-                if remaining > 0:
-                    next_str = f"in {_format_interval(int(remaining))}"
-                else:
-                    next_str = "overdue (imminent)"
-                results.append(
-                    {
-                        "hook_id": h.id,
-                        "name": h.name,
-                        "project_id": h.project_id,
-                        "schedule": "one-shot",
-                        "interval": "once",
-                        "last_run": "never",
-                        "next_run": next_str,
-                        "type": "scheduled",
-                    }
-                )
-                continue
-
-            if trigger_type != "periodic":
-                continue
-
-            schedule = parse_schedule(trigger)
-            interval = trigger.get("interval_seconds", 0)
-
-            # Build last-run info
-            last_run_str = "never"
-            last_dt = None
-            if h.last_triggered_at:
-                from datetime import datetime as _dt, timezone as _tz
-
-                last_dt = _dt.fromtimestamp(h.last_triggered_at, tz=_tz.utc)
-                ago_seconds = int(time.time() - h.last_triggered_at)
-                if ago_seconds < 60:
-                    last_run_str = f"{ago_seconds}s ago"
-                elif ago_seconds < 3600:
-                    last_run_str = f"{ago_seconds // 60}m ago"
-                elif ago_seconds < 86400:
-                    last_run_str = f"{ago_seconds // 3600}h {(ago_seconds % 3600) // 60}m ago"
-                else:
-                    last_run_str = f"{ago_seconds // 86400}d ago"
-
-            # Compute next run
-            if schedule:
-                nxt = next_run_time(schedule, last_run=last_dt)
-                next_str = format_next_run(nxt)
-                schedule_desc = describe_schedule(schedule)
-            else:
-                # Pure interval hook: next = last_run + interval
-                if h.last_triggered_at:
-                    from datetime import datetime as _dt, timezone as _tz
-
-                    nxt = _dt.fromtimestamp(h.last_triggered_at + interval, tz=_tz.utc)
-                    next_str = format_next_run(nxt)
-                else:
-                    next_str = "imminent (never run)"
-                schedule_desc = f"every {_format_interval(interval)}"
-
-            results.append(
-                {
-                    "hook_id": h.id,
-                    "name": h.name,
-                    "project_id": h.project_id,
-                    "schedule": schedule_desc,
-                    "interval": _format_interval(interval),
-                    "last_run": last_run_str,
-                    "next_run": next_str,
-                }
-            )
-
-        return {"hooks": results}
-
-    async def _cmd_fire_all_scheduled_hooks(self, args: dict) -> dict:
-        """Manually trigger all scheduled hooks that match the current time."""
-        hooks_engine = self.orchestrator.hooks
-        if not hooks_engine:
-            return {"error": "Hook engine is not enabled"}
-
-        project_id = args.get("project_id")
-        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
-        fired = []
-        for h in hooks:
-            try:
-                trigger = json.loads(h.trigger)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if trigger.get("type") != "periodic":
-                continue
-            try:
-                await hooks_engine.fire_hook(h.id)
-                fired.append(h.name or h.id)
-            except (ValueError, RuntimeError):
-                pass
-
-        return {"fired": fired, "count": len(fired)}
-
-    async def _cmd_toggle_project_hooks(self, args: dict) -> dict:
-        """Enable or disable all hooks in a project."""
-        project_id = args.get("project_id")
-        if not project_id:
-            return {"error": "project_id is required"}
-        enabled = args.get("enabled")
-        if enabled is None:
-            return {"error": "'enabled' (true/false) is required"}
-        hooks = await self.db.list_hooks(project_id=project_id)
-        if not hooks:
-            return {"error": f"No hooks found for project '{project_id}'"}
-        updated = []
-        for hook in hooks:
-            if hook.enabled != enabled:
-                await self.db.update_hook(hook.id, enabled=enabled)
-                updated.append(hook.name or hook.id)
-        action = "enabled" if enabled else "disabled"
-        return {
-            "project_id": project_id,
-            "action": action,
-            "total_hooks": len(hooks),
-            "updated_count": len(updated),
-            "updated_hooks": updated,
-        }
-
-    # -----------------------------------------------------------------------
-    # Scheduled hook commands — one-shot deferred hooks that auto-delete
-    # -----------------------------------------------------------------------
-
-    async def _cmd_schedule_hook(self, args: dict) -> dict:
-        """Create a one-shot scheduled hook that fires at a specific time.
-
-        Accepts either:
-        - ``fire_at``: epoch timestamp or ISO-8601 datetime string
-        - ``delay``: human-friendly duration string (e.g. '30m', '2h', '1d')
-
-        The hook fires once when the scheduled time arrives, then auto-deletes.
-        """
-        project_id = args["project_id"]
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-
-        name = args.get("name", "scheduled-hook")
-        prompt_template = args["prompt_template"]
-
-        # Resolve fire_at from either fire_at or delay
-        fire_at = args.get("fire_at")
-        delay = args.get("delay")
-
-        if fire_at is not None and delay is not None:
-            return {"error": "Provide either 'fire_at' or 'delay', not both"}
-        if fire_at is None and delay is None:
-            return {"error": "Provide either 'fire_at' (epoch/ISO) or 'delay' (e.g. '30m', '2h')"}
-
-        now = time.time()
-
-        if delay is not None:
-            try:
-                delay_seconds = _parse_delay(str(delay))
-            except ValueError as e:
-                return {"error": str(e)}
-            if delay_seconds <= 0:
-                return {"error": "Delay must be positive"}
-            fire_at_epoch = now + delay_seconds
-        else:
-            # fire_at could be epoch (number) or ISO string
-            if isinstance(fire_at, (int, float)):
-                fire_at_epoch = float(fire_at)
-            elif isinstance(fire_at, str):
-                try:
-                    from datetime import datetime as _dt, timezone as _tz
-
-                    # Try ISO format
-                    dt = _dt.fromisoformat(fire_at.replace("Z", "+00:00"))
-                    fire_at_epoch = dt.timestamp()
-                except ValueError:
-                    # Try as plain number
-                    try:
-                        fire_at_epoch = float(fire_at)
-                    except ValueError:
-                        return {
-                            "error": f"Cannot parse fire_at '{fire_at}'. Use epoch timestamp or ISO-8601 format."
-                        }
-            else:
-                return {"error": f"Invalid fire_at type: {type(fire_at).__name__}"}
-
-            if fire_at_epoch <= now:
-                return {"error": "fire_at must be in the future"}
-
-        # Generate a unique hook ID
-        import uuid
-
-        hook_id = f"sched-{name.lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
-
-        trigger = {"type": "scheduled", "fire_at": fire_at_epoch}
-        context_steps = args.get("context_steps", [])
-        llm_config = args.get("llm_config")
-        if isinstance(llm_config, dict) and "model" in llm_config:
-            llm_config["model"] = str(llm_config["model"])
-
-        hook = Hook(
-            id=hook_id,
-            project_id=project_id,
-            name=name,
-            trigger=json.dumps(trigger),
-            context_steps=json.dumps(context_steps),
-            prompt_template=prompt_template,
-            cooldown_seconds=0,  # One-shot — no cooldown needed
-            llm_config=json.dumps(llm_config) if llm_config else None,
-            created_at=now,
-            updated_at=now,
-        )
-        await self.db.create_hook(hook)
-
-        from datetime import datetime as _dt, timezone as _tz
-
-        fire_at_iso = _dt.fromtimestamp(fire_at_epoch, tz=_tz.utc).isoformat()
-        delay_human = _format_interval(int(fire_at_epoch - now))
-
-        return {
-            "created": hook_id,
-            "name": name,
-            "project_id": project_id,
-            "fire_at": fire_at_iso,
-            "fire_at_epoch": fire_at_epoch,
-            "fires_in": delay_human,
-        }
-
-    async def _cmd_list_scheduled(self, args: dict) -> dict:
-        """List all pending scheduled (one-shot) hooks."""
-        project_id = args.get("project_id")
-        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
-        now = time.time()
-
-        results = []
-        for h in hooks:
-            try:
-                trigger = json.loads(h.trigger)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if trigger.get("type") != "scheduled":
-                continue
-
-            fire_at = trigger.get("fire_at", 0)
-            from datetime import datetime as _dt, timezone as _tz
-
-            fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
-
-            remaining = fire_at - now
-            if remaining > 0:
-                fires_in = _format_interval(int(remaining))
-                status = "pending"
-            else:
-                fires_in = "overdue"
-                status = "overdue"
-
-            results.append(
-                {
-                    "hook_id": h.id,
-                    "name": h.name,
-                    "project_id": h.project_id,
-                    "fire_at": fire_at_iso,
-                    "fire_at_epoch": fire_at,
-                    "fires_in": fires_in,
-                    "status": status,
-                    "prompt_template": h.prompt_template[:200]
-                    + ("..." if len(h.prompt_template) > 200 else ""),
-                }
-            )
-
-        # Sort by fire_at
-        results.sort(key=lambda r: r["fire_at_epoch"])
-        return {"scheduled_hooks": results, "count": len(results)}
-
-    async def _cmd_cancel_scheduled(self, args: dict) -> dict:
-        """Cancel a scheduled hook before it fires."""
-        hook_id = args["hook_id"]
-        hook = await self.db.get_hook(hook_id)
-        if not hook:
-            return {"error": f"Scheduled hook '{hook_id}' not found"}
-
-        try:
-            trigger = json.loads(hook.trigger)
-        except (json.JSONDecodeError, TypeError):
-            trigger = {}
-
-        if trigger.get("type") != "scheduled":
-            return {
-                "error": f"Hook '{hook_id}' is not a scheduled hook (type: {trigger.get('type', 'unknown')})"
-            }
-
-        # Cancel if it's currently running
-        hooks_engine = self.orchestrator.hooks
-        if hooks_engine and hook_id in hooks_engine._running:
-            task = hooks_engine._running.pop(hook_id)
-            if not task.done():
-                task.cancel()
-
-        await self.db.delete_hook(hook_id)
-        return {"cancelled": hook_id, "name": hook.name}
+    # Hook CRUD commands removed — hooks are now an internal implementation
+    # detail managed through rules. See _cmd_fire_rule, _cmd_rule_runs,
+    # _cmd_toggle_rule, and _cmd_refresh_rules above.
 
     # -----------------------------------------------------------------------
     # Rule commands -- persistent autonomous behaviors stored as markdown.
@@ -5377,6 +4866,29 @@ feature work stuck on feature branches across multiple workspaces.
 
         project_id = args.get("project_id")
         rules = rm.browse_rules(project_id)
+
+        # Enrich each rule with execution info
+        all_hooks = await self.db.list_hooks()
+        hooks_by_rule: dict[str, list] = {}
+        for h in all_hooks:
+            for rule in rules:
+                prefix = f"rule-{rule['id']}-"
+                if h.id.startswith(prefix):
+                    hooks_by_rule.setdefault(rule["id"], []).append(h)
+                    break
+
+        for rule in rules:
+            rule_hooks = hooks_by_rule.get(rule["id"], [])
+            if rule_hooks:
+                all_enabled = all(h.enabled for h in rule_hooks)
+                all_disabled = all(not h.enabled for h in rule_hooks)
+                last_runs = [h.last_triggered_at for h in rule_hooks if h.last_triggered_at]
+                rule["enabled"] = all_enabled if all_enabled else (False if all_disabled else "mixed")
+                rule["last_run"] = max(last_runs) if last_runs else None
+            else:
+                rule["enabled"] = None
+                rule["last_run"] = None
+
         return {"rules": rules}
 
     async def _cmd_list_rules(self, args: dict) -> dict:
@@ -5384,7 +4896,7 @@ feature work stuck on feature branches across multiple workspaces.
         return await self._cmd_browse_rules(args)
 
     async def _cmd_load_rule(self, args: dict) -> dict:
-        """Load full details of a specific rule."""
+        """Load full details of a specific rule, including execution info."""
         rm = getattr(self.orchestrator, "rule_manager", None)
         if not rm:
             return {"error": "Rule manager not initialized"}
@@ -5397,9 +4909,26 @@ feature work stuck on feature branches across multiple workspaces.
         if not loaded:
             return {"error": f"Rule '{rule_id}' not found"}
 
+        # Enrich with execution info from hooks
+        prefix = f"rule-{rule_id}-"
+        hooks = await self.db.list_hooks_by_id_prefix(prefix)
+        if hooks:
+            all_enabled = all(h.enabled for h in hooks)
+            all_disabled = all(not h.enabled for h in hooks)
+            last_runs = [h.last_triggered_at for h in hooks if h.last_triggered_at]
+            loaded["execution_info"] = {
+                "enabled": all_enabled if all_enabled else (False if all_disabled else "mixed"),
+                "hook_count": len(hooks),
+                "last_run": max(last_runs) if last_runs else None,
+            }
+
         return loaded
 
     async def _cmd_refresh_hooks(self, args: dict) -> dict:
+        """Backward compat alias — delegates to refresh_rules."""
+        return await self._cmd_refresh_rules(args)
+
+    async def _cmd_refresh_rules(self, args: dict) -> dict:
         """Reconcile hooks from current rule files.
 
         Re-reads all rule files and regenerates hooks for active rules,
@@ -5417,6 +4946,115 @@ feature work stuck on feature branches across multiple workspaces.
             "hooks_regenerated": stats.get("hooks_regenerated", 0),
             "hooks_unchanged": stats.get("hooks_unchanged", 0),
             "errors": stats.get("errors", 0),
+        }
+
+    async def _cmd_fire_rule(self, args: dict) -> dict:
+        """Manually trigger all hooks for a rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        loaded = rm.load_rule(rule_id)
+        if not loaded:
+            return {"error": f"Rule '{rule_id}' not found"}
+
+        hook_ids = loaded.get("hooks", [])
+        if not hook_ids:
+            return {"error": f"Rule '{rule_id}' has no generated hooks"}
+
+        hooks_engine = self.orchestrator.hooks
+        if not hooks_engine:
+            return {"error": "Hook engine is not enabled"}
+
+        fired = []
+        skipped = []
+        for hid in hook_ids:
+            try:
+                await hooks_engine.fire_hook(hid)
+                fired.append(hid)
+            except ValueError:
+                skipped.append(hid)
+
+        return {
+            "rule_id": rule_id,
+            "fired": len(fired),
+            "skipped": len(skipped),
+            "total": len(hook_ids),
+        }
+
+    async def _cmd_rule_runs(self, args: dict) -> dict:
+        """Show recent execution history for a rule's hooks."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        loaded = rm.load_rule(rule_id)
+        if not loaded:
+            return {"error": f"Rule '{rule_id}' not found"}
+
+        limit = args.get("limit", 10)
+        prefix = f"rule-{rule_id}-"
+        runs = await self.db.list_hook_runs_by_prefix(prefix, limit=limit)
+
+        run_list = []
+        for r in runs:
+            run_list.append({
+                "id": r.id,
+                "hook_id": r.hook_id,
+                "project_id": r.project_id,
+                "status": r.status,
+                "trigger_reason": r.trigger_reason,
+                "tokens_used": r.tokens_used,
+                "skipped_reason": r.skipped_reason,
+                "started_at": r.started_at,
+                "completed_at": r.completed_at,
+            })
+
+        return {
+            "rule_id": rule_id,
+            "rule_name": loaded.get("name", rule_id),
+            "runs": run_list,
+        }
+
+    async def _cmd_toggle_rule(self, args: dict) -> dict:
+        """Enable or disable all hooks for a rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        enabled = args.get("enabled")
+        if enabled is None:
+            return {"error": "enabled is required (true or false)"}
+
+        loaded = rm.load_rule(rule_id)
+        if not loaded:
+            return {"error": f"Rule '{rule_id}' not found"}
+
+        prefix = f"rule-{rule_id}-"
+        hooks = await self.db.list_hooks_by_id_prefix(prefix)
+        updated = 0
+        for hook in hooks:
+            if hook.enabled != enabled:
+                await self.db.update_hook(hook.id, enabled=enabled)
+                updated += 1
+
+        return {
+            "rule_id": rule_id,
+            "action": "enabled" if enabled else "disabled",
+            "hooks_updated": updated,
+            "total_hooks": len(hooks),
         }
 
     # -----------------------------------------------------------------------

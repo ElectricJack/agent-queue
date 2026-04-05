@@ -56,9 +56,9 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="agent",
         description=("Agent management, agent profiles, profile import/export"),
     ),
-    "hooks": CategoryMeta(
-        name="hooks",
-        description=("Direct hook management -- create, edit, list, delete, fire hooks"),
+    "rules": CategoryMeta(
+        name="rules",
+        description=("Automation rules — list, view, create, fire, toggle, run history"),
     ),
     "memory": CategoryMeta(
         name="memory",
@@ -131,24 +131,15 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "pause_agent": "agent",
     "resume_agent": "agent",
     # hooks (read-only / execution — all creation goes through rules)
-    "list_hooks": "hooks",
-    "list_hook_runs": "hooks",
-    "fire_hook": "hooks",
-    "hook_schedules": "hooks",
-    "fire_all_scheduled_hooks": "hooks",
-    "schedule_hook": "hooks",
-    "list_scheduled": "hooks",
-    "cancel_scheduled": "hooks",
-    "create_hook": "hooks",
-    "edit_hook": "hooks",
-    "delete_hook": "hooks",
-    "toggle_project_hooks": "hooks",
-    "browse_rules": "hooks",
-    "list_rules": "hooks",
-    "load_rule": "hooks",
-    "save_rule": "hooks",
-    "delete_rule": "hooks",
-    "refresh_hooks": "hooks",
+    "browse_rules": "rules",
+    "list_rules": "rules",
+    "load_rule": "rules",
+    "save_rule": "rules",
+    "delete_rule": "rules",
+    "fire_rule": "rules",
+    "rule_runs": "rules",
+    "toggle_rule": "rules",
+    "refresh_rules": "rules",
     # memory
     # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory.py)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
@@ -1254,151 +1245,8 @@ _ALL_TOOL_DEFINITIONS = [
             },
         },
     },
-    {
-        "name": "list_hooks",
-        "description": (
-            "List hooks (generated from rules), optionally filtered by project. "
-            "Hooks are internal execution artifacts — to create automation, use save_rule instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Filter by project ID (optional)"},
-            },
-        },
-    },
-    {
-        "name": "list_hook_runs",
-        "description": "Show recent execution history for a hook.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID"},
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of runs to show (default 10)",
-                    "default": 10,
-                },
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "fire_hook",
-        "description": "Manually trigger a hook immediately, ignoring cooldown.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID to fire"},
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "hook_schedules",
-        "description": (
-            "Show upcoming hook executions with human-readable next-run times. "
-            "Lists all enabled periodic hooks, their schedule constraints, last "
-            "run time, and when they are expected to fire next."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Optional project ID to filter hooks",
-                },
-            },
-        },
-    },
-    {
-        "name": "fire_all_scheduled_hooks",
-        "description": (
-            "Manually trigger all enabled periodic hooks, optionally filtered by project. "
-            "Useful for testing or forcing immediate execution."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Optional project ID to filter hooks",
-                },
-            },
-        },
-    },
-    {
-        "name": "schedule_hook",
-        "description": (
-            "Schedule a one-shot hook to fire at a specific time or after a delay. "
-            "The hook runs once, executes its prompt with full tool access, then auto-deletes. "
-            "Use for deferred work: reminders, delayed checks, timed actions. "
-            "Provide either 'fire_at' (epoch/ISO datetime) or 'delay' (e.g. '30m', '2h', '1d')."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {
-                    "type": "string",
-                    "description": "Descriptive name for the scheduled hook (optional, used as ID slug)",
-                    "default": "scheduled-hook",
-                },
-                "prompt_template": {
-                    "type": "string",
-                    "description": "Prompt template to execute when the scheduled time arrives",
-                },
-                "fire_at": {
-                    "type": ["number", "string"],
-                    "description": "When to fire: epoch timestamp (number) or ISO-8601 datetime string. Mutually exclusive with 'delay'.",
-                },
-                "delay": {
-                    "type": "string",
-                    "description": "Delay before firing: e.g. '30s', '5m', '2h', '1d', '2h30m'. Mutually exclusive with 'fire_at'.",
-                },
-                "context_steps": {
-                    "type": "array",
-                    "description": "Optional context-gathering steps",
-                    "items": {"type": "object"},
-                },
-                "llm_config": {
-                    "type": "object",
-                    "description": "Optional LLM config override: {provider, model, base_url}",
-                },
-            },
-            "required": ["project_id", "prompt_template"],
-        },
-    },
-    {
-        "name": "list_scheduled",
-        "description": (
-            "List all pending scheduled (one-shot) hooks. Shows when each will fire, "
-            "how long until it fires, and a preview of the prompt."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Optional project ID to filter scheduled hooks",
-                },
-            },
-        },
-    },
-    {
-        "name": "cancel_scheduled",
-        "description": "Cancel a scheduled hook before it fires. Removes it from the queue.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {
-                    "type": "string",
-                    "description": "Scheduled hook ID to cancel",
-                },
-            },
-            "required": ["hook_id"],
-        },
-    },
+    # Hook tool definitions removed — hooks are now an internal implementation
+    # detail. All automation is managed through rules (see rule tools below).
     # Notes tools (list_notes, write_note, delete_note, read_note,
     # append_note, promote_note, compare_specs_notes) migrated to
     # aq-notes internal plugin.
@@ -2023,80 +1871,10 @@ _ALL_TOOL_DEFINITIONS = [
     # GitHub operations + convenience git commands (create_github_repo, generate_readme,
     # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
     # migrated to aq-git internal plugin.
-    # --- Hook management (direct) ---
-    {
-        "name": "create_hook",
-        "description": (
-            "Deprecated — redirects to save_rule. Direct hook creation is no "
-            "longer supported; all automation must be created through rules."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {"type": "string", "description": "Hook name"},
-                "trigger": {"type": "string", "description": "Trigger type"},
-                "prompt_template": {"type": "string", "description": "Prompt template"},
-                "cooldown_seconds": {
-                    "type": "integer",
-                    "description": "Cooldown between fires (seconds)",
-                },
-            },
-            "required": ["name", "trigger", "prompt_template"],
-        },
-    },
-    {
-        "name": "edit_hook",
-        "description": (
-            "Edit a hook. For rule-backed hooks (id starts with 'rule-'), "
-            "redirects to editing the source rule instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID to edit"},
-                "name": {"type": "string", "description": "New hook name"},
-                "enabled": {"type": "boolean", "description": "Enable/disable"},
-                "trigger": {"type": "string", "description": "New trigger type"},
-                "prompt_template": {"type": "string", "description": "New prompt template"},
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "delete_hook",
-        "description": (
-            "Delete a hook. Rule-backed hooks (id starts with 'rule-') must be "
-            "deleted via their source rule. Only orphan/legacy hooks can be "
-            "deleted directly."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID to delete"},
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "toggle_project_hooks",
-        "description": "Enable or disable all hooks in a project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "enabled": {
-                    "type": "boolean",
-                    "description": "True to enable, false to disable",
-                },
-            },
-            "required": ["project_id", "enabled"],
-        },
-    },
-    # --- Rule aliases ---
+    # --- Rule tools ---
     {
         "name": "browse_rules",
-        "description": ("List rules for a project (plus globals). Alias for list_rules."),
+        "description": "List rules for a project (plus globals). Alias for list_rules.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2106,6 +1884,59 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
         },
+    },
+    {
+        "name": "fire_rule",
+        "description": "Manually trigger all hooks for a rule, ignoring cooldowns.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID to fire"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "rule_runs",
+        "description": (
+            "Show recent execution history for a rule (aggregated across "
+            "all its hooks)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of runs to show (default 10)",
+                    "default": 10,
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "toggle_rule",
+        "description": "Enable or disable all hooks for a rule.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID"},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to enable, false to disable",
+                },
+            },
+            "required": ["id", "enabled"],
+        },
+    },
+    {
+        "name": "refresh_rules",
+        "description": (
+            "Force reconciliation of all rules and their hooks. Re-reads all "
+            "rule files and regenerates hooks for active rules."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     # --- Communication ---
     {
@@ -2555,7 +2386,7 @@ class ToolRegistry:
         plugin-registered tools with matching ``_category``.
 
         Args:
-            category: Category name (e.g. ``"git"``, ``"hooks"``).
+            category: Category name (e.g. ``"git"``, ``"rules"``).
             compressed: If True, return minimal schemas for small-context LLMs.
 
         Returns:
@@ -2577,7 +2408,7 @@ class ToolRegistry:
         """Return tool names for a category.
 
         Args:
-            category: Category name (e.g. ``"git"``, ``"hooks"``).
+            category: Category name (e.g. ``"git"``, ``"rules"``).
 
         Returns:
             List of tool name strings, or ``None`` if the category

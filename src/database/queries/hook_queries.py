@@ -174,6 +174,21 @@ class HookQueryMixin:
             )
             return [self._row_to_hook_run(r) for r in result.mappings().fetchall()]
 
+    async def list_hook_runs_by_prefix(
+        self,
+        hook_id_prefix: str,
+        limit: int = 20,
+    ) -> list[HookRun]:
+        """Return recent runs for all hooks matching a prefix, newest first."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(hook_runs)
+                .where(hook_runs.c.hook_id.like(hook_id_prefix + "%"))
+                .order_by(hook_runs.c.started_at.desc())
+                .limit(limit)
+            )
+            return [self._row_to_hook_run(r) for r in result.mappings().fetchall()]
+
     @staticmethod
     def _row_to_hook_run(row) -> HookRun:
         """Convert a database row to a HookRun model."""
