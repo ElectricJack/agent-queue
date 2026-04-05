@@ -1129,6 +1129,81 @@ class _RuleViewButton(discord.ui.Button):
         )
 
 
+class _EditRuleModal(discord.ui.Modal, title="Edit Rule"):
+    """Modal for editing an existing rule's content and type."""
+
+    rule_type_input = discord.ui.TextInput(
+        label="Type (active or passive)",
+        placeholder="active",
+        required=True,
+        max_length=10,
+    )
+    content_input = discord.ui.TextInput(
+        label="Content (markdown)",
+        style=discord.TextStyle.long,
+        placeholder="# Rule Name\n\n## Trigger\n...\n\n## Logic\n...",
+        required=True,
+        max_length=4000,
+    )
+
+    def __init__(self, rule_id: str, project_id: str | None, current_type: str,
+                 current_content: str, handler, parent_view: "_RuleContentView") -> None:
+        super().__init__()
+        self._rule_id = rule_id
+        self._project_id = project_id
+        self._handler = handler
+        self._parent_view = parent_view
+        self.rule_type_input.default = current_type
+        self.content_input.default = current_content[:4000] if current_content else ""
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        rule_type = self.rule_type_input.value.strip().lower()
+        if rule_type not in ("active", "passive"):
+            await interaction.response.send_message(
+                "Type must be 'active' or 'passive'.",
+                ephemeral=True,
+            )
+            return
+
+        content = self.content_input.value
+        result = await self._handler.execute(
+            "save_rule",
+            {
+                "id": self._rule_id,
+                "project_id": self._project_id,
+                "type": rule_type,
+                "content": content,
+            },
+        )
+        if "error" in result:
+            await interaction.response.send_message(
+                f"❌ Error saving rule: {result['error']}",
+                ephemeral=True,
+            )
+            return
+
+        # Reload the rule to refresh the preview
+        loaded = await self._handler.execute("load_rule", {"id": self._rule_id})
+        if "error" not in loaded:
+            self._parent_view._result = loaded
+            # Update rule summary dict with new name/type
+            self._parent_view._rule["type"] = loaded.get("type", rule_type)
+            if loaded.get("name"):
+                self._parent_view._rule["name"] = loaded["name"]
+            self._parent_view._rebuild()
+            await interaction.response.edit_message(
+                content=self._parent_view.build_content(),
+                view=self._parent_view,
+            )
+        else:
+            hooks = result.get("hooks", [])
+            hook_msg = f" ({len(hooks)} hook(s) regenerated)" if hooks else ""
+            await interaction.response.send_message(
+                f"✅ Rule `{self._rule_id}` updated{hook_msg}.",
+                ephemeral=True,
+            )
+
+
 class _RuleContentView(discord.ui.View):
     """Rule content preview with delete action."""
 
@@ -1158,6 +1233,15 @@ class _RuleContentView(discord.ui.View):
         )
         toggle_btn.callback = self._toggle_callback
         self.add_item(toggle_btn)
+
+        edit_btn = discord.ui.Button(
+            label="Edit",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+            row=0,
+        )
+        edit_btn.callback = self._edit_callback
+        self.add_item(edit_btn)
 
         delete_btn = discord.ui.Button(
             label="Delete Rule",
@@ -1260,6 +1344,22 @@ class _RuleContentView(discord.ui.View):
             content=self.build_content(),
             view=self,
         )
+
+    async def _edit_callback(self, interaction: discord.Interaction) -> None:
+        """Open a modal to edit the rule content."""
+        rule_id = self._rule.get("id")
+        project_id = self._result.get("project_id")
+        current_type = self._result.get("type", "passive")
+        current_content = self._result.get("content", "")
+        modal = _EditRuleModal(
+            rule_id=rule_id,
+            project_id=project_id,
+            current_type=current_type,
+            current_content=current_content,
+            handler=self._handler,
+            parent_view=self,
+        )
+        await interaction.response.send_modal(modal)
 
     async def _delete_callback(self, interaction: discord.Interaction) -> None:
         """Show confirmation before deleting the rule and its hooks."""
