@@ -3266,9 +3266,9 @@ class CommandHandler:
 
         **Parse-first workflow (preferred):**
         If ``_cmd_process_plan`` already created draft subtasks (stored in
-        ``plan_draft_subtasks`` context), approval simply transitions the
-        parent to COMPLETED — which unblocks the first subtask's dependency
-        on the parent and starts the chain.
+        ``plan_draft_subtasks`` context), approval transitions the parent to
+        IN_PROGRESS — signaling that the plan is approved and subtasks are
+        running.  The parent will auto-complete when all subtasks finish.
 
         **Legacy workflow (fallback):**
         If no draft subtasks exist (e.g. plan came through the old auto-
@@ -3304,7 +3304,8 @@ class CommandHandler:
         if draft_ctx:
             # Draft subtasks were already created by _cmd_process_plan.
             # They are blocked by a dependency on this parent task.
-            # Transitioning the parent to COMPLETED will unblock the chain.
+            # Transitioning the parent to IN_PROGRESS will unblock the chain
+            # (plan subtask dependency checking treats IN_PROGRESS parents as met).
             created_info = _json.loads(draft_ctx["content"])
             logger.info(
                 "approve_plan: found %d pre-created draft subtasks for %s",
@@ -3413,12 +3414,14 @@ class CommandHandler:
         # already updates the original embed in-place to show approval status
         # and subtask count, avoiding duplicate messages.
 
-        # Transition to COMPLETED — this unblocks draft subtasks that
-        # depend on the parent (parse-first workflow).
-        # Do this BEFORE cleanup so the response is fast and interactive.
+        # Transition to IN_PROGRESS — the plan is approved and subtasks are
+        # active.  The parent will auto-complete when all subtasks finish
+        # (see _check_plan_parent_completion in orchestrator.py).
+        # Plan subtask dependency checking treats IN_PROGRESS plan parents
+        # as satisfying the dependency.
         await self.db.transition_task(
             args["task_id"],
-            TaskStatus.COMPLETED,
+            TaskStatus.IN_PROGRESS,
             context="plan_approved",
         )
 

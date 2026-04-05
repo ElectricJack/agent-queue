@@ -120,6 +120,8 @@ events, transitions, and the rules governing task lifecycle progression.
 
 1. **DEFINED → READY**: Checked every orchestrator cycle (~5s). A task
    promotes when `db.are_dependencies_met(task_id)` returns True.
+   Plan subtasks get special handling: when their parent plan is IN_PROGRESS
+   (approved, subtasks running), the parent dependency is treated as met.
 
 2. **READY → ASSIGNED**: The `Scheduler` selects which project gets the
    next agent slot based on proportional credit-weight.

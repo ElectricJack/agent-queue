@@ -543,7 +543,8 @@ Note: `IN_PROGRESS` is the only status from which `ADMIN_RESTART` is not a defin
 |---|---|---|---|
 | IN_PROGRESS | PLAN_FOUND | AWAITING_PLAN_APPROVAL | A plan file was discovered after agent completion. |
 | READY | PLAN_FOUND | AWAITING_PLAN_APPROVAL | Plan discovered during post-completion processing. |
-| AWAITING_PLAN_APPROVAL | PLAN_APPROVED | COMPLETED | Human approved the plan; subtasks will be created. |
+| AWAITING_PLAN_APPROVAL | PLAN_APPROVED | IN_PROGRESS | Human approved the plan; subtasks activated. Parent stays IN_PROGRESS until all subtasks complete. |
+| IN_PROGRESS | SUBTASKS_COMPLETED | COMPLETED | All subtasks of a plan have reached COMPLETED; parent auto-completes. |
 | AWAITING_PLAN_APPROVAL | PLAN_REJECTED | READY | Human rejected the plan with feedback; task is re-queued. |
 | AWAITING_PLAN_APPROVAL | PLAN_DELETED | COMPLETED | Human deleted the plan; task marked complete without subtasks. |
 | AWAITING_PLAN_APPROVAL | ADMIN_RESTART | READY | Admin manually resets during plan approval. |

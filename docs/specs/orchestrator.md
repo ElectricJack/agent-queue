@@ -241,9 +241,21 @@ Runs every cycle.  For each task currently in status `DEFINED`:
    - This returns `True` only when every upstream task has status `COMPLETED`.
    - If met: call `db.transition_task(id, READY, context="deps_met")`.
 
+**Plan subtask special handling:** When a plan is approved, the parent task
+transitions to `IN_PROGRESS` (not `COMPLETED`).  Plan subtasks whose parent
+is `IN_PROGRESS` treat the parent dependency as satisfied — only non-parent
+dependencies must be `COMPLETED` for promotion.
+
 Tasks are promoted on the same cycle they become eligible.  There is no one-cycle delay
 (the re-check at the end of plan generation, step 4 of task execution, explicitly calls
 `_check_defined_tasks` again for freshly created subtasks).
+
+### `_check_plan_parent_completion`
+
+Runs every cycle after `_check_defined_tasks`.  Scans all `IN_PROGRESS` tasks
+that have subtasks (plan parents).  When all subtasks have reached `COMPLETED`,
+the parent is auto-transitioned to `COMPLETED` with context `"subtasks_completed"`.
+This ensures plan tasks only show as complete when all their work is truly done.
 
 ---
 
@@ -251,7 +263,7 @@ Tasks are promoted on the same cycle they become eligible.  There is no one-cycl
 
 ### `_check_stuck_defined_tasks`
 
-Runs every cycle after `_check_defined_tasks`.
+Runs every cycle after `_check_plan_parent_completion`.
 
 **Configuration.**  `config.monitoring.stuck_task_threshold_seconds` controls the
 threshold.  A value of `<= 0` disables this feature entirely.

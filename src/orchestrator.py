@@ -22,6 +22,7 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     │   └── _check_pr_status()            # Merged/closed/open detection
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
+    ├── _check_plan_parent_completion()   # Auto-complete plan parents
     ├── _check_stuck_defined_tasks()      # Monitoring alerts
     ├── _check_failed_blocked_tasks()    # Periodic failed/blocked report
     ├── _schedule()                       # Proportional fair-share assignment
@@ -1134,6 +1135,11 @@ class Orchestrator:
             #    dependents within the same cycle.
             await self._check_defined_tasks()
 
+            # 3b. Auto-complete plan parents whose subtasks are all done.
+            #     Runs after step 1 (which may complete the last subtask via
+            #     PR merge) so plan parents can complete in the same cycle.
+            await self._check_plan_parent_completion()
+
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that
             #    were just promoted in step 3.
@@ -1364,22 +1370,46 @@ class Orchestrator:
         - Tasks with dependencies are promoted only when every upstream
           dependency has reached COMPLETED status.
 
-        Tasks are skipped (not promoted) in two cases:
-        - The task's project is currently being plan-processed (supervisor is
-          creating subtasks and blocking dependencies haven't been wired yet).
-        - The task is a plan subtask whose parent is still in
-          AWAITING_PLAN_APPROVAL (defense-in-depth against stale state).
+        Special handling for plan subtasks:
+        - Skipped if the parent plan is still in AWAITING_PLAN_APPROVAL.
+        - If the parent plan is IN_PROGRESS (approved, subtasks running),
+          the parent dependency is treated as met — only non-parent
+          dependencies must be COMPLETED.
 
         This runs after ``_check_awaiting_approval`` so that freshly-merged
         PRs can unblock their dependents in the same cycle.
         """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         for task in defined:
-            # Defense-in-depth: skip plan subtasks whose parent plan hasn't
-            # been approved yet, even if the dependency was somehow missed.
+            # Plan subtask special handling: the parent plan transitions to
+            # IN_PROGRESS (not COMPLETED) when approved, so standard
+            # are_dependencies_met() would block forever.  We treat the
+            # IN_PROGRESS parent dep as satisfied.
             if task.is_plan_subtask and task.parent_task_id:
                 parent = await self.db.get_task(task.parent_task_id)
                 if parent and parent.status == TaskStatus.AWAITING_PLAN_APPROVAL:
+                    continue
+                if parent and parent.status == TaskStatus.IN_PROGRESS:
+                    # Parent plan is approved and active — treat parent dep as met.
+                    # Check only non-parent dependencies.
+                    deps = await self.db.get_dependencies(task.id)
+                    non_parent_deps = deps - {task.parent_task_id}
+                    if not non_parent_deps:
+                        await self.db.transition_task(
+                            task.id, TaskStatus.READY, context="deps_met_plan_parent_active"
+                        )
+                    else:
+                        # All non-parent deps must be COMPLETED
+                        all_met = True
+                        for dep_id in non_parent_deps:
+                            dep_task = await self.db.get_task(dep_id)
+                            if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+                                all_met = False
+                                break
+                        if all_met:
+                            await self.db.transition_task(
+                                task.id, TaskStatus.READY, context="deps_met_plan_parent_active"
+                            )
                     continue
 
             deps = await self.db.get_dependencies(task.id)
@@ -1390,6 +1420,43 @@ class Orchestrator:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
                     await self.db.transition_task(task.id, TaskStatus.READY, context="deps_met")
+
+    async def _check_plan_parent_completion(self) -> None:
+        """Auto-complete plan parent tasks when all their subtasks are done.
+
+        When a plan is approved, the parent transitions to IN_PROGRESS (not
+        COMPLETED) so its status accurately reflects that work is still in
+        progress.  This method checks all IN_PROGRESS tasks that have subtasks
+        and transitions them to COMPLETED once every subtask has finished.
+
+        Runs every cycle to catch all completion paths (agent completion,
+        PR merge, admin skip, etc.) without needing hooks in each path.
+        """
+        in_progress = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        for task in in_progress:
+            subtasks = await self.db.get_subtasks(task.id)
+            if not subtasks:
+                continue  # Not a plan parent — skip
+            if all(s.status == TaskStatus.COMPLETED for s in subtasks):
+                await self.db.transition_task(
+                    task.id, TaskStatus.COMPLETED, context="subtasks_completed"
+                )
+                await self.db.log_event(
+                    "plan_completed",
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    payload=f"All {len(subtasks)} subtask(s) completed",
+                )
+                await self._notify_channel(
+                    f"**Plan Completed:** `{task.id}` — {task.title} "
+                    f"(all {len(subtasks)} subtask(s) finished).",
+                    project_id=task.project_id,
+                )
+                logger.info(
+                    "Plan parent %s auto-completed: all %d subtasks finished",
+                    task.id,
+                    len(subtasks),
+                )
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Monitoring: detect DEFINED tasks stuck waiting for dependencies.

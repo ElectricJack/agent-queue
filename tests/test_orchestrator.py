@@ -109,15 +109,16 @@ async def _run_cycle_and_wait(orch):
 
 
 async def _approve_plan_for_task(orch, task_id: str) -> list:
-    """Simulate plan approval: transition to COMPLETED and promote subtasks.
+    """Simulate plan approval: transition to IN_PROGRESS and promote subtasks.
 
     Returns an empty list (subtask creation is now handled by the supervisor
     LLM via break_plan_into_tasks, not by the orchestrator).
+    The parent stays IN_PROGRESS until all subtasks complete.
     """
     task = await orch.db.get_task(task_id)
     if not task or task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
         return []
-    await orch.db.transition_task(task_id, TaskStatus.COMPLETED, context="plan_approved")
+    await orch.db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="plan_approved")
     await orch._check_defined_tasks()
     return []
 
@@ -554,7 +555,7 @@ class TestPlanApprovalBlocking:
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED"
 
     async def test_subtasks_promoted_after_plan_approved(self, orch_with_workspace):
-        """After parent transitions to COMPLETED, first subtask gets promoted."""
+        """After parent transitions to IN_PROGRESS (plan approved), first subtask gets promoted."""
         orch, workspace = orch_with_workspace
 
         await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
@@ -593,8 +594,12 @@ class TestPlanApprovalBlocking:
         await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
         await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
 
-        # Simulate plan approval: transition parent to COMPLETED
-        await orch.db.transition_task("t-plan", TaskStatus.COMPLETED, context="plan_approved")
+        # Simulate plan approval: transition parent to IN_PROGRESS
+        await orch.db.transition_task("t-plan", TaskStatus.IN_PROGRESS, context="plan_approved")
+
+        # Parent should be IN_PROGRESS, not COMPLETED
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.IN_PROGRESS, "Plan parent should be IN_PROGRESS after approval"
 
         # Now run _check_defined_tasks — first subtask should promote
         await orch._check_defined_tasks()
@@ -603,6 +608,57 @@ class TestPlanApprovalBlocking:
         s2 = await orch.db.get_task("t-sub-2")
         assert s1.status == TaskStatus.READY, "Sub 1 should be READY after approval"
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED (deps not met)"
+
+    async def test_plan_parent_auto_completes_when_subtasks_done(self, orch_with_workspace):
+        """Plan parent transitions to COMPLETED when all subtasks finish."""
+        orch, workspace = orch_with_workspace
+
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
+
+        # Create parent in IN_PROGRESS (plan approved)
+        parent = Task(
+            id="t-plan",
+            project_id="p-1",
+            title="Plan Task",
+            description="Create plan",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(parent)
+
+        # Create subtasks
+        sub1 = Task(
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.IN_PROGRESS,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+
+        # Not all subtasks done — parent should stay IN_PROGRESS
+        await orch._check_plan_parent_completion()
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.IN_PROGRESS, "Parent should stay IN_PROGRESS"
+
+        # Complete the last subtask
+        await orch.db.transition_task("t-sub-2", TaskStatus.COMPLETED, context="test")
+
+        # Now all subtasks are done — parent should auto-complete
+        await orch._check_plan_parent_completion()
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.COMPLETED, "Parent should auto-complete"
 
 
 class TestIsLastSubtask:
