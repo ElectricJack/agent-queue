@@ -1320,7 +1320,11 @@ def step_chat_provider(existing: dict) -> dict:
     if not default_model:
         default_model = local_models[0] if local_models else "qwen3.5:35b"
 
-    model = prompt("Model name", default_model)
+    model = prompt("Model name or number", default_model)
+
+    # Resolve numeric selection to model name
+    if model.isdigit() and local_models and 1 <= int(model) <= len(local_models):
+        model = local_models[int(model) - 1]
 
     if model not in local_models:
         print()
