@@ -1093,7 +1093,7 @@ class MenuView(discord.ui.View):
 # Rules list view with View buttons
 # ---------------------------------------------------------------------------
 
-_RULES_PER_PAGE = 10
+_RULES_PER_PAGE = 6
 
 
 class _RuleViewButton(discord.ui.Button):
@@ -1369,7 +1369,7 @@ class RulesListView(discord.ui.View):
             self.add_item(next_btn)
 
     def build_embed(self) -> discord.Embed:
-        """Build an embed with table-formatted rules list."""
+        """Build an embed with markdown-formatted rules list."""
         if not self._rules:
             return make_embed(
                 EmbedStyle.INFO,
@@ -1380,68 +1380,49 @@ class RulesListView(discord.ui.View):
         start = self.page * _RULES_PER_PAGE
         page_rules = self._rules[start : start + _RULES_PER_PAGE]
 
-        # Collect row data
-        rows: list[tuple[str, str, str, str, str, str]] = []
+        # Status emoji mapping
+        _status_emoji = {True: "\u2705", False: "\u23f8\ufe0f", "mixed": "\u26a0\ufe0f"}
+
+        entries: list[str] = []
         for r in page_rules:
             name = r.get("name") or r.get("id", "?")
             rule_type = r.get("type", "passive")
             scope = r.get("project_id") or "global"
-            hooks = str(r.get("hook_count", 0))
-
+            hook_count = r.get("hook_count", 0)
+            summary = r.get("summary", "")
             enabled = r.get("enabled")
-            if enabled is False:
-                status = "off"
-            elif enabled == "mixed":
-                status = "mixed"
-            else:
-                status = "on"
 
-            last_run_raw = r.get("last_run")
-            last_run = str(last_run_raw) if last_run_raw else ""
-            rows.append((name, rule_type, scope, hooks, status, last_run))
+            # Type emoji
+            type_icon = "\u26a1" if rule_type == "active" else "\U0001f4d6"
 
-        has_last_run = any(r[5] for r in rows)
+            # Status badge
+            status_icon = _status_emoji.get(enabled, "")
+            status_text = (
+                "on" if enabled is True else "off" if enabled is False
+                else "mixed" if enabled == "mixed" else ""
+            )
+            status_part = f" {status_icon} {status_text}" if status_text else ""
 
-        # Compute column widths (capped to keep table compact)
-        name_w = min(max(4, *(len(r[0]) for r in rows)), 20)
-        type_w = 7  # "passive" is the longest
-        scope_w = min(max(5, *(len(r[2]) for r in rows)), 14)
-        hooks_w = 5
-        status_w = 6
+            # Metadata line: scope · hooks · status
+            meta_parts = [f"`{scope}`"]
+            if hook_count:
+                meta_parts.append(f"{hook_count} hook{'s' if hook_count != 1 else ''}")
+            if status_part:
+                meta_parts.append(status_part.strip())
+            meta_line = " \u00b7 ".join(meta_parts)
 
-        # Build header + separator
-        cols = [
-            f"{'Name':<{name_w}}",
-            f"{'Type':<{type_w}}",
-            f"{'Scope':<{scope_w}}",
-            f"{'Hooks':>{hooks_w}}",
-            f"{'Status':<{status_w}}",
-        ]
-        if has_last_run:
-            cols.append("Last Run")
-        header = "  ".join(cols)
-        sep = "─" * len(header)
+            # Truncate description for display
+            desc = summary[:120].rstrip() if summary else "*No description*"
+            if summary and len(summary) > 120:
+                desc += "\u2026"
 
-        # Build data rows
-        lines = [header, sep]
-        for name, rule_type, scope, hooks, status, last_run in rows:
-            t_name = name[:name_w] if len(name) > name_w else name
-            t_scope = scope[:scope_w] if len(scope) > scope_w else scope
-            parts = [
-                f"{t_name:<{name_w}}",
-                f"{rule_type:<{type_w}}",
-                f"{t_scope:<{scope_w}}",
-                f"{hooks:>{hooks_w}}",
-                f"{status:<{status_w}}",
-            ]
-            if has_last_run:
-                parts.append(last_run or "—")
-            lines.append("  ".join(parts))
+            entries.append(
+                f"{type_icon} **{name}**\n"
+                f"{meta_line}\n"
+                f"> {desc}"
+            )
 
-        table_text = "```\n" + "\n".join(lines) + "\n```"
-
-        # Legend for status values
-        legend = "⚡ active · 📖 passive · ✅ on · ⏸️ off · ⚠️ mixed"
+        body = "\n\n".join(entries)
 
         # Footer
         footer_parts = []
@@ -1452,8 +1433,8 @@ class RulesListView(discord.ui.View):
         return make_embed(
             EmbedStyle.INFO,
             f"Rules ({len(self._rules)})",
-            description=f"{table_text}\n{legend}",
-            footer=" · ".join(footer_parts),
+            description=body,
+            footer=" \u00b7 ".join(footer_parts),
         )
 
     async def _prev_page(self, interaction: discord.Interaction) -> None:
