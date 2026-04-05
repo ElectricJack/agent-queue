@@ -576,7 +576,7 @@ class RuleManager:
 
         from src.models import Hook
 
-        title = self._extract_title(content)
+        title = re.sub(r"^Rule:\s*", "", self._extract_title(content))
         new_hook_ids: list[str] = []
         creation_succeeded = True
 
