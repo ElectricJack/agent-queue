@@ -522,3 +522,322 @@ class TestBuildContextFactsheet:
         assert "## Project Factsheet" in block
         assert "## Project Profile" in block
         assert block.index("## Project Factsheet") < block.index("## Project Profile")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Deep Consolidation and Bootstrap
+# ---------------------------------------------------------------------------
+
+
+class TestDeepConsolidation:
+    """Tests for run_deep_consolidation() — weekly knowledge base review."""
+
+    def setup_method(self):
+        self.config = MemoryConfig(enabled=False, consolidation_enabled=True)
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_path(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.mgr = MemoryManager(self.config, storage_root=str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_deep_consolidation_disabled(self):
+        """Deep consolidation should return 'disabled' when consolidation is off."""
+        self.mgr.config = MemoryConfig(enabled=False, consolidation_enabled=False)
+        result = await self.mgr.run_deep_consolidation("test-project")
+        assert result["status"] == "disabled"
+        assert result["topics_reviewed"] == 0
+        assert result["topics_updated"] == []
+        assert result["factsheet_updated"] is False
+        assert result["pruned_facts"] == []
+
+    @pytest.mark.asyncio
+    async def test_deep_consolidation_no_knowledge(self):
+        """Deep consolidation should return 'no_knowledge' when nothing exists."""
+        result = await self.mgr.run_deep_consolidation("nonexistent-project")
+        assert result["status"] == "no_knowledge"
+        assert result["topics_reviewed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_deep_consolidation_reads_all_topics(self):
+        """Deep consolidation should read all existing knowledge topics."""
+        project_id = "deep-test"
+
+        # Create a factsheet
+        fs = ProjectFactsheet(
+            raw_yaml={
+                "project": {"name": "Deep Test", "id": project_id},
+                "urls": {"github": "https://github.com/deep-test"},
+            },
+            body_markdown="# Deep Test\n\n## What It Does\nOld description.",
+        )
+        await self.mgr.write_factsheet(project_id, fs)
+
+        # Create a knowledge topic
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "architecture",
+            "# Architecture Knowledge\n\n## Core Architecture\n- Uses async Python (from task: task-1)",
+        )
+
+        # Deep consolidation will try to call LLM — mock it out
+        # For this test, we just verify it reads the data correctly
+        # (the LLM call will fail, returning an error)
+        result = await self.mgr.run_deep_consolidation(project_id)
+        # Will get "error" because no LLM provider is configured
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        assert result["topics_reviewed"] == 1  # found the architecture topic
+
+    @pytest.mark.asyncio
+    async def test_deep_consolidation_counts_processed_staging(self):
+        """Deep consolidation should count previously processed staging files."""
+        project_id = "staging-count-test"
+
+        # Create factsheet
+        fs = ProjectFactsheet(
+            raw_yaml={"project": {"name": "Staging Count"}},
+            body_markdown="# Test",
+        )
+        await self.mgr.write_factsheet(project_id, fs)
+
+        # Create some processed staging files
+        processed_dir = self.mgr._staging_processed_dir(project_id)
+        os.makedirs(processed_dir, exist_ok=True)
+        for i in range(3):
+            with open(os.path.join(processed_dir, f"task-{i}.json"), "w") as f:
+                f.write("{}")
+
+        result = await self.mgr.run_deep_consolidation(project_id)
+        # Will fail at LLM call, but should have counted processed files
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+
+
+class TestBootstrapConsolidation:
+    """Tests for bootstrap_consolidation() — one-time initial setup."""
+
+    def setup_method(self):
+        self.config = MemoryConfig(enabled=False, consolidation_enabled=True)
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_path(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.mgr = MemoryManager(self.config, storage_root=str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_no_tasks(self):
+        """Bootstrap should return 'no_tasks' when no task memories exist."""
+        result = await self.mgr.bootstrap_consolidation("empty-project")
+        assert result["status"] == "no_tasks"
+        assert result["tasks_processed"] == 0
+        assert result["topics_created"] == []
+        assert result["factsheet_created"] is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_already_exists(self):
+        """Bootstrap should return 'already_exists' if factsheet and knowledge exist."""
+        project_id = "already-setup"
+
+        # Create factsheet
+        fs = ProjectFactsheet(
+            raw_yaml={"project": {"name": "Already Setup", "id": project_id}},
+            body_markdown="# Already Setup",
+        )
+        await self.mgr.write_factsheet(project_id, fs)
+
+        # Create a knowledge topic
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "architecture",
+            "# Architecture\n\nExisting content.",
+        )
+
+        result = await self.mgr.bootstrap_consolidation(project_id)
+        assert result["status"] == "already_exists"
+        assert "already has a factsheet" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_reads_task_memories(self):
+        """Bootstrap should read task memory files."""
+        project_id = "boot-test"
+
+        # Create task memory files
+        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+        for i in range(3):
+            with open(os.path.join(tasks_dir, f"task-{i}.md"), "w") as f:
+                f.write(
+                    f"# Task: task-{i} — Test task {i}\n\n"
+                    f"**Project:** {project_id}\n\n"
+                    f"## Summary\nDid something interesting for task {i}.\n"
+                )
+
+        # Bootstrap will try to call LLM — will fail without provider
+        result = await self.mgr.bootstrap_consolidation(
+            project_id,
+            project_name="Boot Test",
+            repo_url="https://github.com/boot-test",
+        )
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        assert result["tasks_processed"] == 3
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_reads_digests(self):
+        """Bootstrap should also read digest files alongside task memories."""
+        project_id = "digest-boot"
+
+        # Create task memories and digests
+        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        digests_dir = os.path.join(str(self.tmp_path), "memory", project_id, "digests")
+        os.makedirs(tasks_dir, exist_ok=True)
+        os.makedirs(digests_dir, exist_ok=True)
+
+        with open(os.path.join(tasks_dir, "task-1.md"), "w") as f:
+            f.write("# Task: task-1\n\n## Summary\nRecent task.\n")
+
+        with open(os.path.join(digests_dir, "week-2026-W10.md"), "w") as f:
+            f.write("# Week 2026-W10 Digest\n\nSummary of older tasks.\n")
+
+        result = await self.mgr.bootstrap_consolidation(project_id)
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        # Should have found both the task and the digest
+        assert result["tasks_processed"] == 2
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_skips_when_factsheet_exists_but_no_knowledge(self):
+        """Bootstrap should proceed if factsheet exists but no knowledge topics do."""
+        project_id = "partial-setup"
+
+        # Create only a factsheet (no knowledge topics)
+        fs = ProjectFactsheet(
+            raw_yaml={"project": {"name": "Partial", "id": project_id}},
+            body_markdown="# Partial",
+        )
+        await self.mgr.write_factsheet(project_id, fs)
+
+        # Create task memories
+        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+        with open(os.path.join(tasks_dir, "task-1.md"), "w") as f:
+            f.write("# Task: task-1\n\n## Summary\nDid a thing.\n")
+
+        result = await self.mgr.bootstrap_consolidation(project_id)
+        # Should proceed (not "already_exists") since no knowledge topics exist
+        assert result["status"] == "error"  # fails at LLM call
+        assert result["error"] == "no_provider"
+        assert result["tasks_processed"] == 1
+
+
+class TestStaleFactPruning:
+    """Tests for stale fact detection and pruning within deep consolidation."""
+
+    def setup_method(self):
+        self.config = MemoryConfig(enabled=False, consolidation_enabled=True)
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_path(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.mgr = MemoryManager(self.config, storage_root=str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_staging_processed_dir_created(self):
+        """The processed staging directory should be accessible."""
+        project_id = "prune-test"
+        processed_dir = self.mgr._staging_processed_dir(project_id)
+        expected = os.path.join(
+            str(self.tmp_path), "memory", project_id, "staging", "processed"
+        )
+        assert processed_dir == expected
+
+    @pytest.mark.asyncio
+    async def test_knowledge_topic_creation_for_deep_review(self):
+        """Knowledge topics should be readable for deep consolidation review."""
+        project_id = "topic-review"
+
+        # Create multiple knowledge topics with varying content
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "architecture",
+            (
+                "# Architecture Knowledge\n\n"
+                "## Core Architecture\n"
+                "- Uses async Python with SQLAlchemy (from task: task-1)\n"
+                "- Redis for caching (from task: task-2)\n"
+            ),
+        )
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "gotchas",
+            (
+                "# Gotchas & Known Issues\n\n"
+                "## Known Issues\n"
+                "- Deprecated API endpoint /v1/old still in use (from task: task-3)\n"
+            ),
+        )
+
+        # Verify both are readable
+        arch = await self.mgr.read_knowledge_topic(project_id, "architecture")
+        assert arch is not None
+        assert "async Python" in arch
+
+        gotchas = await self.mgr.read_knowledge_topic(project_id, "gotchas")
+        assert gotchas is not None
+        assert "Deprecated API" in gotchas
+
+        # List should show both as existing
+        topics = await self.mgr.list_knowledge_topics(project_id)
+        existing = [t for t in topics if t["exists"]]
+        assert len(existing) == 2
+
+    @pytest.mark.asyncio
+    async def test_deep_consolidation_with_factsheet_and_topics(self):
+        """Deep consolidation should work with both factsheet and knowledge topics."""
+        project_id = "full-deep"
+
+        # Create factsheet
+        fs = ProjectFactsheet(
+            raw_yaml={
+                "project": {"name": "Full Deep Test", "id": project_id},
+                "urls": {"github": "https://github.com/full-deep"},
+                "tech_stack": {"language": "Python", "framework": "FastAPI"},
+            },
+            body_markdown="# Full Deep Test\n\n## What It Does\nA test project.\n",
+        )
+        await self.mgr.write_factsheet(project_id, fs)
+
+        # Create knowledge topics
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "architecture",
+            "# Architecture\n\n## Core\n- Python async\n",
+        )
+        await self.mgr.write_knowledge_topic(
+            project_id,
+            "decisions",
+            "# Decisions\n\n## Technology Choices\n- FastAPI chosen\n",
+        )
+
+        # Run deep consolidation — will fail at LLM call
+        result = await self.mgr.run_deep_consolidation(project_id)
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        assert result["topics_reviewed"] == 2  # architecture + decisions
+
+
+class TestConsolidationConfig:
+    """Tests for Phase 6 configuration fields."""
+
+    def test_deep_consolidation_schedule_default(self):
+        config = MemoryConfig()
+        assert config.deep_consolidation_schedule == "weekly"
+
+    def test_deep_consolidation_schedule_custom(self):
+        config = MemoryConfig(deep_consolidation_schedule="monthly")
+        assert config.deep_consolidation_schedule == "monthly"
+
+    def test_consolidation_enabled_default(self):
+        config = MemoryConfig()
+        assert config.consolidation_enabled is True

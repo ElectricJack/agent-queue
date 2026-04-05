@@ -1628,6 +1628,516 @@ class MemoryManager:
         return stats
 
     # ------------------------------------------------------------------
+    # Phase 6: Weekly Deep Consolidation & Bootstrap
+    # ------------------------------------------------------------------
+
+    async def run_deep_consolidation(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+    ) -> dict:
+        """Run a deep consolidation pass for a project.
+
+        Unlike the daily consolidation (which merges new staging facts), deep
+        consolidation reviews the *entire* knowledge base — pruning stale facts,
+        resolving conflicts, and regenerating the factsheet summary sections.
+        Intended to run weekly.
+
+        Returns a stats dict with:
+        - ``status``: ``"consolidated"``, ``"no_knowledge"``, ``"disabled"``, or ``"error"``
+        - ``topics_reviewed``: number of knowledge topics examined
+        - ``topics_updated``: list of topics that were modified
+        - ``factsheet_updated``: whether the factsheet was modified
+        - ``pruned_facts``: list of descriptions of pruned/removed facts
+        """
+        if not self.config.consolidation_enabled:
+            return {
+                "status": "disabled",
+                "project_id": project_id,
+                "topics_reviewed": 0,
+                "topics_updated": [],
+                "factsheet_updated": False,
+                "pruned_facts": [],
+            }
+
+        # 1. Read current factsheet
+        factsheet = await self.read_factsheet(project_id)
+        factsheet_yaml = ""
+        factsheet_body = ""
+        if factsheet:
+            try:
+                import yaml as _yaml
+
+                factsheet_yaml = _yaml.dump(
+                    factsheet.raw_yaml,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
+            except Exception:
+                factsheet_yaml = str(factsheet.raw_yaml)
+            factsheet_body = factsheet.body_markdown
+        else:
+            factsheet_yaml = "(no factsheet exists yet)"
+            factsheet_body = "(no factsheet body)"
+
+        # 2. Read all knowledge topics
+        knowledge_sections: list[str] = []
+        topics_reviewed = 0
+        for topic in self.config.knowledge_topics:
+            content = await self.read_knowledge_topic(project_id, topic)
+            if content:
+                knowledge_sections.append(f"### {topic}\n```markdown\n{content}\n```")
+                topics_reviewed += 1
+
+        if not knowledge_sections and not factsheet:
+            return {
+                "status": "no_knowledge",
+                "project_id": project_id,
+                "topics_reviewed": 0,
+                "topics_updated": [],
+                "factsheet_updated": False,
+                "pruned_facts": [],
+            }
+
+        knowledge_topics_section = (
+            "\n\n".join(knowledge_sections)
+            if knowledge_sections
+            else "(no knowledge topics exist yet)"
+        )
+
+        # 3. Count processed staging files for context
+        processed_dir = self._staging_processed_dir(project_id)
+        processed_count = 0
+        if os.path.isdir(processed_dir):
+            processed_count = len(
+                [f for f in os.listdir(processed_dir) if f.endswith(".json")]
+            )
+
+        # 4. Call LLM for deep consolidation
+        from src.prompts.memory_consolidation import (
+            DEEP_CONSOLIDATION_SYSTEM_PROMPT,
+            DEEP_CONSOLIDATION_USER_PROMPT,
+        )
+
+        user_prompt = DEEP_CONSOLIDATION_USER_PROMPT.format(
+            current_factsheet_yaml=factsheet_yaml,
+            current_factsheet_body=factsheet_body,
+            knowledge_topics_section=knowledge_topics_section,
+            processed_count=processed_count,
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+
+        try:
+            provider = self._get_consolidation_provider()
+            if not provider:
+                logger.warning("No LLM provider available for deep consolidation")
+                return {
+                    "status": "error",
+                    "error": "no_provider",
+                    "project_id": project_id,
+                    "topics_reviewed": topics_reviewed,
+                    "topics_updated": [],
+                    "factsheet_updated": False,
+                    "pruned_facts": [],
+                }
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=DEEP_CONSOLIDATION_SYSTEM_PROMPT,
+                max_tokens=8192,
+            )
+
+            # Extract text from response
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+
+            # Parse the JSON response
+            response_text = response_text.strip()
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                response_text = "\n".join(lines)
+
+            result = json.loads(response_text)
+            if not isinstance(result, dict):
+                logger.warning("Deep consolidation LLM returned non-object response")
+                return {
+                    "status": "error",
+                    "error": "invalid_response",
+                    "project_id": project_id,
+                    "topics_reviewed": topics_reviewed,
+                    "topics_updated": [],
+                    "factsheet_updated": False,
+                    "pruned_facts": [],
+                }
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to parse deep consolidation response: %s", e)
+            return {
+                "status": "error",
+                "error": f"parse_error: {e}",
+                "project_id": project_id,
+                "topics_reviewed": topics_reviewed,
+                "topics_updated": [],
+                "factsheet_updated": False,
+                "pruned_facts": [],
+            }
+        except Exception as e:
+            logger.warning(
+                "Deep consolidation LLM call failed for project %s: %s", project_id, e
+            )
+            return {
+                "status": "error",
+                "error": str(e),
+                "project_id": project_id,
+                "topics_reviewed": topics_reviewed,
+                "topics_updated": [],
+                "factsheet_updated": False,
+                "pruned_facts": [],
+            }
+
+        # 5. Apply factsheet updates (both YAML and body)
+        factsheet_updated = False
+        new_yaml_data = result.get("factsheet_yaml", "")
+        new_body = result.get("factsheet_body", "")
+
+        if factsheet is None:
+            # Create a new factsheet if deep consolidation produced one
+            if new_yaml_data or new_body:
+                factsheet = await self._seed_factsheet(project_id)
+
+        if factsheet:
+            try:
+                if new_yaml_data:
+                    if isinstance(new_yaml_data, dict):
+                        new_yaml = new_yaml_data
+                    else:
+                        import yaml as _yaml
+
+                        new_yaml = _yaml.safe_load(new_yaml_data)
+                    if isinstance(new_yaml, dict):
+                        factsheet.raw_yaml = new_yaml
+                        factsheet_updated = True
+
+                if new_body and isinstance(new_body, str) and new_body.strip():
+                    factsheet.body_markdown = new_body.strip()
+                    factsheet_updated = True
+
+                if factsheet_updated:
+                    await self.write_factsheet(project_id, factsheet, workspace_path)
+            except Exception as e:
+                logger.warning("Failed to apply deep consolidation factsheet update: %s", e)
+
+        # 6. Apply knowledge topic updates
+        topics_updated: list[str] = []
+        knowledge_updates = result.get("knowledge_updates", {})
+        if isinstance(knowledge_updates, dict):
+            for topic, content in knowledge_updates.items():
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if topic not in self.config.knowledge_topics:
+                    logger.debug("Skipping unknown topic '%s' from LLM output", topic)
+                    continue
+                written = await self.write_knowledge_topic(
+                    project_id, topic, content, workspace_path
+                )
+                if written:
+                    topics_updated.append(topic)
+
+        # 7. Collect pruned facts for audit logging
+        pruned_facts = result.get("pruned_facts", [])
+        if not isinstance(pruned_facts, list):
+            pruned_facts = []
+
+        stats = {
+            "status": "consolidated",
+            "project_id": project_id,
+            "topics_reviewed": topics_reviewed,
+            "topics_updated": topics_updated,
+            "factsheet_updated": factsheet_updated,
+            "pruned_facts": pruned_facts,
+        }
+        logger.info(
+            "Deep consolidation for %s: reviewed %d topics, updated %d, "
+            "factsheet %s, %d facts pruned",
+            project_id,
+            topics_reviewed,
+            len(topics_updated),
+            "updated" if factsheet_updated else "unchanged",
+            len(pruned_facts),
+        )
+        return stats
+
+    async def bootstrap_consolidation(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> dict:
+        """Bootstrap a project's knowledge base from existing task memories.
+
+        Reads all existing task memory files (and profile if available),
+        calls an LLM to synthesize them into an initial factsheet and
+        knowledge base entries.  This is a one-time operation for projects
+        that have task history but no structured knowledge base yet.
+
+        Returns a stats dict with:
+        - ``status``: ``"bootstrapped"``, ``"no_tasks"``, ``"already_exists"``, or ``"error"``
+        - ``tasks_processed``: number of task memories used as input
+        - ``topics_created``: list of knowledge topics that were populated
+        - ``factsheet_created``: whether a new factsheet was created
+        """
+        # Check if a factsheet already exists — bootstrap is one-time
+        existing_factsheet = await self.read_factsheet(project_id)
+        existing_topics = await self.list_knowledge_topics(project_id)
+        has_knowledge = any(t["exists"] for t in existing_topics)
+
+        if existing_factsheet and has_knowledge:
+            return {
+                "status": "already_exists",
+                "project_id": project_id,
+                "message": (
+                    "Project already has a factsheet and knowledge base. "
+                    "Use daily or deep consolidation to update them."
+                ),
+                "tasks_processed": 0,
+                "topics_created": [],
+                "factsheet_created": False,
+            }
+
+        # 1. Read all task memory files
+        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        task_summaries: list[str] = []
+        if os.path.isdir(tasks_dir):
+            task_files = sorted(
+                glob.glob(os.path.join(tasks_dir, "*.md")),
+                key=os.path.getmtime,
+            )
+            for tf in task_files:
+                try:
+                    with open(tf) as f:
+                        content = f.read().strip()
+                    if content:
+                        task_summaries.append(content)
+                except Exception:
+                    pass
+
+        # Also read digest files if they exist
+        digests_dir = os.path.join(self._project_memory_dir(project_id), "digests")
+        if os.path.isdir(digests_dir):
+            digest_files = sorted(
+                glob.glob(os.path.join(digests_dir, "*.md")),
+                key=os.path.getmtime,
+            )
+            for df in digest_files:
+                try:
+                    with open(df) as f:
+                        content = f.read().strip()
+                    if content:
+                        task_summaries.append(content)
+                except Exception:
+                    pass
+
+        if not task_summaries:
+            return {
+                "status": "no_tasks",
+                "project_id": project_id,
+                "message": "No task memories found to bootstrap from.",
+                "tasks_processed": 0,
+                "topics_created": [],
+                "factsheet_created": False,
+            }
+
+        # 2. Read existing profile if available
+        existing_profile = await self.get_profile(project_id) or "(no profile exists)"
+
+        # 3. Prepare seed factsheet YAML for the LLM to fill in
+        seed_factsheet = await self._seed_factsheet(
+            project_id,
+            project_name=project_name,
+            repo_url=repo_url,
+        )
+        try:
+            import yaml as _yaml
+
+            seed_yaml = _yaml.dump(
+                seed_factsheet.raw_yaml,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        except Exception:
+            seed_yaml = str(seed_factsheet.raw_yaml)
+
+        # 4. Format available topics
+        available_topics = "\n".join(
+            f"- `{topic}`" for topic in self.config.knowledge_topics
+        )
+
+        # 5. Limit task summaries to avoid exceeding context window
+        # Keep most recent tasks, truncate older ones
+        max_task_chars = 30000
+        formatted_tasks: list[str] = []
+        total_chars = 0
+        for i, summary in enumerate(reversed(task_summaries)):
+            if total_chars + len(summary) > max_task_chars and formatted_tasks:
+                formatted_tasks.append(
+                    f"... and {len(task_summaries) - i} older tasks omitted for brevity"
+                )
+                break
+            formatted_tasks.append(f"---\n{summary}")
+            total_chars += len(summary)
+        formatted_tasks.reverse()
+
+        # 6. Call LLM for bootstrap
+        from src.prompts.memory_consolidation import (
+            BOOTSTRAP_SYSTEM_PROMPT,
+            BOOTSTRAP_USER_PROMPT,
+        )
+
+        user_prompt = BOOTSTRAP_USER_PROMPT.format(
+            project_id=project_id,
+            project_name=project_name or project_id,
+            repo_url=repo_url or "(not configured)",
+            existing_profile=existing_profile,
+            seed_yaml=seed_yaml,
+            available_topics=available_topics,
+            task_count=len(task_summaries),
+            task_summaries="\n\n".join(formatted_tasks),
+        )
+
+        try:
+            provider = self._get_consolidation_provider()
+            if not provider:
+                logger.warning("No LLM provider available for bootstrap consolidation")
+                return {
+                    "status": "error",
+                    "error": "no_provider",
+                    "project_id": project_id,
+                    "tasks_processed": len(task_summaries),
+                    "topics_created": [],
+                    "factsheet_created": False,
+                }
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=BOOTSTRAP_SYSTEM_PROMPT,
+                max_tokens=8192,
+            )
+
+            # Extract text from response
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+
+            # Parse the JSON response
+            response_text = response_text.strip()
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                response_text = "\n".join(lines)
+
+            result = json.loads(response_text)
+            if not isinstance(result, dict):
+                logger.warning("Bootstrap LLM returned non-object response")
+                return {
+                    "status": "error",
+                    "error": "invalid_response",
+                    "project_id": project_id,
+                    "tasks_processed": len(task_summaries),
+                    "topics_created": [],
+                    "factsheet_created": False,
+                }
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to parse bootstrap response: %s", e)
+            return {
+                "status": "error",
+                "error": f"parse_error: {e}",
+                "project_id": project_id,
+                "tasks_processed": len(task_summaries),
+                "topics_created": [],
+                "factsheet_created": False,
+            }
+        except Exception as e:
+            logger.warning(
+                "Bootstrap LLM call failed for project %s: %s", project_id, e
+            )
+            return {
+                "status": "error",
+                "error": str(e),
+                "project_id": project_id,
+                "tasks_processed": len(task_summaries),
+                "topics_created": [],
+                "factsheet_created": False,
+            }
+
+        # 7. Create or update the factsheet
+        factsheet_created = False
+        new_yaml_data = result.get("factsheet_yaml", "")
+        new_body = result.get("factsheet_body", "")
+
+        if new_yaml_data or new_body:
+            fs = existing_factsheet or seed_factsheet
+            try:
+                if new_yaml_data:
+                    if isinstance(new_yaml_data, dict):
+                        fs.raw_yaml = new_yaml_data
+                    else:
+                        import yaml as _yaml
+
+                        parsed_yaml = _yaml.safe_load(new_yaml_data)
+                        if isinstance(parsed_yaml, dict):
+                            fs.raw_yaml = parsed_yaml
+
+                if new_body and isinstance(new_body, str) and new_body.strip():
+                    fs.body_markdown = new_body.strip()
+
+                await self.write_factsheet(project_id, fs, workspace_path)
+                factsheet_created = existing_factsheet is None
+            except Exception as e:
+                logger.warning("Failed to write bootstrapped factsheet: %s", e)
+
+        # 8. Create knowledge topic files
+        topics_created: list[str] = []
+        knowledge_updates = result.get("knowledge_updates", {})
+        if isinstance(knowledge_updates, dict):
+            for topic, content in knowledge_updates.items():
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if topic not in self.config.knowledge_topics:
+                    logger.debug("Skipping unknown topic '%s' from bootstrap output", topic)
+                    continue
+                written = await self.write_knowledge_topic(
+                    project_id, topic, content, workspace_path
+                )
+                if written:
+                    topics_created.append(topic)
+
+        stats = {
+            "status": "bootstrapped",
+            "project_id": project_id,
+            "tasks_processed": len(task_summaries),
+            "topics_created": topics_created,
+            "factsheet_created": factsheet_created,
+        }
+        logger.info(
+            "Bootstrap consolidation for %s: %d tasks processed, "
+            "factsheet %s, %d topics created",
+            project_id,
+            len(task_summaries),
+            "created" if factsheet_created else "updated",
+            len(topics_created),
+        )
+        return stats
+
+    # ------------------------------------------------------------------
     # Phase 4b: Memory Compaction & Enhanced Context Delivery
     # ------------------------------------------------------------------
 

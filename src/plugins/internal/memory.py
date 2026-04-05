@@ -218,11 +218,11 @@ TOOL_DEFINITIONS = [
     {
         "name": "consolidate",
         "description": (
-            "Run the daily knowledge consolidation process for a project. "
-            "Reads staged facts from completed tasks, deduplicates them, "
-            "and merges updates into the project factsheet and knowledge "
-            "base topic files. Processed staging files are moved to "
-            "staging/processed/ to prevent re-processing."
+            "Run knowledge consolidation for a project. By default runs the "
+            "daily consolidation (process staged facts). Use mode='deep' for "
+            "weekly deep consolidation (prune stale facts, resolve conflicts, "
+            "regenerate factsheet summary). Use mode='bootstrap' for one-time "
+            "initial knowledge base generation from existing task memories."
         ),
         "input_schema": {
             "type": "object",
@@ -230,6 +230,16 @@ TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Project ID to run consolidation for",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["daily", "deep", "bootstrap"],
+                    "description": (
+                        "Consolidation mode: 'daily' (default) processes staged facts, "
+                        "'deep' reviews and prunes the entire knowledge base, "
+                        "'bootstrap' generates initial knowledge from task history"
+                    ),
+                    "default": "daily",
                 },
             },
             "required": ["project_id"],
@@ -676,13 +686,31 @@ class MemoryPlugin(InternalPlugin):
         if not project_id:
             return {"error": "project_id is required"}
 
+        mode = args.get("mode", "daily")
+        if mode not in ("daily", "deep", "bootstrap"):
+            return {"error": f"Invalid mode '{mode}'. Use 'daily', 'deep', or 'bootstrap'."}
+
         workspace, err = await self._require_workspace(project_id)
         if err:
             return err
 
         try:
-            result = await self._mem.run_daily_consolidation(project_id, workspace)
+            if mode == "bootstrap":
+                # Fetch project metadata for bootstrap
+                project = await self._db.get_project(project_id)
+                project_name = project.get("name", project_id) if project else project_id
+                repo_url = project.get("repo_url", "") if project else ""
+                result = await self._mem.bootstrap_consolidation(
+                    project_id,
+                    workspace,
+                    project_name=project_name,
+                    repo_url=repo_url,
+                )
+            elif mode == "deep":
+                result = await self._mem.run_deep_consolidation(project_id, workspace)
+            else:
+                result = await self._mem.run_daily_consolidation(project_id, workspace)
         except Exception as e:
-            return {"error": f"Memory consolidation failed: {e}"}
+            return {"error": f"Memory consolidation ({mode}) failed: {e}"}
 
-        return {"project_id": project_id, **result}
+        return {"project_id": project_id, "mode": mode, **result}

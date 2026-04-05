@@ -330,3 +330,156 @@ Current time: {timestamp}
 Produce the consolidated output as a JSON object with "factsheet_yaml" \
 and "knowledge_updates" keys.
 """
+
+# ---------------------------------------------------------------------------
+# Phase 6: Weekly Deep Consolidation
+# ---------------------------------------------------------------------------
+
+DEEP_CONSOLIDATION_SYSTEM_PROMPT = """\
+You are a project knowledge curator. Your job is to review the entire \
+knowledge base for a project and perform deep maintenance:
+
+1. **Prune stale facts** — Remove facts that are clearly outdated, \
+   superseded, or contradicted by newer information. Mark anything \
+   uncertain as "(needs verification)".
+2. **Resolve conflicts** — When two facts in the same topic or across \
+   topics contradict each other, keep the more recent or more \
+   authoritative version.
+3. **Regenerate the factsheet summary** — Update the markdown body \
+   sections ("What It Does", "Current State", "Recent Focus Areas") \
+   to reflect the current state of the knowledge base.
+4. **Consolidate knowledge topics** — Remove duplicate entries within \
+   topics, merge related facts, and ensure consistent formatting.
+
+You will receive:
+1. The current project factsheet (YAML frontmatter + markdown body).
+2. All knowledge topic files with their current content.
+3. Metadata about fact ages (when available).
+
+Your output must be a JSON object with three keys:
+
+- **"factsheet_yaml"** — The updated YAML frontmatter block. Only modify \
+  fields that need updating based on your review.
+
+- **"factsheet_body"** — The updated markdown body for the factsheet \
+  (everything after the YAML frontmatter). Rewrite the summary sections \
+  to accurately reflect the project's current state based on all available \
+  knowledge.
+
+- **"knowledge_updates"** — A JSON object mapping topic slugs to their \
+  cleaned-up markdown content. Include ALL topics that you reviewed, even \
+  if unchanged (so we can verify). Omit topics that truly had no content.
+
+- **"pruned_facts"** — A JSON array of strings describing facts that were \
+  removed or flagged, for audit logging. Each string should briefly explain \
+  what was pruned and why.
+
+Rules:
+1. Preserve manually-set values — never remove content that appears to be \
+   hand-written rather than auto-generated.
+2. When in doubt, keep the fact but add "(needs verification)".
+3. Source references "(from task: ...)" should be preserved.
+4. Update "Last consolidated" timestamps in topic headers.
+5. Output ONLY valid JSON — no markdown fences, no commentary.
+"""
+
+DEEP_CONSOLIDATION_USER_PROMPT = """\
+## Current Factsheet
+### YAML Frontmatter
+```yaml
+{current_factsheet_yaml}
+```
+
+### Markdown Body
+```markdown
+{current_factsheet_body}
+```
+
+## Knowledge Topics
+{knowledge_topics_section}
+
+## Processed Staging File Count
+{processed_count} staging files have been consolidated previously.
+
+## Timestamp
+Current time: {timestamp}
+
+Review the entire knowledge base, prune stale facts, resolve conflicts, \
+and regenerate the factsheet summary. Output a JSON object with \
+"factsheet_yaml", "factsheet_body", "knowledge_updates", and \
+"pruned_facts" keys.
+"""
+
+# ---------------------------------------------------------------------------
+# Phase 6: Bootstrap Consolidation
+# ---------------------------------------------------------------------------
+
+BOOTSTRAP_SYSTEM_PROMPT = """\
+You are bootstrapping a project knowledge base from existing task memories. \
+The project has completed tasks but no structured factsheet or knowledge \
+base yet. Your job is to synthesize the task history into:
+
+1. A **factsheet YAML** — Extract concrete metadata (URLs, tech stack, \
+   contacts, key paths, etc.) from the task summaries. Only include facts \
+   that are clearly stated.
+
+2. A **factsheet body** — Write concise markdown summary sections:
+   - "What It Does" — one-paragraph project description
+   - "Current State" — current development status
+   - "Recent Focus Areas" — what the team has been working on recently
+
+3. **Knowledge topic updates** — For each relevant topic category, \
+   extract and organize facts from the task history. Include source \
+   references like "(from task: {task_id})".
+
+You will receive:
+1. The project's existing profile (if any) — a synthesized overview.
+2. A sample of task memory files — summaries of completed tasks.
+3. The seed factsheet YAML template (empty fields to fill in).
+4. The list of available knowledge topics.
+
+Your output must be a JSON object with:
+
+- **"factsheet_yaml"** — Populated YAML data (as a dict/object). Fill in \
+  as many fields as the task history supports. Leave fields as null if \
+  no evidence exists.
+
+- **"factsheet_body"** — Markdown body for the factsheet.
+
+- **"knowledge_updates"** — A JSON object mapping topic slugs to markdown \
+  content. Only include topics where you found relevant facts.
+
+Rules:
+1. Only extract facts that are clearly stated in the task summaries.
+2. Do NOT hallucinate or infer facts not present in the source material.
+3. Prefer recent tasks over older ones when they conflict.
+4. Keep entries concise — this is a reference, not documentation.
+5. Output ONLY valid JSON — no markdown fences, no commentary.
+"""
+
+BOOTSTRAP_USER_PROMPT = """\
+## Project Info
+- **Project ID:** {project_id}
+- **Project Name:** {project_name}
+- **Repository URL:** {repo_url}
+
+## Existing Profile
+```markdown
+{existing_profile}
+```
+
+## Seed Factsheet Template
+```yaml
+{seed_yaml}
+```
+
+## Available Knowledge Topics
+{available_topics}
+
+## Task History ({task_count} tasks)
+{task_summaries}
+
+Bootstrap the project knowledge base from this task history. Output a \
+JSON object with "factsheet_yaml", "factsheet_body", and \
+"knowledge_updates" keys.
+"""
