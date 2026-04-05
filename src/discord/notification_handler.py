@@ -365,6 +365,17 @@ class DiscordNotificationHandler:
             format_plan_approval_embed,
         )
 
+        # Resolve thread URL at delivery time — the orchestrator no longer
+        # queries transport-specific URLs; this is the handler's responsibility.
+        thread_url = event.thread_url or ""
+        if not thread_url:
+            try:
+                thread_url = await self.bot.get_thread_last_message_url(event.task.id) or ""
+            except Exception:
+                logger.debug(
+                    "Could not resolve thread URL for task %s", event.task.id, exc_info=True
+                )
+
         task_p = _task_proxy(event.task)
         handler_ref = self._get_handler()
         plan_view = PlanApprovalView(event.task.id, handler=handler_ref)
@@ -374,7 +385,7 @@ class DiscordNotificationHandler:
             raw_content=event.raw_content,
             plan_url=event.plan_url,
             parsed_steps=event.subtasks if event.subtasks else None,
-            thread_url=event.thread_url,
+            thread_url=thread_url,
         )
         await self.bot._send_message(
             f"📋 **Plan ready for review:** `{event.task.id}` — {event.task.title}",

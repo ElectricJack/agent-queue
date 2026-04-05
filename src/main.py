@@ -142,11 +142,6 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 adapter.platform_name,
             )
 
-        # Legacy callback: _get_thread_url is still needed for plan approval
-        # embeds (the orchestrator queries the thread URL to include in the
-        # PlanAwaitingApprovalEvent).  Will be removed once the handler
-        # exposes this via the bus or a shared registry.
-        orch.set_get_thread_url_callback(adapter.get_thread_last_message_url)
         orch.set_command_handler(adapter.get_command_handler())
         orch.set_supervisor(adapter.get_supervisor())
 

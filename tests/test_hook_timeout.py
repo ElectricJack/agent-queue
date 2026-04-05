@@ -121,7 +121,7 @@ class TestHookTimeout:
         assert len(timeout_calls) == 1
 
     async def test_hook_times_out_notifies_channel_without_thread(self, db, engine):
-        """Without a thread, timeout notification goes to the channel."""
+        """Without a thread, timeout notification goes through the event bus."""
         await _create_project(db)
         hook = await _create_hook(db)
 
@@ -134,12 +134,15 @@ class TestHookTimeout:
         # No thread support
         engine._orchestrator._create_thread = None
 
+        # Capture events emitted on the bus
+        emitted_events: list[dict] = []
+        engine.bus.subscribe("notify.text", lambda data: emitted_events.append(data))
+
         await engine._execute_hook_inner(hook, "test-trigger")
 
-        # Channel notification should include timeout
-        notify_calls = engine._orchestrator._notify_channel.call_args_list
-        timeout_calls = [c for c in notify_calls if "timed out" in str(c)]
-        assert len(timeout_calls) >= 1
+        # Bus should have received a timeout notification
+        timeout_events = [e for e in emitted_events if "timed out" in e.get("message", "")]
+        assert len(timeout_events) >= 1
 
     async def test_successful_hook_unaffected_by_timeout(self, db, engine):
         """A fast hook should complete normally despite the timeout wrapper."""
