@@ -420,6 +420,12 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
+    async def _emit_notify(self, event_type: str, event) -> None:
+        self._notifications.append(event_type)
+
+    async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
+        self._notifications.append(message)
+
     # Removed: _mid_chain_rebase was inlined into orchestrator's
     # _complete_workspace flow (now uses git.mid_chain_sync directly)
     pass

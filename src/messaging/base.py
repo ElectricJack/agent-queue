@@ -4,10 +4,10 @@
 transports must implement.  The orchestrator and ``main.py`` interact only
 through this ABC — never importing platform-specific types directly.
 
-This differs from ``MessagingPort`` (the lower-level transport contract) in
-that it bundles higher-level orchestrator-facing concerns: task thread
-creation that returns callback pairs, and access to the ``CommandHandler``
-and ``Supervisor`` instances wired into the transport.
+The adapter handles lifecycle management (start/stop/readiness) and provides
+access to the ``CommandHandler`` and ``Supervisor`` instances wired into the
+transport.  Notification delivery is handled separately by event bus handlers
+(e.g. ``DiscordNotificationHandler``) that subscribe to ``notify.*`` events.
 
 Lifecycle::
 
@@ -52,10 +52,12 @@ class MessagingAdapter(ABC):
         """Disconnect from the platform gracefully."""
 
     # -------------------------------------------------------------------
-    # Messaging
+    # Messaging (optional)
     # -------------------------------------------------------------------
+    # Primary notification delivery is handled by event bus handlers
+    # (e.g. DiscordNotificationHandler).  These methods are retained for
+    # backward compatibility and direct use by platform-specific code.
 
-    @abstractmethod
     async def send_message(
         self,
         text: str,
@@ -66,19 +68,9 @@ class MessagingAdapter(ABC):
     ) -> None:
         """Send a notification message to the appropriate channel/chat.
 
-        Parameters
-        ----------
-        text:
-            Plain-text message content.
-        project_id:
-            Route to a project-specific channel/chat when set.
-        embed:
-            Platform-specific rich embed (Discord Embed, etc.).
-        view:
-            Platform-specific interactive view (Discord View, etc.).
+        Override in platform-specific adapters.  Default is a no-op.
         """
 
-    @abstractmethod
     async def create_task_thread(
         self,
         thread_name: str,
@@ -88,29 +80,14 @@ class MessagingAdapter(ABC):
     ) -> tuple["ThreadSendCallback", "ThreadSendCallback"] | None:
         """Create a thread/topic for task output streaming.
 
-        Parameters
-        ----------
-        thread_name:
-            Display name for the thread/topic.
-        initial_message:
-            First message to post in the thread.
-        project_id:
-            Route to a project-specific channel when set.
-        task_id:
-            The task ID — used to reuse existing threads for reopened tasks.
-
-        Returns
-        -------
-        tuple[ThreadSendCallback, ThreadSendCallback] | None
-            ``(send_to_thread, notify_main_channel)`` callback pair,
-            or None if thread creation failed.
+        Override in platform-specific adapters.  Default returns None.
         """
+        return None
 
     async def get_thread_last_message_url(self, task_id: str) -> str | None:
         """Return a jump URL to the last message in a task's thread.
 
-        Override in platform-specific adapters.  Default returns None
-        (no thread URL available).
+        Override in platform-specific adapters.  Default returns None.
         """
         return None
 
@@ -121,9 +98,6 @@ class MessagingAdapter(ABC):
         embed: Any = None,
     ) -> None:
         """Edit the thread-root message (e.g. "Agent working: ...").
-
-        Used to update the root message when a task completes or fails,
-        changing it from "Agent working" to a completion/failure status.
 
         Override in platform-specific adapters.  Default is a no-op.
         """

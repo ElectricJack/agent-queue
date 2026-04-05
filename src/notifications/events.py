@@ -1,0 +1,218 @@
+"""Typed, transport-agnostic notification events.
+
+Each event carries structured data about what happened (event type, severity,
+category) and the domain objects involved (TaskDetail, AgentSummary, etc.).
+Consumers subscribe to ``notify.*`` event types on the EventBus and format
+the events for their specific transport (Discord embeds, WebSocket JSON,
+Slack blocks, etc.).
+
+Events use Pydantic models from ``src.api.models`` to ensure consistency
+with the REST API — the same data shapes are used for both real-time
+notifications and API responses.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+from src.api.models.agent import AgentSummary
+from src.api.models.task import TaskDetail
+
+
+class NotifyEvent(BaseModel):
+    """Base for all notification events."""
+
+    event_type: str
+    severity: str = "info"  # info, warning, error, critical
+    category: str = "system"  # task_lifecycle, vcs, budget, interaction, system
+    project_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Task lifecycle events
+# ---------------------------------------------------------------------------
+
+
+class TaskStartedEvent(NotifyEvent):
+    event_type: str = "notify.task_started"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    agent: AgentSummary
+    workspace_path: str = ""
+    workspace_name: str = ""
+    is_reopened: bool = False
+    task_description: str = ""
+    task_contexts: list[dict] | None = None
+
+
+class TaskCompletedEvent(NotifyEvent):
+    event_type: str = "notify.task_completed"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    agent: AgentSummary
+    summary: str = ""
+    files_changed: list[str] = []
+    tokens_used: int = 0
+
+
+class TaskFailedEvent(NotifyEvent):
+    event_type: str = "notify.task_failed"
+    severity: str = "error"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    agent: AgentSummary
+    error_label: str = ""
+    error_detail: str = ""
+    fix_suggestion: str = ""
+    retry_count: int = 0
+    max_retries: int = 3
+
+
+class TaskBlockedEvent(NotifyEvent):
+    event_type: str = "notify.task_blocked"
+    severity: str = "critical"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    last_error: str = ""
+
+
+class TaskStoppedEvent(NotifyEvent):
+    event_type: str = "notify.task_stopped"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+
+
+# ---------------------------------------------------------------------------
+# Interaction events
+# ---------------------------------------------------------------------------
+
+
+class AgentQuestionEvent(NotifyEvent):
+    event_type: str = "notify.agent_question"
+    category: str = "interaction"
+    task: TaskDetail
+    agent: AgentSummary
+    question: str
+
+
+class PlanAwaitingApprovalEvent(NotifyEvent):
+    event_type: str = "notify.plan_awaiting_approval"
+    category: str = "interaction"
+    task: TaskDetail
+    subtasks: list[dict] = []  # [{title, description}, ...]
+    plan_url: str = ""
+    raw_content: str = ""
+    thread_url: str = ""
+
+
+# ---------------------------------------------------------------------------
+# VCS events
+# ---------------------------------------------------------------------------
+
+
+class PRCreatedEvent(NotifyEvent):
+    event_type: str = "notify.pr_created"
+    category: str = "vcs"
+    task: TaskDetail
+    pr_url: str
+
+
+class MergeConflictEvent(NotifyEvent):
+    event_type: str = "notify.merge_conflict"
+    severity: str = "error"
+    category: str = "vcs"
+    task: TaskDetail
+    branch: str
+    target_branch: str
+
+
+class PushFailedEvent(NotifyEvent):
+    event_type: str = "notify.push_failed"
+    severity: str = "warning"
+    category: str = "vcs"
+    task: TaskDetail
+    branch: str = ""
+    error_detail: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Budget & system events
+# ---------------------------------------------------------------------------
+
+
+class BudgetWarningEvent(NotifyEvent):
+    event_type: str = "notify.budget_warning"
+    severity: str = "warning"
+    category: str = "budget"
+    project_name: str
+    usage: int
+    limit: int
+    percentage: float
+
+
+class ChainStuckEvent(NotifyEvent):
+    event_type: str = "notify.chain_stuck"
+    severity: str = "error"
+    category: str = "task_lifecycle"
+    blocked_task: TaskDetail
+    stuck_task_ids: list[str] = []
+    stuck_task_titles: list[str] = []
+
+
+class StuckDefinedTaskEvent(NotifyEvent):
+    event_type: str = "notify.stuck_defined_task"
+    severity: str = "warning"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    blocking_deps: list[dict] = []  # [{id, title, status}, ...]
+    stuck_hours: float = 0.0
+
+
+class SystemOnlineEvent(NotifyEvent):
+    event_type: str = "notify.system_online"
+    category: str = "system"
+
+
+# ---------------------------------------------------------------------------
+# Thread / streaming events
+# ---------------------------------------------------------------------------
+
+
+class TaskThreadOpenEvent(NotifyEvent):
+    event_type: str = "notify.task_thread_open"
+    category: str = "task_stream"
+    task_id: str = ""
+    thread_name: str = ""
+    initial_message: str = ""
+
+
+class TaskMessageEvent(NotifyEvent):
+    """A message within a task's execution stream."""
+
+    event_type: str = "notify.task_message"
+    category: str = "task_stream"
+    task_id: str = ""
+    message: str = ""
+    message_type: str = "agent_output"  # agent_output, status, error, brief
+
+
+class TaskThreadCloseEvent(NotifyEvent):
+    event_type: str = "notify.task_thread_close"
+    category: str = "task_stream"
+    task_id: str = ""
+    final_status: str = ""  # completed, failed, blocked, stopped
+    final_message: str = ""  # e.g. "Work completed: title"
+
+
+# ---------------------------------------------------------------------------
+# Generic text notification (catch-all for simple messages)
+# ---------------------------------------------------------------------------
+
+
+class TextNotifyEvent(NotifyEvent):
+    """Plain-text notification for messages that don't warrant a typed event."""
+
+    event_type: str = "notify.text"
+    category: str = "system"
+    message: str = ""
+    embed_data: dict | None = None  # optional structured data for rich rendering

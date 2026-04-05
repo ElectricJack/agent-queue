@@ -485,28 +485,13 @@ class AgentQueueBot(commands.Bot):
                 # Resolve per-project channels from database
                 await self._resolve_project_channels()
 
-                # Register orchestrator callbacks if we have any usable channel
-                # (global or per-project).  Previously these were only set when
-                # the global channel existed, which meant projects with dedicated
-                # channels but no global channel never got threads or notifications.
-                #
-                # When running through the MessagingAdapter path (main.py),
-                # callbacks are registered after wait_until_ready() returns —
-                # skip re-registration if they're already set.
+                # Wire orchestrator references for command handling and
+                # supervisor delegation.  Notification delivery is handled
+                # by DiscordNotificationHandler (subscribes to EventBus
+                # notify.* events) — no callback wiring needed here.
                 if self._channel or self._project_channels:
-                    if self.orchestrator._notify is None:
-                        self.orchestrator.set_notify_callback(self._send_message)
-                        self.orchestrator.set_create_thread_callback(self._create_task_thread)
-                        self.orchestrator.set_get_thread_url_callback(
-                            self.get_thread_last_message_url
-                        )
-                        self.orchestrator.set_edit_thread_root_callback(
-                            self.edit_thread_root_message
-                        )
-                        # Pass command handler ref so interactive views
-                        # (Retry/Skip/Approve buttons) can execute commands.
+                    if not self.orchestrator._command_handler:
                         self.orchestrator.set_command_handler(self.agent.handler)
-                        # Wire Supervisor for post-task completion delegation
                         self.orchestrator.set_supervisor(self.agent)
 
                     # Start ChatObserver for passive channel observation

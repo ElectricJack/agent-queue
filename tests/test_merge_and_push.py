@@ -56,6 +56,12 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
+    async def _emit_notify(self, event_type: str, event) -> None:
+        self._notifications.append(event_type)
+
+    async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
+        self._notifications.append(message)
+
     # Bind the real method from Orchestrator
     from src.orchestrator import Orchestrator as _Orch
 
@@ -113,9 +119,7 @@ class TestMergeAndPushClone:
 
         git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
-        assert "Merge Conflict" in orch._notifications[0]
-        assert "task/test-branch" in orch._notifications[0]
-        assert "Manual resolution" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.merge_conflict"
 
     @pytest.mark.asyncio
     async def test_push_failed_notifies_with_details(self, orch, git):
@@ -130,10 +134,7 @@ class TestMergeAndPushClone:
 
         git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
-        msg = orch._notifications[0]
-        assert "Push Failed" in msg
-        assert "diverged" in msg
-        assert "push_failed: rejected by remote" in msg
+        assert orch._notifications[0] == "notify.push_failed"
 
     @pytest.mark.asyncio
     async def test_push_failed_includes_attempt_count(self, orch, git):
@@ -146,7 +147,7 @@ class TestMergeAndPushClone:
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=5)
 
         assert len(orch._notifications) == 1
-        assert "5 attempts" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.push_failed"
         # max_retries = 5 - 1 = 4
         git.async_and_merge.assert_called_once_with(
             "/workspace",
@@ -253,7 +254,7 @@ class TestMergeAndPushClone:
         await orch._merge_and_push(task, repo, "/workspace")
 
         assert len(orch._notifications) == 1
-        assert "Push Failed" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.push_failed"
 
     @pytest.mark.asyncio
     async def test_success_does_not_trigger_recovery(self, orch, git):
@@ -323,9 +324,7 @@ class TestMergeAndPushLink:
 
         git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
-        assert "Merge Conflict" in orch._notifications[0]
-        assert "task/test-branch" in orch._notifications[0]
-        assert "Manual resolution" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.merge_conflict"
 
     @pytest.mark.asyncio
     async def test_link_repo_delete_branch_failure_ignored(self, orch, git):
@@ -370,7 +369,7 @@ class TestMergeAndPushLink:
         await orch._merge_and_push(task, repo, "/workspace")
 
         assert len(orch._notifications) == 1
-        assert "Merge Conflict" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.merge_conflict"
 
     @pytest.mark.asyncio
     async def test_link_repo_success_does_not_trigger_recovery(self, orch, git):

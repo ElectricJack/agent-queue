@@ -3962,30 +3962,21 @@ class CommandHandler:
         # raw plan content only.
         parsed_steps = [{"title": t["title"], "description": ""} for t in created_info]
 
-        # Notify channel with approval embed
+        # Emit plan approval notification via the event bus.
+        # The DiscordNotificationHandler resolves thread URLs at delivery time.
         try:
-            from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
+            from src.notifications.builder import build_task_detail
+            from src.notifications.events import PlanAwaitingApprovalEvent
 
-            # Get thread URL for linking to the agent's full plan summary
-            thread_url = ""
-            if self.orchestrator._get_thread_url:
-                try:
-                    thread_url = await self.orchestrator._get_thread_url(task_id) or ""
-                except Exception:
-                    pass
-
-            plan_view = PlanApprovalView(task_id, handler=self)
-            plan_embed = format_plan_approval_embed(
-                task=task if not args.get("task_id") else await self.db.get_task(task_id),
-                raw_content=raw,
-                parsed_steps=parsed_steps,
-                thread_url=thread_url,
-            )
-            await self.orchestrator._notify_channel(
-                "",
-                project_id=project_id,
-                embed=plan_embed,
-                view=plan_view,
+            current_task = task if not args.get("task_id") else await self.db.get_task(task_id)
+            await self.orchestrator._emit_notify(
+                "notify.plan_awaiting_approval",
+                PlanAwaitingApprovalEvent(
+                    task=build_task_detail(current_task),
+                    subtasks=parsed_steps,
+                    raw_content=raw,
+                    project_id=project_id,
+                ),
             )
         except Exception as e:
             logger.warning("process_plan: failed to send approval notification: %s", e)
@@ -5626,7 +5617,7 @@ feature work stuck on feature branches across multiple workspaces.
             f"**Reason:** {reason}\n"
             f"**Time:** {timestamp}"
         )
-        await self.orchestrator._notify_channel(shutdown_msg)
+        await self.orchestrator._emit_text_notify(shutdown_msg)
 
         orch = self.orchestrator
 
@@ -5674,14 +5665,14 @@ feature work stuck on feature branches across multiple workspaces.
         if wait_for_tasks and running_count > 0:
             # Pause orchestrator so no new tasks are scheduled, then wait
             orch._paused = True
-            await orch._notify_channel(
+            await orch._emit_text_notify(
                 f"🔄 **Daemon restart pending** — waiting for {running_count} "
                 f"running task(s) to complete\n**Reason:** {reason}"
             )
             await orch.wait_for_running_tasks(timeout=300)
 
         # Log the restart reason to the notification channel before restarting
-        await orch._notify_channel(f"🔄 **Daemon restart initiated** — {reason}")
+        await orch._emit_text_notify(f"🔄 **Daemon restart initiated** — {reason}")
         orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
         return {
@@ -5731,14 +5722,14 @@ feature work stuck on feature branches across multiple workspaces.
         if wait_for_tasks and running_count > 0:
             # Pause orchestrator so no new tasks are scheduled, then wait
             orch._paused = True
-            await orch._notify_channel(
+            await orch._emit_text_notify(
                 f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
                 f"running task(s) to complete\n**Reason:** {reason}"
             )
             await orch.wait_for_running_tasks(timeout=300)
 
         # Log the update/restart reason to the notification channel
-        await orch._notify_channel(f"🔄 **Daemon update & restart initiated** — {reason}")
+        await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
         # Trigger restart
         orch._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)

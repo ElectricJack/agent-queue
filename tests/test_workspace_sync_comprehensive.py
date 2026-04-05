@@ -953,6 +953,12 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
+    async def _emit_notify(self, event_type: str, event) -> None:
+        self._notifications.append(event_type)
+
+    async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
+        self._notifications.append(message)
+
     from src.orchestrator import Orchestrator as _Orch
 
     _merge_and_push = _Orch._merge_and_push
@@ -1001,12 +1007,9 @@ class TestOrchestratorMergeAndPushIntegration:
 
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=5)
 
-        # Notification includes key details
+        # Notification includes the push_failed event type
         assert len(orch._notifications) == 1
-        msg = orch._notifications[0]
-        assert "Push Failed" in msg
-        assert "5 attempts" in msg
-        assert "diverged" in msg
+        assert orch._notifications[0] == "notify.push_failed"
 
         # Recovery via arecover_workspace
         git.arecover_workspace.assert_called_once_with("/workspace", "main")

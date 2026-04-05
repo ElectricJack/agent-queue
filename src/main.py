@@ -126,15 +126,22 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             shutdown_event.set()
             return
 
-        # Register orchestrator callbacks through the adapter.
-        # This is done here (rather than inside on_ready) so the
-        # registration path is platform-agnostic.  The Discord bot's
-        # on_ready handler detects these are already set and skips
-        # its own registration.
-        orch.set_notify_callback(adapter.send_message)
-        orch.set_create_thread_callback(adapter.create_task_thread)
-        orch.set_get_thread_url_callback(adapter.get_thread_last_message_url)
-        orch.set_edit_thread_root_callback(adapter.edit_thread_root_message)
+        # Register the event-driven notification handler.
+        # The handler subscribes to notify.* events on the orchestrator's
+        # EventBus and routes them to the messaging platform (Discord embeds,
+        # threads, interactive views, etc.).
+        bot = getattr(adapter, "bot", None)
+        if bot is not None:
+            from src.discord.notification_handler import DiscordNotificationHandler
+
+            _notification_handler = DiscordNotificationHandler(bot, orch.bus)
+            logger.info("Discord notification handler registered on EventBus")
+        else:
+            logger.info(
+                "No bot instance on adapter (%s) — notification handler not registered",
+                adapter.platform_name,
+            )
+
         orch.set_command_handler(adapter.get_command_handler())
         orch.set_supervisor(adapter.get_supervisor())
 
