@@ -99,6 +99,20 @@ class MemoryManager:
         """Path to the project notes directory."""
         return os.path.join(self._storage_root, "notes", project_id)
 
+    def _factsheet_path(self, project_id: str) -> str:
+        """Path to the project factsheet file.
+
+        Returns ``{data_dir}/memory/{project_id}/factsheet.md``.
+        """
+        return os.path.join(self._project_memory_dir(project_id), "factsheet.md")
+
+    def _knowledge_dir(self, project_id: str) -> str:
+        """Path to the project knowledge base directory.
+
+        Returns ``{data_dir}/memory/{project_id}/knowledge/``.
+        """
+        return os.path.join(self._project_memory_dir(project_id), "knowledge")
+
     def _memory_paths(self, project_id: str, workspace_path: str) -> list[str]:
         """Directories to index for a project.
 
@@ -115,6 +129,11 @@ class MemoryManager:
             notes_dir = self._notes_dir(project_id)
             if os.path.isdir(notes_dir):
                 paths.append(notes_dir)
+        # Include knowledge base directory for semantic search indexing
+        if self.config.index_knowledge:
+            knowledge_dir = self._knowledge_dir(project_id)
+            if os.path.isdir(knowledge_dir):
+                paths.append(knowledge_dir)
         # Include workspace specs/ and docs/ directories for zero-duplication
         # knowledge indexing — agents can answer questions about their own
         # architecture, configuration, and published documentation.
@@ -275,6 +294,255 @@ class MemoryManager:
                     logger.warning(f"Profile indexing failed for project {project_id}: {e}")
 
         return path
+
+    # ------------------------------------------------------------------
+    # Phase 1b: Project Factsheet — Structured Metadata Layer
+    # ------------------------------------------------------------------
+
+    async def read_factsheet(self, project_id: str) -> str | None:
+        """Read and return the project factsheet content (YAML frontmatter + markdown).
+
+        Returns ``None`` if no factsheet exists yet.
+        """
+        path = self._factsheet_path(project_id)
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path) as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read factsheet for project {project_id}: {e}")
+            return None
+
+    async def write_factsheet(
+        self, project_id: str, content: str, workspace_path: str = ""
+    ) -> str | None:
+        """Write factsheet content and re-index it.
+
+        Returns the file path on success, ``None`` otherwise.
+        """
+        path = self._factsheet_path(project_id)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(f"Failed to write factsheet for project {project_id}: {e}")
+            return None
+
+        # Re-index the factsheet file if we have an instance
+        if workspace_path:
+            instance = await self.get_instance(project_id, workspace_path)
+            if instance:
+                try:
+                    await instance.index_file(path)
+                except Exception as e:
+                    logger.warning(f"Factsheet indexing failed for project {project_id}: {e}")
+
+        return path
+
+    async def update_factsheet_field(
+        self, project_id: str, field_path: str, value: str, workspace_path: str = ""
+    ) -> str | None:
+        """Update a specific YAML field in the factsheet using dot-notation.
+
+        For example, ``update_factsheet_field("my-proj", "urls.github", "https://...")``
+        sets the ``urls.github`` field in the YAML frontmatter.
+
+        Creates a minimal factsheet if none exists. Returns the file path on
+        success, ``None`` otherwise.
+        """
+        try:
+            import yaml
+        except ImportError:
+            logger.warning("PyYAML not available — cannot update factsheet YAML fields")
+            return None
+
+        content = await self.read_factsheet(project_id) or ""
+
+        # Parse YAML frontmatter
+        yaml_data: dict = {}
+        body = content
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    yaml_data = yaml.safe_load(parts[1]) or {}
+                except yaml.YAMLError:
+                    yaml_data = {}
+                body = parts[2].lstrip("\n")
+
+        # Navigate dot-notation path and set value
+        keys = field_path.split(".")
+        target = yaml_data
+        for key in keys[:-1]:
+            if key not in target or not isinstance(target[key], dict):
+                target[key] = {}
+            target = target[key]
+        target[keys[-1]] = value
+
+        # Reconstruct factsheet
+        yaml_str = yaml.dump(yaml_data, default_flow_style=False, sort_keys=False)
+        new_content = f"---\n{yaml_str}---\n\n{body}" if body else f"---\n{yaml_str}---\n"
+
+        return await self.write_factsheet(project_id, new_content, workspace_path)
+
+    def parse_factsheet_yaml(self, content: str) -> dict:
+        """Parse YAML frontmatter from a factsheet string. Returns empty dict on failure."""
+        try:
+            import yaml
+        except ImportError:
+            return {}
+
+        if not content or not content.startswith("---"):
+            return {}
+
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return {}
+        try:
+            return yaml.safe_load(parts[1]) or {}
+        except Exception:
+            return {}
+
+    # ------------------------------------------------------------------
+    # Phase 3b: Knowledge Base Topic Files
+    # ------------------------------------------------------------------
+
+    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None:
+        """Read a knowledge base topic file.
+
+        Returns the file content, or ``None`` if the topic file doesn't exist.
+        The ``topic`` should be one of the configured ``knowledge_topics``
+        (e.g. ``"architecture"``, ``"gotchas"``).
+        """
+        # Sanitize topic to prevent directory traversal
+        safe_topic = os.path.basename(topic)
+        path = os.path.join(self._knowledge_dir(project_id), f"{safe_topic}.md")
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path) as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(
+                f"Failed to read knowledge topic '{topic}' for project {project_id}: {e}"
+            )
+            return None
+
+    async def list_knowledge_topics(self, project_id: str) -> list[dict]:
+        """List available knowledge base topics for a project.
+
+        Returns a list of dicts with ``topic`` name and ``has_content`` boolean
+        for each configured topic. Also includes any extra topic files found
+        on disk that aren't in the default config.
+        """
+        knowledge_dir = self._knowledge_dir(project_id)
+        configured = set(self.config.knowledge_topics)
+
+        topics: list[dict] = []
+        found_on_disk: set[str] = set()
+
+        # Check disk for existing topic files
+        if os.path.isdir(knowledge_dir):
+            for fname in sorted(os.listdir(knowledge_dir)):
+                if fname.endswith(".md"):
+                    topic_name = fname[:-3]  # strip .md
+                    found_on_disk.add(topic_name)
+
+        # Report configured topics with presence info
+        for topic in self.config.knowledge_topics:
+            has_content = topic in found_on_disk
+            size = 0
+            if has_content:
+                try:
+                    size = os.path.getsize(
+                        os.path.join(knowledge_dir, f"{topic}.md")
+                    )
+                except OSError:
+                    pass
+            topics.append({
+                "topic": topic,
+                "has_content": has_content,
+                "size_bytes": size,
+            })
+
+        # Include any extra topics found on disk but not in config
+        for topic in sorted(found_on_disk - configured):
+            try:
+                size = os.path.getsize(os.path.join(knowledge_dir, f"{topic}.md"))
+            except OSError:
+                size = 0
+            topics.append({
+                "topic": topic,
+                "has_content": True,
+                "size_bytes": size,
+                "extra": True,
+            })
+
+        return topics
+
+    async def search_all_project_factsheets(
+        self, project_ids: list[str], query: str = "", field: str = ""
+    ) -> list[dict]:
+        """Search across multiple project factsheets for metadata.
+
+        If ``field`` is provided, extracts that specific YAML field from each
+        factsheet (dot-notation, e.g. ``"urls.github"``). If ``query`` is
+        provided, performs a case-insensitive text match against factsheet
+        content.
+
+        Returns a list of dicts with ``project_id``, ``match``, and
+        optionally ``field_value``.
+        """
+        results: list[dict] = []
+        query_lower = query.lower() if query else ""
+
+        for pid in project_ids:
+            content = await self.read_factsheet(pid)
+            if content is None:
+                continue
+
+            entry: dict = {"project_id": pid}
+
+            # Field-specific extraction
+            if field:
+                yaml_data = self.parse_factsheet_yaml(content)
+                value = yaml_data
+                for key in field.split("."):
+                    if isinstance(value, dict):
+                        value = value.get(key)
+                    else:
+                        value = None
+                        break
+                if value is not None:
+                    entry["field"] = field
+                    entry["field_value"] = value
+                    results.append(entry)
+                continue
+
+            # Text search across the whole factsheet
+            if query_lower and query_lower in content.lower():
+                # Extract a context snippet around the match
+                idx = content.lower().find(query_lower)
+                start = max(0, idx - 100)
+                end = min(len(content), idx + len(query_lower) + 100)
+                entry["snippet"] = content[start:end]
+                results.append(entry)
+            elif not query:
+                # No query/field — return summary from YAML
+                yaml_data = self.parse_factsheet_yaml(content)
+                entry["project_name"] = (
+                    yaml_data.get("project", {}).get("name", pid)
+                    if isinstance(yaml_data.get("project"), dict)
+                    else pid
+                )
+                entry["has_factsheet"] = True
+                results.append(entry)
+
+        return results
 
     # ------------------------------------------------------------------
     # Phase 2: Post-Task Profile Revision
@@ -913,7 +1181,8 @@ class MemoryManager:
         """Build a structured, tiered memory context for a task.
 
         Returns a ``MemoryContext`` with fields for each priority tier:
-        1. Project profile (always included, highest priority)
+        0. Project factsheet (always included, highest priority — small YAML metadata)
+        1. Project profile (always included)
         1.5. Project documentation (CLAUDE.md — foundational context)
         2. Relevant notes (semantic search matched)
         3. Recent task memories (for continuity)
@@ -927,6 +1196,12 @@ class MemoryManager:
         memory_dir = self._project_memory_dir(project_id)
         if os.path.isdir(memory_dir):
             ctx.memory_folder = memory_dir if memory_dir.endswith("/") else memory_dir + "/"
+
+        # Tier 0: Project Factsheet (small, always included)
+        if self.config.factsheet_in_context:
+            factsheet = await self.read_factsheet(project_id)
+            if factsheet:
+                ctx.factsheet = factsheet
 
         # Tier 1: Project Profile
         if self.config.profile_enabled:

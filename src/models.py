@@ -391,11 +391,12 @@ class MemoryContext:
 
     Each field contains pre-formatted markdown text ready for injection into
     the agent's context. The orchestrator assembles these tiers in priority
-    order (profile first, then notes, recent tasks, and semantic search)
-    and trims to fit the configured token budget.
+    order (factsheet first, then profile, notes, recent tasks, and semantic
+    search) and trims to fit the configured token budget.
     """
 
-    profile: str = ""  # Project profile (highest priority, always included)
+    factsheet: str = ""  # Project factsheet (Tier 0, highest priority — always included)
+    profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
@@ -405,6 +406,8 @@ class MemoryContext:
     def to_context_block(self) -> str:
         """Assemble all tiers into a single markdown context block."""
         sections = []
+        if self.factsheet:
+            sections.append(f"## Project Factsheet\n{self.factsheet}")
         if self.profile:
             sections.append(f"## Project Profile\n{self.profile}")
         if self.project_docs:
@@ -424,7 +427,9 @@ class MemoryContext:
                 "If you need additional historical context, you can browse markdown files "
                 "in the memory folder using the Read tool:\n"
                 f"- **Task memories:** `{self.memory_folder}tasks/`\n"
-                f"- **Project profile:** `{self.memory_folder}profile.md`"
+                f"- **Project profile:** `{self.memory_folder}profile.md`\n"
+                f"- **Project factsheet:** `{self.memory_folder}factsheet.md`\n"
+                f"- **Knowledge base:** `{self.memory_folder}knowledge/`"
             )
         return "\n\n".join(sections)
 
@@ -432,6 +437,7 @@ class MemoryContext:
     def is_empty(self) -> bool:
         return not any(
             [
+                self.factsheet,
                 self.profile,
                 self.project_docs,
                 self.notes,
