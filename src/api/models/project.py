@@ -14,7 +14,24 @@ class ProjectSummary(BaseModel):
     credit_weight: float = 1.0
     max_concurrent_agents: int = 1
     workspace: str | None = None
+    repo_url: str | None = None
     discord_channel_id: str | None = None
+
+
+class GetProjectResponse(BaseModel):
+    id: str
+    name: str
+    status: str = ""
+    repo_url: str = ""
+    repo_default_branch: str = "main"
+    workspace: str | None = None
+    credit_weight: float = 1.0
+    max_concurrent_agents: int = 1
+    total_tokens_used: int = 0
+    tokens_used_recent: int = 0
+    budget_limit: int | None = None
+    discord_channel_id: str | None = None
+    default_profile_id: str | None = None
 
 
 class WorkspaceSummary(BaseModel):
@@ -141,6 +158,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "set_project_channel": SetProjectChannelResponse,
     "set_control_interface": SetProjectChannelResponse,
     "set_default_branch": SetDefaultBranchResponse,
+    "get_project": GetProjectResponse,
     "get_project_channels": GetProjectChannelsResponse,
     "get_project_for_channel": GetProjectForChannelResponse,
     "add_workspace": AddWorkspaceResponse,

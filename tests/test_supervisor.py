@@ -90,9 +90,9 @@ def test_set_active_project():
     assert sup._active_project_id == "my-project"
 
 
-def test_build_system_prompt_returns_string():
+async def test_build_system_prompt_returns_string():
     sup = _make_supervisor()
-    prompt = sup._build_system_prompt()
+    prompt = await sup._build_system_prompt()
     assert isinstance(prompt, str)
     assert len(prompt) > 0
 
@@ -555,10 +555,10 @@ def test_chat_reply_to_user_empty_message_returns_done():
     assert result == "Done."
 
 
-def test_system_prompt_mentions_reply_to_user():
+async def test_system_prompt_mentions_reply_to_user():
     """System prompt instructs the LLM about reply_to_user."""
     sup = _make_supervisor()
-    prompt = sup._build_system_prompt()
+    prompt = await sup._build_system_prompt()
     assert "reply_to_user" in prompt
 
 

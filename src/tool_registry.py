@@ -100,6 +100,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "resume_project": "project",
     "edit_project": "project",
     "set_default_branch": "project",
+    "get_project": "project",
     "get_project_channels": "project",
     "get_project_for_channel": "project",
     "delete_project": "project",
@@ -350,6 +351,21 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id", "branch"],
+        },
+    },
+    {
+        "name": "get_project",
+        "description": (
+            "Get full details for a single project, including repo URL, workspace path, "
+            "default branch, token usage, and configuration. Use this when you need "
+            "project metadata like the GitHub/git URL, workspace location, or budget info."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID to look up"},
+            },
+            "required": ["project_id"],
         },
     },
     # Note: set_project_channel and set_control_interface have been removed.

@@ -214,7 +214,7 @@ class Supervisor:
         """True while at least one ``chat()`` call is in progress."""
         return any(not ev.is_set() for ev in self._cancel_events)
 
-    def _build_system_prompt(self) -> str:
+    async def _build_system_prompt(self) -> str:
         """Build the system prompt for the current conversation.
 
         Uses ``PromptBuilder`` to assemble identity + active project context.
@@ -232,18 +232,43 @@ class Supervisor:
             {"workspace_dir": self.config.workspace_dir},
         )
         if self._active_project_id:
-            builder.add_context(
-                "active_project",
-                f"ACTIVE PROJECT: `{self._active_project_id}`. "
-                f"Use this as the default project_id for all tools unless the user "
-                f"explicitly specifies a different project. When creating tasks, "
-                f"listing notes, or any project-scoped operation, use this project.",
+            # Fetch project metadata to include in context
+            project_context = await self._build_active_project_context(
+                self._active_project_id
             )
+            builder.add_context("active_project", project_context)
         tool_index = self._registry.get_tool_index()
         if tool_index:
             builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
         system_prompt, _ = builder.build()
         return system_prompt
+
+    async def _build_active_project_context(self, project_id: str) -> str:
+        """Build a rich context block for the active project.
+
+        Fetches project metadata from the database so the supervisor
+        has immediate access to key project info (repo URL, workspace
+        path, etc.) without needing to call tools.
+        """
+        lines = [
+            f"ACTIVE PROJECT: `{project_id}`. "
+            f"Use this as the default project_id for all tools unless the user "
+            f"explicitly specifies a different project. When creating tasks, "
+            f"listing notes, or any project-scoped operation, use this project.",
+        ]
+        try:
+            project = await self.orchestrator.db.get_project(project_id)
+            if project:
+                if project.repo_url:
+                    lines.append(f"Repository URL: {project.repo_url}")
+                ws_path = await self.orchestrator.db.get_project_workspace_path(project_id)
+                if ws_path:
+                    lines.append(f"Workspace: {ws_path}")
+                if project.repo_default_branch:
+                    lines.append(f"Default branch: {project.repo_default_branch}")
+        except Exception:
+            pass  # graceful degradation — ID-only context still works
+        return "\n".join(lines)
 
     async def reflect(
         self,
@@ -287,7 +312,7 @@ class Supervisor:
         try:
             reflect_resp = await self._provider.create_message(
                 messages=messages,
-                system=self._build_system_prompt(),
+                system=await self._build_system_prompt(),
                 tools=list(active_tools.values()),
                 max_tokens=512,
             )
@@ -470,7 +495,7 @@ class Supervisor:
             active_provider = _hook_provider_override.get() or self._provider
             resp = await active_provider.create_message(
                 messages=messages,
-                system=self._build_system_prompt(),
+                system=await self._build_system_prompt(),
                 tools=list(active_tools.values()),
                 max_tokens=1024,
             )

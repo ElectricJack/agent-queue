@@ -1306,6 +1306,8 @@ class CommandHandler:
                 "max_concurrent_agents": p.max_concurrent_agents,
                 "workspace": ws_path,
             }
+            if p.repo_url:
+                info["repo_url"] = p.repo_url
             if p.discord_channel_id:
                 info["discord_channel_id"] = p.discord_channel_id
             result.append(info)
@@ -1525,6 +1527,34 @@ class CommandHandler:
                 "channel_id": channel_id,
             }
         )
+
+    async def _cmd_get_project(self, args: dict) -> dict:
+        """Return full details for a single project."""
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+        ws_path = await self.db.get_project_workspace_path(pid)
+        usage = await self.db.get_project_token_usage(pid)
+        info: dict = {
+            "id": project.id,
+            "name": project.name,
+            "status": project.status.value,
+            "repo_url": project.repo_url or "",
+            "repo_default_branch": project.repo_default_branch,
+            "workspace": ws_path,
+            "credit_weight": project.credit_weight,
+            "max_concurrent_agents": project.max_concurrent_agents,
+            "total_tokens_used": project.total_tokens_used,
+            "tokens_used_recent": usage,
+        }
+        if project.budget_limit is not None:
+            info["budget_limit"] = project.budget_limit
+        if project.discord_channel_id:
+            info["discord_channel_id"] = project.discord_channel_id
+        if project.default_profile_id:
+            info["default_profile_id"] = project.default_profile_id
+        return info
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:
         """Return the Discord channel ID configured for a project."""

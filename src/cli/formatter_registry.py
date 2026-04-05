@@ -453,6 +453,11 @@ def _register_all():
         extract=None,
         many=False,
     )
+    FORMATTERS["get_project"] = FormatterSpec(
+        render=format_entity_detail,
+        extract=None,
+        many=False,
+    )
     FORMATTERS["get_project_channels"] = FormatterSpec(
         render=format_key_value,
         extract=None,
