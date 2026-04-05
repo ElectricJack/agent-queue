@@ -24,6 +24,8 @@ from src.discord.embeds import (
     STATUS_COLORS,
     STATUS_EMOJIS,
     TYPE_TAGS,
+    EmbedStyle,
+    make_embed,
     success_embed,
     error_embed,
     warning_embed,
@@ -1366,44 +1368,99 @@ class RulesListView(discord.ui.View):
             next_btn.callback = self._next_page
             self.add_item(next_btn)
 
-    def build_content(self) -> str:
-        """Build the text content for the rules list message."""
+    def build_embed(self) -> discord.Embed:
+        """Build an embed with table-formatted rules list."""
         if not self._rules:
-            return "**No rules configured.**"
-        lines = [f"**📏 Rules ({len(self._rules)}):**"]
+            return make_embed(
+                EmbedStyle.INFO,
+                "Rules",
+                description="No rules configured.",
+            )
+
         start = self.page * _RULES_PER_PAGE
         page_rules = self._rules[start : start + _RULES_PER_PAGE]
+
+        # Collect row data
+        rows: list[tuple[str, str, str, str, str, str]] = []
         for r in page_rules:
-            rule_type = r.get("type", "passive")
-            type_icon = "⚡" if rule_type == "active" else "📖"
-            scope = r.get("project_id") or "global"
-            hook_count = r.get("hook_count", 0)
             name = r.get("name") or r.get("id", "?")
-            # Enabled status indicator
+            rule_type = r.get("type", "passive")
+            scope = r.get("project_id") or "global"
+            hooks = str(r.get("hook_count", 0))
+
             enabled = r.get("enabled")
-            status_indicator = ""
             if enabled is False:
-                status_indicator = " ⏸️"
+                status = "off"
             elif enabled == "mixed":
-                status_indicator = " ⚠️"
-            # Last run relative time
-            last_run = r.get("last_run")
-            last_run_str = ""
-            if last_run:
-                last_run_str = f" • ran {last_run}"
-            lines.append(
-                f"{type_icon} **{name}** (`{r['id']}`){status_indicator} — "
-                f"{rule_type} • scope: `{scope}` • hooks: {hook_count}{last_run_str}"
-            )
+                status = "mixed"
+            else:
+                status = "on"
+
+            last_run = r.get("last_run") or ""
+            rows.append((name, rule_type, scope, hooks, status, last_run))
+
+        has_last_run = any(r[5] for r in rows)
+
+        # Compute column widths (capped to keep table compact)
+        name_w = min(max(4, *(len(r[0]) for r in rows)), 20)
+        type_w = 7  # "passive" is the longest
+        scope_w = min(max(5, *(len(r[2]) for r in rows)), 14)
+        hooks_w = 5
+        status_w = 6
+
+        # Build header + separator
+        cols = [
+            f"{'Name':<{name_w}}",
+            f"{'Type':<{type_w}}",
+            f"{'Scope':<{scope_w}}",
+            f"{'Hooks':>{hooks_w}}",
+            f"{'Status':<{status_w}}",
+        ]
+        if has_last_run:
+            cols.append("Last Run")
+        header = "  ".join(cols)
+        sep = "─" * len(header)
+
+        # Build data rows
+        lines = [header, sep]
+        for name, rule_type, scope, hooks, status, last_run in rows:
+            t_name = name[:name_w] if len(name) > name_w else name
+            t_scope = scope[:scope_w] if len(scope) > scope_w else scope
+            parts = [
+                f"{t_name:<{name_w}}",
+                f"{rule_type:<{type_w}}",
+                f"{t_scope:<{scope_w}}",
+                f"{hooks:>{hooks_w}}",
+                f"{status:<{status_w}}",
+            ]
+            if has_last_run:
+                parts.append(last_run or "—")
+            lines.append("  ".join(parts))
+
+        table_text = "```\n" + "\n".join(lines) + "\n```"
+
+        # Legend for status values
+        legend = "⚡ active · 📖 passive · ✅ on · ⏸️ off · ⚠️ mixed"
+
+        # Footer
+        footer_parts = []
         if self.total_pages > 1:
-            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
-        return "\n".join(lines)
+            footer_parts.append(f"Page {self.page + 1}/{self.total_pages}")
+        footer_parts.append("AgentQueue")
+
+        return make_embed(
+            EmbedStyle.INFO,
+            f"Rules ({len(self._rules)})",
+            description=f"{table_text}\n{legend}",
+            footer=" · ".join(footer_parts),
+        )
 
     async def _prev_page(self, interaction: discord.Interaction) -> None:
         self.page = max(0, self.page - 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(),
+            embed=self.build_embed(),
+            content=None,
             view=self,
         )
 
@@ -1411,7 +1468,8 @@ class RulesListView(discord.ui.View):
         self.page = min(self.total_pages - 1, self.page + 1)
         self._rebuild_components()
         await interaction.response.edit_message(
-            content=self.build_content(),
+            embed=self.build_embed(),
+            content=None,
             view=self,
         )
 
@@ -4749,12 +4807,8 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         view = RulesListView(rules, handler)
-        msg = view.build_content()
-        await _send_long_interaction(
-            msg,
-            interaction.response.send_message,
-            view=view,
-        )
+        embed = view.build_embed()
+        await interaction.response.send_message(embed=embed, view=view)
 
     @bot.tree.command(name="rule", description="View full details of a rule")
     @app_commands.describe(rule_id="Rule ID")
