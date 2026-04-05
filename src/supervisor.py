@@ -158,6 +158,7 @@ class Supervisor:
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
+        self._registry = _ToolRegistry()
         # Stack of cancel events — one per concurrent chat() call.
         # Using a stack instead of a single event prevents concurrent/recursive
         # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
@@ -409,9 +410,7 @@ class Supervisor:
         Using a stack-based list avoids races where concurrent or recursive
         ``chat()`` calls clobber each other's cancellation state.
         """
-        from src.tool_registry import ToolRegistry
-
-        registry = ToolRegistry()
+        registry = self._registry
 
         # Use compressed schemas for local LLMs with small context windows
         compressed = self.config.chat_provider.provider == "ollama"
@@ -1015,10 +1014,7 @@ class Supervisor:
                 if isinstance(result, dict) and result.get("plan_found"):
                     summary += " — plan found, awaiting approval"
 
-                from src.tool_registry import ToolRegistry
-
-                registry = ToolRegistry()
-                active_tools = {t["name"]: t for t in registry.get_core_tools()}
+                active_tools = {t["name"]: t for t in self._registry.get_core_tools()}
 
                 await self.reflect(
                     trigger=trigger,
