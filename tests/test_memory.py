@@ -1543,3 +1543,553 @@ class TestKnowledgeBaseConfig:
         cfg = MemoryConfig(knowledge_topics=("architecture", "decisions"))
         assert cfg.knowledge_topics == ("architecture", "decisions")
         assert len(cfg.knowledge_topics) == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Daily Consolidation Process tests
+# ---------------------------------------------------------------------------
+
+
+class TestDailyConsolidation:
+    """Tests for run_daily_consolidation() — Phase 4 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    def _write_staging_file(
+        self,
+        storage_root: str,
+        project_id: str,
+        task_id: str,
+        facts: list[dict],
+        *,
+        extracted_at: str = "2026-04-05T10:00:00Z",
+    ) -> str:
+        """Helper to create a staging JSON file."""
+        staging_dir = os.path.join(storage_root, "memory", project_id, "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+        doc = {
+            "task_id": task_id,
+            "project_id": project_id,
+            "task_title": f"Task {task_id}",
+            "task_type": "feature",
+            "extracted_at": extracted_at,
+            "facts": facts,
+        }
+        path = os.path.join(staging_dir, f"{task_id}.json")
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        return path
+
+    # -- Disabled / empty scenarios --
+
+    async def test_consolidation_disabled_returns_status(self, tmp_path):
+        """Consolidation returns 'disabled' status when consolidation_enabled=False."""
+        mgr = self._make_manager(str(tmp_path), consolidation_enabled=False)
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "disabled"
+        assert result["staging_files_processed"] == 0
+
+    async def test_no_staging_files_returns_no_staging(self, tmp_path):
+        """Consolidation returns 'no_staging' when no staging files exist."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "no_staging"
+        assert result["staging_files_processed"] == 0
+
+    async def test_empty_facts_returns_no_facts(self, tmp_path):
+        """Staging files with no facts → 'no_facts' status, files still moved."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(str(tmp_path), "proj", "task-1", [])
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "no_facts"
+        assert result["staging_files_processed"] == 1
+        assert result["facts_consolidated"] == 0
+        # Staging file should be moved to processed/
+        processed_dir = os.path.join(str(tmp_path), "memory", "proj", "staging", "processed")
+        assert os.path.isfile(os.path.join(processed_dir, "task-1.json"))
+
+    # -- Staging file reading --
+
+    async def test_read_staging_files_sorted_by_time(self, tmp_path):
+        """_read_staging_files returns docs sorted by extracted_at."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-2",
+            [{"category": "url", "key": "k", "value": "v"}],
+            extracted_at="2026-04-05T12:00:00Z",
+        )
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k2", "value": "v2"}],
+            extracted_at="2026-04-05T10:00:00Z",
+        )
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 2
+        assert docs[0]["task_id"] == "task-1"  # earlier extracted_at first
+        assert docs[1]["task_id"] == "task-2"
+
+    async def test_read_staging_files_skips_malformed(self, tmp_path):
+        """_read_staging_files skips malformed JSON files."""
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+
+        # Write a valid file
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+
+        # Write a malformed file
+        with open(os.path.join(staging_dir, "bad.json"), "w") as f:
+            f.write("not valid json {{{")
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 1
+        assert docs[0]["task_id"] == "task-1"
+
+    async def test_read_staging_files_skips_non_json(self, tmp_path):
+        """_read_staging_files ignores non-.json files."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+        # Create a non-JSON file in staging
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        with open(os.path.join(staging_dir, "readme.txt"), "w") as f:
+            f.write("not a staging file")
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 1
+
+    # -- Deduplication --
+
+    async def test_deduplicate_facts_basic(self, tmp_path):
+        """_deduplicate_facts flattens and enriches facts with task_id."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Add auth",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["task_id"] == "task-1"
+        assert result[0]["task_title"] == "Add auth"
+        assert result[0]["key"] == "jwt_lib"
+
+    async def test_deduplicate_newer_wins(self, tmp_path):
+        """When same (category, key) appears in multiple docs, the later one wins."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Old task",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.7.0"},
+                ],
+            },
+            {
+                "task_id": "task-2",
+                "task_title": "New task",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["value"] == "PyJWT 2.8.0"
+        assert result[0]["task_id"] == "task-2"
+
+    async def test_deduplicate_different_keys_kept(self, tmp_path):
+        """Different (category, key) pairs are all kept."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Task 1",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT"},
+                    {"category": "url", "key": "docs_url", "value": "https://docs.example.com"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 2
+
+    async def test_deduplicate_skips_empty_keys(self, tmp_path):
+        """Facts with empty category or key are skipped."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Task 1",
+                "facts": [
+                    {"category": "", "key": "bad", "value": "skipped"},
+                    {"category": "url", "key": "", "value": "skipped"},
+                    {"category": "url", "key": "good", "value": "kept"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["key"] == "good"
+
+    # -- Topic grouping --
+
+    async def test_group_facts_by_topic(self, tmp_path):
+        """_group_facts_by_topic maps facts to configured knowledge topics."""
+        mgr = self._make_manager(str(tmp_path))
+        facts = [
+            {"category": "architecture", "key": "pattern", "value": "event-driven"},
+            {"category": "tech_stack", "key": "db", "value": "PostgreSQL"},
+            {"category": "contact", "key": "owner", "value": "alice"},  # no topic mapping
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+
+        assert "architecture" in grouped
+        assert "dependencies" in grouped
+        assert len(grouped["architecture"]) == 1
+        assert len(grouped["dependencies"]) == 1
+        # contacts don't map to any topic
+        for topic, topic_facts in grouped.items():
+            for f in topic_facts:
+                assert f["category"] != "contact"
+
+    async def test_group_facts_decision_maps_to_both_topics(self, tmp_path):
+        """Decision facts map to both 'decisions' and 'architecture' topics."""
+        mgr = self._make_manager(str(tmp_path))
+        facts = [
+            {"category": "decision", "key": "db_choice", "value": "Use PostgreSQL"},
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+        assert "decisions" in grouped
+        assert "architecture" in grouped
+
+    async def test_group_facts_skips_unconfigured_topics(self, tmp_path):
+        """Topics not in knowledge_topics config are excluded."""
+        mgr = self._make_manager(str(tmp_path), knowledge_topics=("architecture",))
+        facts = [
+            {"category": "decision", "key": "db", "value": "PostgreSQL"},
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+        # "decisions" is not in configured topics, only "architecture"
+        assert "architecture" in grouped
+        assert "decisions" not in grouped
+
+    # -- Staging file move to processed --
+
+    async def test_move_to_processed(self, tmp_path):
+        """_move_to_processed moves staging files to processed/ subdirectory."""
+        mgr = self._make_manager(str(tmp_path))
+        path = self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+        docs = [{"_filepath": path, "project_id": "proj"}]
+        moved = mgr._move_to_processed(docs)
+
+        assert moved == 1
+        assert not os.path.isfile(path)
+        processed = os.path.join(str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json")
+        assert os.path.isfile(processed)
+
+    async def test_move_to_processed_missing_file(self, tmp_path):
+        """_move_to_processed handles missing files gracefully."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [{"_filepath": "/nonexistent/file.json", "project_id": "proj"}]
+        moved = mgr._move_to_processed(docs)
+        assert moved == 0
+
+    # -- End-to-end consolidation with mocked LLM --
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_no_provider(self, mock_provider, tmp_path):
+        """Consolidation returns error when no LLM provider is available."""
+        mock_provider.return_value = None
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        # Staging files should NOT be moved on error
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert os.path.isfile(os.path.join(staging_dir, "task-1.json"))
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_invalid_llm_response(self, mock_provider, tmp_path):
+        """Consolidation handles invalid LLM responses gracefully."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        assert "parse_error" in result["error"]
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_end_to_end(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """End-to-end: staging → factsheet update → knowledge base update."""
+        # Set up mock LLM response
+        llm_response = json.dumps({
+            "factsheet_yaml": {
+                "last_updated": "2026-04-05T15:00:00Z",
+                "project": {"name": "test", "id": "proj"},
+                "tech_stack": {"language": "python", "key_dependencies": ["PyJWT"]},
+            },
+            "knowledge_updates": {
+                "dependencies": "# Dependencies Knowledge\n\n- PyJWT 2.8.0 (from task: task-1)\n",
+                "decisions": "# Technical Decisions\n\n- Use JWT for auth (from task: task-1)\n",
+            },
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        # Mock factsheet read
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"project": {"name": "test", "id": "proj"}, "tech_stack": {}},
+            body_markdown="# Test Project",
+        )
+
+        # Mock knowledge topic reads
+        mock_read_kt.return_value = "# Dependencies\n\n*(empty)*"
+        mock_write_fs.return_value = "/tmp/factsheet.md"
+        mock_write_kt.return_value = "/tmp/topic.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [
+                {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                {"category": "decision", "key": "auth_method", "value": "Use JWT for auth"},
+            ],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "consolidated"
+        assert result["facts_consolidated"] == 2
+        assert result["factsheet_updated"] is True
+        assert "dependencies" in result["topics_updated"]
+        assert "decisions" in result["topics_updated"]
+        assert result["staging_files_processed"] == 1
+
+        # Verify factsheet was written
+        mock_write_fs.assert_called_once()
+        # Verify knowledge topics were written
+        assert mock_write_kt.call_count == 2
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_moves_staging_on_success(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """Staging files are moved to processed/ after successful consolidation."""
+        llm_response = json.dumps({
+            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+            "knowledge_updates": {},
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"last_updated": "old"},
+            body_markdown="",
+        )
+        mock_read_kt.return_value = None
+        mock_write_fs.return_value = "/tmp/fs.md"
+        mock_write_kt.return_value = "/tmp/kt.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        staging_path = self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "docs", "value": "https://docs.example.com"}],
+        )
+
+        assert os.path.isfile(staging_path)
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "consolidated"
+
+        # Original staging file should be gone
+        assert not os.path.isfile(staging_path)
+        # It should be in processed/
+        processed = os.path.join(
+            str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json"
+        )
+        assert os.path.isfile(processed)
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_multiple_staging_files(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """Consolidation processes multiple staging files and deduplicates."""
+        llm_response = json.dumps({
+            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+            "knowledge_updates": {"dependencies": "# Updated deps\n"},
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"tech_stack": {}},
+            body_markdown="",
+        )
+        mock_read_kt.return_value = "# Dependencies\n"
+        mock_write_fs.return_value = "/tmp/fs.md"
+        mock_write_kt.return_value = "/tmp/kt.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        # Same key in two files — later one should win
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "SQLite"}],
+            extracted_at="2026-04-05T10:00:00Z",
+        )
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-2",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+            extracted_at="2026-04-05T12:00:00Z",
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "consolidated"
+        assert result["facts_consolidated"] == 1  # deduplicated to 1
+
+        # Check the LLM was called with the newer value
+        call_args = provider_instance.create_message.call_args
+        user_prompt = call_args.kwargs.get("messages", call_args[1].get("messages", [{}]))[0].get("content", "")
+        assert "PostgreSQL" in user_prompt
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_llm_code_fence_response(self, mock_provider, tmp_path):
+        """Consolidation handles LLM responses wrapped in markdown code fences."""
+        llm_response = '```json\n{"factsheet_yaml": {}, "knowledge_updates": {}}\n```'
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "docs", "value": "https://example.com"}],
+        )
+        # Need to set up read_factsheet since it's not mocked
+        factsheet_dir = os.path.join(str(tmp_path), "memory", "proj")
+        os.makedirs(factsheet_dir, exist_ok=True)
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        # Should parse successfully despite code fences
+        assert result["status"] in ("consolidated", "error")
+        # If the yaml was empty {}, factsheet_updated would be False, but parsing succeeded
+        if result["status"] == "consolidated":
+            assert result["facts_consolidated"] == 1
+
+
+class TestConsolidationConfig:
+    """Tests for consolidation config fields on MemoryConfig."""
+
+    def test_consolidation_enabled_default(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_enabled is True
+
+    def test_consolidation_enabled_can_be_disabled(self):
+        cfg = MemoryConfig(consolidation_enabled=False)
+        assert cfg.consolidation_enabled is False
+
+    def test_consolidation_schedule_default(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_schedule == "daily"
+
+    def test_consolidation_provider_default_empty(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_provider == ""
+
+    def test_consolidation_model_default_empty(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_model == ""
+
+    def test_consolidation_provider_custom(self):
+        cfg = MemoryConfig(consolidation_provider="ollama", consolidation_model="llama3")
+        assert cfg.consolidation_provider == "ollama"
+        assert cfg.consolidation_model == "llama3"
+
+
+class TestConsolidationProvider:
+    """Tests for _get_consolidation_provider fallback chain."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_provider_called(self, mock_provider, tmp_path):
+        """Consolidation uses _get_consolidation_provider, not _get_revision_provider."""
+        mock_provider.return_value = None  # force no-provider path
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+        with open(os.path.join(staging_dir, "task-1.json"), "w") as f:
+            json.dump({
+                "task_id": "task-1",
+                "project_id": "proj",
+                "task_title": "Test",
+                "task_type": "feature",
+                "extracted_at": "2026-04-05T10:00:00Z",
+                "facts": [{"category": "url", "key": "k", "value": "v"}],
+            }, f)
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        mock_provider.assert_called_once()

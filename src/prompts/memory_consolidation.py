@@ -13,7 +13,9 @@ Phase 3: Knowledge Base Topic Files — topic-organized knowledge files
 (``knowledge/architecture.md``, etc.) that contain sourced facts with
 deep-dive links back to originating tasks and notes.
 
-Future phases will add consolidation and bootstrap prompts here.
+Phase 4: Daily Consolidation Process — scheduled process that reads
+accumulated staging files, updates the project factsheet YAML, and merges
+relevant facts into the appropriate knowledge base topic files.
 """
 
 # ---------------------------------------------------------------------------
@@ -255,3 +257,76 @@ KNOWLEDGE_TOPIC_SEED_TEMPLATES: dict[str, str] = {
 *(Explicit trade-offs made and their justification)*
 """,
 }
+
+# ---------------------------------------------------------------------------
+# Phase 4: Daily Consolidation Process
+# ---------------------------------------------------------------------------
+
+# Mapping from fact categories to the knowledge topic they should update.
+# A single fact category may map to multiple topics (e.g. "decision" facts
+# are relevant to both "decisions" and "architecture").
+FACT_CATEGORY_TO_TOPIC: dict[str, list[str]] = {
+    "url": ["api-and-endpoints", "deployment"],
+    "tech_stack": ["dependencies"],
+    "decision": ["decisions", "architecture"],
+    "convention": ["conventions"],
+    "architecture": ["architecture"],
+    "config": ["deployment"],
+    "contact": [],  # contacts go to factsheet only, not knowledge topics
+}
+
+DAILY_CONSOLIDATION_SYSTEM_PROMPT = """\
+You are a project knowledge consolidation engine. Your job is to merge \
+newly extracted facts into existing knowledge artifacts: a YAML factsheet \
+and topic-organized markdown knowledge files.
+
+You will receive:
+1. The current project factsheet (YAML frontmatter + markdown body).
+2. The current content of each relevant knowledge topic file.
+3. A batch of new facts extracted from recently completed tasks.
+
+Your output must be a JSON object with two keys:
+
+- **"factsheet_yaml"** — The updated YAML frontmatter block (between --- \
+  delimiters). Merge new facts into existing fields. Never remove manually \
+  set values. Fill in null fields when facts provide the information. For \
+  list fields, append new entries and deduplicate.
+
+- **"knowledge_updates"** — A JSON object mapping topic slugs (e.g. \
+  "architecture", "decisions") to their updated markdown content. Only \
+  include topics that actually changed. Preserve existing content and \
+  append or update sections with the new facts. Each fact should include \
+  a source reference like "(from task: {task_id})".
+
+Rules:
+1. MERGE, never overwrite — preserve existing manually-set content.
+2. Deduplicate — if a fact is already present (same key or equivalent \
+   meaning), skip it. Newer facts take precedence over older ones when \
+   they conflict.
+3. Source attribution — every new fact added to a knowledge topic must \
+   include "(from task: {task_id})" at the end of the bullet.
+4. Keep factsheet YAML structure identical — same keys, same nesting.
+5. Update the "last_updated" field in the factsheet to the current timestamp.
+6. For knowledge topics, update the "Last consolidated" line in the \
+   blockquote header with the current timestamp and source count.
+7. Output ONLY valid JSON — no markdown fences, no commentary.
+"""
+
+DAILY_CONSOLIDATION_USER_PROMPT = """\
+## Current Factsheet
+```yaml
+{current_factsheet_yaml}
+```
+
+## Knowledge Topics
+{knowledge_topics_section}
+
+## New Facts to Consolidate
+{facts_section}
+
+## Timestamp
+Current time: {timestamp}
+
+Produce the consolidated output as a JSON object with "factsheet_yaml" \
+and "knowledge_updates" keys.
+"""

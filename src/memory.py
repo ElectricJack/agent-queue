@@ -1242,7 +1242,393 @@ class MemoryManager:
         return result
 
     # ------------------------------------------------------------------
-    # Phase 4: Memory Compaction & Enhanced Context Delivery
+    # Phase 4: Daily Consolidation Process
+    # ------------------------------------------------------------------
+
+    def _staging_processed_dir(self, project_id: str) -> str:
+        """Path to the processed staging directory for a project.
+
+        Returns ``{data_dir}/memory/{project_id}/staging/processed/``.
+        Staging files are moved here after successful consolidation so they
+        aren't re-processed, but remain available for auditing.
+        """
+        return os.path.join(self._staging_dir(project_id), "processed")
+
+    def _read_staging_files(self, project_id: str) -> list[dict]:
+        """Read all unprocessed staging JSON files for a project.
+
+        Returns a list of staging documents sorted by ``extracted_at``
+        (oldest first).  Malformed files are logged and skipped.
+        """
+        staging_dir = self._staging_dir(project_id)
+        if not os.path.isdir(staging_dir):
+            return []
+
+        docs: list[dict] = []
+        for filename in os.listdir(staging_dir):
+            if not filename.endswith(".json"):
+                continue
+            filepath = os.path.join(staging_dir, filename)
+            if not os.path.isfile(filepath):
+                continue
+            try:
+                with open(filepath) as f:
+                    doc = json.load(f)
+                if isinstance(doc, dict) and "facts" in doc:
+                    doc["_filepath"] = filepath
+                    docs.append(doc)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Skipping malformed staging file %s: %s", filename, e)
+
+        # Sort by extraction time so older facts are processed first
+        docs.sort(key=lambda d: d.get("extracted_at", ""))
+        return docs
+
+    def _deduplicate_facts(self, staging_docs: list[dict]) -> list[dict]:
+        """Flatten and deduplicate facts across multiple staging files.
+
+        When the same ``(category, key)`` pair appears in multiple staging
+        files, the most recent one (later in the sorted list) wins.
+        Also attaches ``task_id`` from the parent document to each fact
+        for source attribution.
+
+        Returns a list of unique fact dicts, each with an added ``task_id``
+        and ``task_title`` field.
+        """
+        seen: dict[tuple[str, str], dict] = {}
+
+        for doc in staging_docs:
+            task_id = doc.get("task_id", "unknown")
+            task_title = doc.get("task_title", "")
+            for fact in doc.get("facts", []):
+                category = fact.get("category", "")
+                key = fact.get("key", "")
+                if not category or not key:
+                    continue
+                # Later entries overwrite earlier ones (newer facts win)
+                enriched = {
+                    **fact,
+                    "task_id": task_id,
+                    "task_title": task_title,
+                }
+                seen[(category, key)] = enriched
+
+        return list(seen.values())
+
+    def _get_consolidation_provider(self) -> "Any | None":
+        """Create a chat provider for consolidation LLM calls.
+
+        Uses consolidation_provider/consolidation_model config if set,
+        falls back to revision_provider/revision_model, then to defaults.
+        """
+        try:
+            from src.chat_providers import create_chat_provider
+            from src.config import ChatProviderConfig
+
+            provider_name = (
+                self.config.consolidation_provider
+                or self.config.revision_provider
+                or "anthropic"
+            )
+            model_name = (
+                self.config.consolidation_model
+                or self.config.revision_model
+                or ""
+            )
+
+            provider_config = ChatProviderConfig(
+                provider=provider_name,
+                model=model_name,
+            )
+            return create_chat_provider(provider_config)
+        except Exception as e:
+            logger.warning("Failed to create consolidation LLM provider: %s", e)
+            return None
+
+    def _move_to_processed(self, staging_docs: list[dict]) -> int:
+        """Move processed staging files to the ``staging/processed/`` directory.
+
+        Returns the number of files successfully moved.
+        """
+        moved = 0
+        for doc in staging_docs:
+            filepath = doc.get("_filepath")
+            if not filepath or not os.path.isfile(filepath):
+                continue
+            project_id = doc.get("project_id", "")
+            if not project_id:
+                continue
+            processed_dir = self._staging_processed_dir(project_id)
+            os.makedirs(processed_dir, exist_ok=True)
+            dest = os.path.join(processed_dir, os.path.basename(filepath))
+            try:
+                os.rename(filepath, dest)
+                moved += 1
+            except OSError as e:
+                logger.warning("Failed to move staging file %s: %s", filepath, e)
+        return moved
+
+    def _group_facts_by_topic(self, facts: list[dict]) -> dict[str, list[dict]]:
+        """Group deduplicated facts by knowledge topic.
+
+        Uses ``FACT_CATEGORY_TO_TOPIC`` mapping.  Facts whose category has
+        no topic mapping (e.g. ``contact``) are excluded — they only go to
+        the factsheet.
+
+        Returns ``{topic_slug: [fact, ...]}`` where each fact retains its
+        full metadata including ``task_id``.
+        """
+        from src.prompts.memory_consolidation import FACT_CATEGORY_TO_TOPIC
+
+        grouped: dict[str, list[dict]] = {}
+        for fact in facts:
+            category = fact.get("category", "")
+            topics = FACT_CATEGORY_TO_TOPIC.get(category, [])
+            for topic in topics:
+                if topic in self.config.knowledge_topics:
+                    grouped.setdefault(topic, []).append(fact)
+        return grouped
+
+    async def run_daily_consolidation(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+    ) -> dict:
+        """Run the daily consolidation process for a project.
+
+        Reads all unprocessed staging files, deduplicates facts, calls an LLM
+        to merge them into the project factsheet and relevant knowledge topics,
+        then moves processed staging files to ``staging/processed/``.
+
+        Returns a stats dict with:
+        - ``status``: ``"consolidated"``, ``"no_staging"``, ``"disabled"``, or ``"error"``
+        - ``staging_files_processed``: number of staging files consumed
+        - ``facts_consolidated``: number of unique facts merged
+        - ``topics_updated``: list of knowledge topics that were modified
+        - ``factsheet_updated``: whether the factsheet was modified
+        """
+        if not self.config.consolidation_enabled:
+            return {
+                "status": "disabled",
+                "project_id": project_id,
+                "staging_files_processed": 0,
+                "facts_consolidated": 0,
+                "topics_updated": [],
+                "factsheet_updated": False,
+            }
+
+        # 1. Read unprocessed staging files
+        staging_docs = self._read_staging_files(project_id)
+        if not staging_docs:
+            return {
+                "status": "no_staging",
+                "project_id": project_id,
+                "staging_files_processed": 0,
+                "facts_consolidated": 0,
+                "topics_updated": [],
+                "factsheet_updated": False,
+            }
+
+        # 2. Deduplicate facts across all staging files
+        unique_facts = self._deduplicate_facts(staging_docs)
+        if not unique_facts:
+            # Staging files exist but contain no facts — still move to processed
+            self._move_to_processed(staging_docs)
+            return {
+                "status": "no_facts",
+                "project_id": project_id,
+                "staging_files_processed": len(staging_docs),
+                "facts_consolidated": 0,
+                "topics_updated": [],
+                "factsheet_updated": False,
+            }
+
+        # 3. Read current factsheet
+        factsheet = await self.read_factsheet(project_id)
+        factsheet_yaml = ""
+        if factsheet:
+            try:
+                import yaml as _yaml
+                factsheet_yaml = _yaml.dump(
+                    factsheet.raw_yaml,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
+            except Exception:
+                factsheet_yaml = str(factsheet.raw_yaml)
+        else:
+            factsheet_yaml = "(no factsheet exists yet)"
+
+        # 4. Identify which topics need updating and read their current content
+        facts_by_topic = self._group_facts_by_topic(unique_facts)
+        knowledge_sections: list[str] = []
+        for topic in sorted(facts_by_topic.keys()):
+            content = await self.read_knowledge_topic(project_id, topic)
+            if content:
+                knowledge_sections.append(f"### {topic}\n```markdown\n{content}\n```")
+            else:
+                # Ensure the topic file exists (seed from template)
+                await self.ensure_knowledge_topic(project_id, topic, workspace_path)
+                content = await self.read_knowledge_topic(project_id, topic)
+                if content:
+                    knowledge_sections.append(f"### {topic}\n```markdown\n{content}\n```")
+
+        knowledge_topics_section = (
+            "\n\n".join(knowledge_sections) if knowledge_sections
+            else "(no knowledge topics to update)"
+        )
+
+        # 5. Format facts for the LLM prompt
+        facts_lines: list[str] = []
+        for fact in unique_facts:
+            facts_lines.append(
+                f"- **[{fact['category']}]** `{fact['key']}`: {fact['value']} "
+                f"(from task: {fact['task_id']})"
+            )
+        facts_section = "\n".join(facts_lines)
+
+        # 6. Call LLM for consolidation
+        from src.prompts.memory_consolidation import (
+            DAILY_CONSOLIDATION_SYSTEM_PROMPT,
+            DAILY_CONSOLIDATION_USER_PROMPT,
+        )
+
+        user_prompt = DAILY_CONSOLIDATION_USER_PROMPT.format(
+            current_factsheet_yaml=factsheet_yaml,
+            knowledge_topics_section=knowledge_topics_section,
+            facts_section=facts_section,
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+
+        try:
+            provider = self._get_consolidation_provider()
+            if not provider:
+                logger.warning("No LLM provider available for consolidation")
+                return {
+                    "status": "error",
+                    "error": "no_provider",
+                    "project_id": project_id,
+                    "staging_files_processed": 0,
+                    "facts_consolidated": 0,
+                    "topics_updated": [],
+                    "factsheet_updated": False,
+                }
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=DAILY_CONSOLIDATION_SYSTEM_PROMPT,
+                max_tokens=4096,
+            )
+
+            # Extract text from response
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+
+            # Parse the JSON response
+            response_text = response_text.strip()
+            # Handle markdown code fences
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                response_text = "\n".join(lines)
+
+            result = json.loads(response_text)
+            if not isinstance(result, dict):
+                logger.warning("Consolidation LLM returned non-object response")
+                return {
+                    "status": "error",
+                    "error": "invalid_response",
+                    "project_id": project_id,
+                    "staging_files_processed": 0,
+                    "facts_consolidated": len(unique_facts),
+                    "topics_updated": [],
+                    "factsheet_updated": False,
+                }
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to parse consolidation response: %s", e)
+            return {
+                "status": "error",
+                "error": f"parse_error: {e}",
+                "project_id": project_id,
+                "staging_files_processed": 0,
+                "facts_consolidated": len(unique_facts),
+                "topics_updated": [],
+                "factsheet_updated": False,
+            }
+        except Exception as e:
+            logger.warning("Consolidation LLM call failed for project %s: %s", project_id, e)
+            return {
+                "status": "error",
+                "error": str(e),
+                "project_id": project_id,
+                "staging_files_processed": 0,
+                "facts_consolidated": len(unique_facts),
+                "topics_updated": [],
+                "factsheet_updated": False,
+            }
+
+        # 7. Apply factsheet updates
+        factsheet_updated = False
+        new_yaml_data = result.get("factsheet_yaml", "")
+        if new_yaml_data and factsheet:
+            try:
+                # The LLM may return a dict (from JSON) or a YAML string
+                if isinstance(new_yaml_data, dict):
+                    new_yaml = new_yaml_data
+                else:
+                    import yaml as _yaml
+                    new_yaml = _yaml.safe_load(new_yaml_data)
+                if isinstance(new_yaml, dict):
+                    factsheet.raw_yaml = new_yaml
+                    await self.write_factsheet(project_id, factsheet, workspace_path)
+                    factsheet_updated = True
+            except Exception as e:
+                logger.warning("Failed to apply factsheet update: %s", e)
+
+        # 8. Apply knowledge topic updates
+        topics_updated: list[str] = []
+        knowledge_updates = result.get("knowledge_updates", {})
+        if isinstance(knowledge_updates, dict):
+            for topic, content in knowledge_updates.items():
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if topic not in self.config.knowledge_topics:
+                    logger.debug("Skipping unknown topic '%s' from LLM output", topic)
+                    continue
+                written = await self.write_knowledge_topic(
+                    project_id, topic, content, workspace_path
+                )
+                if written:
+                    topics_updated.append(topic)
+
+        # 9. Move staging files to processed/
+        moved = self._move_to_processed(staging_docs)
+
+        stats = {
+            "status": "consolidated",
+            "project_id": project_id,
+            "staging_files_processed": moved,
+            "facts_consolidated": len(unique_facts),
+            "topics_updated": topics_updated,
+            "factsheet_updated": factsheet_updated,
+        }
+        logger.info(
+            "Consolidation for %s: %d facts from %d staging files, "
+            "%d topics updated, factsheet %s",
+            project_id,
+            len(unique_facts),
+            moved,
+            len(topics_updated),
+            "updated" if factsheet_updated else "unchanged",
+        )
+        return stats
+
+    # ------------------------------------------------------------------
+    # Phase 4b: Memory Compaction & Enhanced Context Delivery
     # ------------------------------------------------------------------
 
     async def compact(self, project_id: str, workspace_path: str) -> dict:

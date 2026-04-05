@@ -340,7 +340,12 @@ class MemoryConfig:
         "conventions",
         "decisions",
     )
-    # Phase 4: Enhanced Context Delivery
+    # Phase 4: Daily Consolidation Process
+    consolidation_enabled: bool = True  # toggle periodic consolidation of staging facts
+    consolidation_schedule: str = "daily"  # "daily", "hourly", or cron-like (future)
+    consolidation_provider: str = ""  # LLM provider for consolidation (defaults to revision_provider)
+    consolidation_model: str = ""  # model override for consolidation
+    # Phase 4b: Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include
 
