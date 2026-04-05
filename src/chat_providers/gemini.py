@@ -207,6 +207,11 @@ def _convert_schema(schema: dict):
     }
 
     schema_type = schema.get("type", "object")
+    # JSON Schema allows type to be a list for unions, e.g. ["string", "null"].
+    # Gemini doesn't support union types, so pick the first non-null type.
+    if isinstance(schema_type, list):
+        non_null = [t for t in schema_type if t != "null"]
+        schema_type = non_null[0] if non_null else "string"
     kwargs: dict = {
         "type": _TYPE_MAP.get(schema_type, "OBJECT"),
     }
