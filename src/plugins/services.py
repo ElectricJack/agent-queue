@@ -78,13 +78,28 @@ class MemoryService(Protocol):
     """Semantic search and memory management."""
 
     async def search(self, project_id: str, workspace: str, query: str, *, top_k: int = 10) -> list[dict]: ...
+    async def batch_search(self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10) -> dict[str, list[dict]]: ...
     async def reindex(self, project_id: str, workspace: str) -> int: ...
     async def compact(self, project_id: str, workspace: str) -> dict: ...
     async def stats(self, project_id: str, workspace: str) -> dict: ...
+    async def write_memory(self, project_id: str, workspace: str, key: str, content: str) -> str | None: ...
+    async def read_memory(self, project_id: str, key: str) -> str | None: ...
     async def get_profile(self, project_id: str) -> str | None: ...
     async def promote_note(self, project_id: str, note_filename: str, note_content: str, workspace: str) -> str | None: ...
     async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None: ...
     async def regenerate_profile(self, project_id: str, workspace: str) -> str | None: ...
+    # Consolidation
+    async def run_daily_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
+    async def run_deep_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
+    async def bootstrap_consolidation(self, project_id: str, workspace_path: str = "", *, project_name: str = "", repo_url: str = "") -> dict: ...
+    # Factsheet & knowledge
+    async def read_factsheet_raw(self, project_id: str) -> str | None: ...
+    def parse_factsheet_yaml(self, content: str) -> dict: ...
+    async def write_factsheet_raw(self, project_id: str, content: str, workspace_path: str = "") -> str | None: ...
+    async def update_factsheet_field(self, project_id: str, dotted_key: str, value: Any, workspace_path: str = "", *, project_name: str = "", repo_url: str = "") -> str | None: ...
+    async def list_knowledge_topics(self, project_id: str) -> list[dict]: ...
+    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None: ...
+    async def search_all_project_factsheets(self, project_ids: list[str], query: str = "", field: str = "") -> list[dict]: ...
     @property
     def notes_inform_profile(self) -> bool: ...
 
@@ -229,6 +244,25 @@ class MemoryServiceImpl:
             return []
         return await self._mm.search(project_id, workspace, query, top_k=top_k)
 
+    async def batch_search(
+        self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10
+    ) -> dict[str, list[dict]]:
+        if not self._mm:
+            return {q: [] for q in queries}
+        return await self._mm.batch_search(project_id, workspace, queries, top_k=top_k)
+
+    async def write_memory(
+        self, project_id: str, workspace: str, key: str, content: str
+    ) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.write_memory(project_id, workspace, key, content)
+
+    async def read_memory(self, project_id: str, key: str) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.read_memory(project_id, key)
+
     async def reindex(self, project_id: str, workspace: str) -> int:
         if not self._mm:
             return 0
@@ -263,6 +297,85 @@ class MemoryServiceImpl:
         if not self._mm:
             return None
         return await self._mm.regenerate_profile(project_id, workspace)
+
+    # --- Consolidation ---
+
+    async def run_daily_consolidation(self, project_id: str, workspace_path: str = "") -> dict:
+        if not self._mm:
+            return {"error": "Memory manager not available"}
+        return await self._mm.run_daily_consolidation(project_id, workspace_path)
+
+    async def run_deep_consolidation(self, project_id: str, workspace_path: str = "") -> dict:
+        if not self._mm:
+            return {"error": "Memory manager not available"}
+        return await self._mm.run_deep_consolidation(project_id, workspace_path)
+
+    async def bootstrap_consolidation(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> dict:
+        if not self._mm:
+            return {"error": "Memory manager not available"}
+        return await self._mm.bootstrap_consolidation(
+            project_id, workspace_path, project_name=project_name, repo_url=repo_url
+        )
+
+    # --- Factsheet & Knowledge ---
+
+    async def read_factsheet_raw(self, project_id: str) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.read_factsheet_raw(project_id)
+
+    def parse_factsheet_yaml(self, content: str) -> dict:
+        if not self._mm:
+            return {}
+        return self._mm.parse_factsheet_yaml(content)
+
+    async def write_factsheet_raw(
+        self, project_id: str, content: str, workspace_path: str = ""
+    ) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.write_factsheet_raw(project_id, content, workspace_path)
+
+    async def update_factsheet_field(
+        self,
+        project_id: str,
+        dotted_key: str,
+        value: Any,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.update_factsheet_field(
+            project_id, dotted_key, value, workspace_path,
+            project_name=project_name, repo_url=repo_url,
+        )
+
+    async def list_knowledge_topics(self, project_id: str) -> list[dict]:
+        if not self._mm:
+            return []
+        return await self._mm.list_knowledge_topics(project_id)
+
+    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None:
+        if not self._mm:
+            return None
+        return await self._mm.read_knowledge_topic(project_id, topic)
+
+    async def search_all_project_factsheets(
+        self, project_ids: list[str], query: str = "", field: str = ""
+    ) -> list[dict]:
+        if not self._mm:
+            return []
+        return await self._mm.search_all_project_factsheets(project_ids, query=query, field=field)
 
     @property
     def notes_inform_profile(self) -> bool:
