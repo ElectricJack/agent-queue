@@ -110,8 +110,6 @@ from src.messaging.types import (
     NotifyCallback as _NotifyCallbackType,
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
-    GetThreadUrlCallback as _GetThreadUrlCallbackType,
-    EditThreadRootCallback as _EditThreadRootCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -135,25 +133,22 @@ from src.tokens.budget import BudgetManager
 
 logger = logging.getLogger(__name__)
 
-# Re-export callback types from the messaging abstraction layer.
-# These were previously defined inline here; now they live in
-# src/messaging/types.py so both the orchestrator and transport
-# implementations share the same type definitions.
+# Re-export callback types from the messaging abstraction layer for
+# backward compatibility.  New code should import from src.messaging.types.
 NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
-GetThreadUrlCallback = _GetThreadUrlCallbackType
-EditThreadRootCallback = _EditThreadRootCallbackType
 
 
 class Orchestrator:
     """Coordinates the full task lifecycle across multiple projects and agents.
 
-    The orchestrator is deliberately decoupled from Discord: it communicates
-    through injected callbacks (``set_notify_callback``,
-    ``set_create_thread_callback``) rather than importing Discord directly.
-    This makes it testable in isolation and keeps the transport layer
-    pluggable.
+    The orchestrator is deliberately decoupled from any messaging transport.
+    All outbound notifications are emitted as typed events on the EventBus
+    via ``_emit_notify()``.  Transport handlers (e.g.
+    ``DiscordNotificationHandler``) subscribe to ``notify.*`` events and
+    handle formatting/delivery independently.  This makes the orchestrator
+    testable in isolation and keeps the transport layer pluggable.
 
     Key internal state:
 
@@ -200,10 +195,11 @@ class Orchestrator:
         # started, keyed by task_id.  Used by _discover_and_store_plan() to
         # detect stale plan files that predate the current task's execution.
         self._task_exec_start: dict[str, float] = {}
-        self._notify: NotifyCallback | None = None
-        self._create_thread: CreateThreadCallback | None = None
-        self._get_thread_url: GetThreadUrlCallback | None = None
-        self._edit_thread_root: EditThreadRootCallback | None = None
+        # Legacy callback fields — kept as no-ops for backward compatibility
+        # with transports that haven't migrated to the event bus yet.
+        # All orchestrator notifications now flow through _emit_notify().
+        self._notify = None
+        self._create_thread = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
@@ -436,46 +432,28 @@ class Orchestrator:
         """Resume scheduling after a pause.  New assignments start on the next cycle."""
         self._paused = False
 
-    def set_notify_callback(self, callback: NotifyCallback) -> None:
-        """Inject the notification transport (e.g. Discord channel posting).
+    # ------------------------------------------------------------------
+    # Legacy callback setters (deprecated)
+    # ------------------------------------------------------------------
+    # These are no-ops kept for backward compatibility with transports
+    # (e.g. Telegram) that still call them during startup.  All
+    # notification delivery now goes through the EventBus via
+    # _emit_notify().  Remove once all transports migrate to event
+    # bus handlers.
 
-        All orchestrator notifications flow through ``_notify_channel`` which
-        delegates to this callback.  The callback signature is::
-
-            async def callback(message: str, project_id: str | None,
-                               *, embed=None, view=None) -> None
-
-        This injection pattern keeps the orchestrator testable without a live
-        Discord connection.  In production, ``main.py`` wires this to the
-        Discord bot's ``send_notification`` method.
-        """
+    def set_notify_callback(self, callback: Any) -> None:  # noqa: ARG002
+        """Deprecated — notifications now go through the EventBus."""
         self._notify = callback
 
-    def set_create_thread_callback(self, callback: CreateThreadCallback) -> None:
-        """Inject the thread-creation transport for per-task output streaming.
-
-        Each task execution creates a Discord thread for streaming agent output
-        in real time.  The callback returns two send functions: one for the
-        thread itself and one for posting brief summaries to the parent channel.
-
-        Set by ``main.py`` during bot initialization.  When None, agent output
-        is posted directly to the notifications channel (noisier but functional).
-        """
+    def set_create_thread_callback(self, callback: Any) -> None:  # noqa: ARG002
+        """Deprecated — thread management now goes through the EventBus."""
         self._create_thread = callback
 
-    def set_get_thread_url_callback(self, callback: GetThreadUrlCallback) -> None:
-        """Inject a callback that returns a Discord jump URL to the last message
-        in a task's thread.  Used by the plan approval flow to link to the
-        agent's final output instead of showing truncated plan content."""
-        self._get_thread_url = callback
+    def set_get_thread_url_callback(self, callback: Any) -> None:  # noqa: ARG002
+        """Deprecated — thread URL lookup moved to DiscordNotificationHandler."""
 
-    def set_edit_thread_root_callback(self, callback: EditThreadRootCallback) -> None:
-        """Inject a callback that edits the thread-root message for a task.
-
-        Used to update the "Agent working: ..." message to reflect task
-        completion or failure (e.g. "✅ Work completed: ...").
-        """
-        self._edit_thread_root = callback
+    def set_edit_thread_root_callback(self, callback: Any) -> None:  # noqa: ARG002
+        """Deprecated — thread root editing now goes through the EventBus."""
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -640,51 +618,6 @@ class Orchestrator:
             context=context,
             error=error,
         )
-
-    async def _notify_channel(
-        self,
-        message: str,
-        project_id: str | None = None,
-        *,
-        embed: Any = None,
-        view: Any = None,
-    ) -> Any:
-        """Send a notification via the injected callback (typically Discord).
-
-        This is the orchestrator's single notification gateway — all outbound
-        messages (task started/completed/failed, PR created, errors, etc.) flow
-        through this method.  The actual transport is injected via
-        ``set_notify_callback``, keeping the orchestrator decoupled from Discord.
-
-        When *project_id* is given the callback can route the message to a
-        per-project Discord channel (falling back to the global notifications
-        channel if the project has none configured).
-
-        When *embed* is provided the callback can use it for rich Discord
-        rendering while still keeping *message* for logging/fallback.
-
-        When *view* is provided, interactive buttons are attached to the embed
-        message (e.g. Retry/Skip buttons on failed task notifications).
-
-        Returns the sent message object (e.g. ``discord.Message``) when
-        available, so callers can track or delete it later.
-        """
-        if self._notify:
-            try:
-                # Only pass embed/view kwargs when set to maintain backward
-                # compatibility with callbacks that don't accept them.
-                kwargs: dict[str, Any] = {}
-                if embed is not None:
-                    kwargs["embed"] = embed
-                if view is not None:
-                    kwargs["view"] = view
-                if kwargs:
-                    return await self._notify(message, project_id, **kwargs)
-                else:
-                    return await self._notify(message, project_id)
-            except Exception as e:
-                logger.error("Notification error: %s", e)
-        return None
 
     async def _emit_notify(self, event_type: str, event: Any) -> None:
         """Emit a typed notification event on the bus.
@@ -4255,16 +4188,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         {"title": t["title"], "description": ""} for t in created_info
                     ]
 
-                    # Get a link to the last message in the thread — the agent's
-                    # final output contains the complete plan summary, so we link
-                    # to it instead of showing a truncated preview in the embed.
-                    thread_url = ""
-                    if self._get_thread_url:
-                        try:
-                            thread_url = await self._get_thread_url(task.id) or ""
-                        except Exception as e:
-                            logger.debug("Could not get thread URL for %s: %s", task.id, e)
-
+                    # Thread URL is resolved by the notification handler
+                    # (e.g. DiscordNotificationHandler) at delivery time,
+                    # keeping the orchestrator transport-agnostic.
                     await self._emit_notify(
                         "notify.plan_awaiting_approval",
                         PlanAwaitingApprovalEvent(
@@ -4272,7 +4198,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
                             subtasks=parsed_steps,
                             plan_url=plan_url,
                             raw_content=raw_ctx["content"] if raw_ctx else "",
-                            thread_url=thread_url,
                             project_id=action.project_id,
                         ),
                     )
