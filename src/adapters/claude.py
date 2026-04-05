@@ -323,11 +323,6 @@ class ClaudeAdapter(AgentAdapter):
                     async for message in _resilient_query(
                         prompt=current_prompt, options=options, adapter=self
                     ):
-                        msg_subtype = getattr(message, "subtype", "")
-                        if msg_subtype and msg_subtype not in ("", None):
-                            msg_type = getattr(message, "type", "unknown")
-                            print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
-
                         if self._cancel_event.is_set():
                             output = AgentOutput(
                                 result=AgentResult.FAILED,
