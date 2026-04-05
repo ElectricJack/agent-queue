@@ -6,11 +6,7 @@ commands delegate to the MemoryManager on the orchestrator.
 
 from __future__ import annotations
 
-import logging
-
 from src.plugins.base import InternalPlugin, PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +169,7 @@ def _fmt_memory_search(data: dict):
     from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
+
     results = data.get("results", [])
     query = data.get("query", "")
     count = data.get("count", len(results))
@@ -192,7 +189,13 @@ def _fmt_memory_search(data: dict):
         meta.append(f"Score: {score:.2f}", style="dim")
         if source:
             meta.append(f"  Source: {source}", style="cyan")
-        panels.append(Panel(Group(Text(snippet, style="white"), meta), border_style="bright_black", padding=(0, 1)))
+        panels.append(
+            Panel(
+                Group(Text(snippet, style="white"), meta),
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+        )
     return Group(header, *panels)
 
 
@@ -200,9 +203,17 @@ def _fmt_memory_stats(data: dict):
     from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
+
     lines = []
-    for key in ("enabled", "provider", "collection", "document_count",
-                "embedding_model", "chunk_size", "notes_inform_profile"):
+    for key in (
+        "enabled",
+        "provider",
+        "collection",
+        "document_count",
+        "embedding_model",
+        "chunk_size",
+        "notes_inform_profile",
+    ):
         val = data.get(key)
         if val is not None:
             line = Text()
@@ -219,17 +230,20 @@ def _fmt_memory_stats(data: dict):
 
 def _fmt_confirmation(data: dict):
     from src.cli.formatters import format_confirmation
+
     return format_confirmation(data)
 
 
 def _fmt_text_content(data: dict):
     from src.cli.formatters import format_text_content
+
     return format_text_content(data)
 
 
 def _build_cli_formatters():
     """Return CLI formatter specs for memory commands."""
     from src.cli.formatter_registry import FormatterSpec
+
     return {
         "memory_search": FormatterSpec(render=_fmt_memory_search, extract=None, many=False),
         "memory_stats": FormatterSpec(render=_fmt_memory_stats, extract=None, many=False),
@@ -280,7 +294,9 @@ class MemoryPlugin(InternalPlugin):
             return None, {"error": f"Project '{project_id}' not found"}
         workspace = await self._db.get_project_workspace_path(project_id)
         if not workspace:
-            return None, {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+            return None, {
+                "error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."
+            }
         return workspace, None
 
     # --- Commands ---
@@ -305,13 +321,15 @@ class MemoryPlugin(InternalPlugin):
 
         formatted = []
         for i, mem in enumerate(results, 1):
-            formatted.append({
-                "rank": i,
-                "source": mem.get("source", "unknown"),
-                "heading": mem.get("heading", ""),
-                "content": mem.get("content", ""),
-                "score": round(mem.get("score", 0), 4),
-            })
+            formatted.append(
+                {
+                    "rank": i,
+                    "source": mem.get("source", "unknown"),
+                    "heading": mem.get("heading", ""),
+                    "content": mem.get("content", ""),
+                    "score": round(mem.get("score", 0), 4),
+                }
+            )
 
         return {
             "project_id": project_id,

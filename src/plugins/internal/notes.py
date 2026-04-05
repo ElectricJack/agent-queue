@@ -6,12 +6,9 @@ markdown files stored under ``{data_dir}/notes/{project_id}/``.
 
 from __future__ import annotations
 
-import logging
 import os
 
 from src.plugins.base import InternalPlugin, PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +158,7 @@ TOOL_DEFINITIONS = [
 def _relative_time(ts):
     """Format a Unix timestamp as relative time."""
     import time as _time
+
     if not ts:
         return "—"
     delta = _time.time() - ts
@@ -177,6 +175,7 @@ def _relative_time(ts):
 
 def _fmt_note_list(data: dict):
     from rich.table import Table
+
     notes = data.get("notes", [])
     table = Table(
         title=f"Notes — {data.get('project_id', '')}",
@@ -192,7 +191,9 @@ def _fmt_note_list(data: dict):
         size = note.get("size_bytes", 0)
         size_str = f"{size:,}" if size < 10000 else f"{size / 1024:.1f}K"
         modified = note.get("modified")
-        mod_str = _relative_time(modified) if isinstance(modified, (int, float)) else str(modified or "—")
+        mod_str = (
+            _relative_time(modified) if isinstance(modified, (int, float)) else str(modified or "—")
+        )
         table.add_row(note.get("name", ""), note.get("title", ""), size_str, mod_str)
     return table
 
@@ -202,6 +203,7 @@ def _fmt_note_content(data: dict):
     from rich.markdown import Markdown
     from rich.panel import Panel
     from rich.text import Text
+
     content = data.get("content", "")
     title = data.get("title", "")
     path = data.get("path", "")
@@ -219,6 +221,7 @@ def _fmt_note_content(data: dict):
 
 def _fmt_note_status(data: dict):
     from rich.text import Text
+
     status = data.get("status", "ok")
     title = data.get("title", "")
     icon = "✅" if status in ("created", "written", "appended", "deleted", "ok") else "📝"
@@ -236,6 +239,7 @@ def _fmt_note_status(data: dict):
 def _build_cli_formatters():
     """Return CLI formatter specs for notes commands."""
     from src.cli.formatter_registry import FormatterSpec
+
     formatters = {
         "list_notes": FormatterSpec(render=_fmt_note_list, extract=None, many=False),
         "read_note": FormatterSpec(render=_fmt_note_content, extract=None, many=False),
@@ -243,7 +247,9 @@ def _build_cli_formatters():
     for cmd in ("write_note", "append_note", "delete_note", "promote_note"):
         formatters[cmd] = FormatterSpec(render=_fmt_note_status, extract=None, many=False)
     formatters["compare_specs_notes"] = FormatterSpec(
-        render=_fmt_note_list, extract=None, many=False,
+        render=_fmt_note_list,
+        extract=None,
+        many=False,
     )
     return formatters
 
@@ -290,7 +296,10 @@ class NotesPlugin(InternalPlugin):
         return self._ws.resolve_note_path(notes_dir, title)
 
     async def _trigger_note_profile_revision(
-        self, project_id: str, note_filename: str, note_content: str,
+        self,
+        project_id: str,
+        note_filename: str,
+        note_content: str,
     ) -> None:
         if not self._mem.notes_inform_profile:
             return
@@ -300,9 +309,10 @@ class NotesPlugin(InternalPlugin):
                 return
             await self._mem.promote_note(project_id, note_filename, note_content, workspace)
         except Exception as e:
-            logger.warning(
+            self._ctx.logger.warning(
                 "Profile revision after note write failed for project %s: %s",
-                project_id, e,
+                project_id,
+                e,
             )
 
     # --- Commands ---
@@ -328,13 +338,15 @@ class NotesPlugin(InternalPlugin):
                     title = first_line[2:].strip()
             except Exception:
                 pass
-            notes.append({
-                "name": fname,
-                "title": title,
-                "size_bytes": stat.st_size,
-                "modified": stat.st_mtime,
-                "path": fpath,
-            })
+            notes.append(
+                {
+                    "name": fname,
+                    "title": title,
+                    "size_bytes": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "path": fpath,
+                }
+            )
         return {"project_id": args["project_id"], "notes": notes}
 
     async def cmd_write_note(self, args: dict) -> dict:
@@ -360,13 +372,16 @@ class NotesPlugin(InternalPlugin):
         }
         # Emit note event for hook automation
         event_type = "note.updated" if existed else "note.created"
-        await self._ctx.emit_event(event_type, {
-            "project_id": args["project_id"],
-            "note_name": f"{slug}.md",
-            "note_path": fpath,
-            "title": args["title"],
-            "operation": "updated" if existed else "created",
-        })
+        await self._ctx.emit_event(
+            event_type,
+            {
+                "project_id": args["project_id"],
+                "note_name": f"{slug}.md",
+                "note_path": fpath,
+                "title": args["title"],
+                "operation": "updated" if existed else "created",
+            },
+        )
         await self._trigger_note_profile_revision(args["project_id"], f"{slug}.md", args["content"])
         return result
 
@@ -420,13 +435,16 @@ class NotesPlugin(InternalPlugin):
             "size_bytes": stat.st_size,
         }
         event_type = "note.updated" if existed else "note.created"
-        await self._ctx.emit_event(event_type, {
-            "project_id": args["project_id"],
-            "note_name": os.path.basename(fpath),
-            "note_path": fpath,
-            "title": args["title"],
-            "operation": status,
-        })
+        await self._ctx.emit_event(
+            event_type,
+            {
+                "project_id": args["project_id"],
+                "note_name": os.path.basename(fpath),
+                "note_path": fpath,
+                "title": args["title"],
+                "operation": status,
+            },
+        )
         try:
             with open(fpath, "r") as f:
                 full_content = f.read()
@@ -446,12 +464,15 @@ class NotesPlugin(InternalPlugin):
         if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
         os.remove(fpath)
-        await self._ctx.emit_event("note.deleted", {
-            "project_id": args["project_id"],
-            "note_name": os.path.basename(fpath),
-            "note_path": fpath,
-            "title": args["title"],
-        })
+        await self._ctx.emit_event(
+            "note.deleted",
+            {
+                "project_id": args["project_id"],
+                "note_name": os.path.basename(fpath),
+                "note_path": fpath,
+                "title": args["title"],
+            },
+        )
         return {"deleted": fpath, "title": args["title"]}
 
     async def cmd_promote_note(self, args: dict) -> dict:
@@ -511,7 +532,9 @@ class NotesPlugin(InternalPlugin):
             return {"error": f"Project '{args['project_id']}' not found"}
         workspace = await self._db.get_project_workspace_path(args["project_id"])
         if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
+            return {
+                "error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."
+            }
 
         specs_path = args.get("specs_path")
         if not specs_path:
@@ -544,11 +567,13 @@ class NotesPlugin(InternalPlugin):
                         title = first_line[2:].strip()
                 except Exception:
                     pass
-                files.append({
-                    "name": fname,
-                    "title": title,
-                    "size_bytes": stat.st_size,
-                })
+                files.append(
+                    {
+                        "name": fname,
+                        "title": title,
+                        "size_bytes": stat.st_size,
+                    }
+                )
             return files
 
         return {

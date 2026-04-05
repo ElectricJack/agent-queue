@@ -8,16 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import logging
 
 from src.plugins.base import InternalPlugin, PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Subprocess helpers (extracted from command_handler.py module level)
 # ---------------------------------------------------------------------------
+
 
 async def _run_subprocess(
     *args: str,
@@ -36,7 +34,11 @@ async def _run_subprocess(
         proc.kill()
         await proc.communicate()
         raise
-    return proc.returncode, stdout_b.decode() if stdout_b else "", stderr_b.decode() if stderr_b else ""
+    return (
+        proc.returncode,
+        stdout_b.decode() if stdout_b else "",
+        stderr_b.decode() if stderr_b else "",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +54,10 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
+                "path": {
+                    "type": "string",
+                    "description": "File path (absolute or relative to workspaces root)",
+                },
                 "max_lines": {
                     "type": "integer",
                     "description": "Max lines to return (default 2000)",
@@ -77,7 +82,10 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
+                "path": {
+                    "type": "string",
+                    "description": "File path (absolute or relative to workspaces root)",
+                },
                 "content": {"type": "string", "description": "Content to write to the file"},
             },
             "required": ["path", "content"],
@@ -93,7 +101,10 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
+                "path": {
+                    "type": "string",
+                    "description": "File path (absolute or relative to workspaces root)",
+                },
                 "old_string": {"type": "string", "description": "Exact text to find and replace"},
                 "new_string": {"type": "string", "description": "Replacement text"},
                 "replace_all": {
@@ -114,8 +125,14 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Glob pattern to match files (e.g. '**/*.py', 'src/components/**/*.tsx')"},
-                "path": {"type": "string", "description": "Directory to search in (absolute or relative to workspaces root)"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match files (e.g. '**/*.py', 'src/components/**/*.tsx')",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in (absolute or relative to workspaces root)",
+                },
             },
             "required": ["pattern", "path"],
         },
@@ -130,7 +147,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                "path": {"type": "string", "description": "File or directory to search in (absolute or relative to workspaces root)"},
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search in (absolute or relative to workspaces root)",
+                },
                 "context": {
                     "type": "integer",
                     "description": "Number of context lines before and after each match",
@@ -166,8 +186,14 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Search pattern (regex for grep, glob for find)"},
-                "path": {"type": "string", "description": "Directory to search in (absolute or relative to workspaces root)"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern (regex for grep, glob for find)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in (absolute or relative to workspaces root)",
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["grep", "find"],
@@ -185,8 +211,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
-                "path": {"type": "string", "description": "Relative path within the workspace (default: root)"},
-                "workspace": {"type": "string", "description": "Workspace name or ID (default: first workspace)"},
+                "path": {
+                    "type": "string",
+                    "description": "Relative path within the workspace (default: root)",
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (default: first workspace)",
+                },
             },
             "required": ["project_id"],
         },
@@ -203,28 +235,45 @@ def _fmt_file_content(data: dict):
     from rich.panel import Panel
     from rich.syntax import Syntax
     from rich.text import Text
+
     content = data.get("content", "")
     path = data.get("path", data.get("file_path", ""))
     ext = path.rsplit(".", 1)[-1] if "." in path else ""
     lang_map = {
-        "py": "python", "js": "javascript", "ts": "typescript",
-        "rs": "rust", "go": "go", "rb": "ruby", "sh": "bash",
-        "yaml": "yaml", "yml": "yaml", "json": "json", "toml": "toml",
-        "md": "markdown", "html": "html", "css": "css", "sql": "sql",
+        "py": "python",
+        "js": "javascript",
+        "ts": "typescript",
+        "rs": "rust",
+        "go": "go",
+        "rb": "ruby",
+        "sh": "bash",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "json": "json",
+        "toml": "toml",
+        "md": "markdown",
+        "html": "html",
+        "css": "css",
+        "sql": "sql",
     }
     lang = lang_map.get(ext, "")
     body = Syntax(content, lang, theme="monokai", line_numbers=True) if lang else Text(content)
-    return Panel(body, title=f"[bold bright_white]{path}[/]", border_style="bright_cyan", padding=(0, 1))
+    return Panel(
+        body, title=f"[bold bright_white]{path}[/]", border_style="bright_cyan", padding=(0, 1)
+    )
 
 
 def _fmt_directory_listing(data: dict):
     from rich.table import Table
+
     path = data.get("path", "")
     dirs = data.get("directories", [])
     files = data.get("files", [])
     table = Table(
-        title=f"{path}/", title_style="bold bright_white",
-        border_style="bright_black", expand=True,
+        title=f"{path}/",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
     )
     table.add_column("Name", style="white", ratio=1)
     table.add_column("Size", justify="right", style="dim")
@@ -242,6 +291,7 @@ def _fmt_directory_listing(data: dict):
 def _fmt_glob_results(data: dict):
     from rich.console import Group
     from rich.text import Text
+
     matches = data.get("matches", [])
     path_text = Text()
     for m in matches:
@@ -253,6 +303,7 @@ def _fmt_glob_results(data: dict):
 def _fmt_grep_results(data: dict):
     from rich.console import Group
     from rich.text import Text
+
     matches = data.get("matches", [])
     if not matches:
         return Group(Text("  No matches found.", style="dim"))
@@ -269,6 +320,7 @@ def _fmt_grep_results(data: dict):
 
 def _fmt_file_status(data: dict):
     from rich.text import Text
+
     status = data.get("status", "ok")
     path = data.get("path", data.get("file_path", ""))
     icon = "✅" if status in ("written", "created", "edited", "ok") else "📝"
@@ -283,6 +335,7 @@ def _fmt_file_status(data: dict):
 def _build_cli_formatters():
     """Return CLI formatter specs for file commands."""
     from src.cli.formatter_registry import FormatterSpec
+
     formatters = {
         "read_file": FormatterSpec(render=_fmt_file_content, extract=None, many=False),
         "list_directory": FormatterSpec(render=_fmt_directory_listing, extract=None, many=False),
@@ -417,7 +470,11 @@ class FilesPlugin(InternalPlugin):
                     "or set replace_all=true."
                 )
             }
-        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+        new_content = (
+            content.replace(old_string, new_string)
+            if replace_all
+            else content.replace(old_string, new_string, 1)
+        )
         try:
             with open(validated, "w") as f:
                 f.write(new_content)
@@ -522,12 +579,23 @@ class FilesPlugin(InternalPlugin):
         try:
             if mode == "grep":
                 _, stdout, _ = await _run_subprocess(
-                    "grep", "-rn", "--include=*", "-m", "50", pattern, validated,
+                    "grep",
+                    "-rn",
+                    "--include=*",
+                    "-m",
+                    "50",
+                    pattern,
+                    validated,
                     timeout=30,
                 )
             else:
                 _, stdout, _ = await _run_subprocess(
-                    "find", validated, "-name", pattern, "-type", "f",
+                    "find",
+                    validated,
+                    "-name",
+                    pattern,
+                    "-type",
+                    "f",
                     timeout=30,
                 )
             output = stdout[:4000] if stdout else "(no matches)"
@@ -547,7 +615,9 @@ class FilesPlugin(InternalPlugin):
                 workspaces = await self._db.list_workspaces(project_id)
                 ws = next((w for w in workspaces if w.id == workspace_name), None)
             if not ws:
-                return {"error": f"Workspace '{workspace_name}' not found for project '{project_id}'."}
+                return {
+                    "error": f"Workspace '{workspace_name}' not found for project '{project_id}'."
+                }
             ws_path = ws.workspace_path
             ws_name = ws.name or ws.id
         else:
@@ -564,9 +634,11 @@ class FilesPlugin(InternalPlugin):
         raw_ws_path = ws_path
         ws_path = os.path.realpath(ws_path)
         if raw_ws_path != ws_path:
-            logger.debug(
+            self._ctx.logger.debug(
                 "list_directory: resolved workspace path %r -> %r for project %s",
-                raw_ws_path, ws_path, project_id,
+                raw_ws_path,
+                ws_path,
+                project_id,
             )
 
         rel_path = args.get("path", "")

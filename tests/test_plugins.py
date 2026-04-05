@@ -7,7 +7,7 @@ import json
 import os
 import textwrap
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,7 +16,6 @@ from src.plugins.base import (
     PluginContext,
     PluginInfo,
     PluginPermission,
-    PluginStatus,
 )
 from src.plugins.base import cron
 from src.plugins.loader import (
@@ -298,12 +297,11 @@ class TestPluginContext:
         assert result == {"result": "ok"}
         callback.assert_called_once_with("list_tasks", {"project": "test"})
 
-    def test_get_config(self, plugin_dir, mock_db, mock_bus):
-        # Write a config file
-        import yaml
-
-        config_path = plugin_dir / "config.yaml"
-        config_path.write_text(yaml.dump({"greeting": "hi", "count": 5}))
+    @pytest.mark.asyncio
+    async def test_get_config(self, plugin_dir, mock_db, mock_bus):
+        mock_db.get_plugin = AsyncMock(
+            return_value={"config": json.dumps({"greeting": "hi", "count": 5})}
+        )
 
         ctx = PluginContext(
             plugin_name="test-plugin",
@@ -314,12 +312,16 @@ class TestPluginContext:
             tool_registry={},
             event_type_registry=set(),
         )
+        await ctx.load_config()
 
         config = ctx.get_config()
         assert config["greeting"] == "hi"
         assert config["count"] == 5
 
-    def test_get_config_missing_file(self, plugin_dir, mock_db, mock_bus):
+    @pytest.mark.asyncio
+    async def test_get_config_no_db_record(self, plugin_dir, mock_db, mock_bus):
+        mock_db.get_plugin = AsyncMock(return_value=None)
+
         ctx = PluginContext(
             plugin_name="test-plugin",
             install_path=str(plugin_dir),
@@ -329,6 +331,7 @@ class TestPluginContext:
             tool_registry={},
             event_type_registry=set(),
         )
+        await ctx.load_config()
         assert ctx.get_config() == {}
 
     def test_prompt_management(self, plugin_dir, mock_db, mock_bus):
@@ -389,7 +392,7 @@ class TestPluginContext:
         mock_db.delete_plugin_data.assert_called_once_with("test-plugin", "counter")
 
     def test_directories_created(self, plugin_dir, mock_db, mock_bus):
-        ctx = PluginContext(
+        PluginContext(
             plugin_name="test-plugin",
             install_path=str(plugin_dir),
             db=mock_db,
@@ -978,22 +981,25 @@ class TestPluginClassAttributes:
 
 
 class TestConfigHelpers:
-    def test_get_config_value(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_get_config_value(self, tmp_path):
         """get_config_value reads a single key."""
-        import yaml
 
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
+        db = AsyncMock()
+        db.get_plugin = AsyncMock(
+            return_value={"config": json.dumps({"server": "imap.example.com", "port": 993})}
+        )
 
         ctx = PluginContext(
             plugin_name="test",
             install_path=str(tmp_path),
-            db=AsyncMock(),
+            db=db,
             bus=MagicMock(),
             command_registry={},
             tool_registry={},
             event_type_registry=set(),
         )
+        await ctx.load_config()
         assert ctx.get_config_value("server") == "imap.example.com"
         assert ctx.get_config_value("port") == 993
         assert ctx.get_config_value("missing") is None
@@ -1002,36 +1008,44 @@ class TestConfigHelpers:
     @pytest.mark.asyncio
     async def test_set_config_value(self, tmp_path):
         """set_config_value updates a single key without clobbering others."""
-        import yaml
 
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump({"server": "imap.example.com", "port": 993}))
+        db = AsyncMock()
+        db.get_plugin = AsyncMock(
+            return_value={"config": json.dumps({"server": "imap.example.com", "port": 993})}
+        )
+        db.update_plugin = AsyncMock()
 
         ctx = PluginContext(
             plugin_name="test",
             install_path=str(tmp_path),
-            db=AsyncMock(),
+            db=db,
             bus=MagicMock(),
             command_registry={},
             tool_registry={},
             event_type_registry=set(),
         )
+        await ctx.load_config()
         await ctx.set_config_value("port", 465)
         assert ctx.get_config_value("port") == 465
         assert ctx.get_config_value("server") == "imap.example.com"  # untouched
 
     @pytest.mark.asyncio
-    async def test_set_config_value_creates_file(self, tmp_path):
-        """set_config_value creates config.yaml if it doesn't exist."""
+    async def test_set_config_value_no_existing_config(self, tmp_path):
+        """set_config_value works when no config exists yet."""
+        db = AsyncMock()
+        db.get_plugin = AsyncMock(return_value=None)
+        db.update_plugin = AsyncMock()
+
         ctx = PluginContext(
             plugin_name="test",
             install_path=str(tmp_path),
-            db=AsyncMock(),
+            db=db,
             bus=MagicMock(),
             command_registry={},
             tool_registry={},
             event_type_registry=set(),
         )
+        await ctx.load_config()
         await ctx.set_config_value("schedule", "0 */2 * * *")
         assert ctx.get_config_value("schedule") == "0 */2 * * *"
 

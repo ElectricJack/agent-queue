@@ -99,8 +99,9 @@ class PluginPermission(Enum):
 
 class TrustLevel(Enum):
     """Trust level controlling what services a plugin can access."""
-    EXTERNAL = "external"    # Standard third-party plugins
-    INTERNAL = "internal"    # Ships with the repo, full service access
+
+    EXTERNAL = "external"  # Standard third-party plugins
+    INTERNAL = "internal"  # Ships with the repo, full service access
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +207,8 @@ class PluginContext:
         self._services: dict[str, Any] = services or {}
         self._active_project_id_getter = active_project_id_getter
 
+        self._logger = logging.getLogger(f"plugin.{plugin_name}")
+
         # Ensure instance directories exist
         self._data_dir = self._data_path / "data"
         self._prompts_dir = self._data_path / "prompts"
@@ -217,6 +220,11 @@ class PluginContext:
     def plugin_name(self) -> str:
         """The plugin's unique name."""
         return self._plugin_name
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Logger scoped to this plugin (``plugin.<name>``)."""
+        return self._logger
 
     @property
     def install_path(self) -> Path:
@@ -264,13 +272,9 @@ class PluginContext:
         service = self._services.get(name)
         if service is None:
             available = list(self._services.keys())
-            raise ValueError(
-                f"Unknown service: {name!r}. Available: {available}"
-            )
+            raise ValueError(f"Unknown service: {name!r}. Available: {available}")
         if self._trust_level == TrustLevel.EXTERNAL:
-            raise PermissionError(
-                f"Service {name!r} requires TrustLevel.INTERNAL"
-            )
+            raise PermissionError(f"Service {name!r} requires TrustLevel.INTERNAL")
         return service
 
     # --- Command Registration ---
@@ -290,7 +294,7 @@ class PluginContext:
         # Also register short name for convenience
         if "." not in name:
             self._command_registry[name] = handler
-        logger.debug("Plugin '%s' registered command: %s", self._plugin_name, name)
+        self._logger.debug("Registered command: %s", name)
 
     # --- Tool Registration ---
 
@@ -316,7 +320,7 @@ class PluginContext:
         if category:
             definition["_category"] = category
         self._tool_registry[name] = definition
-        logger.debug("Plugin '%s' registered tool: %s", self._plugin_name, name)
+        self._logger.debug("Registered tool: %s", name)
 
     # --- Event System ---
 
@@ -331,7 +335,7 @@ class PluginContext:
             event_type: Event type string (e.g. "my_plugin.scan_complete").
         """
         self._event_type_registry.add(event_type)
-        logger.debug("Plugin '%s' registered event type: %s", self._plugin_name, event_type)
+        self._logger.debug("Registered event type: %s", event_type)
 
     async def emit_event(self, event_type: str, data: dict | None = None) -> None:
         """Emit an event on the system EventBus.
@@ -384,7 +388,7 @@ class PluginContext:
         if self._notify_callback:
             await self._notify_callback(message, project_id=project_id)
         else:
-            logger.info("Plugin '%s' notification (no callback): %s", self._plugin_name, message)
+            self._logger.info("Notification (no callback): %s", message)
 
     # --- LLM Invocation ---
 
@@ -746,4 +750,5 @@ class InternalPlugin(Plugin):
                 ws = ctx.get_service("workspace")
                 ...
     """
+
     _internal: bool = True
