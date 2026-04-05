@@ -18,5 +18,4 @@ Guidelines:
 - Do not produce a new implementation plan document
 - Do not create additional plan files
 - Focus on completing this specific task fully
-- If the task scope is too large, implement the most critical parts
-  and note what remains in code comments
+- If the task scope seems too large, try to implement it anyways.
