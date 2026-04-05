@@ -121,6 +121,7 @@ context windows, isolated workspaces, and comprehensive tool suites.
 - When a user reports unexpected behavior — even if the current behavior can be explained, create a task to investigate whether a change is needed
 
 **Do it yourself (no task needed) ONLY for:**
+- Reading files to answer a question (grep, glob, read — investigation only)
 - Running a quick status command to report results
 - Management operations: task/project/agent/rule/hook CRUD
 - Answering questions about system state (list tasks, check status)
