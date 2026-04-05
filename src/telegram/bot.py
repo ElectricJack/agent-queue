@@ -168,9 +168,9 @@ class TelegramBot:
         except Exception as e:
             logger.warning("Telegram bot: Could not initialize LLM client: %s", e)
 
-        # Wire orchestrator callbacks
-        self.orchestrator.set_notify_callback(self.send_notification)
-        self.orchestrator.set_create_thread_callback(self.create_task_topic)
+        # Wire orchestrator references for command handling.
+        # Notification delivery is handled through the EventBus —
+        # a TelegramNotificationHandler should subscribe to notify.* events.
         self.orchestrator.set_command_handler(self.handler)
         self.orchestrator.set_supervisor(self._supervisor)
 

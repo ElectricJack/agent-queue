@@ -469,6 +469,12 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
+    async def _emit_notify(self, event_type: str, event) -> None:
+        self._notifications.append(event_type)
+
+    async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
+        self._notifications.append(message)
+
     from src.orchestrator import Orchestrator as _Orch
 
     _merge_and_push = _Orch._merge_and_push
@@ -564,7 +570,7 @@ class TestLinkRepoRebaseFallback:
         assert git.amerge_branch.call_count == 1
         # Conflict notification sent
         assert len(orch._notifications) == 1
-        assert "Merge Conflict" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.merge_conflict"
 
     @pytest.mark.asyncio
     async def test_link_no_rebase_when_merge_succeeds(self, orch, git):
@@ -602,7 +608,7 @@ class TestLinkRepoRebaseFallback:
         assert git.amerge_branch.call_count == 2
         # Notification sent for persistent conflict
         assert len(orch._notifications) == 1
-        assert "Merge Conflict" in orch._notifications[0]
+        assert orch._notifications[0] == "notify.merge_conflict"
 
     @pytest.mark.asyncio
     async def test_clone_repo_uses_sync_and_merge_rebase(self, orch, git):

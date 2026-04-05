@@ -564,10 +564,22 @@ class HookEngine:
 
         orchestrator = getattr(self, "_orchestrator", None)
 
-        # Create a Discord thread for streaming hook output (mirrors task
-        # execution behavior).  Falls back to _notify_channel if thread
-        # creation is unavailable or fails.
+        # Notify that a hook is running via the event bus.
         thread_send = None
+        try:
+            await self.bus.emit("notify.text", {
+                "event_type": "notify.text",
+                "message": (
+                    f"🪝 Hook **{hook.name}** is running "
+                    f"(trigger: `{trigger_reason}`)."
+                ),
+                "project_id": hook.project_id,
+            })
+        except Exception:
+            logger.debug("Failed to emit hook-running notification", exc_info=True)
+
+        # Create a thread for streaming hook output if a thread-creation
+        # callback is still available (legacy path for non-bus transports).
         if orchestrator and getattr(orchestrator, "_create_thread", None):
             try:
                 thread_name = f"🪝 Hook: {hook.name}"[:100]
@@ -599,12 +611,7 @@ class HookEngine:
                     e,
                     exc_info=True,
                 )
-        elif orchestrator:
-            # No thread callback — fall back to main channel notification
-            await orchestrator._notify_channel(
-                f"🪝 Hook **{hook.name}** is running (trigger: `{trigger_reason}`).",
-                project_id=hook.project_id,
-            )
+        # (Running notification already sent via event bus above.)
 
         try:
             # Render prompt (substitute {{event.*}} placeholders)
@@ -653,14 +660,14 @@ class HookEngine:
                         await thread_send(timeout_msg)
                     except Exception:
                         pass
-                elif orchestrator:
-                    try:
-                        await orchestrator._notify_channel(
-                            timeout_msg,
-                            project_id=hook.project_id,
-                        )
-                    except Exception:
-                        pass
+                try:
+                    await self.bus.emit("notify.text", {
+                        "event_type": "notify.text",
+                        "message": timeout_msg,
+                        "project_id": hook.project_id,
+                    })
+                except Exception:
+                    pass
                 return
 
             await self.db.update_hook_run(
@@ -687,11 +694,15 @@ class HookEngine:
                 # to avoid notification spam (the thread-root "Agent working"
                 # message already provides visibility; details live in-thread).
                 await thread_send(completion_msg)
-            elif orchestrator:
-                await orchestrator._notify_channel(
-                    completion_msg,
-                    project_id=hook.project_id,
-                )
+            else:
+                try:
+                    await self.bus.emit("notify.text", {
+                        "event_type": "notify.text",
+                        "message": completion_msg,
+                        "project_id": hook.project_id,
+                    })
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error("Hook %s failed: %s", hook.name, e, exc_info=True)
@@ -707,14 +718,14 @@ class HookEngine:
                     await thread_send(error_msg)
                 except Exception:
                     pass
-            elif orchestrator:
-                try:
-                    await orchestrator._notify_channel(
-                        error_msg,
-                        project_id=hook.project_id,
-                    )
-                except Exception:
-                    pass
+            try:
+                await self.bus.emit("notify.text", {
+                    "event_type": "notify.text",
+                    "message": error_msg,
+                    "project_id": hook.project_id,
+                })
+            except Exception:
+                pass
 
     def _render_prompt(
         self,

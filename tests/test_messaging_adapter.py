@@ -31,7 +31,12 @@ from src.config import AppConfig, TelegramConfig, ConfigValidationError
 
 
 class DummyAdapter(MessagingAdapter):
-    """Minimal concrete implementation for testing."""
+    """Minimal concrete implementation for testing.
+
+    Only the abstract methods (lifecycle, component access, health) are
+    required.  Messaging methods (send_message, create_task_thread, etc.)
+    have default no-op implementations in the base class.
+    """
 
     async def start(self) -> None:
         pass
@@ -41,12 +46,6 @@ class DummyAdapter(MessagingAdapter):
 
     async def close(self) -> None:
         pass
-
-    async def send_message(self, text, project_id=None, *, embed=None, view=None):
-        pass
-
-    async def create_task_thread(self, thread_name, initial_message, project_id=None, task_id=None):
-        return (MagicMock(), MagicMock())
 
     def get_command_handler(self) -> Any:
         return None
@@ -82,7 +81,7 @@ class TestMessagingAdapterABC:
             Incomplete()  # type: ignore[abstract]
 
     def test_missing_single_method_raises(self):
-        """Subclass missing just one method still cannot be instantiated."""
+        """Subclass missing just one abstract method still cannot be instantiated."""
 
         class AlmostComplete(MessagingAdapter):
             async def start(self) -> None:
@@ -94,13 +93,7 @@ class TestMessagingAdapterABC:
             async def close(self) -> None:
                 pass
 
-            async def send_message(self, text, project_id=None, *, embed=None, view=None):
-                pass
-
-            # Missing create_task_thread
-
-            def get_command_handler(self):
-                return None
+            # Missing get_command_handler (abstract)
 
             def get_supervisor(self):
                 return None
