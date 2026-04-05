@@ -164,6 +164,10 @@ class Supervisor:
         # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
         # clobbering each other's cancel state.
         self._cancel_events: list[asyncio.Event] = []
+        # Serialises all LLM-using entry points so that only one request
+        # is processed at a time.  Concurrent callers (Discord messages,
+        # hooks, task-completion pipeline) queue on this lock.
+        self._llm_lock = asyncio.Lock()
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready."""
@@ -373,6 +377,25 @@ class Supervisor:
         _reflection_trigger: str = "user.request",
     ) -> str:
         """Process a user message with tool use. Returns response text.
+
+        Acquires ``_llm_lock`` so that only one LLM interaction runs at a
+        time.  Internal callers that already hold the lock should use
+        ``_chat_unlocked()`` instead.
+        """
+        async with self._llm_lock:
+            return await self._chat_unlocked(
+                text, user_name, history, on_progress, _reflection_trigger,
+            )
+
+    async def _chat_unlocked(
+        self,
+        text: str,
+        user_name: str,
+        history: list[dict] | None = None,
+        on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
+        _reflection_trigger: str = "user.request",
+    ) -> str:
+        """Process a user message without acquiring ``_llm_lock``.
 
         Starts with core tools only. When the LLM calls ``load_tools``,
         the requested category's tool definitions are added to the active
@@ -658,7 +681,7 @@ class Supervisor:
                                 "Please try again, addressing the feedback above. "
                                 "Remember to call reply_to_user with your response."
                             )
-                            return await self.chat(
+                            return await self._chat_unlocked(
                                 text=retry_prompt,
                                 user_name="system:reflection-retry",
                                 history=messages,
@@ -676,6 +699,11 @@ class Supervisor:
         """Summarize a conversation transcript. Returns None on failure."""
         if not self._provider:
             return None
+        async with self._llm_lock:
+            return await self._summarize_unlocked(transcript)
+
+    async def _summarize_unlocked(self, transcript: str) -> str | None:
+        """Inner summarize without lock — called by ``summarize()``."""
         # Tag logged calls with the summarize caller identity
         prev_caller = None
         if isinstance(self._provider, LoggedChatProvider):
@@ -720,6 +748,15 @@ class Supervisor:
         """
         if not self._provider:
             return None
+        async with self._llm_lock:
+            return await self._expand_rule_prompt_unlocked(rule_content, project_id)
+
+    async def _expand_rule_prompt_unlocked(
+        self,
+        rule_content: str,
+        project_id: str | None = None,
+    ) -> str | None:
+        """Inner expand_rule_prompt without lock."""
         prev_caller = None
         if isinstance(self._provider, LoggedChatProvider):
             prev_caller = self._provider._caller
@@ -782,17 +819,18 @@ class Supervisor:
         if project_id:
             self.set_active_project(project_id)
         full_prompt = hook_context + rendered_prompt
-        token = _hook_provider_override.set(provider) if provider else None
-        try:
-            return await self.chat(
-                text=full_prompt,
-                user_name=f"hook:{hook_name}",
-                on_progress=on_progress,
-                _reflection_trigger="hook.completed",
-            )
-        finally:
-            if token is not None:
-                _hook_provider_override.reset(token)
+        async with self._llm_lock:
+            token = _hook_provider_override.set(provider) if provider else None
+            try:
+                return await self._chat_unlocked(
+                    text=full_prompt,
+                    user_name=f"hook:{hook_name}",
+                    on_progress=on_progress,
+                    _reflection_trigger="hook.completed",
+                )
+            finally:
+                if token is not None:
+                    _hook_provider_override.reset(token)
 
     async def break_plan_into_tasks(
         self,
@@ -882,39 +920,40 @@ class Supervisor:
         ) or ""
 
         try:
-            # Tag logged calls so they're identifiable
-            prev_caller = None
-            if isinstance(self._provider, LoggedChatProvider):
-                prev_caller = self._provider._caller
-                self._provider._caller = "supervisor.break_plan"
+            async with self._llm_lock:
+                # Tag logged calls so they're identifiable
+                prev_caller = None
+                if isinstance(self._provider, LoggedChatProvider):
+                    prev_caller = self._provider._caller
+                    self._provider._caller = "supervisor.break_plan"
 
-            # Suppress conversation context during plan splitting — subtasks
-            # should inherit the *parent's* conversation context (set in
-            # post-processing below), not the plan-splitter's internal prompt.
-            saved_conv_ctx = self.handler._current_conversation_context
-            self.handler._current_conversation_context = None
+                # Suppress conversation context during plan splitting — subtasks
+                # should inherit the *parent's* conversation context (set in
+                # post-processing below), not the plan-splitter's internal prompt.
+                saved_conv_ctx = self.handler._current_conversation_context
+                self.handler._current_conversation_context = None
 
-            # Create plan subtasks directly as DEFINED so the orchestrator
-            # won't schedule them before the blocking dependency on the
-            # parent is established.  This eliminates the need for
-            # project-wide plan processing locks.
-            self.handler._plan_subtask_creation_mode = True
+                # Create plan subtasks directly as DEFINED so the orchestrator
+                # won't schedule them before the blocking dependency on the
+                # parent is established.  This eliminates the need for
+                # project-wide plan processing locks.
+                self.handler._plan_subtask_creation_mode = True
 
-            try:
-                response = await self.chat(
-                    text=prompt,
-                    user_name="system:plan-splitter",
-                    on_progress=on_progress,
-                    _reflection_trigger="plan.split",
-                )
-            finally:
-                self.handler._plan_subtask_creation_mode = False
+                try:
+                    response = await self._chat_unlocked(
+                        text=prompt,
+                        user_name="system:plan-splitter",
+                        on_progress=on_progress,
+                        _reflection_trigger="plan.split",
+                    )
+                finally:
+                    self.handler._plan_subtask_creation_mode = False
 
-            # Restore (chat() finally-block clears it, so just ensure clean)
-            self.handler._current_conversation_context = saved_conv_ctx
+                # Restore (chat() finally-block clears it, so just ensure clean)
+                self.handler._current_conversation_context = saved_conv_ctx
 
-            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
-                self._provider._caller = prev_caller
+                if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
+                    self._provider._caller = prev_caller
 
             logger.info(
                 "break_plan_into_tasks: supervisor finished for parent %s: %s",
@@ -1011,6 +1050,19 @@ class Supervisor:
 
         logger = logging.getLogger(__name__)
 
+        async with self._llm_lock:
+            return await self._on_task_completed_unlocked(
+                task_id, project_id, workspace_path, logger,
+            )
+
+    async def _on_task_completed_unlocked(
+        self,
+        task_id: str,
+        project_id: str,
+        workspace_path: str,
+        logger,
+    ) -> dict:
+        """Inner on_task_completed without lock."""
         try:
             if project_id:
                 self.set_active_project(project_id)
@@ -1098,43 +1150,44 @@ class Supervisor:
         if not self._provider or not messages:
             return {"action": "ignore"}
 
-        lines = []
-        for m in messages:
-            author = m.get("author", "unknown")
-            content = m.get("content", "")
-            lines.append(f"[{author}]: {content}")
-        conversation = "\n".join(lines)
+        async with self._llm_lock:
+            lines = []
+            for m in messages:
+                author = m.get("author", "unknown")
+                content = m.get("content", "")
+                lines.append(f"[{author}]: {content}")
+            conversation = "\n".join(lines)
 
-        prompt = (
-            f"## Passive Observation — Project: {project_id}\n\n"
-            f"The following conversation happened in the project channel. "
-            f"You are observing passively — do NOT take action on the project.\n\n"
-            f"### Conversation\n{conversation}\n\n"
-            f"### Instructions\n"
-            f"Decide one of:\n"
-            f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
-            f"2. **memory** — worth remembering. Respond: "
-            f'{{"action": "memory", "content": "what to remember"}}\n'
-            f"3. **suggest** — actionable work item. Respond: "
-            f'{{"action": "suggest", "content": "suggestion text", '
-            f'"suggestion_type": "task|answer|context|warning", '
-            f'"task_title": "optional task title"}}\n\n'
-            f"Respond with ONLY the JSON object, no other text."
-        )
-
-        try:
-            resp = await self._provider.create_message(
-                messages=[{"role": "user", "content": prompt}],
-                system=(
-                    "You are observing a project channel passively. "
-                    "Respond with a single JSON object. No other text."
-                ),
-                max_tokens=256,
+            prompt = (
+                f"## Passive Observation — Project: {project_id}\n\n"
+                f"The following conversation happened in the project channel. "
+                f"You are observing passively — do NOT take action on the project.\n\n"
+                f"### Conversation\n{conversation}\n\n"
+                f"### Instructions\n"
+                f"Decide one of:\n"
+                f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
+                f"2. **memory** — worth remembering. Respond: "
+                f'{{"action": "memory", "content": "what to remember"}}\n'
+                f"3. **suggest** — actionable work item. Respond: "
+                f'{{"action": "suggest", "content": "suggestion text", '
+                f'"suggestion_type": "task|answer|context|warning", '
+                f'"task_title": "optional task title"}}\n\n'
+                f"Respond with ONLY the JSON object, no other text."
             )
-            text = "\n".join(resp.text_parts).strip()
-            return self._parse_observe_response(text)
-        except Exception:
-            return {"action": "ignore"}
+
+            try:
+                resp = await self._provider.create_message(
+                    messages=[{"role": "user", "content": prompt}],
+                    system=(
+                        "You are observing a project channel passively. "
+                        "Respond with a single JSON object. No other text."
+                    ),
+                    max_tokens=256,
+                )
+                text = "\n".join(resp.text_parts).strip()
+                return self._parse_observe_response(text)
+            except Exception:
+                return {"action": "ignore"}
 
     def _parse_observe_response(self, text: str) -> dict:
         """Parse the LLM's observation response into a structured dict.
