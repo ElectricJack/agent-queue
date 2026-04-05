@@ -1200,10 +1200,7 @@ class AgentQueueBot(commands.Bot):
                     try:
                         await adapter.inject_message(feedback)
                         injected = True
-                        await message.reply(
-                            "💬 Message sent to the agent — it will pause and "
-                            "resume with your message in context."
-                        )
+                        await message.add_reaction("👍")
                     except Exception as e:
                         logger.warning("inject_message failed for task %s: %s", task_id, e)
 
