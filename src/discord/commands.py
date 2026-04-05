@@ -1396,7 +1396,8 @@ class RulesListView(discord.ui.View):
             else:
                 status = "on"
 
-            last_run = r.get("last_run") or ""
+            last_run_raw = r.get("last_run")
+            last_run = str(last_run_raw) if last_run_raw else ""
             rows.append((name, rule_type, scope, hooks, status, last_run))
 
         has_last_run = any(r[5] for r in rows)

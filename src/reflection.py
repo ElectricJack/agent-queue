@@ -158,7 +158,11 @@ class ReflectionEngine:
             "5. Is there follow-up work needed?\n"
             "6. Did I modify files directly when I should have created a task? "
             "An agent with a full context window and isolated workspace would "
-            "do this better. If so, note this for improvement.\n\n"
+            "do this better. If so, note this for improvement.\n"
+            "7. Did I answer a feature/behavior request directly instead of "
+            "creating a task? If the user said something 'should' work "
+            "differently and I explained current behavior, I should have "
+            "delegated instead.\n\n"
             "If follow-up is needed, take action. Otherwise, confirm completion.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
@@ -178,7 +182,11 @@ class ReflectionEngine:
             "1. Did the action succeed?\n"
             "2. Any directly relevant rules to check?\n"
             "3. Did I do inline file work (write/edit) that should have been "
-            "delegated as a task? Agents execute code changes more reliably.\n\n"
+            "delegated as a task? Agents execute code changes more reliably.\n"
+            "4. Did I answer a feature request or behavior change directly "
+            "instead of creating a task? If the user said something 'should' "
+            "work differently and I explained current behavior instead of "
+            "delegating, that's wrong — create a task.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
         )
