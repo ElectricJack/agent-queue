@@ -15,6 +15,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_metadata,
     task_results,
     task_tools,
     tasks,
@@ -97,6 +98,7 @@ class ArchiveQueryMixin:
             )
             await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
             await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
             await conn.execute(
                 update(tasks).where(tasks.c.parent_task_id == task_id).values(parent_task_id=None)

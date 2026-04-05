@@ -204,6 +204,7 @@ class TaskQueryMixin:
             )
             await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
             await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 

@@ -164,6 +164,18 @@ class TestTaskMetadata:
         assert await db.get_task_meta("t-1", "session_id") == "sess-1"
         assert await db.get_task_meta("t-2", "session_id") == "sess-2"
 
+    async def test_delete_task_cleans_up_metadata(self, db):
+        """Deleting a task must also remove its task_metadata rows."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "session_id", "sess-abc")
+        await db.set_task_meta("t-1", "workspace", "/tmp/ws")
+        # Delete the task — metadata should be cleaned up
+        await db.delete_task("t-1")
+        assert await db.get_task("t-1") is None
+        # Verify no orphaned metadata remains (would cause FK errors)
+        assert await db.get_all_task_meta("t-1") == {}
+
 
 class TestAgentCRUD:
     async def test_create_and_get_agent(self, db):
