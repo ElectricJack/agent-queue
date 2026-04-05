@@ -2820,6 +2820,15 @@ class Orchestrator:
                 ctx.task.id,
             )
             ctx.plan_needs_approval = True
+            # The supervisor archived the plan file (renamed plan.md →
+            # .claude/plans/), which dirties the working tree.  Commit the
+            # archival so _phase_verify doesn't see it as uncommitted agent
+            # changes and incorrectly reopen the task.
+            if ctx.workspace_path and await self.git.avalidate_checkout(ctx.workspace_path):
+                await self.git.acommit_all(
+                    ctx.workspace_path,
+                    f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
+                )
         else:
             reason = (
                 result.get("reason", "unknown") if isinstance(result, dict) else "non-dict result"
