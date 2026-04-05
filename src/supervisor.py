@@ -249,6 +249,10 @@ class Supervisor:
         Fetches project metadata from the database so the supervisor
         has immediate access to key project info (repo URL, workspace
         path, etc.) without needing to call tools.
+
+        When ``repo_url`` is empty but the workspace has a git remote,
+        auto-detects and persists the remote URL so future lookups are
+        instant.
         """
         lines = [
             f"ACTIVE PROJECT: `{project_id}`. "
@@ -259,9 +263,23 @@ class Supervisor:
         try:
             project = await self.orchestrator.db.get_project(project_id)
             if project:
-                if project.repo_url:
-                    lines.append(f"Repository URL: {project.repo_url}")
+                repo_url = project.repo_url
                 ws_path = await self.orchestrator.db.get_project_workspace_path(project_id)
+
+                # Auto-detect repo_url from git remote if not set
+                if not repo_url and ws_path:
+                    try:
+                        detected = await self.orchestrator.git.aget_remote_url(ws_path)
+                        if detected:
+                            repo_url = detected
+                            await self.orchestrator.db.update_project(
+                                project_id, repo_url=repo_url
+                            )
+                    except Exception:
+                        pass  # Non-fatal — proceed without URL
+
+                if repo_url:
+                    lines.append(f"Repository URL: {repo_url}")
                 if ws_path:
                     lines.append(f"Workspace: {ws_path}")
                 if project.repo_default_branch:

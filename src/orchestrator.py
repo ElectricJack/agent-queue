@@ -3233,8 +3233,18 @@ class Orchestrator:
         sys_parts = [f"- Workspace directory: {workspace}"]
         if project:
             sys_parts.append(f"- Project: {project.name} (id: {project.id})")
-            if project.repo_url:
-                sys_parts.append(f"- Repository URL: {project.repo_url}")
+            repo_url = project.repo_url
+            # Auto-detect repo_url from git remote if not set
+            if not repo_url:
+                try:
+                    detected = await self.git.aget_remote_url(workspace)
+                    if detected:
+                        repo_url = detected
+                        await self.db.update_project(project.id, repo_url=repo_url)
+                except Exception:
+                    pass  # Non-fatal
+            if repo_url:
+                sys_parts.append(f"- Repository URL: {repo_url}")
             if project.repo_default_branch:
                 sys_parts.append(f"- Default branch: {project.repo_default_branch}")
         if task.branch_name:

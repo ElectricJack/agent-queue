@@ -46,7 +46,9 @@ class CategoryMeta:
 CATEGORIES: dict[str, CategoryMeta] = {
     "git": CategoryMeta(
         name="git",
-        description=("Branch, commit, push, PR, and merge operations for project repositories"),
+        description=(
+            "Branch, commit, push, PR, merge, and remote URL operations for project repositories"
+        ),
     ),
     "project": CategoryMeta(
         name="project",

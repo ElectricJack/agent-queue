@@ -4331,12 +4331,23 @@ class CommandHandler:
             name=name,
         )
         await self.db.create_workspace(workspace)
-        return {
+
+        # Auto-populate project.repo_url from git remote if not already set
+        result: dict = {
             "created": ws_id,
             "project_id": project_id,
             "workspace_path": path,
             "source_type": source,
         }
+        if not project.repo_url:
+            try:
+                remote_url = await self.orchestrator.git.aget_remote_url(path)
+                if remote_url:
+                    await self.db.update_project(project_id, repo_url=remote_url)
+                    result["auto_detected_repo_url"] = remote_url
+            except Exception:
+                pass  # Non-fatal — workspace was still created successfully
+        return result
 
     async def _cmd_list_workspaces(self, args: dict) -> dict:
         """List workspaces with lock status."""

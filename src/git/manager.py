@@ -1105,6 +1105,14 @@ class GitManager:
         except GitError:
             return False
 
+    async def aget_remote_url(self, checkout_path: str, remote: str = "origin") -> str | None:
+        """Return the URL for *remote*, or ``None`` if no remote is configured."""
+        try:
+            url = await self._arun(["remote", "get-url", remote], cwd=checkout_path)
+            return url.strip() if url and url.strip() else None
+        except GitError:
+            return None
+
     async def acreate_branch(self, checkout_path: str, branch_name: str) -> None:
         try:
             await self._arun(["checkout", "-b", branch_name], cwd=checkout_path)
