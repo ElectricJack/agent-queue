@@ -160,9 +160,7 @@ class LLMLogger:
                 resp_summary["tool_uses"] = [
                     {
                         "name": getattr(tu, "name", ""),
-                        "input_keys": list(getattr(tu, "input", {}).keys())
-                        if isinstance(getattr(tu, "input", None), dict)
-                        else [],
+                        "input": getattr(tu, "input", {}),
                     }
                     for tu in tool_uses
                 ]
@@ -188,9 +186,8 @@ class LLMLogger:
             "duration_ms": duration_ms,
             "prompt_fingerprint": prompt_fingerprint,
             "input": {
-                "system_prompt_length": len(system),
-                "message_count": len(messages),
-                "messages": self._summarize_messages(messages),
+                "system": system,
+                "messages": messages,
                 "tool_names": tool_names,
                 "max_tokens": max_tokens,
                 "input_tokens_est": input_tokens_est,
