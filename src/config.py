@@ -329,6 +329,17 @@ class MemoryConfig:
     notes_inform_profile: bool = True  # include notes in profile revision context
     # Phase 3.5: Post-Task Fact Extraction
     fact_extraction_enabled: bool = True  # extract structured facts after task completion
+    # Phase 3.6: Knowledge Base Topic Files
+    index_knowledge: bool = True  # index knowledge/ directory in vector DB
+    knowledge_topics: tuple[str, ...] = (
+        "architecture",
+        "api-and-endpoints",
+        "deployment",
+        "dependencies",
+        "gotchas",
+        "conventions",
+        "decisions",
+    )
     # Phase 4: Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include

@@ -115,6 +115,10 @@ class MemoryManager:
             notes_dir = self._notes_dir(project_id)
             if os.path.isdir(notes_dir):
                 paths.append(notes_dir)
+        if self.config.index_knowledge:
+            knowledge_dir = self._knowledge_dir(project_id)
+            if os.path.isdir(knowledge_dir):
+                paths.append(knowledge_dir)
         # Include workspace specs/ and docs/ directories for zero-duplication
         # knowledge indexing — agents can answer questions about their own
         # architecture, configuration, and published documentation.
@@ -1085,6 +1089,157 @@ class MemoryManager:
         except Exception as e:
             logger.warning("Fact extraction failed for project %s: %s", project_id, e)
             return None
+
+    # ------------------------------------------------------------------
+    # Phase 3.6: Knowledge Base Topic Files
+    # ------------------------------------------------------------------
+
+    def _knowledge_dir(self, project_id: str) -> str:
+        """Path to the knowledge base directory for a project.
+
+        Returns ``{data_dir}/memory/{project_id}/knowledge/``.
+        """
+        return os.path.join(self._project_memory_dir(project_id), "knowledge")
+
+    def _knowledge_topic_path(self, project_id: str, topic: str) -> str:
+        """Path to a specific knowledge topic file.
+
+        Returns ``{data_dir}/memory/{project_id}/knowledge/{topic}.md``.
+        """
+        # Sanitize topic to prevent directory traversal
+        safe_topic = topic.replace("/", "").replace("\\", "").replace("..", "")
+        return os.path.join(self._knowledge_dir(project_id), f"{safe_topic}.md")
+
+    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None:
+        """Read a knowledge topic file for a project.
+
+        Returns the file content as a string, or ``None`` if the topic file
+        doesn't exist or knowledge indexing is disabled.
+        """
+        if not self.config.index_knowledge:
+            return None
+
+        path = self._knowledge_topic_path(project_id, topic)
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path) as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read knowledge topic '{topic}' for project {project_id}: {e}")
+            return None
+
+    async def write_knowledge_topic(
+        self,
+        project_id: str,
+        topic: str,
+        content: str,
+        workspace_path: str = "",
+    ) -> str | None:
+        """Write content to a knowledge topic file and optionally re-index.
+
+        Creates the knowledge directory if it doesn't exist.
+        Returns the file path on success, ``None`` on failure.
+        """
+        if not self.config.index_knowledge:
+            return None
+
+        # Validate topic against configured topics
+        if topic not in self.config.knowledge_topics:
+            logger.warning(
+                f"Topic '{topic}' not in configured knowledge_topics for project {project_id}"
+            )
+            return None
+
+        path = self._knowledge_topic_path(project_id, topic)
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(
+                f"Failed to write knowledge topic '{topic}' for project {project_id}: {e}"
+            )
+            return None
+
+        # Re-index the topic file if we have a memsearch instance
+        if workspace_path:
+            instance = await self.get_instance(project_id, workspace_path)
+            if instance:
+                try:
+                    await instance.index_file(path)
+                except Exception as e:
+                    logger.warning(
+                        f"Knowledge topic indexing failed for '{topic}' "
+                        f"in project {project_id}: {e}"
+                    )
+
+        logger.info(f"Knowledge topic '{topic}' written for project {project_id}")
+        return path
+
+    async def ensure_knowledge_topic(
+        self,
+        project_id: str,
+        topic: str,
+        workspace_path: str = "",
+    ) -> str | None:
+        """Ensure a knowledge topic file exists, seeding from template if needed.
+
+        Returns the file path on success, ``None`` on failure or if the
+        topic is not in the configured list.
+        """
+        if not self.config.index_knowledge:
+            return None
+
+        if topic not in self.config.knowledge_topics:
+            return None
+
+        path = self._knowledge_topic_path(project_id, topic)
+        if os.path.isfile(path):
+            return path
+
+        # Seed from template
+        from src.prompts.memory_consolidation import KNOWLEDGE_TOPIC_SEED_TEMPLATES
+
+        template = KNOWLEDGE_TOPIC_SEED_TEMPLATES.get(topic)
+        if not template:
+            logger.warning(f"No seed template found for knowledge topic '{topic}'")
+            return None
+
+        content = template.format(
+            last_updated=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+
+        return await self.write_knowledge_topic(project_id, topic, content, workspace_path)
+
+    async def list_knowledge_topics(self, project_id: str) -> list[dict[str, Any]]:
+        """List all configured knowledge topics and their status.
+
+        Returns a list of dicts, each with:
+        - ``topic``: the topic slug (e.g. ``"architecture"``)
+        - ``exists``: whether the topic file exists on disk
+        - ``path``: the full file path
+        - ``size``: file size in bytes (0 if not exists)
+        """
+        result: list[dict[str, Any]] = []
+        for topic in self.config.knowledge_topics:
+            path = self._knowledge_topic_path(project_id, topic)
+            exists = os.path.isfile(path)
+            size = 0
+            if exists:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    pass
+            result.append({
+                "topic": topic,
+                "exists": exists,
+                "path": path,
+                "size": size,
+            })
+        return result
 
     # ------------------------------------------------------------------
     # Phase 4: Memory Compaction & Enhanced Context Delivery

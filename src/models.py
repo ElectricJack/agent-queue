@@ -509,7 +509,9 @@ class MemoryContext:
                 "in the memory folder using the Read tool:\n"
                 f"- **Task memories:** `{self.memory_folder}tasks/`\n"
                 f"- **Project profile:** `{self.memory_folder}profile.md`\n"
-                f"- **Factsheet:** `{self.memory_folder}factsheet.md`"
+                f"- **Factsheet:** `{self.memory_folder}factsheet.md`\n"
+                f"- **Knowledge base:** `{self.memory_folder}knowledge/` "
+                "(topic files: architecture, conventions, decisions, etc.)"
             )
         return "\n\n".join(sections)
 

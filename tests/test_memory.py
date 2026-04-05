@@ -1252,3 +1252,294 @@ class TestFactExtractionConfig:
     def test_fact_extraction_can_be_disabled(self):
         cfg = MemoryConfig(fact_extraction_enabled=False)
         assert cfg.fact_extraction_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base Topic Files tests (Phase 3.6)
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeBase:
+    """Tests for knowledge base topic file methods — Phase 3.6 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    # -- _knowledge_dir and _knowledge_topic_path --
+
+    def test_knowledge_dir_path(self, tmp_path):
+        """_knowledge_dir returns the correct path."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        assert mgr._knowledge_dir("proj") == expected
+
+    def test_knowledge_topic_path(self, tmp_path):
+        """_knowledge_topic_path returns the correct path for a topic."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(
+            str(tmp_path), "memory", "proj", "knowledge", "architecture.md"
+        )
+        assert mgr._knowledge_topic_path("proj", "architecture") == expected
+
+    def test_knowledge_topic_path_sanitizes_traversal(self, tmp_path):
+        """_knowledge_topic_path strips directory traversal characters."""
+        mgr = self._make_manager(str(tmp_path))
+        path = mgr._knowledge_topic_path("proj", "../../etc/passwd")
+        # Should not contain traversal; file stays inside knowledge/ dir
+        assert ".." not in path
+        knowledge_dir = mgr._knowledge_dir("proj")
+        assert path.startswith(knowledge_dir)
+        # Filename should have slashes and dots stripped
+        filename = os.path.basename(path)
+        assert "/" not in filename
+        assert "\\" not in filename
+
+    # -- read_knowledge_topic --
+
+    async def test_read_nonexistent_topic_returns_none(self, tmp_path):
+        """read_knowledge_topic returns None when topic file doesn't exist."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_read_disabled_returns_none(self, tmp_path):
+        """read_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        # Create the file anyway to prove it's the config blocking it
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        with open(os.path.join(kdir, "architecture.md"), "w") as f:
+            f.write("# Architecture\nSome content")
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_read_existing_topic(self, tmp_path):
+        """read_knowledge_topic returns file content when topic exists."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        content = "# Architecture Knowledge\n\n- Async-first design"
+        with open(os.path.join(kdir, "architecture.md"), "w") as f:
+            f.write(content)
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result == content
+
+    # -- write_knowledge_topic --
+
+    async def test_write_creates_file(self, tmp_path):
+        """write_knowledge_topic creates the topic file on disk."""
+        mgr = self._make_manager(str(tmp_path))
+        content = "# Conventions\n\n- Use ruff for linting"
+        result = await mgr.write_knowledge_topic("proj", "conventions", content)
+        assert result is not None
+        assert result.endswith("conventions.md")
+        assert os.path.isfile(result)
+        with open(result) as f:
+            assert f.read() == content
+
+    async def test_write_creates_knowledge_directory(self, tmp_path):
+        """write_knowledge_topic creates the knowledge/ directory if needed."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        assert not os.path.isdir(kdir)
+        await mgr.write_knowledge_topic("proj", "architecture", "# Arch")
+        assert os.path.isdir(kdir)
+
+    async def test_write_disabled_returns_none(self, tmp_path):
+        """write_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        result = await mgr.write_knowledge_topic("proj", "architecture", "# Arch")
+        assert result is None
+
+    async def test_write_invalid_topic_returns_none(self, tmp_path):
+        """write_knowledge_topic rejects topics not in configured list."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.write_knowledge_topic("proj", "nonexistent-topic", "content")
+        assert result is None
+
+    async def test_write_overwrites_existing(self, tmp_path):
+        """write_knowledge_topic overwrites existing content."""
+        mgr = self._make_manager(str(tmp_path))
+        await mgr.write_knowledge_topic("proj", "gotchas", "# Old content")
+        result = await mgr.write_knowledge_topic("proj", "gotchas", "# New content")
+        assert result is not None
+        with open(result) as f:
+            assert f.read() == "# New content"
+
+    @patch("src.memory.MemoryManager.get_instance")
+    async def test_write_reindexes_with_workspace(self, mock_get_instance, tmp_path):
+        """write_knowledge_topic calls index_file when workspace_path is provided."""
+        mock_instance = AsyncMock()
+        mock_get_instance.return_value = mock_instance
+        mgr = self._make_manager(str(tmp_path))
+
+        await mgr.write_knowledge_topic(
+            "proj", "architecture", "# Arch", workspace_path="/some/workspace"
+        )
+
+        mock_instance.index_file.assert_called_once()
+        call_path = mock_instance.index_file.call_args[0][0]
+        assert call_path.endswith("architecture.md")
+
+    # -- ensure_knowledge_topic --
+
+    async def test_ensure_creates_from_template(self, tmp_path):
+        """ensure_knowledge_topic seeds a new file from the template."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result is not None
+        assert os.path.isfile(result)
+        with open(result) as f:
+            content = f.read()
+        assert "# Architecture Knowledge" in content
+        assert "Core Architecture" in content
+        assert "Data Flow" in content
+
+    async def test_ensure_returns_existing_file(self, tmp_path):
+        """ensure_knowledge_topic returns path of existing file without overwriting."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        existing_content = "# Custom Architecture Content"
+        path = os.path.join(kdir, "architecture.md")
+        with open(path, "w") as f:
+            f.write(existing_content)
+
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result == path
+        with open(path) as f:
+            assert f.read() == existing_content  # not overwritten
+
+    async def test_ensure_disabled_returns_none(self, tmp_path):
+        """ensure_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_ensure_invalid_topic_returns_none(self, tmp_path):
+        """ensure_knowledge_topic returns None for unconfigured topics."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.ensure_knowledge_topic("proj", "nonexistent-topic")
+        assert result is None
+
+    # -- list_knowledge_topics --
+
+    async def test_list_topics_all_missing(self, tmp_path):
+        """list_knowledge_topics reports all topics as not existing when no files."""
+        mgr = self._make_manager(str(tmp_path))
+        topics = await mgr.list_knowledge_topics("proj")
+        assert len(topics) == 7  # default topic count
+        for t in topics:
+            assert t["exists"] is False
+            assert t["size"] == 0
+            assert t["topic"] in mgr.config.knowledge_topics
+
+    async def test_list_topics_some_exist(self, tmp_path):
+        """list_knowledge_topics correctly reports which topics exist."""
+        mgr = self._make_manager(str(tmp_path))
+        # Create two topics
+        await mgr.write_knowledge_topic("proj", "architecture", "# Architecture\nContent here")
+        await mgr.write_knowledge_topic("proj", "gotchas", "# Gotchas\nWatch out")
+
+        topics = await mgr.list_knowledge_topics("proj")
+        exists_map = {t["topic"]: t["exists"] for t in topics}
+        assert exists_map["architecture"] is True
+        assert exists_map["gotchas"] is True
+        assert exists_map["deployment"] is False
+        assert exists_map["conventions"] is False
+
+        # Check size is populated for existing topics
+        size_map = {t["topic"]: t["size"] for t in topics}
+        assert size_map["architecture"] > 0
+        assert size_map["gotchas"] > 0
+        assert size_map["deployment"] == 0
+
+    async def test_list_topics_custom_topic_list(self, tmp_path):
+        """list_knowledge_topics respects a custom knowledge_topics config."""
+        mgr = self._make_manager(
+            str(tmp_path),
+            knowledge_topics=("architecture", "decisions"),
+        )
+        topics = await mgr.list_knowledge_topics("proj")
+        assert len(topics) == 2
+        assert topics[0]["topic"] == "architecture"
+        assert topics[1]["topic"] == "decisions"
+
+    # -- seed templates --
+
+    async def test_all_default_topics_have_seed_templates(self, tmp_path):
+        """Every default knowledge topic has a seed template in the prompts module."""
+        from src.prompts.memory_consolidation import KNOWLEDGE_TOPIC_SEED_TEMPLATES
+
+        default_topics = MemoryConfig().knowledge_topics
+        for topic in default_topics:
+            assert topic in KNOWLEDGE_TOPIC_SEED_TEMPLATES, (
+                f"Missing seed template for default topic '{topic}'"
+            )
+
+    async def test_seed_templates_have_placeholder(self, tmp_path):
+        """Seed templates contain the {last_updated} placeholder for formatting."""
+        from src.prompts.memory_consolidation import KNOWLEDGE_TOPIC_SEED_TEMPLATES
+
+        for topic, template in KNOWLEDGE_TOPIC_SEED_TEMPLATES.items():
+            assert "{last_updated}" in template, (
+                f"Seed template for '{topic}' missing {{last_updated}} placeholder"
+            )
+
+    # -- _memory_paths includes knowledge dir --
+
+    def test_memory_paths_includes_knowledge_dir(self, tmp_path):
+        """_memory_paths includes the knowledge directory when index_knowledge=True."""
+        mgr = self._make_manager(str(tmp_path))
+        # Create the knowledge directory so it's detected
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir in paths
+
+    def test_memory_paths_excludes_knowledge_when_disabled(self, tmp_path):
+        """_memory_paths excludes the knowledge directory when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir not in paths
+
+    def test_memory_paths_skips_missing_knowledge_dir(self, tmp_path):
+        """_memory_paths doesn't add knowledge dir when it doesn't exist on disk."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        # Don't create it
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir not in paths
+
+
+class TestKnowledgeBaseConfig:
+    """Tests for knowledge base config fields on MemoryConfig."""
+
+    def test_index_knowledge_default_true(self):
+        cfg = MemoryConfig()
+        assert cfg.index_knowledge is True
+
+    def test_index_knowledge_can_be_disabled(self):
+        cfg = MemoryConfig(index_knowledge=False)
+        assert cfg.index_knowledge is False
+
+    def test_knowledge_topics_default(self):
+        cfg = MemoryConfig()
+        assert "architecture" in cfg.knowledge_topics
+        assert "api-and-endpoints" in cfg.knowledge_topics
+        assert "deployment" in cfg.knowledge_topics
+        assert "dependencies" in cfg.knowledge_topics
+        assert "gotchas" in cfg.knowledge_topics
+        assert "conventions" in cfg.knowledge_topics
+        assert "decisions" in cfg.knowledge_topics
+        assert len(cfg.knowledge_topics) == 7
+
+    def test_knowledge_topics_custom(self):
+        cfg = MemoryConfig(knowledge_topics=("architecture", "decisions"))
+        assert cfg.knowledge_topics == ("architecture", "decisions")
+        assert len(cfg.knowledge_topics) == 2

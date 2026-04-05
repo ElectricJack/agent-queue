@@ -9,7 +9,11 @@ structured facts (URLs, tech stack decisions, architectural patterns, etc.)
 into staging JSON files for later consolidation into the project factsheet
 and knowledge base.
 
-Future phases will add consolidation and knowledge-base prompts here.
+Phase 3: Knowledge Base Topic Files — topic-organized knowledge files
+(``knowledge/architecture.md``, etc.) that contain sourced facts with
+deep-dive links back to originating tasks and notes.
+
+Future phases will add consolidation and bootstrap prompts here.
 """
 
 # ---------------------------------------------------------------------------
@@ -140,3 +144,114 @@ FACT_EXTRACTION_USER_PROMPT = """\
 
 Extract structured facts from this task. Respond with a JSON array.
 """
+
+# ---------------------------------------------------------------------------
+# Phase 3: Knowledge Base Topic Files
+# ---------------------------------------------------------------------------
+
+# Seed templates for each knowledge topic file.  These are written to
+# ``knowledge/{topic}.md`` when the topic file is first created (e.g. during
+# the daily consolidation or when an agent explicitly writes a fact).  Each
+# template establishes the heading structure and explains what goes in the
+# file so the consolidation LLM can follow the pattern.
+
+KNOWLEDGE_TOPIC_SEED_TEMPLATES: dict[str, str] = {
+    "architecture": """\
+# Architecture Knowledge
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Core Architecture
+*(System components, overall design, and high-level structure)*
+
+## Data Flow
+*(How data moves through the system — request/response paths, event flows)*
+
+## Key Components
+*(Major modules, services, or subsystems with brief descriptions)*
+""",
+    "api-and-endpoints": """\
+# API & Endpoints Knowledge
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## API Routes
+*(REST/GraphQL/gRPC endpoints with methods and brief descriptions)*
+
+## Protocols & Formats
+*(Wire formats, authentication schemes, API versioning)*
+
+## Integrations
+*(External services, webhooks, third-party API usage)*
+""",
+    "deployment": """\
+# Deployment Knowledge
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Environments
+*(Dev, staging, production — URLs, access, configuration)*
+
+## CI/CD Pipeline
+*(Build steps, test gates, deployment process)*
+
+## Infrastructure
+*(Hosting, containers, cloud services, monitoring)*
+""",
+    "dependencies": """\
+# Dependencies Knowledge
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Runtime Dependencies
+*(Key libraries, frameworks, and their versions)*
+
+## Development Dependencies
+*(Build tools, test frameworks, linters)*
+
+## Version Constraints
+*(Pinned versions, compatibility notes, upgrade blockers)*
+""",
+    "gotchas": """\
+# Gotchas & Known Issues
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Known Issues
+*(Bugs, limitations, or broken functionality to be aware of)*
+
+## Workarounds
+*(Temporary fixes or manual steps required)*
+
+## Pitfalls
+*(Common mistakes, non-obvious behavior, foot-guns)*
+""",
+    "conventions": """\
+# Conventions & Standards
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Coding Standards
+*(Style rules, linting config, formatting requirements)*
+
+## Naming Conventions
+*(File naming, variable naming, module naming patterns)*
+
+## Workflow Patterns
+*(Branching strategy, PR process, commit message format)*
+""",
+    "decisions": """\
+# Technical Decisions
+
+> Last consolidated: {last_updated} | Sources: 0 tasks, 0 notes
+
+## Architecture Decisions
+*(Major structural choices with rationale)*
+
+## Technology Choices
+*(Why specific tools, libraries, or services were chosen)*
+
+## Design Trade-offs
+*(Explicit trade-offs made and their justification)*
+""",
+}
