@@ -1113,6 +1113,65 @@ class MemoryManager:
 
         return memory_path
 
+    async def write_memory(
+        self, project_id: str, workspace_path: str, key: str, content: str
+    ) -> str | None:
+        """Write an arbitrary key-value memory entry for a project.
+
+        Stores the content as a markdown file at
+        ``{data_dir}/memory/{project_id}/{key}.md`` and indexes it for
+        semantic search. This is the agent-facing write API — use it for
+        persistent state like timestamps, counters, or any structured data
+        that should be retrievable via ``memory_search`` or ``read_memory``.
+
+        Returns the file path on success, ``None`` otherwise.
+        """
+        memory_dir = self._project_memory_dir(project_id)
+        # Sanitize key to be filesystem-safe
+        safe_key = key.replace("/", "_").replace("\\", "_").replace("..", "_")
+        if not safe_key.endswith(".md"):
+            safe_key += ".md"
+        memory_path = os.path.join(memory_dir, safe_key)
+
+        try:
+            os.makedirs(memory_dir, exist_ok=True)
+            with open(memory_path, "w") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(f"Failed to write memory file {safe_key}: {e}")
+            return None
+
+        # Index for semantic search (non-fatal)
+        instance = await self.get_instance(project_id, workspace_path)
+        if instance:
+            try:
+                await instance.index_file(memory_path)
+            except Exception as e:
+                logger.warning(f"Memory indexing failed for {safe_key}: {e}")
+
+        return memory_path
+
+    async def read_memory(self, project_id: str, key: str) -> str | None:
+        """Read an arbitrary key-value memory entry for a project.
+
+        Returns the file content, or ``None`` if the key doesn't exist.
+        """
+        memory_dir = self._project_memory_dir(project_id)
+        safe_key = key.replace("/", "_").replace("\\", "_").replace("..", "_")
+        if not safe_key.endswith(".md"):
+            safe_key += ".md"
+        memory_path = os.path.join(memory_dir, safe_key)
+
+        if not os.path.isfile(memory_path):
+            return None
+
+        try:
+            with open(memory_path, "r") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read memory file {safe_key}: {e}")
+            return None
+
     async def search(
         self, project_id: str, workspace_path: str, query: str, top_k: int = 10
     ) -> list[dict]:

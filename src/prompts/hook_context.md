@@ -51,7 +51,8 @@ When creating tasks, make descriptions self-contained — include all relevant c
 - Query task status, results, and diffs
 - Run shell commands and read files (for investigation)
 - Git operations (commit, push, create branches, merge, diff, log)
-- Manage notes (read, write, append, delete) — use these for persistent data like timestamps and state
+- Manage notes (read, write, append, delete)
+- Read and write project memory (`write_memory` / `read_memory`) for persistent state
 - Search project memory for past context
 - Fire other hooks
 - Send notifications (via tool calls)
@@ -59,7 +60,7 @@ When creating tasks, make descriptions self-contained — include all relevant c
 
 ## Data Storage
 
-When you need to persist data (timestamps, counters, status values, key-value pairs), use **notes** (`write_note` / `read_note`). Do NOT use `save_rule` for data storage — rules are strictly for behavioral automation logic.
+When you need to persist data (timestamps, counters, status values, key-value pairs), use the **memory system** (`write_memory` / `read_memory`). Do NOT use `save_rule` for data storage — rules are strictly for behavioral automation logic.
 
 ## Hook Prompt
 

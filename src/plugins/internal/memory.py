@@ -148,6 +148,55 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "write_memory",
+        "description": (
+            "Write a key-value entry to project memory. Use this for persistent "
+            "data like timestamps, counters, status values, or any structured state "
+            "that should survive across tasks and hook executions. The entry is "
+            "indexed for semantic search via memory_search. Use read_memory to "
+            "retrieve it later by key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to store memory for",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Memory key (used as filename, e.g. 'last_sync_timestamp')",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to store (markdown or plain text)",
+                },
+            },
+            "required": ["project_id", "key", "content"],
+        },
+    },
+    {
+        "name": "read_memory",
+        "description": (
+            "Read a specific memory entry by key. Returns the content stored "
+            "via write_memory. For broad lookups use memory_search instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to read memory from",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Memory key (e.g. 'last_sync_timestamp')",
+                },
+            },
+            "required": ["project_id", "key"],
+        },
+    },
+    {
         "name": "compact_memory",
         "description": (
             "Trigger memory compaction for a project. Groups task memories "
@@ -285,6 +334,8 @@ def _build_cli_formatters():
     return {
         "memory_search": FormatterSpec(render=_fmt_memory_search, extract=None, many=False),
         "memory_stats": FormatterSpec(render=_fmt_memory_stats, extract=None, many=False),
+        "write_memory": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "read_memory": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
         "compact_memory": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "memory_reindex": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "edit_project_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
@@ -312,6 +363,8 @@ class MemoryPlugin(InternalPlugin):
         ctx.register_command("memory_search", self.cmd_memory_search)
         ctx.register_command("memory_stats", self.cmd_memory_stats)
         ctx.register_command("memory_reindex", self.cmd_memory_reindex)
+        ctx.register_command("write_memory", self.cmd_write_memory)
+        ctx.register_command("read_memory", self.cmd_read_memory)
         ctx.register_command("view_profile", self.cmd_view_profile)
         ctx.register_command("edit_project_profile", self.cmd_edit_project_profile)
         ctx.register_command("regenerate_profile", self.cmd_regenerate_profile)
@@ -449,6 +502,63 @@ class MemoryPlugin(InternalPlugin):
             "project_id": project_id,
             "status": "reindex_complete",
             "chunks_indexed": chunks_indexed,
+        }
+
+    async def cmd_write_memory(self, args: dict) -> dict:
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        key = args.get("key")
+        if not key:
+            return {"error": "key is required"}
+        content = args.get("content")
+        if not content:
+            return {"error": "content is required"}
+
+        workspace, err = await self._require_workspace(project_id)
+        if err:
+            return err
+
+        try:
+            path = await self._mem.write_memory(project_id, workspace, key, content)
+        except Exception as e:
+            return {"error": f"Failed to write memory: {e}"}
+
+        if not path:
+            return {"error": "Memory write failed"}
+
+        return {
+            "project_id": project_id,
+            "key": key,
+            "status": "memory_written",
+            "path": path,
+        }
+
+    async def cmd_read_memory(self, args: dict) -> dict:
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        key = args.get("key")
+        if not key:
+            return {"error": "key is required"}
+
+        try:
+            content = await self._mem.read_memory(project_id, key)
+        except Exception as e:
+            return {"error": f"Failed to read memory: {e}"}
+
+        if content is None:
+            return {
+                "project_id": project_id,
+                "key": key,
+                "content": None,
+                "message": f"No memory entry found for key '{key}'",
+            }
+
+        return {
+            "project_id": project_id,
+            "key": key,
+            "content": content,
         }
 
     async def cmd_view_profile(self, args: dict) -> dict:

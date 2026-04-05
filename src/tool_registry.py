@@ -1609,7 +1609,7 @@ _ALL_TOOL_DEFINITIONS = [
             "'When a task is completed'), and ## Logic section in the content. "
             "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
             "save_rule to store data, timestamps, or key-value state. Use "
-            "write_note or update_note for persistent data storage."
+            "write_memory/read_memory for persistent data storage."
         ),
         "input_schema": {
             "type": "object",
@@ -2211,7 +2211,7 @@ class ToolRegistry:
                     "'When a task is completed'), and ## Logic section in the content. "
                     "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
                     "save_rule to store data, timestamps, or key-value state. Use "
-                    "write_note or update_note for persistent data storage."
+                    "write_memory/read_memory for persistent data storage."
                 ),
                 "input_schema": {
                     "type": "object",
