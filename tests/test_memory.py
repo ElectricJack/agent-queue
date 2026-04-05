@@ -424,6 +424,70 @@ class TestMemoryManager:
         results = await mgr.search("proj", str(tmp_path), "query")
         assert results == []
 
+    # -- Batch search ------------------------------------------------------
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_batch_search_multiple_queries(self, MockMemSearch, tmp_path):
+        mock_instance = MagicMock()
+        mock_instance.search = AsyncMock(
+            side_effect=[
+                [{"content": "result A"}],
+                [{"content": "result B"}],
+            ]
+        )
+        MockMemSearch.return_value = mock_instance
+
+        mgr = self._make_manager()
+        results = await mgr.batch_search(
+            "proj", str(tmp_path), ["query A", "query B"], top_k=5
+        )
+
+        assert set(results.keys()) == {"query A", "query B"}
+        assert len(results["query A"]) == 1
+        assert len(results["query B"]) == 1
+        assert results["query A"][0]["content"] == "result A"
+        assert results["query B"][0]["content"] == "result B"
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_batch_search_empty_queries(self, MockMemSearch, tmp_path):
+        mock_instance = MagicMock()
+        MockMemSearch.return_value = mock_instance
+
+        mgr = self._make_manager()
+        results = await mgr.batch_search("proj", str(tmp_path), [])
+
+        assert results == {}
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_batch_search_partial_failure(self, MockMemSearch, tmp_path):
+        mock_instance = MagicMock()
+        mock_instance.search = AsyncMock(
+            side_effect=[
+                [{"content": "ok"}],
+                Exception("search fail"),
+                [{"content": "also ok"}],
+            ]
+        )
+        MockMemSearch.return_value = mock_instance
+
+        mgr = self._make_manager()
+        results = await mgr.batch_search(
+            "proj", str(tmp_path), ["q1", "q2", "q3"], top_k=3
+        )
+
+        assert len(results) == 3
+        assert len(results["q1"]) == 1
+        assert results["q2"] == []  # failed query returns empty
+        assert len(results["q3"]) == 1
+
+    async def test_batch_search_returns_empty_when_disabled(self, tmp_path):
+        mgr = MemoryManager(MemoryConfig(enabled=False))
+        results = await mgr.batch_search("proj", str(tmp_path), ["q1", "q2"])
+        assert results == {"q1": [], "q2": []}
+
     # -- Reindex -----------------------------------------------------------
 
     @patch("src.memory.MEMSEARCH_AVAILABLE", True)

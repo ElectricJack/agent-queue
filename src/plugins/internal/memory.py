@@ -21,8 +21,8 @@ TOOL_DEFINITIONS = [
         "description": (
             "Search project memory for relevant context. Returns semantically "
             "similar past task results, notes, and knowledge-base entries. "
-            "Use this when the user asks about past work, wants to find related "
-            "context, or says 'search memory', 'what do we know about', etc."
+            "Supports single query (via 'query') or multiple concurrent queries "
+            "(via 'queries' array) for batch lookups."
         ),
         "input_schema": {
             "type": "object",
@@ -33,15 +33,24 @@ TOOL_DEFINITIONS = [
                 },
                 "query": {
                     "type": "string",
-                    "description": "Semantic search query",
+                    "description": "Single semantic search query",
+                },
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Multiple search queries to run concurrently. Results are "
+                        "returned grouped by query. Use instead of 'query' when "
+                        "looking up multiple topics at once."
+                    ),
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Number of results to return (default 10)",
+                    "description": "Results per query (default 10)",
                     "default": 10,
                 },
             },
-            "required": ["project_id", "query"],
+            "required": ["project_id"],
         },
     },
     {
@@ -165,20 +174,12 @@ TOOL_DEFINITIONS = [
 # ---------------------------------------------------------------------------
 
 
-def _fmt_memory_search(data: dict):
+def _fmt_search_results(results: list[dict]) -> list:
+    """Format a list of search result dicts into Rich panels."""
     from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
 
-    results = data.get("results", [])
-    query = data.get("query", "")
-    count = data.get("count", len(results))
-    header = Text()
-    header.append("  Memory search: ", style="dim")
-    header.append(f'"{query}"', style="bold")
-    header.append(f"  ({count} result(s))", style="dim")
-    if not results:
-        return Group(header, Text("  No results found.", style="dim"))
     panels = []
     for r in results:
         score = r.get("score", 0)
@@ -196,7 +197,44 @@ def _fmt_memory_search(data: dict):
                 padding=(0, 1),
             )
         )
-    return Group(header, *panels)
+    return panels
+
+
+def _fmt_memory_search(data: dict):
+    from rich.console import Group
+    from rich.text import Text
+
+    # --- Multi-query mode ---
+    results_by_query = data.get("results_by_query")
+    if results_by_query is not None:
+        total = data.get("total_count", 0)
+        header = Text()
+        header.append("  Memory batch search: ", style="dim")
+        header.append(f"{len(results_by_query)} queries", style="bold")
+        header.append(f"  ({total} total result(s))", style="dim")
+        sections: list = [header]
+        for q, hits in results_by_query.items():
+            q_header = Text()
+            q_header.append(f'\n  Query: "{q}"', style="bold yellow")
+            q_header.append(f"  ({len(hits)} result(s))", style="dim")
+            sections.append(q_header)
+            if hits:
+                sections.extend(_fmt_search_results(hits))
+            else:
+                sections.append(Text("    No results found.", style="dim"))
+        return Group(*sections)
+
+    # --- Single-query mode ---
+    results = data.get("results", [])
+    query = data.get("query", "")
+    count = data.get("count", len(results))
+    header = Text()
+    header.append("  Memory search: ", style="dim")
+    header.append(f'"{query}"', style="bold")
+    header.append(f"  ({count} result(s))", style="dim")
+    if not results:
+        return Group(header, Text("  No results found.", style="dim"))
+    return Group(header, *_fmt_search_results(results))
 
 
 def _fmt_memory_stats(data: dict):
@@ -305,15 +343,53 @@ class MemoryPlugin(InternalPlugin):
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
+
         query = args.get("query")
-        if not query:
-            return {"error": "query is required"}
+        queries = args.get("queries")
         top_k = args.get("top_k", 10)
+
+        if not query and not queries:
+            return {"error": "Either 'query' (string) or 'queries' (array) is required"}
 
         workspace, err = await self._require_workspace(project_id)
         if err:
             return err
 
+        # --- Multi-query mode ---
+        if queries:
+            try:
+                raw = await self._mem.batch_search(
+                    project_id, workspace, queries, top_k=top_k
+                )
+            except Exception as e:
+                return {"error": f"Memory batch search failed: {e}"}
+
+            results_by_query: dict[str, list[dict]] = {}
+            total = 0
+            for q, hits in raw.items():
+                formatted = []
+                for i, mem in enumerate(hits, 1):
+                    formatted.append(
+                        {
+                            "rank": i,
+                            "source": mem.get("source", "unknown"),
+                            "heading": mem.get("heading", ""),
+                            "content": mem.get("content", ""),
+                            "score": round(mem.get("score", 0), 4),
+                        }
+                    )
+                results_by_query[q] = formatted
+                total += len(formatted)
+
+            return {
+                "project_id": project_id,
+                "queries": queries,
+                "top_k": top_k,
+                "results_by_query": results_by_query,
+                "total_count": total,
+            }
+
+        # --- Single-query mode (backward compatible) ---
         try:
             results = await self._mem.search(project_id, workspace, query, top_k=top_k)
         except Exception as e:

@@ -1131,6 +1131,33 @@ class MemoryManager:
             logger.warning(f"Memory search failed for project {project_id}: {e}")
             return []
 
+    async def batch_search(
+        self,
+        project_id: str,
+        workspace_path: str,
+        queries: list[str],
+        top_k: int = 10,
+    ) -> dict[str, list[dict]]:
+        """Run multiple semantic searches concurrently.
+
+        Returns a dict mapping each query string to its results list.
+        Individual query failures return empty lists without blocking others.
+        """
+        instance = await self.get_instance(project_id, workspace_path)
+        if not instance:
+            return {q: [] for q in queries}
+
+        async def _single(q: str) -> tuple[str, list[dict]]:
+            try:
+                results = await instance.search(q, top_k=top_k)
+                return (q, results if results else [])
+            except Exception as e:
+                logger.warning("Memory batch_search query %r failed: %s", q, e)
+                return (q, [])
+
+        pairs = await asyncio.gather(*[_single(q) for q in queries])
+        return dict(pairs)
+
     async def reindex(self, project_id: str, workspace_path: str) -> int:
         """Force a full reindex of a project's memory.
 
