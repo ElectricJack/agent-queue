@@ -340,19 +340,8 @@ class MemoryConfig:
         "conventions",
         "decisions",
     )
-    # Phase 4: Daily Consolidation Process
-    consolidation_enabled: bool = True  # toggle periodic consolidation of staging facts
-    consolidation_schedule: str = "daily"  # "daily", "hourly", or cron-like (future)
-    consolidation_provider: str = ""  # LLM provider for consolidation (defaults to revision_provider)
-    consolidation_model: str = ""  # model override for consolidation
-    # Phase 6: Weekly Deep Consolidation & Bootstrap
-    deep_consolidation_schedule: str = "weekly"  # "weekly", "monthly", or cron-like (future)
-    # Phase 4b: Enhanced Context Delivery
-    context_max_tokens: int = 4000  # soft budget for total memory context
-    context_include_recent: int = 3  # number of recent same-project tasks to include
-    # Phase 5: Knowledge Consolidation
+    # Knowledge Consolidation (unified: daily, deep/weekly, bootstrap)
     consolidation_enabled: bool = False  # master switch for consolidation
-    fact_extraction_enabled: bool = True  # extract facts after each task
     consolidation_schedule: str = "0 3 * * *"  # daily consolidation cron
     deep_consolidation_schedule: str = "0 4 * * 0"  # weekly deep consolidation
     consolidation_provider: str = ""  # LLM provider (defaults to revision_provider)
@@ -368,6 +357,16 @@ class MemoryConfig:
         "conventions",
         "decisions",
     )
+    # Enhanced Context Delivery
+    context_max_tokens: int = 4000  # soft budget for total memory context
+    context_include_recent: int = 3  # number of recent same-project tasks to include
+    # Consolidation auto-trigger thresholds
+    consolidation_auto_trigger: bool = True  # auto-run consolidation when thresholds are met
+    consolidation_growth_threshold: int = 10  # staging files before auto-consolidation fires
+    consolidation_min_age_hours: float = 1.0  # min age of staging facts before consolidating
+    consolidation_max_batch_size: int = 50  # max staging files per consolidation run
+    consolidation_similarity_threshold: float = 0.7  # similarity threshold for memory clustering
+    consolidation_cooldown_minutes: int = 30  # min minutes between auto-triggered consolidations
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

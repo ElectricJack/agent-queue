@@ -1146,7 +1146,7 @@ class TestConsolidationConfigPhase6:
 
     def test_deep_consolidation_schedule_default(self):
         config = MemoryConfig()
-        assert config.deep_consolidation_schedule == "weekly"
+        assert config.deep_consolidation_schedule == "0 4 * * 0"
 
     def test_deep_consolidation_schedule_custom(self):
         config = MemoryConfig(deep_consolidation_schedule="monthly")
@@ -1154,7 +1154,7 @@ class TestConsolidationConfigPhase6:
 
     def test_consolidation_enabled_default(self):
         config = MemoryConfig()
-        assert config.consolidation_enabled is True
+        assert config.consolidation_enabled is False
 
 
 class TestConsolidationConfigPhase5:

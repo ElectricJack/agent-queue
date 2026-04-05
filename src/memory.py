@@ -564,27 +564,8 @@ class MemoryManager:
     # Phase 3b: Knowledge Base Topic Files
     # ------------------------------------------------------------------
 
-    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None:
-        """Read a knowledge base topic file.
-
-        Returns the file content, or ``None`` if the topic file doesn't exist.
-        The ``topic`` should be one of the configured ``knowledge_topics``
-        (e.g. ``"architecture"``, ``"gotchas"``).
-        """
-        # Sanitize topic to prevent directory traversal
-        safe_topic = os.path.basename(topic)
-        path = os.path.join(self._knowledge_dir(project_id), f"{safe_topic}.md")
-        if not os.path.isfile(path):
-            return None
-
-        try:
-            with open(path) as f:
-                return f.read()
-        except Exception as e:
-            logger.warning(
-                f"Failed to read knowledge topic '{topic}' for project {project_id}: {e}"
-            )
-            return None
+    # NOTE: read_knowledge_topic is defined in the Phase 3.6 section below
+    # with index_knowledge config checking and sanitized path helpers.
 
     async def list_knowledge_topics(self, project_id: str) -> list[dict]:
         """List available knowledge base topics for a project.
@@ -1414,32 +1395,8 @@ class MemoryManager:
 
         return await self.write_knowledge_topic(project_id, topic, content, workspace_path)
 
-    async def list_knowledge_topics(self, project_id: str) -> list[dict[str, Any]]:
-        """List all configured knowledge topics and their status.
-
-        Returns a list of dicts, each with:
-        - ``topic``: the topic slug (e.g. ``"architecture"``)
-        - ``exists``: whether the topic file exists on disk
-        - ``path``: the full file path
-        - ``size``: file size in bytes (0 if not exists)
-        """
-        result: list[dict[str, Any]] = []
-        for topic in self.config.knowledge_topics:
-            path = self._knowledge_topic_path(project_id, topic)
-            exists = os.path.isfile(path)
-            size = 0
-            if exists:
-                try:
-                    size = os.path.getsize(path)
-                except OSError:
-                    pass
-            result.append({
-                "topic": topic,
-                "exists": exists,
-                "path": path,
-                "size": size,
-            })
-        return result
+    # NOTE: list_knowledge_topics is defined earlier (Phase 3.6 section)
+    # with a richer API (has_content, size_bytes, extra topic discovery).
 
     # ------------------------------------------------------------------
     # Phase 4: Daily Consolidation Process
@@ -2095,7 +2052,7 @@ class MemoryManager:
         # Check if a factsheet already exists — bootstrap is one-time
         existing_factsheet = await self.read_factsheet(project_id)
         existing_topics = await self.list_knowledge_topics(project_id)
-        has_knowledge = any(t["exists"] for t in existing_topics)
+        has_knowledge = any(t.get("has_content") for t in existing_topics)
 
         if existing_factsheet and has_knowledge:
             return {

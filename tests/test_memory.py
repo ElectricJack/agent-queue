@@ -1431,8 +1431,8 @@ class TestKnowledgeBase:
         topics = await mgr.list_knowledge_topics("proj")
         assert len(topics) == 7  # default topic count
         for t in topics:
-            assert t["exists"] is False
-            assert t["size"] == 0
+            assert t["has_content"] is False
+            assert t["size_bytes"] == 0
             assert t["topic"] in mgr.config.knowledge_topics
 
     async def test_list_topics_some_exist(self, tmp_path):
@@ -1443,14 +1443,14 @@ class TestKnowledgeBase:
         await mgr.write_knowledge_topic("proj", "gotchas", "# Gotchas\nWatch out")
 
         topics = await mgr.list_knowledge_topics("proj")
-        exists_map = {t["topic"]: t["exists"] for t in topics}
+        exists_map = {t["topic"]: t["has_content"] for t in topics}
         assert exists_map["architecture"] is True
         assert exists_map["gotchas"] is True
         assert exists_map["deployment"] is False
         assert exists_map["conventions"] is False
 
         # Check size is populated for existing topics
-        size_map = {t["topic"]: t["size"] for t in topics}
+        size_map = {t["topic"]: t["size_bytes"] for t in topics}
         assert size_map["architecture"] > 0
         assert size_map["gotchas"] > 0
         assert size_map["deployment"] == 0
@@ -1554,6 +1554,7 @@ class TestDailyConsolidation:
     """Tests for run_daily_consolidation() — Phase 4 of the memory consolidation system."""
 
     def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        overrides.setdefault("consolidation_enabled", True)
         cfg = MemoryConfig(enabled=True, **overrides)
         return MemoryManager(cfg, storage_root=storage_root)
 
@@ -2042,7 +2043,7 @@ class TestConsolidationConfig:
 
     def test_consolidation_enabled_default(self):
         cfg = MemoryConfig()
-        assert cfg.consolidation_enabled is True
+        assert cfg.consolidation_enabled is False
 
     def test_consolidation_enabled_can_be_disabled(self):
         cfg = MemoryConfig(consolidation_enabled=False)
@@ -2050,7 +2051,7 @@ class TestConsolidationConfig:
 
     def test_consolidation_schedule_default(self):
         cfg = MemoryConfig()
-        assert cfg.consolidation_schedule == "daily"
+        assert cfg.consolidation_schedule == "0 3 * * *"
 
     def test_consolidation_provider_default_empty(self):
         cfg = MemoryConfig()
@@ -2070,6 +2071,7 @@ class TestConsolidationProvider:
     """Tests for _get_consolidation_provider fallback chain."""
 
     def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        overrides.setdefault("consolidation_enabled", True)
         cfg = MemoryConfig(enabled=True, **overrides)
         return MemoryManager(cfg, storage_root=storage_root)
 
