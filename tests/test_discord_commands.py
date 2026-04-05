@@ -19,6 +19,7 @@ from src.discord.notifications import (
     format_pr_created,
     format_chain_stuck,
     format_stuck_defined_task,
+    format_failed_blocked_report,
     format_task_started_embed,
 )
 
@@ -242,6 +243,91 @@ class TestNotificationFormatting:
         result = format_stuck_defined_task(task, blocking, stuck_hours=3.5)
         assert "Stuck" in result
         assert "3.5" in result
+
+
+    def test_format_failed_blocked_report_both(self):
+        failed = [
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Broken build",
+                description="D",
+                retry_count=2,
+                max_retries=3,
+                status=TaskStatus.FAILED,
+            ),
+        ]
+        blocked = [
+            Task(
+                id="t-2",
+                project_id="p-1",
+                title="Stuck deploy",
+                description="D",
+                status=TaskStatus.BLOCKED,
+            ),
+        ]
+        result = format_failed_blocked_report(failed, blocked)
+        assert "Attention Required" in result
+        assert "2 tasks" in result
+        assert "Failed (1)" in result
+        assert "Blocked (1)" in result
+        assert "t-1" in result
+        assert "t-2" in result
+        assert "Broken build" in result
+        assert "Stuck deploy" in result
+        assert "2/3" in result  # retry count
+        assert "/restart-task" in result
+
+    def test_format_failed_blocked_report_failed_only(self):
+        failed = [
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Broken",
+                description="D",
+                retry_count=1,
+                max_retries=3,
+                status=TaskStatus.FAILED,
+            ),
+        ]
+        result = format_failed_blocked_report(failed, [])
+        assert "Attention Required" in result
+        assert "1 task" in result
+        assert "Failed (1)" in result
+        assert "Blocked" not in result.split("Failed")[0]  # no blocked section header
+
+    def test_format_failed_blocked_report_blocked_only(self):
+        blocked = [
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Stuck",
+                description="D",
+                status=TaskStatus.BLOCKED,
+            ),
+        ]
+        result = format_failed_blocked_report([], blocked)
+        assert "Attention Required" in result
+        assert "1 task" in result
+        assert "Blocked (1)" in result
+
+    def test_format_failed_blocked_report_truncates_long_lists(self):
+        failed = [
+            Task(
+                id=f"t-{i}",
+                project_id="p-1",
+                title=f"Task {i}",
+                description="D",
+                status=TaskStatus.FAILED,
+            )
+            for i in range(15)
+        ]
+        result = format_failed_blocked_report(failed, [])
+        assert "+5 more" in result
+        # Should show first 10 tasks
+        assert "t-9" in result
+        # Should NOT show task 11+
+        assert "t-10" not in result
 
 
 class TestProjectContextPrefixing:

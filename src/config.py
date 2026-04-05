@@ -279,6 +279,7 @@ class MonitoringConfig:
     """Configuration for monitoring stuck or stalled tasks."""
 
     stuck_task_threshold_seconds: int = 3600  # 1 hour default
+    failed_blocked_report_interval_seconds: int = 3600  # 1 hour default
 
 
 @dataclass

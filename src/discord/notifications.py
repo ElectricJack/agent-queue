@@ -270,6 +270,42 @@ def format_stuck_defined_task(
     )
 
 
+def format_failed_blocked_report(
+    failed_tasks: list[Task],
+    blocked_tasks: list[Task],
+) -> str:
+    """Format a periodic summary of all tasks currently in FAILED or BLOCKED status.
+
+    Produces a concise markdown message listing tasks that need attention,
+    grouped by status, with actionable commands for each.
+    """
+    total = len(failed_tasks) + len(blocked_tasks)
+    lines = [
+        f"📊 **Attention Required — {total} task{'s' if total != 1 else ''} "
+        f"need{'s' if total == 1 else ''} intervention**",
+    ]
+
+    if failed_tasks:
+        lines.append(f"\n**Failed ({len(failed_tasks)}):**")
+        for t in failed_tasks[:10]:
+            lines.append(
+                f"• `{t.id}` — {t.title} "
+                f"(project: `{t.project_id}`, retries: {t.retry_count}/{t.max_retries})"
+            )
+        if len(failed_tasks) > 10:
+            lines.append(f"  +{len(failed_tasks) - 10} more")
+
+    if blocked_tasks:
+        lines.append(f"\n**Blocked ({len(blocked_tasks)}):**")
+        for t in blocked_tasks[:10]:
+            lines.append(f"• `{t.id}` — {t.title} (project: `{t.project_id}`)")
+        if len(blocked_tasks) > 10:
+            lines.append(f"  +{len(blocked_tasks) - 10} more")
+
+    lines.append("\n_Use `/restart-task` to retry or `/skip-task` to unblock dependents._")
+    return "\n".join(lines)
+
+
 def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     pct = (usage / limit * 100) if limit > 0 else 0
     return (
@@ -540,6 +576,54 @@ def format_stuck_defined_task_embed(
         description=f"DEFINED for {stuck_hours:.1f}h, waiting on dependencies.",
         fields=fields,
     )
+
+
+def format_failed_blocked_report_embed(
+    failed_tasks: list[Task],
+    blocked_tasks: list[Task],
+) -> discord.Embed:
+    """Rich embed version of :func:`format_failed_blocked_report`.
+
+    Uses a critical (dark red) embed with structured fields grouping tasks
+    by status, giving operators an at-a-glance view of everything needing
+    manual intervention.
+    """
+    total = len(failed_tasks) + len(blocked_tasks)
+    description = (
+        f"{total} task{'s' if total != 1 else ''} "
+        f"currently {'require' if total != 1 else 'requires'} manual intervention."
+    )
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Failed", str(len(failed_tasks)), True),
+        ("Blocked", str(len(blocked_tasks)), True),
+    ]
+
+    if failed_tasks:
+        task_lines = "\n".join(
+            f"\u2022 `{t.id}` \u2014 {t.title} ({t.retry_count}/{t.max_retries})"
+            for t in failed_tasks[:8]
+        )
+        if len(failed_tasks) > 8:
+            task_lines += f"\n+{len(failed_tasks) - 8} more"
+        fields.append(("Failed Tasks", truncate(task_lines, LIMIT_FIELD_VALUE), False))
+
+    if blocked_tasks:
+        task_lines = "\n".join(
+            f"\u2022 `{t.id}` \u2014 {t.title}" for t in blocked_tasks[:8]
+        )
+        if len(blocked_tasks) > 8:
+            task_lines += f"\n+{len(blocked_tasks) - 8} more"
+        fields.append(("Blocked Tasks", truncate(task_lines, LIMIT_FIELD_VALUE), False))
+
+    fields.append(
+        (
+            "Actions",
+            "`/restart-task <id>` to retry \u2022 `/skip-task <id>` to unblock dependents",
+            False,
+        )
+    )
+    return critical_embed("Attention Required", description=description, fields=fields)
 
 
 def format_budget_warning_embed(

@@ -23,6 +23,7 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
     ├── _check_stuck_defined_tasks()      # Monitoring alerts
+    ├── _check_failed_blocked_tasks()    # Periodic failed/blocked report
     ├── _schedule()                       # Proportional fair-share assignment
     └── _execute_task_safe(action)        # Background asyncio.Task per assignment
         └── _execute_task_safe_inner()    # Timeout + crash recovery wrapper
@@ -91,6 +92,7 @@ from src.discord.notifications import (
     format_chain_stuck,
     format_stuck_defined_task,
     format_budget_warning,
+    format_failed_blocked_report,
     format_task_started_embed,
     format_task_completed_embed,
     format_task_failed_embed,
@@ -100,6 +102,7 @@ from src.discord.notifications import (
     format_chain_stuck_embed,
     format_stuck_defined_task_embed,
     format_budget_warning_embed,
+    format_failed_blocked_report_embed,
     TaskStartedView,
     TaskFailedView,
     TaskApprovalView,
@@ -228,6 +231,7 @@ class Orchestrator:
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0
+        self._last_failed_blocked_report: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
         self._supervisor = None  # Set via set_supervisor() in Discord bot
         self.rule_manager = None
@@ -1082,6 +1086,8 @@ class Orchestrator:
         4. **Stuck monitoring** — rate-limited alerts for DEFINED tasks that
            have been waiting too long (runs after promotion so we don't
            false-alarm on tasks that just got promoted).
+        4b. **Failed/blocked report** — periodic summary of all tasks in
+            FAILED or BLOCKED status, grouped by project.
 
         **Phase 2 — Scheduling & launch** (steps 5-6):
 
@@ -1132,6 +1138,10 @@ class Orchestrator:
             #    Runs after promotion so we don't false-alarm on tasks that
             #    were just promoted in step 3.
             await self._check_stuck_defined_tasks()
+
+            # 4b. Periodic report of all FAILED/BLOCKED tasks so operators
+            #     have an at-a-glance view of tasks needing intervention.
+            await self._check_failed_blocked_tasks()
 
             # ── Phase 2: Scheduling & launch ────────────────────────────────
 
@@ -1450,6 +1460,53 @@ class Orchestrator:
             )
 
             self._stuck_notified_at[task.id] = now
+
+    async def _check_failed_blocked_tasks(self) -> None:
+        """Periodic report: summarize all FAILED and BLOCKED tasks to the channel.
+
+        Queries for tasks currently in FAILED or BLOCKED status and posts a
+        consolidated summary to the notification channel so operators have an
+        at-a-glance view of everything needing manual intervention.
+
+        Rate-limited by ``monitoring.failed_blocked_report_interval_seconds``
+        (default 1 hour).  Set to 0 or negative to disable.  The report is
+        only sent when at least one task is in FAILED or BLOCKED status.
+        """
+        interval = self.config.monitoring.failed_blocked_report_interval_seconds
+        if interval <= 0:
+            return  # Disabled
+
+        now = time.time()
+        if now - self._last_failed_blocked_report < interval:
+            return
+
+        self._last_failed_blocked_report = now
+
+        failed_tasks = await self.db.list_tasks(status=TaskStatus.FAILED)
+        blocked_tasks = await self.db.list_tasks(status=TaskStatus.BLOCKED)
+
+        if not failed_tasks and not blocked_tasks:
+            return
+
+        total = len(failed_tasks) + len(blocked_tasks)
+        logger.info(
+            "Failed/blocked report: %d failed, %d blocked (%d total)",
+            len(failed_tasks),
+            len(blocked_tasks),
+            total,
+        )
+
+        # Group tasks by project so we can notify each project's channel
+        projects: dict[str, tuple[list, list]] = {}
+        for t in failed_tasks:
+            projects.setdefault(t.project_id, ([], []))[0].append(t)
+        for t in blocked_tasks:
+            projects.setdefault(t.project_id, ([], []))[1].append(t)
+
+        for project_id, (proj_failed, proj_blocked) in projects.items():
+            msg = format_failed_blocked_report(proj_failed, proj_blocked)
+            embed = format_failed_blocked_report_embed(proj_failed, proj_blocked)
+            await self._notify_channel(msg, project_id=project_id, embed=embed)
 
     async def _auto_archive_tasks(self) -> None:
         """Automatically archive terminal tasks older than the configured threshold.
