@@ -2123,20 +2123,6 @@ def setup_commands(bot: commands.Bot) -> None:
             if status_result.get("orchestrator_paused"):
                 header_lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
 
-            agents = status_result.get("agents", [])
-            if agents:
-                header_lines.append("**Agents:**")
-                for a in agents:
-                    working_on = a.get("working_on")
-                    if working_on:
-                        header_lines.append(
-                            f"• **{a['name']}** ({a['state']}) → "
-                            f"**{working_on['project_id']}** / "
-                            f"`{working_on['task_id']}` — {working_on['title']}"
-                        )
-                    else:
-                        header_lines.append(f"• **{a['name']}** ({a['state']})")
-
             # Fetch tasks using the same backend as /tasks
             args: dict = {
                 "include_completed": True,
