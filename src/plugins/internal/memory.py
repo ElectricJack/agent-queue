@@ -215,6 +215,36 @@ TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "consolidate",
+        "description": (
+            "Run knowledge consolidation for a project. By default runs the "
+            "daily consolidation (process staged facts). Use mode='deep' for "
+            "weekly deep consolidation (prune stale facts, resolve conflicts, "
+            "regenerate factsheet summary). Use mode='bootstrap' for one-time "
+            "initial knowledge base generation from existing task memories."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to run consolidation for",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["daily", "deep", "bootstrap"],
+                    "description": (
+                        "Consolidation mode: 'daily' (default) processes staged facts, "
+                        "'deep' reviews and prunes the entire knowledge base, "
+                        "'bootstrap' generates initial knowledge from task history"
+                    ),
+                    "default": "daily",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 
@@ -337,6 +367,7 @@ def _build_cli_formatters():
         "write_memory": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "read_memory": FormatterSpec(render=_fmt_text_content, extract=None, many=False),
         "compact_memory": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
+        "consolidate": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "memory_reindex": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "edit_project_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
         "regenerate_profile": FormatterSpec(render=_fmt_confirmation, extract=None, many=False),
@@ -369,6 +400,7 @@ class MemoryPlugin(InternalPlugin):
         ctx.register_command("edit_project_profile", self.cmd_edit_project_profile)
         ctx.register_command("regenerate_profile", self.cmd_regenerate_profile)
         ctx.register_command("compact_memory", self.cmd_compact_memory)
+        ctx.register_command("consolidate", self.cmd_consolidate)
 
         for tool_def in TOOL_DEFINITIONS:
             ctx.register_tool(dict(tool_def), category="memory")
@@ -648,3 +680,37 @@ class MemoryPlugin(InternalPlugin):
             return {"error": f"Memory compaction failed: {e}"}
 
         return {"project_id": project_id, **result}
+
+    async def cmd_consolidate(self, args: dict) -> dict:
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        mode = args.get("mode", "daily")
+        if mode not in ("daily", "deep", "bootstrap"):
+            return {"error": f"Invalid mode '{mode}'. Use 'daily', 'deep', or 'bootstrap'."}
+
+        workspace, err = await self._require_workspace(project_id)
+        if err:
+            return err
+
+        try:
+            if mode == "bootstrap":
+                # Fetch project metadata for bootstrap
+                project = await self._db.get_project(project_id)
+                project_name = project.get("name", project_id) if project else project_id
+                repo_url = project.get("repo_url", "") if project else ""
+                result = await self._mem.bootstrap_consolidation(
+                    project_id,
+                    workspace,
+                    project_name=project_name,
+                    repo_url=repo_url,
+                )
+            elif mode == "deep":
+                result = await self._mem.run_deep_consolidation(project_id, workspace)
+            else:
+                result = await self._mem.run_daily_consolidation(project_id, workspace)
+        except Exception as e:
+            return {"error": f"Memory consolidation ({mode}) failed: {e}"}
+
+        return {"project_id": project_id, "mode": mode, **result}

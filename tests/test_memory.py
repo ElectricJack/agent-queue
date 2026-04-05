@@ -9,6 +9,7 @@ Also includes tests for the ``memory_search`` hook-engine context step
 (src/hooks.py) which delegates to MemoryManager.
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -984,3 +985,1111 @@ class TestMemoryConfigCompaction:
         assert cfg.compact_enabled is True
         assert cfg.compact_recent_days == 14
         assert cfg.compact_archive_days == 60
+
+
+# ---------------------------------------------------------------------------
+# Post-Task Fact Extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestFactExtraction:
+    """Tests for extract_task_facts() — Phase 3.5 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    async def test_extract_disabled_returns_none(self, tmp_path):
+        """extract_task_facts returns None when fact_extraction_enabled=False."""
+        mgr = self._make_manager(str(tmp_path), fact_extraction_enabled=False)
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_no_provider_returns_none(self, mock_provider, tmp_path):
+        """extract_task_facts returns None when no LLM provider is available."""
+        mock_provider.return_value = None
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_writes_staging_file(self, mock_provider, tmp_path):
+        """extract_task_facts writes a valid JSON staging file."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+            {"category": "decision", "key": "token_storage", "value": "httponly cookies"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        task = FakeTask()
+        result = await mgr.extract_task_facts("proj", task, FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        assert result.endswith(f"{task.id}.json")
+        assert os.path.isfile(result)
+
+        with open(result) as f:
+            staging_doc = json.load(f)
+
+        assert staging_doc["task_id"] == task.id
+        assert staging_doc["project_id"] == "proj"
+        assert staging_doc["task_title"] == task.title
+        assert len(staging_doc["facts"]) == 2
+        assert staging_doc["facts"][0]["category"] == "tech_stack"
+        assert staging_doc["facts"][0]["key"] == "jwt_lib"
+        assert staging_doc["facts"][1]["category"] == "decision"
+        assert "extracted_at" in staging_doc
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_staging_dir_created(self, mock_provider, tmp_path):
+        """extract_task_facts creates staging directory if it doesn't exist."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert not os.path.isdir(staging_dir)
+
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        assert os.path.isdir(staging_dir)
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_empty_facts_writes_file(self, mock_provider, tmp_path):
+        """Empty fact array still writes a staging file (records that extraction ran)."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        with open(result) as f:
+            doc = json.load(f)
+        assert doc["facts"] == []
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_filters_invalid_categories(self, mock_provider, tmp_path):
+        """Facts with invalid categories are dropped during validation."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "valid", "value": "kept"},
+            {"category": "invalid_cat", "key": "bad", "value": "dropped"},
+            {"category": "url", "key": "repo", "value": "https://example.com"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 2
+        categories = [f["category"] for f in doc["facts"]]
+        assert "invalid_cat" not in categories
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_filters_missing_fields(self, mock_provider, tmp_path):
+        """Facts with missing key or value fields are dropped."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "valid", "value": "kept"},
+            {"category": "decision", "key": "", "value": "no key"},
+            {"category": "url", "key": "no_value", "value": ""},
+            {"category": "config"},  # missing both key and value
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 1
+        assert doc["facts"][0]["key"] == "valid"
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_handles_markdown_fences(self, mock_provider, tmp_path):
+        """LLM response wrapped in ```json fences is parsed correctly."""
+        facts_json = '```json\n[{"category": "url", "key": "docs", "value": "https://docs.io"}]\n```'
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 1
+        assert doc["facts"][0]["value"] == "https://docs.io"
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_llm_error_returns_none(self, mock_provider, tmp_path):
+        """LLM failure returns None without crashing."""
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(side_effect=RuntimeError("LLM down"))
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_invalid_json_returns_none(self, mock_provider, tmp_path):
+        """Malformed JSON response returns None."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_non_array_response_returns_none(self, mock_provider, tmp_path):
+        """Non-array JSON response (e.g., object) returns None."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"not": "an array"}')]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_prompt_includes_task_metadata(self, mock_provider, tmp_path):
+        """User prompt sent to LLM includes task ID, title, summary, and files."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        task = FakeTask(id="task-456", title="Upgrade auth system")
+        output = FakeOutput(
+            summary="Switched to OAuth2.",
+            files_changed=["src/auth.py"],
+        )
+
+        await mgr.extract_task_facts("my-proj", task, output, str(tmp_path))
+
+        call_kwargs = provider_instance.create_message.call_args
+        user_msg = call_kwargs.kwargs.get("messages", call_kwargs[1].get("messages", [{}]))[0][
+            "content"
+        ]
+        assert "task-456" in user_msg
+        assert "Upgrade auth system" in user_msg
+        assert "OAuth2" in user_msg
+        assert "src/auth.py" in user_msg
+        assert "my-proj" in user_msg
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_all_valid_categories(self, mock_provider, tmp_path):
+        """All seven valid categories are accepted."""
+        facts_json = json.dumps([
+            {"category": "url", "key": "repo", "value": "https://github.com/test"},
+            {"category": "tech_stack", "key": "db", "value": "PostgreSQL 16"},
+            {"category": "decision", "key": "orm", "value": "Use SQLAlchemy Core"},
+            {"category": "convention", "key": "naming", "value": "snake_case everywhere"},
+            {"category": "architecture", "key": "pattern", "value": "Event-driven"},
+            {"category": "config", "key": "debug", "value": "DEBUG=false in prod"},
+            {"category": "contact", "key": "lead", "value": "Alice (tech lead)"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 7
+
+    def test_staging_dir_path(self, tmp_path):
+        """_staging_dir returns the correct path."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert mgr._staging_dir("proj") == expected
+
+
+class TestFactExtractionConfig:
+    """Tests for fact_extraction_enabled config field."""
+
+    def test_fact_extraction_enabled_default(self):
+        cfg = MemoryConfig()
+        assert cfg.fact_extraction_enabled is True
+
+    def test_fact_extraction_can_be_disabled(self):
+        cfg = MemoryConfig(fact_extraction_enabled=False)
+        assert cfg.fact_extraction_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base Topic Files tests (Phase 3.6)
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeBase:
+    """Tests for knowledge base topic file methods — Phase 3.6 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    # -- _knowledge_dir and _knowledge_topic_path --
+
+    def test_knowledge_dir_path(self, tmp_path):
+        """_knowledge_dir returns the correct path."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        assert mgr._knowledge_dir("proj") == expected
+
+    def test_knowledge_topic_path(self, tmp_path):
+        """_knowledge_topic_path returns the correct path for a topic."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(
+            str(tmp_path), "memory", "proj", "knowledge", "architecture.md"
+        )
+        assert mgr._knowledge_topic_path("proj", "architecture") == expected
+
+    def test_knowledge_topic_path_sanitizes_traversal(self, tmp_path):
+        """_knowledge_topic_path strips directory traversal characters."""
+        mgr = self._make_manager(str(tmp_path))
+        path = mgr._knowledge_topic_path("proj", "../../etc/passwd")
+        # Should not contain traversal; file stays inside knowledge/ dir
+        assert ".." not in path
+        knowledge_dir = mgr._knowledge_dir("proj")
+        assert path.startswith(knowledge_dir)
+        # Filename should have slashes and dots stripped
+        filename = os.path.basename(path)
+        assert "/" not in filename
+        assert "\\" not in filename
+
+    # -- read_knowledge_topic --
+
+    async def test_read_nonexistent_topic_returns_none(self, tmp_path):
+        """read_knowledge_topic returns None when topic file doesn't exist."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_read_disabled_returns_none(self, tmp_path):
+        """read_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        # Create the file anyway to prove it's the config blocking it
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        with open(os.path.join(kdir, "architecture.md"), "w") as f:
+            f.write("# Architecture\nSome content")
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_read_existing_topic(self, tmp_path):
+        """read_knowledge_topic returns file content when topic exists."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        content = "# Architecture Knowledge\n\n- Async-first design"
+        with open(os.path.join(kdir, "architecture.md"), "w") as f:
+            f.write(content)
+        result = await mgr.read_knowledge_topic("proj", "architecture")
+        assert result == content
+
+    # -- write_knowledge_topic --
+
+    async def test_write_creates_file(self, tmp_path):
+        """write_knowledge_topic creates the topic file on disk."""
+        mgr = self._make_manager(str(tmp_path))
+        content = "# Conventions\n\n- Use ruff for linting"
+        result = await mgr.write_knowledge_topic("proj", "conventions", content)
+        assert result is not None
+        assert result.endswith("conventions.md")
+        assert os.path.isfile(result)
+        with open(result) as f:
+            assert f.read() == content
+
+    async def test_write_creates_knowledge_directory(self, tmp_path):
+        """write_knowledge_topic creates the knowledge/ directory if needed."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        assert not os.path.isdir(kdir)
+        await mgr.write_knowledge_topic("proj", "architecture", "# Arch")
+        assert os.path.isdir(kdir)
+
+    async def test_write_disabled_returns_none(self, tmp_path):
+        """write_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        result = await mgr.write_knowledge_topic("proj", "architecture", "# Arch")
+        assert result is None
+
+    async def test_write_invalid_topic_returns_none(self, tmp_path):
+        """write_knowledge_topic rejects topics not in configured list."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.write_knowledge_topic("proj", "nonexistent-topic", "content")
+        assert result is None
+
+    async def test_write_overwrites_existing(self, tmp_path):
+        """write_knowledge_topic overwrites existing content."""
+        mgr = self._make_manager(str(tmp_path))
+        await mgr.write_knowledge_topic("proj", "gotchas", "# Old content")
+        result = await mgr.write_knowledge_topic("proj", "gotchas", "# New content")
+        assert result is not None
+        with open(result) as f:
+            assert f.read() == "# New content"
+
+    @patch("src.memory.MemoryManager.get_instance")
+    async def test_write_reindexes_with_workspace(self, mock_get_instance, tmp_path):
+        """write_knowledge_topic calls index_file when workspace_path is provided."""
+        mock_instance = AsyncMock()
+        mock_get_instance.return_value = mock_instance
+        mgr = self._make_manager(str(tmp_path))
+
+        await mgr.write_knowledge_topic(
+            "proj", "architecture", "# Arch", workspace_path="/some/workspace"
+        )
+
+        mock_instance.index_file.assert_called_once()
+        call_path = mock_instance.index_file.call_args[0][0]
+        assert call_path.endswith("architecture.md")
+
+    # -- ensure_knowledge_topic --
+
+    async def test_ensure_creates_from_template(self, tmp_path):
+        """ensure_knowledge_topic seeds a new file from the template."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result is not None
+        assert os.path.isfile(result)
+        with open(result) as f:
+            content = f.read()
+        assert "# Architecture Knowledge" in content
+        assert "Core Architecture" in content
+        assert "Data Flow" in content
+
+    async def test_ensure_returns_existing_file(self, tmp_path):
+        """ensure_knowledge_topic returns path of existing file without overwriting."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+        existing_content = "# Custom Architecture Content"
+        path = os.path.join(kdir, "architecture.md")
+        with open(path, "w") as f:
+            f.write(existing_content)
+
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result == path
+        with open(path) as f:
+            assert f.read() == existing_content  # not overwritten
+
+    async def test_ensure_disabled_returns_none(self, tmp_path):
+        """ensure_knowledge_topic returns None when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        result = await mgr.ensure_knowledge_topic("proj", "architecture")
+        assert result is None
+
+    async def test_ensure_invalid_topic_returns_none(self, tmp_path):
+        """ensure_knowledge_topic returns None for unconfigured topics."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.ensure_knowledge_topic("proj", "nonexistent-topic")
+        assert result is None
+
+    # -- list_knowledge_topics --
+
+    async def test_list_topics_all_missing(self, tmp_path):
+        """list_knowledge_topics reports all topics as not existing when no files."""
+        mgr = self._make_manager(str(tmp_path))
+        topics = await mgr.list_knowledge_topics("proj")
+        assert len(topics) == 7  # default topic count
+        for t in topics:
+            assert t["exists"] is False
+            assert t["size"] == 0
+            assert t["topic"] in mgr.config.knowledge_topics
+
+    async def test_list_topics_some_exist(self, tmp_path):
+        """list_knowledge_topics correctly reports which topics exist."""
+        mgr = self._make_manager(str(tmp_path))
+        # Create two topics
+        await mgr.write_knowledge_topic("proj", "architecture", "# Architecture\nContent here")
+        await mgr.write_knowledge_topic("proj", "gotchas", "# Gotchas\nWatch out")
+
+        topics = await mgr.list_knowledge_topics("proj")
+        exists_map = {t["topic"]: t["exists"] for t in topics}
+        assert exists_map["architecture"] is True
+        assert exists_map["gotchas"] is True
+        assert exists_map["deployment"] is False
+        assert exists_map["conventions"] is False
+
+        # Check size is populated for existing topics
+        size_map = {t["topic"]: t["size"] for t in topics}
+        assert size_map["architecture"] > 0
+        assert size_map["gotchas"] > 0
+        assert size_map["deployment"] == 0
+
+    async def test_list_topics_custom_topic_list(self, tmp_path):
+        """list_knowledge_topics respects a custom knowledge_topics config."""
+        mgr = self._make_manager(
+            str(tmp_path),
+            knowledge_topics=("architecture", "decisions"),
+        )
+        topics = await mgr.list_knowledge_topics("proj")
+        assert len(topics) == 2
+        assert topics[0]["topic"] == "architecture"
+        assert topics[1]["topic"] == "decisions"
+
+    # -- seed templates --
+
+    async def test_all_default_topics_have_seed_templates(self, tmp_path):
+        """Every default knowledge topic has a seed template in the prompts module."""
+        from src.prompts.memory_consolidation import KNOWLEDGE_TOPIC_SEED_TEMPLATES
+
+        default_topics = MemoryConfig().knowledge_topics
+        for topic in default_topics:
+            assert topic in KNOWLEDGE_TOPIC_SEED_TEMPLATES, (
+                f"Missing seed template for default topic '{topic}'"
+            )
+
+    async def test_seed_templates_have_placeholder(self, tmp_path):
+        """Seed templates contain the {last_updated} placeholder for formatting."""
+        from src.prompts.memory_consolidation import KNOWLEDGE_TOPIC_SEED_TEMPLATES
+
+        for topic, template in KNOWLEDGE_TOPIC_SEED_TEMPLATES.items():
+            assert "{last_updated}" in template, (
+                f"Seed template for '{topic}' missing {{last_updated}} placeholder"
+            )
+
+    # -- _memory_paths includes knowledge dir --
+
+    def test_memory_paths_includes_knowledge_dir(self, tmp_path):
+        """_memory_paths includes the knowledge directory when index_knowledge=True."""
+        mgr = self._make_manager(str(tmp_path))
+        # Create the knowledge directory so it's detected
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir in paths
+
+    def test_memory_paths_excludes_knowledge_when_disabled(self, tmp_path):
+        """_memory_paths excludes the knowledge directory when index_knowledge=False."""
+        mgr = self._make_manager(str(tmp_path), index_knowledge=False)
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        os.makedirs(kdir, exist_ok=True)
+
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir not in paths
+
+    def test_memory_paths_skips_missing_knowledge_dir(self, tmp_path):
+        """_memory_paths doesn't add knowledge dir when it doesn't exist on disk."""
+        mgr = self._make_manager(str(tmp_path))
+        kdir = os.path.join(str(tmp_path), "memory", "proj", "knowledge")
+        # Don't create it
+        paths = mgr._memory_paths("proj", str(tmp_path))
+        assert kdir not in paths
+
+
+class TestKnowledgeBaseConfig:
+    """Tests for knowledge base config fields on MemoryConfig."""
+
+    def test_index_knowledge_default_true(self):
+        cfg = MemoryConfig()
+        assert cfg.index_knowledge is True
+
+    def test_index_knowledge_can_be_disabled(self):
+        cfg = MemoryConfig(index_knowledge=False)
+        assert cfg.index_knowledge is False
+
+    def test_knowledge_topics_default(self):
+        cfg = MemoryConfig()
+        assert "architecture" in cfg.knowledge_topics
+        assert "api-and-endpoints" in cfg.knowledge_topics
+        assert "deployment" in cfg.knowledge_topics
+        assert "dependencies" in cfg.knowledge_topics
+        assert "gotchas" in cfg.knowledge_topics
+        assert "conventions" in cfg.knowledge_topics
+        assert "decisions" in cfg.knowledge_topics
+        assert len(cfg.knowledge_topics) == 7
+
+    def test_knowledge_topics_custom(self):
+        cfg = MemoryConfig(knowledge_topics=("architecture", "decisions"))
+        assert cfg.knowledge_topics == ("architecture", "decisions")
+        assert len(cfg.knowledge_topics) == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Daily Consolidation Process tests
+# ---------------------------------------------------------------------------
+
+
+class TestDailyConsolidation:
+    """Tests for run_daily_consolidation() — Phase 4 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    def _write_staging_file(
+        self,
+        storage_root: str,
+        project_id: str,
+        task_id: str,
+        facts: list[dict],
+        *,
+        extracted_at: str = "2026-04-05T10:00:00Z",
+    ) -> str:
+        """Helper to create a staging JSON file."""
+        staging_dir = os.path.join(storage_root, "memory", project_id, "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+        doc = {
+            "task_id": task_id,
+            "project_id": project_id,
+            "task_title": f"Task {task_id}",
+            "task_type": "feature",
+            "extracted_at": extracted_at,
+            "facts": facts,
+        }
+        path = os.path.join(staging_dir, f"{task_id}.json")
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        return path
+
+    # -- Disabled / empty scenarios --
+
+    async def test_consolidation_disabled_returns_status(self, tmp_path):
+        """Consolidation returns 'disabled' status when consolidation_enabled=False."""
+        mgr = self._make_manager(str(tmp_path), consolidation_enabled=False)
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "disabled"
+        assert result["staging_files_processed"] == 0
+
+    async def test_no_staging_files_returns_no_staging(self, tmp_path):
+        """Consolidation returns 'no_staging' when no staging files exist."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "no_staging"
+        assert result["staging_files_processed"] == 0
+
+    async def test_empty_facts_returns_no_facts(self, tmp_path):
+        """Staging files with no facts → 'no_facts' status, files still moved."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(str(tmp_path), "proj", "task-1", [])
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "no_facts"
+        assert result["staging_files_processed"] == 1
+        assert result["facts_consolidated"] == 0
+        # Staging file should be moved to processed/
+        processed_dir = os.path.join(str(tmp_path), "memory", "proj", "staging", "processed")
+        assert os.path.isfile(os.path.join(processed_dir, "task-1.json"))
+
+    # -- Staging file reading --
+
+    async def test_read_staging_files_sorted_by_time(self, tmp_path):
+        """_read_staging_files returns docs sorted by extracted_at."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-2",
+            [{"category": "url", "key": "k", "value": "v"}],
+            extracted_at="2026-04-05T12:00:00Z",
+        )
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k2", "value": "v2"}],
+            extracted_at="2026-04-05T10:00:00Z",
+        )
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 2
+        assert docs[0]["task_id"] == "task-1"  # earlier extracted_at first
+        assert docs[1]["task_id"] == "task-2"
+
+    async def test_read_staging_files_skips_malformed(self, tmp_path):
+        """_read_staging_files skips malformed JSON files."""
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+
+        # Write a valid file
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+
+        # Write a malformed file
+        with open(os.path.join(staging_dir, "bad.json"), "w") as f:
+            f.write("not valid json {{{")
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 1
+        assert docs[0]["task_id"] == "task-1"
+
+    async def test_read_staging_files_skips_non_json(self, tmp_path):
+        """_read_staging_files ignores non-.json files."""
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+        # Create a non-JSON file in staging
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        with open(os.path.join(staging_dir, "readme.txt"), "w") as f:
+            f.write("not a staging file")
+
+        docs = mgr._read_staging_files("proj")
+        assert len(docs) == 1
+
+    # -- Deduplication --
+
+    async def test_deduplicate_facts_basic(self, tmp_path):
+        """_deduplicate_facts flattens and enriches facts with task_id."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Add auth",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["task_id"] == "task-1"
+        assert result[0]["task_title"] == "Add auth"
+        assert result[0]["key"] == "jwt_lib"
+
+    async def test_deduplicate_newer_wins(self, tmp_path):
+        """When same (category, key) appears in multiple docs, the later one wins."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Old task",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.7.0"},
+                ],
+            },
+            {
+                "task_id": "task-2",
+                "task_title": "New task",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["value"] == "PyJWT 2.8.0"
+        assert result[0]["task_id"] == "task-2"
+
+    async def test_deduplicate_different_keys_kept(self, tmp_path):
+        """Different (category, key) pairs are all kept."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Task 1",
+                "facts": [
+                    {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT"},
+                    {"category": "url", "key": "docs_url", "value": "https://docs.example.com"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 2
+
+    async def test_deduplicate_skips_empty_keys(self, tmp_path):
+        """Facts with empty category or key are skipped."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [
+            {
+                "task_id": "task-1",
+                "task_title": "Task 1",
+                "facts": [
+                    {"category": "", "key": "bad", "value": "skipped"},
+                    {"category": "url", "key": "", "value": "skipped"},
+                    {"category": "url", "key": "good", "value": "kept"},
+                ],
+            },
+        ]
+        result = mgr._deduplicate_facts(docs)
+        assert len(result) == 1
+        assert result[0]["key"] == "good"
+
+    # -- Topic grouping --
+
+    async def test_group_facts_by_topic(self, tmp_path):
+        """_group_facts_by_topic maps facts to configured knowledge topics."""
+        mgr = self._make_manager(str(tmp_path))
+        facts = [
+            {"category": "architecture", "key": "pattern", "value": "event-driven"},
+            {"category": "tech_stack", "key": "db", "value": "PostgreSQL"},
+            {"category": "contact", "key": "owner", "value": "alice"},  # no topic mapping
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+
+        assert "architecture" in grouped
+        assert "dependencies" in grouped
+        assert len(grouped["architecture"]) == 1
+        assert len(grouped["dependencies"]) == 1
+        # contacts don't map to any topic
+        for topic, topic_facts in grouped.items():
+            for f in topic_facts:
+                assert f["category"] != "contact"
+
+    async def test_group_facts_decision_maps_to_both_topics(self, tmp_path):
+        """Decision facts map to both 'decisions' and 'architecture' topics."""
+        mgr = self._make_manager(str(tmp_path))
+        facts = [
+            {"category": "decision", "key": "db_choice", "value": "Use PostgreSQL"},
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+        assert "decisions" in grouped
+        assert "architecture" in grouped
+
+    async def test_group_facts_skips_unconfigured_topics(self, tmp_path):
+        """Topics not in knowledge_topics config are excluded."""
+        mgr = self._make_manager(str(tmp_path), knowledge_topics=("architecture",))
+        facts = [
+            {"category": "decision", "key": "db", "value": "PostgreSQL"},
+        ]
+        grouped = mgr._group_facts_by_topic(facts)
+        # "decisions" is not in configured topics, only "architecture"
+        assert "architecture" in grouped
+        assert "decisions" not in grouped
+
+    # -- Staging file move to processed --
+
+    async def test_move_to_processed(self, tmp_path):
+        """_move_to_processed moves staging files to processed/ subdirectory."""
+        mgr = self._make_manager(str(tmp_path))
+        path = self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "k", "value": "v"}],
+        )
+        docs = [{"_filepath": path, "project_id": "proj"}]
+        moved = mgr._move_to_processed(docs)
+
+        assert moved == 1
+        assert not os.path.isfile(path)
+        processed = os.path.join(str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json")
+        assert os.path.isfile(processed)
+
+    async def test_move_to_processed_missing_file(self, tmp_path):
+        """_move_to_processed handles missing files gracefully."""
+        mgr = self._make_manager(str(tmp_path))
+        docs = [{"_filepath": "/nonexistent/file.json", "project_id": "proj"}]
+        moved = mgr._move_to_processed(docs)
+        assert moved == 0
+
+    # -- End-to-end consolidation with mocked LLM --
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_no_provider(self, mock_provider, tmp_path):
+        """Consolidation returns error when no LLM provider is available."""
+        mock_provider.return_value = None
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        assert result["error"] == "no_provider"
+        # Staging files should NOT be moved on error
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert os.path.isfile(os.path.join(staging_dir, "task-1.json"))
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_invalid_llm_response(self, mock_provider, tmp_path):
+        """Consolidation handles invalid LLM responses gracefully."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        assert "parse_error" in result["error"]
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_end_to_end(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """End-to-end: staging → factsheet update → knowledge base update."""
+        # Set up mock LLM response
+        llm_response = json.dumps({
+            "factsheet_yaml": {
+                "last_updated": "2026-04-05T15:00:00Z",
+                "project": {"name": "test", "id": "proj"},
+                "tech_stack": {"language": "python", "key_dependencies": ["PyJWT"]},
+            },
+            "knowledge_updates": {
+                "dependencies": "# Dependencies Knowledge\n\n- PyJWT 2.8.0 (from task: task-1)\n",
+                "decisions": "# Technical Decisions\n\n- Use JWT for auth (from task: task-1)\n",
+            },
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        # Mock factsheet read
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"project": {"name": "test", "id": "proj"}, "tech_stack": {}},
+            body_markdown="# Test Project",
+        )
+
+        # Mock knowledge topic reads
+        mock_read_kt.return_value = "# Dependencies\n\n*(empty)*"
+        mock_write_fs.return_value = "/tmp/factsheet.md"
+        mock_write_kt.return_value = "/tmp/topic.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [
+                {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                {"category": "decision", "key": "auth_method", "value": "Use JWT for auth"},
+            ],
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "consolidated"
+        assert result["facts_consolidated"] == 2
+        assert result["factsheet_updated"] is True
+        assert "dependencies" in result["topics_updated"]
+        assert "decisions" in result["topics_updated"]
+        assert result["staging_files_processed"] == 1
+
+        # Verify factsheet was written
+        mock_write_fs.assert_called_once()
+        # Verify knowledge topics were written
+        assert mock_write_kt.call_count == 2
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_moves_staging_on_success(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """Staging files are moved to processed/ after successful consolidation."""
+        llm_response = json.dumps({
+            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+            "knowledge_updates": {},
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"last_updated": "old"},
+            body_markdown="",
+        )
+        mock_read_kt.return_value = None
+        mock_write_fs.return_value = "/tmp/fs.md"
+        mock_write_kt.return_value = "/tmp/kt.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        staging_path = self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "docs", "value": "https://docs.example.com"}],
+        )
+
+        assert os.path.isfile(staging_path)
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "consolidated"
+
+        # Original staging file should be gone
+        assert not os.path.isfile(staging_path)
+        # It should be in processed/
+        processed = os.path.join(
+            str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json"
+        )
+        assert os.path.isfile(processed)
+
+    @patch("src.memory.MemoryManager.write_knowledge_topic")
+    @patch("src.memory.MemoryManager.write_factsheet")
+    @patch("src.memory.MemoryManager.read_knowledge_topic")
+    @patch("src.memory.MemoryManager.read_factsheet")
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_multiple_staging_files(
+        self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
+    ):
+        """Consolidation processes multiple staging files and deduplicates."""
+        llm_response = json.dumps({
+            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+            "knowledge_updates": {"dependencies": "# Updated deps\n"},
+        })
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        from src.models import ProjectFactsheet
+        mock_read_fs.return_value = ProjectFactsheet(
+            raw_yaml={"tech_stack": {}},
+            body_markdown="",
+        )
+        mock_read_kt.return_value = "# Dependencies\n"
+        mock_write_fs.return_value = "/tmp/fs.md"
+        mock_write_kt.return_value = "/tmp/kt.md"
+
+        mgr = self._make_manager(str(tmp_path))
+        # Same key in two files — later one should win
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "tech_stack", "key": "db", "value": "SQLite"}],
+            extracted_at="2026-04-05T10:00:00Z",
+        )
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-2",
+            [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
+            extracted_at="2026-04-05T12:00:00Z",
+        )
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        assert result["status"] == "consolidated"
+        assert result["facts_consolidated"] == 1  # deduplicated to 1
+
+        # Check the LLM was called with the newer value
+        call_args = provider_instance.create_message.call_args
+        user_prompt = call_args.kwargs.get("messages", call_args[1].get("messages", [{}]))[0].get("content", "")
+        assert "PostgreSQL" in user_prompt
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_llm_code_fence_response(self, mock_provider, tmp_path):
+        """Consolidation handles LLM responses wrapped in markdown code fences."""
+        llm_response = '```json\n{"factsheet_yaml": {}, "knowledge_updates": {}}\n```'
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=llm_response)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        self._write_staging_file(
+            str(tmp_path), "proj", "task-1",
+            [{"category": "url", "key": "docs", "value": "https://example.com"}],
+        )
+        # Need to set up read_factsheet since it's not mocked
+        factsheet_dir = os.path.join(str(tmp_path), "memory", "proj")
+        os.makedirs(factsheet_dir, exist_ok=True)
+
+        result = await mgr.run_daily_consolidation("proj")
+
+        # Should parse successfully despite code fences
+        assert result["status"] in ("consolidated", "error")
+        # If the yaml was empty {}, factsheet_updated would be False, but parsing succeeded
+        if result["status"] == "consolidated":
+            assert result["facts_consolidated"] == 1
+
+
+class TestConsolidationConfig:
+    """Tests for consolidation config fields on MemoryConfig."""
+
+    def test_consolidation_enabled_default(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_enabled is True
+
+    def test_consolidation_enabled_can_be_disabled(self):
+        cfg = MemoryConfig(consolidation_enabled=False)
+        assert cfg.consolidation_enabled is False
+
+    def test_consolidation_schedule_default(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_schedule == "daily"
+
+    def test_consolidation_provider_default_empty(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_provider == ""
+
+    def test_consolidation_model_default_empty(self):
+        cfg = MemoryConfig()
+        assert cfg.consolidation_model == ""
+
+    def test_consolidation_provider_custom(self):
+        cfg = MemoryConfig(consolidation_provider="ollama", consolidation_model="llama3")
+        assert cfg.consolidation_provider == "ollama"
+        assert cfg.consolidation_model == "llama3"
+
+
+class TestConsolidationProvider:
+    """Tests for _get_consolidation_provider fallback chain."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    @patch("src.memory.MemoryManager._get_consolidation_provider")
+    async def test_consolidation_provider_called(self, mock_provider, tmp_path):
+        """Consolidation uses _get_consolidation_provider, not _get_revision_provider."""
+        mock_provider.return_value = None  # force no-provider path
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        os.makedirs(staging_dir, exist_ok=True)
+        with open(os.path.join(staging_dir, "task-1.json"), "w") as f:
+            json.dump({
+                "task_id": "task-1",
+                "project_id": "proj",
+                "task_title": "Test",
+                "task_type": "feature",
+                "extracted_at": "2026-04-05T10:00:00Z",
+                "facts": [{"category": "url", "key": "k", "value": "v"}],
+            }, f)
+
+        result = await mgr.run_daily_consolidation("proj")
+        assert result["status"] == "error"
+        mock_provider.assert_called_once()

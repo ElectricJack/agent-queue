@@ -327,7 +327,27 @@ class MemoryConfig:
     # Phase 3: Notes Integration
     auto_generate_notes: bool = False  # auto-note generation (off by default, can be noisy)
     notes_inform_profile: bool = True  # include notes in profile revision context
-    # Phase 4: Enhanced Context Delivery
+    # Phase 3.5: Post-Task Fact Extraction
+    fact_extraction_enabled: bool = True  # extract structured facts after task completion
+    # Phase 3.6: Knowledge Base Topic Files
+    index_knowledge: bool = True  # index knowledge/ directory in vector DB
+    knowledge_topics: tuple[str, ...] = (
+        "architecture",
+        "api-and-endpoints",
+        "deployment",
+        "dependencies",
+        "gotchas",
+        "conventions",
+        "decisions",
+    )
+    # Phase 4: Daily Consolidation Process
+    consolidation_enabled: bool = True  # toggle periodic consolidation of staging facts
+    consolidation_schedule: str = "daily"  # "daily", "hourly", or cron-like (future)
+    consolidation_provider: str = ""  # LLM provider for consolidation (defaults to revision_provider)
+    consolidation_model: str = ""  # model override for consolidation
+    # Phase 6: Weekly Deep Consolidation & Bootstrap
+    deep_consolidation_schedule: str = "weekly"  # "weekly", "monthly", or cron-like (future)
+    # Phase 4b: Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include
 
