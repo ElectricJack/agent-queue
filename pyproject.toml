@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+anthropic = [
+    "anthropic>=0.42.0",
+]
 postgresql = [
     "asyncpg>=0.29.0",
 ]

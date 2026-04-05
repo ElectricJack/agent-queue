@@ -1698,9 +1698,15 @@ class AgentQueueBot(commands.Bot):
                             on_progress=_on_progress,
                         )
                     except Exception as e:
-                        import anthropic
+                        _is_auth_error = False
+                        try:
+                            import anthropic
 
-                        if isinstance(e, anthropic.AuthenticationError):
+                            _is_auth_error = isinstance(e, anthropic.AuthenticationError)
+                        except ModuleNotFoundError:
+                            pass
+
+                        if _is_auth_error:
                             # Token may have been refreshed — reload and retry once
                             logger.warning("Auth error, reloading credentials: %s", e)
                             if self.agent.reload_credentials():
