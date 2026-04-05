@@ -821,25 +821,20 @@ class Supervisor:
         elif requires_approval:
             approval_instructions = "- Set requires_approval to true on every task.\n"
 
-        prompt = f"""You are breaking an implementation plan into executable tasks.
+        from src.prompt_builder import PromptBuilder
 
-Read the plan below and create one task per implementation phase using the create_task tool. Each task should be a self-contained unit of work that an AI coding agent can execute.
-
-## Rules
-
-- Create one task per implementation phase/step in the plan. Do NOT create tasks for background sections, architecture notes, or non-actionable content.
-- Use short, descriptive titles (under 80 characters).
-- The description for each task should include all the relevant details from the plan that the agent needs — file paths, code patterns, specific requirements, etc. Include context from the plan's background/architecture sections if it helps the agent understand what to do.
-- Set priority to {base_priority} for all tasks.
-- project_id is already set (active project).
-{dep_instructions}{ws_instructions}{approval_instructions}
-- After creating all tasks, use list_tasks to verify they were created correctly. Confirm the count and titles match what you intended.
-- Parent task ID for reference (do not use as a tool parameter): {parent_task_id}
-
-## Plan Content
-
-{raw_plan}
-"""
+        builder = PromptBuilder()
+        prompt = builder.render_template(
+            "plan-parser-system",
+            {
+                "base_priority": str(base_priority),
+                "dep_instructions": dep_instructions,
+                "ws_instructions": ws_instructions,
+                "approval_instructions": approval_instructions,
+                "parent_task_id": parent_task_id,
+                "raw_plan": raw_plan,
+            },
+        ) or ""
 
         try:
             # Tag logged calls so they're identifiable
