@@ -1,0 +1,18 @@
+{
+  "name": "@aq/ts-client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "generate": "openapi-ts --input ../../openapi.json --output src --client @hey-api/client-fetch",
+    "build": "echo 'TS client consumed as source — no build step needed'"
+  },
+  "dependencies": {
+    "@hey-api/client-fetch": "^0.6.0"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.61.0"
+  }
+}

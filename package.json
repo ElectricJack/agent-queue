@@ -1,0 +1,14 @@
+{
+  "name": "agent-queue",
+  "private": true,
+  "workspaces": ["packages/aq-ts-client", "dashboard"],
+  "scripts": {
+    "dev": "npm -w dashboard run dev",
+    "build": "npm -w packages/aq-ts-client run build && npm -w dashboard run build",
+    "generate:ts-client": "./scripts/regenerate-ts-client.sh",
+    "generate:py-client": "./scripts/regenerate-api-client.sh",
+    "generate": "npm run generate:py-client && npm run generate:ts-client",
+    "lint": "npm -w dashboard run lint",
+    "typecheck": "npm -w dashboard run typecheck"
+  }
+}
