@@ -148,34 +148,46 @@ async def _copy_tables(
     dst: AsyncEngine,
     progress_cb: Callable[[str, int], None] | None,
 ) -> dict[str, int]:
-    """Copy rows from each table in FK-safe order."""
+    """Copy rows from each table in FK-safe order.
+
+    SQLite databases may contain orphaned FK references (e.g. events pointing
+    to archived/deleted tasks) because SQLite does not enforce FKs by default.
+    We disable FK trigger checks during the bulk copy via PostgreSQL's
+    ``session_replication_role = replica`` to handle this gracefully.
+    """
     counts: dict[str, int] = {}
 
-    for table in _ORDERED_TABLES:
-        async with src.connect() as src_conn:
-            result = await src_conn.execute(select(table))
-            rows = result.mappings().fetchall()
+    async with dst.begin() as dst_conn:
+        # Disable FK trigger checks for the duration of the bulk copy
+        await dst_conn.execute(text("SET session_replication_role = replica"))
 
-        if not rows:
-            counts[table.name] = 0
-            if progress_cb:
-                progress_cb(table.name, 0)
-            continue
+        for table in _ORDERED_TABLES:
+            async with src.connect() as src_conn:
+                result = await src_conn.execute(select(table))
+                rows = result.mappings().fetchall()
 
-        # For agents, NULL out current_task_id on first pass
-        if table is agents:
-            rows = [
-                {k: (None if k in _AGENT_DEFERRED_COLS else v) for k, v in row.items()}
-                for row in rows
-            ]
+            if not rows:
+                counts[table.name] = 0
+                if progress_cb:
+                    progress_cb(table.name, 0)
+                continue
 
-        async with dst.begin() as dst_conn:
+            # For agents, NULL out current_task_id on first pass
+            if table is agents:
+                rows = [
+                    {k: (None if k in _AGENT_DEFERRED_COLS else v) for k, v in row.items()}
+                    for row in rows
+                ]
+
             await dst_conn.execute(insert(table), [dict(r) for r in rows])
 
-        counts[table.name] = len(rows)
-        if progress_cb:
-            progress_cb(table.name, len(rows))
-        logger.info("Migrated %d rows from %s", len(rows), table.name)
+            counts[table.name] = len(rows)
+            if progress_cb:
+                progress_cb(table.name, len(rows))
+            logger.info("Migrated %d rows from %s", len(rows), table.name)
+
+        # Re-enable FK trigger checks
+        await dst_conn.execute(text("SET session_replication_role = DEFAULT"))
 
     return counts
 

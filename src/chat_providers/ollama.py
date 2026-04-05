@@ -36,7 +36,7 @@ class OllamaChatProvider(ChatProvider):
         from openai import AsyncOpenAI
 
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
-        self._model = model
+        self._model = str(model) if model else "qwen2.5:32b-instruct-q3_K_M"
         self._keep_alive = keep_alive
         self._num_ctx = num_ctx
         self._keep_alive_seconds = self._parse_duration(keep_alive)

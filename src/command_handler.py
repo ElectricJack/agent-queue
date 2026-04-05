@@ -57,6 +57,7 @@ from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import generate_task_id
+from src.workspace_names import generate_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -4242,8 +4243,6 @@ class CommandHandler:
 
     async def _cmd_add_workspace(self, args: dict) -> dict:
         """Create a workspace for a project."""
-        import uuid
-
         project_id = args["project_id"]
         project = await self.db.get_project(project_id)
         if not project:
@@ -4253,6 +4252,10 @@ class CommandHandler:
         source_type = RepoSourceType(source)
         path = args.get("path")
         name = args.get("name")
+
+        # Generate a human-readable workspace ID up front so it can double
+        # as the checkout directory name when no explicit path is given.
+        ws_id = await generate_workspace_id(self.db)
 
         if source_type == RepoSourceType.LINK:
             if not path:
@@ -4272,11 +4275,12 @@ class CommandHandler:
         elif source_type == RepoSourceType.CLONE:
             if not path:
                 # Auto-generate path under workspace_dir/{project_id}/
-                ws_name = name or f"checkout-{uuid.uuid4().hex[:6]}"
+                # Use explicit name, or the human-readable workspace ID
+                ws_dir_name = name or ws_id
                 path = os.path.join(
                     self.config.workspace_dir,
                     project_id,
-                    ws_name,
+                    ws_dir_name,
                 )
             # Always store as absolute path
             path = os.path.realpath(path)
@@ -4286,8 +4290,6 @@ class CommandHandler:
                     await self.orchestrator.git.acreate_checkout(project.repo_url, path)
                 except Exception as e:
                     return {"error": f"Clone failed: {e}"}
-
-        ws_id = f"ws-{uuid.uuid4().hex[:8]}"
         workspace = Workspace(
             id=ws_id,
             project_id=project_id,
@@ -4915,7 +4917,10 @@ feature work stuck on feature branches across multiple workspaces.
         if "cooldown_seconds" in args:
             updates["cooldown_seconds"] = args["cooldown_seconds"]
         if "llm_config" in args:
-            updates["llm_config"] = json.dumps(args["llm_config"])
+            llm_cfg = args["llm_config"]
+            if isinstance(llm_cfg, dict) and "model" in llm_cfg:
+                llm_cfg["model"] = str(llm_cfg["model"])
+            updates["llm_config"] = json.dumps(llm_cfg)
         if "max_tokens_per_run" in args:
             updates["max_tokens_per_run"] = args["max_tokens_per_run"]
         if not updates:
@@ -5219,6 +5224,8 @@ feature work stuck on feature branches across multiple workspaces.
         trigger = {"type": "scheduled", "fire_at": fire_at_epoch}
         context_steps = args.get("context_steps", [])
         llm_config = args.get("llm_config")
+        if isinstance(llm_config, dict) and "model" in llm_config:
+            llm_config["model"] = str(llm_config["model"])
 
         hook = Hook(
             id=hook_id,

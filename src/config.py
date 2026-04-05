@@ -463,6 +463,14 @@ class ChatProviderConfig:
     keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
     num_ctx: int = 0  # Ollama: context window size (0 = model default)
 
+    def __post_init__(self) -> None:
+        # YAML may parse numeric model names (e.g. ``model: 4``) as int/float.
+        # LLM APIs require the model field to be a string, so coerce here to
+        # prevent "cannot unmarshal number … of type string" errors from
+        # OpenAI-compatible servers (Ollama, vLLM, etc.).
+        if self.model and not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         valid_providers = {"anthropic", "ollama"}
@@ -1307,9 +1315,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "chat_provider" in raw:
         cp = raw["chat_provider"]
+        raw_model = cp.get("model", "")
         config.chat_provider = ChatProviderConfig(
             provider=cp.get("provider", "anthropic"),
-            model=cp.get("model", ""),
+            model=str(raw_model) if raw_model else "",
             base_url=cp.get("base_url", ""),
             keep_alive=cp.get("keep_alive", "1h"),
             num_ctx=cp.get("num_ctx", 0),
@@ -1438,12 +1447,13 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         for pid, pdata in raw["agent_profiles"].items():
             if not isinstance(pdata, dict):
                 continue
+            raw_profile_model = pdata.get("model", "")
             profiles.append(
                 AgentProfileConfig(
                     id=pid,
                     name=pdata.get("name", pid),
                     description=pdata.get("description", ""),
-                    model=pdata.get("model", ""),
+                    model=str(raw_profile_model) if raw_profile_model else "",
                     permission_mode=pdata.get("permission_mode", ""),
                     allowed_tools=pdata.get("allowed_tools", []),
                     mcp_servers=pdata.get("mcp_servers", {}),

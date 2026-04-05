@@ -2869,8 +2869,8 @@ class TestCreateGithubRepo:
         with pytest.raises(GitError, match="no repository URL was found"):
             mgr.create_github_repo("my-app")
 
-    def test_uses_yes_flag(self, monkeypatch):
-        """Uses --yes instead of deprecated --confirm flag."""
+    def test_no_interactive_flags(self, monkeypatch):
+        """Ensures no invalid interactive flags are passed to gh repo create."""
         mgr = GitManager()
         captured_args = {}
 
@@ -2886,7 +2886,7 @@ class TestCreateGithubRepo:
         monkeypatch.setattr(subprocess, "run", mock_run)
 
         mgr.create_github_repo("my-app")
-        assert "--yes" in captured_args["cmd"]
+        assert "--yes" not in captured_args["cmd"]
         assert "--confirm" not in captured_args["cmd"]
 
 
