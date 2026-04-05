@@ -283,6 +283,23 @@ class ClaudeAdapter(AgentAdapter):
                 options.model = self._config.model
             if self._task.mcp_servers:
                 options.mcp_servers = self._task.mcp_servers
+            if self._task.resume_session_id:
+                try:
+                    from claude_agent_sdk import get_session_messages
+
+                    msgs = get_session_messages(self._task.resume_session_id, limit=1)
+                    if msgs:
+                        options.resume = self._task.resume_session_id
+                        options.fork_session = True
+                        print(f"Claude adapter: forking session {self._task.resume_session_id}")
+                    else:
+                        print(
+                            f"Claude adapter: session "
+                            f"{self._task.resume_session_id} not found, "
+                            f"starting fresh"
+                        )
+                except Exception as e:
+                    print(f"Claude adapter: session fork check failed ({e}), starting fresh")
 
             summary_parts = []
             tokens_used = 0
