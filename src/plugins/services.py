@@ -255,12 +255,18 @@ class MemoryServiceImpl:
         self, project_id: str, workspace: str, key: str, content: str
     ) -> str | None:
         if not self._mm:
-            return None
+            raise RuntimeError(
+                "Memory manager is not enabled. "
+                "Ensure 'memory.enabled' is set to true in your configuration."
+            )
         return await self._mm.write_memory(project_id, workspace, key, content)
 
     async def read_memory(self, project_id: str, key: str) -> str | None:
         if not self._mm:
-            return None
+            raise RuntimeError(
+                "Memory manager is not enabled. "
+                "Ensure 'memory.enabled' is set to true in your configuration."
+            )
         return await self._mm.read_memory(project_id, key)
 
     async def reindex(self, project_id: str, workspace: str) -> int:

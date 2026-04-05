@@ -677,7 +677,7 @@ class MemoryPlugin(InternalPlugin):
             return {"error": f"Failed to write memory: {e}"}
 
         if not path:
-            return {"error": "Memory write failed"}
+            return {"error": f"Memory write failed for key '{key}' in project '{project_id}'. The write returned no path — this may indicate the memory manager is misconfigured."}
 
         return {
             "project_id": project_id,

@@ -2732,7 +2732,7 @@ class MemoryManager:
                 f.write(content)
         except Exception as e:
             logger.warning(f"Failed to write memory file {safe_key}: {e}")
-            return None
+            raise OSError(f"Failed to write memory file '{safe_key}' to {memory_dir}: {e}") from e
 
         # Index for semantic search (non-fatal)
         instance = await self.get_instance(project_id, workspace_path)
