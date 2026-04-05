@@ -13,6 +13,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_metadata,
     task_results,
     task_tools,
     tasks,
@@ -255,6 +256,64 @@ class TaskQueryMixin:
                 ).where(task_context.c.task_id == task_id)
             )
             return [dict(r) for r in result.mappings().fetchall()]
+
+    # ---- task_metadata (key-value store) ----
+
+    async def set_task_meta(self, task_id: str, key: str, value) -> None:
+        """Upsert a single metadata key for a task. *value* is JSON-serialised."""
+        encoded = json.dumps(value)
+        async with self._engine.begin() as conn:
+            # Try update first; if no row matched, insert.
+            result = await conn.execute(
+                update(task_metadata)
+                .where(
+                    and_(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == key,
+                    )
+                )
+                .values(value=encoded)
+            )
+            if result.rowcount == 0:
+                await conn.execute(
+                    insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
+                )
+
+    async def get_task_meta(self, task_id: str, key: str):
+        """Return a single metadata value (JSON-decoded), or ``None``."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(task_metadata.c.value).where(
+                    and_(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == key,
+                    )
+                )
+            )
+            row = result.fetchone()
+            return json.loads(row[0]) if row else None
+
+    async def get_all_task_meta(self, task_id: str) -> dict:
+        """Return all metadata for a task as ``{key: decoded_value}``."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(task_metadata.c.key, task_metadata.c.value).where(
+                    task_metadata.c.task_id == task_id
+                )
+            )
+            return {r.key: json.loads(r.value) for r in result.fetchall()}
+
+    async def delete_task_meta(self, task_id: str, key: str) -> None:
+        """Remove a single metadata key for a task."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    and_(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == key,
+                    )
+                )
+            )
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         """Return all direct children of a task."""

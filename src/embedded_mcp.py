@@ -121,12 +121,26 @@ async def run_mcp_server(
 
     while not shutdown_event.is_set():
         try:
+            # Reset session manager so a fresh one is created on restart.
+            mcp._session_manager = None
             mcp_app = mcp.streamable_http_app()
 
             # Mount MCP sub-app at root on the FastAPI app.
             # FastAPI's own routes (/api/*, /health, /docs, etc.) take
             # precedence; MCP handles /mcp underneath.
             fastapi_app.router.routes.append(Mount("/", app=mcp_app))
+
+            # The MCP Starlette sub-app defines a lifespan that
+            # initialises the StreamableHTTPSessionManager task group.
+            # Mounted sub-apps do NOT get their lifespan triggered by
+            # the parent — only the top-level ASGI app does.  We must
+            # run the session manager ourselves via FastAPI's lifespan.
+            @asynccontextmanager
+            async def _combined_lifespan(app):
+                async with mcp.session_manager.run():
+                    yield
+
+            fastapi_app.router.lifespan_context = _combined_lifespan
 
             uv_config = uvicorn.Config(
                 fastapi_app,

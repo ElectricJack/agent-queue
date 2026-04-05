@@ -3751,6 +3751,21 @@ For EACH workspace listed above, perform these steps IN ORDER:
             mcp_servers=task_mcp,
         )
 
+        # On reopened tasks, pass the previous session ID so the adapter can
+        # fork the session and give the agent full prior context.
+        if _is_reopened:
+            try:
+                prev_session = await self.db.get_task_meta(task.id, "last_session_id")
+                if prev_session:
+                    ctx.resume_session_id = prev_session
+                    logger.info(
+                        "Task %s: reopened — will fork session %s",
+                        task.id,
+                        prev_session,
+                    )
+            except Exception as e:
+                logger.warning("Task %s: failed to look up session_id: %s", task.id, e)
+
         # Memory recall: inject relevant historical context from memsearch.
         # Uses the enhanced tiered context (profile → notes → recent tasks →
         # search results) when available, falling back to legacy flat recall.
@@ -3907,6 +3922,13 @@ For EACH workspace listed above, perform these steps IN ORDER:
             await self.db.save_task_result(action.task_id, action.agent_id, output)
         except Exception as e:
             logger.error("Failed to save task result: %s", e)
+
+        # Persist session ID for potential session forking on reopen
+        if output.session_id:
+            try:
+                await self.db.set_task_meta(action.task_id, "last_session_id", output.session_id)
+            except Exception as e:
+                logger.warning("Failed to persist session_id: %s", e)
 
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)

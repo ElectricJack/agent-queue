@@ -1191,27 +1191,39 @@ class AgentQueueBot(commands.Bot):
                 await message.reply(f"⚠️ Error reopening task: {e}")
 
         elif task.status == TaskStatus.IN_PROGRESS:
-            # Task is actively running — store feedback as context.
-            # We can't inject into a running SDK session, but we append
-            # to the description so the agent sees it on any re-execution.
-            try:
-                separator = "\n\n---\n**Thread Feedback:**\n"
-                updated_desc = task.description + separator + feedback
-                await self.orchestrator.db.update_task(task_id, description=updated_desc)
-                await self.orchestrator.db.add_task_context(
-                    task_id,
-                    type="thread_feedback",
-                    label="User Feedback (from thread)",
-                    content=feedback,
-                )
-                await message.reply(
-                    "💬 Message received. The agent is currently working — "
-                    "your feedback has been saved and will be included if "
-                    "the task is re-executed."
-                )
-            except Exception as e:
-                logger.error("Task thread context save failed for %s: %s", task_id, e)
-                await message.reply(f"⚠️ Error saving feedback: {e}")
+            # Task is actively running — try to inject the message into the
+            # live session so the agent sees it immediately.
+            injected = False
+            if task.assigned_agent_id:
+                adapter = self.orchestrator._adapters.get(task.assigned_agent_id)
+                if adapter and hasattr(adapter, "inject_message"):
+                    try:
+                        await adapter.inject_message(feedback)
+                        injected = True
+                        await message.add_reaction("👍")
+                    except Exception as e:
+                        logger.warning("inject_message failed for task %s: %s", task_id, e)
+
+            if not injected:
+                # Fallback: save as context for re-execution
+                try:
+                    separator = "\n\n---\n**Thread Feedback:**\n"
+                    updated_desc = task.description + separator + feedback
+                    await self.orchestrator.db.update_task(task_id, description=updated_desc)
+                    await self.orchestrator.db.add_task_context(
+                        task_id,
+                        type="thread_feedback",
+                        label="User Feedback (from thread)",
+                        content=feedback,
+                    )
+                    await message.reply(
+                        "💬 Message received. The agent is currently working — "
+                        "your feedback has been saved and will be included if "
+                        "the task is re-executed."
+                    )
+                except Exception as e:
+                    logger.error("Task thread context save failed for %s: %s", task_id, e)
+                    await message.reply(f"⚠️ Error saving feedback: {e}")
 
         else:
             # READY, ASSIGNED, DEFINED, PAUSED, WAITING_INPUT, etc.

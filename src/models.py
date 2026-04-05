@@ -361,6 +361,7 @@ class TaskContext:
         default_factory=list
     )  # absolute paths to images the agent should examine
     mcp_servers: dict[str, dict] = field(default_factory=dict)
+    resume_session_id: str | None = None  # fork from this session on reopen
 
 
 @dataclass
@@ -380,6 +381,7 @@ class AgentOutput:
     tokens_used: int = 0
     error_message: str | None = None
     question: str | None = None
+    session_id: str | None = None
 
 
 @dataclass

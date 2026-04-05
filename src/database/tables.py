@@ -119,6 +119,14 @@ task_context = Table(
     Column("content", Text, nullable=False),
 )
 
+task_metadata = Table(
+    "task_metadata",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("key", Text, primary_key=True),
+    Column("value", Text, nullable=False),
+)
+
 task_tools = Table(
     "task_tools",
     metadata,
