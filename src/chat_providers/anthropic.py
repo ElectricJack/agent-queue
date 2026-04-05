@@ -57,11 +57,11 @@ class AnthropicChatProvider(ChatProvider):
             import anthropic
         except ModuleNotFoundError:
             self._client = None
-            self._model = model
+            self._model = str(model) if model else ""
             return
 
         self._client = None
-        self._model = model
+        self._model = str(model) if model else ""
 
         # Try Vertex AI first
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get(

@@ -852,9 +852,10 @@ class HookEngine:
             hook_provider = None
             if hook.llm_config:
                 llm_cfg = json.loads(hook.llm_config)
+                raw_model = llm_cfg.get("model", self.config.chat_provider.model)
                 provider_config = ChatProviderConfig(
                     provider=llm_cfg.get("provider", self.config.chat_provider.provider),
-                    model=llm_cfg.get("model", self.config.chat_provider.model),
+                    model=str(raw_model) if raw_model else "",
                     base_url=llm_cfg.get("base_url", self.config.chat_provider.base_url),
                 )
                 hook_provider = create_chat_provider(provider_config)
@@ -882,9 +883,10 @@ class HookEngine:
 
         if hook.llm_config:
             llm_cfg = json.loads(hook.llm_config)
+            raw_model = llm_cfg.get("model", self.config.chat_provider.model)
             provider_config = ChatProviderConfig(
                 provider=llm_cfg.get("provider", self.config.chat_provider.provider),
-                model=llm_cfg.get("model", self.config.chat_provider.model),
+                model=str(raw_model) if raw_model else "",
                 base_url=llm_cfg.get("base_url", self.config.chat_provider.base_url),
             )
         else:

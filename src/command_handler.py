@@ -4915,7 +4915,10 @@ feature work stuck on feature branches across multiple workspaces.
         if "cooldown_seconds" in args:
             updates["cooldown_seconds"] = args["cooldown_seconds"]
         if "llm_config" in args:
-            updates["llm_config"] = json.dumps(args["llm_config"])
+            llm_cfg = args["llm_config"]
+            if isinstance(llm_cfg, dict) and "model" in llm_cfg:
+                llm_cfg["model"] = str(llm_cfg["model"])
+            updates["llm_config"] = json.dumps(llm_cfg)
         if "max_tokens_per_run" in args:
             updates["max_tokens_per_run"] = args["max_tokens_per_run"]
         if not updates:
@@ -5219,6 +5222,8 @@ feature work stuck on feature branches across multiple workspaces.
         trigger = {"type": "scheduled", "fire_at": fire_at_epoch}
         context_steps = args.get("context_steps", [])
         llm_config = args.get("llm_config")
+        if isinstance(llm_config, dict) and "model" in llm_config:
+            llm_config["model"] = str(llm_config["model"])
 
         hook = Hook(
             id=hook_id,
