@@ -86,29 +86,28 @@ from src.llm_logger import LLMLogger
 from src.database import create_database
 from src.discord.notifications import (
     format_task_started,
-    format_task_failed,
-    format_task_blocked,
-    format_pr_created,
-    format_agent_question,
-    format_chain_stuck,
-    format_stuck_defined_task,
-    format_budget_warning,
     format_failed_blocked_report,
-    format_task_started_embed,
-    format_task_completed_embed,
-    format_task_failed_embed,
-    format_task_blocked_embed,
-    format_pr_created_embed,
-    format_agent_question_embed,
-    format_chain_stuck_embed,
-    format_stuck_defined_task_embed,
-    format_budget_warning_embed,
     format_failed_blocked_report_embed,
-    TaskStartedView,
-    TaskFailedView,
-    TaskApprovalView,
-    TaskBlockedView,
-    AgentQuestionView,
+)
+from src.notifications.builder import build_agent_summary, build_task_detail
+from src.notifications.events import (
+    AgentQuestionEvent,
+    BudgetWarningEvent,
+    ChainStuckEvent,
+    MergeConflictEvent,
+    PlanAwaitingApprovalEvent,
+    PRCreatedEvent,
+    PushFailedEvent,
+    StuckDefinedTaskEvent,
+    TaskBlockedEvent,
+    TaskCompletedEvent,
+    TaskFailedEvent,
+    TaskMessageEvent,
+    TaskStartedEvent,
+    TaskStoppedEvent,
+    TaskThreadCloseEvent,
+    TaskThreadOpenEvent,
+    TextNotifyEvent,
 )
 from src.event_bus import EventBus
 from src.messaging.types import (
@@ -530,16 +529,16 @@ class Orchestrator:
                 if await self.db.are_dependencies_met(dep_id):
                     unblocked.append(dep_task)
 
-        await self._notify_channel(
+        msg = (
             f"**Task Skipped:** `{task_id}` — {task.title}\n"
             f"Marked as COMPLETED to unblock dependency chain."
             + (
                 f"\n{len(unblocked)} task(s) will be unblocked in the next cycle."
                 if unblocked
                 else ""
-            ),
-            project_id=task.project_id,
+            )
         )
+        await self._emit_text_notify(msg, project_id=task.project_id)
 
         return None, unblocked
 
@@ -593,9 +592,12 @@ class Orchestrator:
             self._adapters.pop(agent_id, None)
 
         await self._emit_task_failure(task, "stop_task", error="Manually stopped by user")
-        await self._notify_channel(
-            f"**Task Stopped:** `{task_id}` — {task.title}",
-            project_id=task.project_id,
+        await self._emit_notify(
+            "notify.task_stopped",
+            TaskStoppedEvent(
+                task=build_task_detail(task),
+                project_id=task.project_id,
+            ),
         )
         # Delete the task-added and task-started messages to reduce chat clutter
         added_msg = self._task_added_messages.pop(task_id, None)
@@ -610,16 +612,16 @@ class Orchestrator:
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s", task_id, e)
-        # Update the thread root message to reflect the stop
-        if self._edit_thread_root:
-            try:
-                await self._edit_thread_root(
-                    task_id,
-                    f"🛑 **Work stopped:** {task.title}",
-                    None,
-                )
-            except Exception as e:
-                logger.debug("Could not edit thread root for %s: %s", task_id, e)
+        # Close thread and update root message
+        await self._emit_notify(
+            "notify.task_thread_close",
+            TaskThreadCloseEvent(
+                task_id=task_id,
+                final_status="stopped",
+                final_message=f"🛑 **Work stopped:** {task.title}",
+                project_id=task.project_id,
+            ),
+        )
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
@@ -689,6 +691,32 @@ class Orchestrator:
                 logger.error("Notification error: %s", e)
         return None
 
+    async def _emit_notify(self, event_type: str, event: Any) -> None:
+        """Emit a typed notification event on the bus.
+
+        All outbound notifications now go through the EventBus as typed
+        events.  Transport handlers (Discord, WebSocket, etc.) subscribe
+        to ``notify.*`` events and handle formatting/delivery.
+        """
+        try:
+            await self.bus.emit(event_type, event.model_dump(mode="json"))
+        except Exception as e:
+            logger.error("Notification event emit error (%s): %s", event_type, e)
+
+    async def _emit_text_notify(
+        self,
+        message: str,
+        project_id: str | None = None,
+    ) -> None:
+        """Emit a plain-text notification event on the bus.
+
+        Used for simple text messages that don't warrant a typed event.
+        """
+        await self._emit_notify(
+            "notify.text",
+            TextNotifyEvent(message=message, project_id=project_id),
+        )
+
     async def _notify_agent_question(
         self,
         task: Task,
@@ -708,15 +736,14 @@ class Orchestrator:
         # Ensure we have proper model objects (may receive raw DB rows)
         if not isinstance(agent, Agent):
             agent = await self.db.get_agent(getattr(agent, "id", agent))
-        msg = format_agent_question(task, agent, question)
-        embed = format_agent_question_embed(task, agent, question)
-        handler_ref = self._get_handler()
-        view = AgentQuestionView(task.id, handler=handler_ref)
-        await self._notify_channel(
-            msg,
-            project_id=project_id or task.project_id,
-            embed=embed,
-            view=view,
+        await self._emit_notify(
+            "notify.agent_question",
+            AgentQuestionEvent(
+                task=build_task_detail(task),
+                agent=build_agent_summary(agent),
+                question=question,
+                project_id=project_id or task.project_id,
+            ),
         )
         await self.db.log_event(
             "agent_question",
@@ -789,12 +816,15 @@ class Orchestrator:
         self._budget_warned_at[project_id] = crossed
 
         project_name = project.name or project_id
-        msg = format_budget_warning(project_name, usage, limit)
-        embed = format_budget_warning_embed(project_name, usage, limit)
-        await self._notify_channel(
-            msg,
-            project_id=project_id,
-            embed=embed,
+        await self._emit_notify(
+            "notify.budget_warning",
+            BudgetWarningEvent(
+                project_name=project_name,
+                usage=usage,
+                limit=limit,
+                percentage=pct,
+                project_id=project_id,
+            ),
         )
         await self.db.log_event(
             "budget_warning",
@@ -1286,7 +1316,7 @@ class Orchestrator:
                 await self._emit_task_failure(
                     task, "timeout", error=f"Task execution timed out after {timeout}s"
                 )
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
                 project_id=action.project_id,
             )
@@ -1314,7 +1344,7 @@ class Orchestrator:
                 )
             except Exception:
                 pass
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Error executing task** `{action.task_id}`: {e}",
                 project_id=action.project_id,
             )
@@ -1501,11 +1531,17 @@ class Orchestrator:
                 task_created_at = now  # fallback (should not happen)
             stuck_hours = (now - task_created_at) / 3600
 
-            msg = format_stuck_defined_task(task, blocking, stuck_hours)
-            await self._notify_channel(
-                msg,
-                project_id=task.project_id,
-                embed=format_stuck_defined_task_embed(task, blocking, stuck_hours),
+            await self._emit_notify(
+                "notify.stuck_defined_task",
+                StuckDefinedTaskEvent(
+                    task=build_task_detail(task),
+                    blocking_deps=[
+                        {"id": dep_id, "title": dep_title, "status": dep_status}
+                        for dep_id, dep_title, dep_status in blocking
+                    ],
+                    stuck_hours=stuck_hours,
+                    project_id=task.project_id,
+                ),
             )
 
             # Log the event
@@ -1722,11 +1758,14 @@ class Orchestrator:
         if not stuck:
             return
 
-        msg = format_chain_stuck(blocked_task, stuck)
-        await self._notify_channel(
-            msg,
-            project_id=blocked_task.project_id,
-            embed=format_chain_stuck_embed(blocked_task, stuck),
+        await self._emit_notify(
+            "notify.chain_stuck",
+            ChainStuckEvent(
+                blocked_task=build_task_detail(blocked_task),
+                stuck_task_ids=[t.id for t in stuck],
+                stuck_task_titles=[t.title for t in stuck],
+                project_id=blocked_task.project_id,
+            ),
         )
         await self.db.log_event(
             "chain_stuck",
@@ -1776,20 +1815,15 @@ class Orchestrator:
 
         for threshold in self._BUDGET_THRESHOLDS:
             if pct >= threshold > prev_threshold:
-                msg = format_budget_warning(
-                    project.name,
-                    usage,
-                    project.budget_limit,
-                )
-                embed = format_budget_warning_embed(
-                    project.name,
-                    usage,
-                    project.budget_limit,
-                )
-                await self._notify_channel(
-                    msg,
-                    project_id=project_id,
-                    embed=embed,
+                await self._emit_notify(
+                    "notify.budget_warning",
+                    BudgetWarningEvent(
+                        project_name=project.name,
+                        usage=usage,
+                        limit=project.budget_limit,
+                        percentage=pct,
+                        project_id=project_id,
+                    ),
                 )
                 await self.db.log_event(
                     "budget_warning",
@@ -2031,7 +2065,7 @@ class Orchestrator:
 
             elif ws.source_type == RepoSourceType.LINK:
                 if not os.path.isdir(workspace):
-                    await self._notify_channel(
+                    await self._emit_text_notify(
                         f"**Warning:** Linked workspace path `{workspace}` does not exist.",
                         project_id=task.project_id,
                     )
@@ -2057,7 +2091,7 @@ class Orchestrator:
             # Layer 3: Git failure means no launch — release workspace and
             # clean up the sentinel so another task can use this workspace.
             logger.error("Git setup failed for task %s in %s: %s", task.id, workspace, e)
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Git Error:** Task `{task.id}` — branch setup failed: {e}\n"
                 f"Workspace released. Task will retry when a workspace is available.",
                 project_id=task.project_id,
@@ -2174,19 +2208,28 @@ class Orchestrator:
             )
             if not success:
                 if error == "merge_conflict":
-                    await self._notify_channel(
-                        f"**Merge Conflict:** Task `{task.id}` branch "
-                        f"`{task.branch_name}` has conflicts with "
-                        f"`{repo.default_branch}`. Manual resolution needed.",
-                        project_id=task.project_id,
+                    await self._emit_notify(
+                        "notify.merge_conflict",
+                        MergeConflictEvent(
+                            task=build_task_detail(task),
+                            branch=task.branch_name or "",
+                            target_branch=repo.default_branch,
+                            project_id=task.project_id,
+                        ),
                     )
                 else:
                     # error starts with "push_failed: …"
-                    await self._notify_channel(
-                        f"**Push Failed:** Could not push `{repo.default_branch}` "
-                        f"for task `{task.id}` after {_max_retries} attempts. "
-                        f"Workspace may be diverged. Details: {error}",
-                        project_id=task.project_id,
+                    await self._emit_notify(
+                        "notify.push_failed",
+                        PushFailedEvent(
+                            task=build_task_detail(task),
+                            branch=repo.default_branch,
+                            error_detail=(
+                                f"Could not push after {_max_retries} attempts. "
+                                f"Workspace may be diverged. Details: {error}"
+                            ),
+                            project_id=task.project_id,
+                        ),
                     )
                 # Recovery: reset workspace to origin state so it's clean
                 # for the next task.  After a failed push the local default
@@ -2220,11 +2263,14 @@ class Orchestrator:
                         repo.default_branch,
                     )
             if not merged:
-                await self._notify_channel(
-                    f"**Merge Conflict:** Task `{task.id}` branch "
-                    f"`{task.branch_name}` has conflicts with "
-                    f"`{repo.default_branch}`. Manual resolution needed.",
-                    project_id=task.project_id,
+                await self._emit_notify(
+                    "notify.merge_conflict",
+                    MergeConflictEvent(
+                        task=build_task_detail(task),
+                        branch=task.branch_name or "",
+                        target_branch=repo.default_branch,
+                        project_id=task.project_id,
+                    ),
                 )
                 # Recovery: ensure we're on the default branch so the
                 # workspace is clean for the next task.  merge_branch()
@@ -2280,7 +2326,7 @@ class Orchestrator:
         """
         if not await self.git.ahas_remote(workspace):
             # No remote — notify user to review the branch locally
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Approval Required:** Task `{task.id}` — {task.title}\n"
                 f"Branch `{task.branch_name}` is ready for review in `{workspace}`.\n"
                 f"Use the `approve_task` command to complete it.",
@@ -2299,10 +2345,14 @@ class Orchestrator:
                 force_with_lease=True,
             )
         except Exception as e:
-            await self._notify_channel(
-                f"**Push Failed:** Could not push branch `{task.branch_name}` "
-                f"for task `{task.id}`: {e}",
-                project_id=task.project_id,
+            await self._emit_notify(
+                "notify.push_failed",
+                PushFailedEvent(
+                    task=build_task_detail(task),
+                    branch=task.branch_name or "",
+                    error_detail=str(e),
+                    project_id=task.project_id,
+                ),
             )
             return None
 
@@ -2316,7 +2366,7 @@ class Orchestrator:
             )
             return pr_url
         except Exception as e:
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**PR Creation Failed:** Task `{task.id}` — {e}\n"
                 f"Branch `{task.branch_name}` has been pushed. Create a PR manually.",
                 project_id=task.project_id,
@@ -2745,7 +2795,7 @@ class Orchestrator:
                 retry_count,
                 max_retries,
             )
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Verification Failed:** Task `{task.id}` — "
                 f"git state is incorrect after {retry_count} retries. "
                 f"Manual resolution needed.",
@@ -2782,7 +2832,7 @@ class Orchestrator:
             label="Git Verification Feedback",
             content=feedback,
         )
-        await self._notify_channel(
+        await self._emit_text_notify(
             f"🔄 **Verification reopen:** Task `{task.id}` — "
             f"reopened with feedback (attempt {retry_count + 1}/{max_retries})",
             project_id=task.project_id,
@@ -2944,7 +2994,7 @@ class Orchestrator:
                     task_id=task.id,
                     payload="auto-completed: no PR and approval not required",
                 )
-                await self._notify_channel(
+                await self._emit_text_notify(
                     f"**Auto-completed:** Task `{task.id}` — {task.title} "
                     f"(no PR created, approval not required).",
                     project_id=task.project_id,
@@ -2961,7 +3011,7 @@ class Orchestrator:
 
         if age >= self._NO_PR_ESCALATION_THRESHOLD:
             hours = int(age // 3600)
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"⚠️ **Stuck Task:** `{task.id}` — {task.title} has been "
                 f"AWAITING_APPROVAL for **{hours}h** with no PR URL.\n"
                 f"Use `approve_task {task.id}` to complete it or investigate "
@@ -2975,7 +3025,7 @@ class Orchestrator:
                 payload=f"no_pr_url, age={hours}h",
             )
         else:
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"🔍 **Awaiting manual approval:** Task `{task.id}` — "
                 f"{task.title}\nNo PR URL — use `approve_task {task.id}` "
                 f"to complete.",
@@ -3021,7 +3071,7 @@ class Orchestrator:
         if merged is True:
             await self.db.transition_task(task.id, TaskStatus.COMPLETED, context="pr_merged")
             await self.db.log_event("task_completed", project_id=task.project_id, task_id=task.id)
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
                 project_id=task.project_id,
             )
@@ -3039,7 +3089,7 @@ class Orchestrator:
             # Closed without merge
             await self.db.transition_task(task.id, TaskStatus.BLOCKED, context="pr_closed")
             await self._emit_task_failure(task, "pr_closed", error="PR was closed without merging")
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "
                 f"was closed without merging. Marked as BLOCKED.",
                 project_id=task.project_id,
@@ -3382,7 +3432,7 @@ class Orchestrator:
         merge_succeeded = False  # Track merge outcome for final status
 
         async def _notify(msg: str) -> None:
-            await self._notify_channel(msg, project_id=action.project_id)
+            await self._emit_text_notify(msg, project_id=action.project_id)
 
         await _notify(
             f"🔄 **Sync Workspaces started:** `{task.id}`\n"
@@ -3603,29 +3653,35 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 branch_name=default_branch,
             )
 
-            # Create a thread for streaming output.
-            thread_send = None
-            if self._create_thread:
-                try:
-                    start_msg = (
-                        f"🔄 **Sync Workspaces** — Merge agent starting\n"
-                        f"Task: `{task.id}` | Agent: {agent.name}"
-                    )
-                    thread_name = f"{task.id} | Sync Workspaces"[:100]
-                    thread_result = await self._create_thread(
-                        thread_name, start_msg, action.project_id, task.id
-                    )
-                    if thread_result:
-                        thread_send = thread_result[0]
-                except Exception as e:
-                    logger.error("Sync workflow: thread creation failed: %s", e)
+            # Create a thread for streaming output via event.
+            start_msg = (
+                f"🔄 **Sync Workspaces** — Merge agent starting\n"
+                f"Task: `{task.id}` | Agent: {agent.name}"
+            )
+            thread_name = f"{task.id} | Sync Workspaces"[:100]
+            await self._emit_notify(
+                "notify.task_thread_open",
+                TaskThreadOpenEvent(
+                    task_id=task.id,
+                    thread_name=thread_name,
+                    initial_message=start_msg,
+                    project_id=action.project_id,
+                ),
+            )
 
             await adapter.start(ctx)
 
-            # Stream agent output.
+            # Stream agent output via event.
             async def forward_msg(text: str) -> None:
-                if thread_send:
-                    await thread_send(text)
+                await self._emit_notify(
+                    "notify.task_message",
+                    TaskMessageEvent(
+                        task_id=task.id,
+                        message=text,
+                        message_type="agent_output",
+                        project_id=action.project_id,
+                    ),
+                )
 
             output = await adapter.wait(on_message=forward_msg)
 
@@ -3749,7 +3805,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
         """
         if not self._adapter_factory:
             logger.error("Cannot execute task %s: no adapter factory configured", action.task_id)
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
                 project_id=action.project_id,
             )
@@ -3781,7 +3837,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
         try:
             workspace = await self._prepare_workspace(task, agent)
         except Exception as e:
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**Workspace Error:** Task `{task.id}` — {e}",
                 project_id=action.project_id,
             )
@@ -3808,7 +3864,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 resume_after=time.time() + no_ws_backoff,
             )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
-            await self._notify_channel(
+            await self._emit_text_notify(
                 f"**No Workspace:** Task `{task.id}` paused for "
                 f"{no_ws_backoff}s — project `{action.project_id}` has no "
                 f"available workspaces. Use `/add-workspace` to create one.",
@@ -3835,26 +3891,24 @@ For EACH workspace listed above, perform these steps IN ORDER:
         except Exception:
             pass
 
-        # Notify that work is starting — skip the main-channel message
-        # for reopened tasks to avoid cluttering the channel.
+        # Notify that work is starting via typed event.
+        # The DiscordNotificationHandler stores the returned message for
+        # later deletion and handles embed/view creation.
         start_msg = format_task_started(task, agent, workspace=ws_obj)
-        started_discord_msg = None
         if not _is_reopened:
-            handler_ref = self._get_handler()
-            started_discord_msg = await self._notify_channel(
-                start_msg,
-                project_id=action.project_id,
-                embed=format_task_started_embed(task, agent, workspace=ws_obj),
-                view=TaskStartedView(
-                    task.id,
-                    handler=handler_ref,
+            await self._emit_notify(
+                "notify.task_started",
+                TaskStartedEvent(
+                    task=build_task_detail(task),
+                    agent=build_agent_summary(agent),
+                    workspace_path=ws_obj.workspace_path if ws_obj else workspace,
+                    workspace_name=(ws_obj.name or "") if ws_obj else "",
+                    is_reopened=False,
                     task_description=task.description or "",
                     task_contexts=contexts if contexts else None,
+                    project_id=action.project_id,
                 ),
             )
-        # Store the message so we can delete it when the task finishes
-        if started_discord_msg is not None:
-            self._task_started_messages[task.id] = started_discord_msg
 
         # Delete the task-added notification from Discord to reduce chat
         # clutter — the task-started message supersedes it.
@@ -3865,26 +3919,20 @@ For EACH workspace listed above, perform these steps IN ORDER:
             except Exception as e:
                 logger.debug("Could not delete task-added message for %s: %s", task.id, e)
 
-        # Create a thread for streaming agent output.  If this is a reopened
-        # task, the callback will reuse the existing thread instead of creating
-        # a new one.
-        thread_send: ThreadSendCallback | None = None
-        thread_main_notify: ThreadSendCallback | None = None
-        if self._create_thread:
-            try:
-                thread_name = f"{task.id} | {task.title}"[:100]
-                thread_result = await self._create_thread(
-                    thread_name, start_msg, action.project_id, task.id
-                )
-                if thread_result:
-                    thread_send, thread_main_notify = thread_result
-                    logger.debug("Created thread for task %s", task.id)
-                else:
-                    logger.warning("Thread creation returned None for task %s", task.id)
-            except Exception:
-                logger.error("Failed to create thread for task %s", task.id, exc_info=True)
-        else:
-            logger.debug("No thread callback set for task %s", task.id)
+        # Open a thread for streaming agent output via event.
+        # The notification handler creates the thread and stores callbacks
+        # internally, keyed by task_id.  Subsequent task_message events
+        # are routed to the correct thread automatically.
+        thread_name = f"{task.id} | {task.title}"[:100]
+        await self._emit_notify(
+            "notify.task_thread_open",
+            TaskThreadOpenEvent(
+                task_id=task.id,
+                thread_name=thread_name,
+                initial_message=start_msg,
+                project_id=action.project_id,
+            ),
+        )
 
         # Resolve the agent profile (task-level → project-level → system default)
         # and create an adapter instance.  The profile controls model selection,
@@ -3993,11 +4041,18 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
         async def forward_agent_message(text: str) -> None:
             nonlocal _question_notified
-            if thread_send:
-                await thread_send(text)
-            else:
-                header = f"`{task.id}` | **{agent.name}**\n"
-                await self._notify_channel(header + text, project_id=action.project_id)
+            # Stream agent output via event — the notification handler
+            # routes to the task's thread if one exists, otherwise to the
+            # main channel.
+            await self._emit_notify(
+                "notify.task_message",
+                TaskMessageEvent(
+                    task_id=task.id,
+                    message=text,
+                    message_type="agent_output",
+                    project_id=action.project_id,
+                ),
+            )
 
             # Detect agent questions — the Claude adapter formats
             # AskUserQuestion tool use as "**[AskUserQuestion...]**".
@@ -4071,15 +4126,26 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 _backoff,
             )
 
-            await self._notify_channel(
-                "⏳ Claude is currently rate-limited. We will try again in a moment.",
-                project_id=action.project_id,
+            await self._emit_notify(
+                "notify.task_message",
+                TaskMessageEvent(
+                    task_id=task.id,
+                    message="⏳ Claude is currently rate-limited. We will try again in a moment.",
+                    message_type="status",
+                    project_id=action.project_id,
+                ),
             )
 
             await asyncio.sleep(_backoff)
 
-            await self._notify_channel(
-                "✅ Rate limit cleared — resuming now.", project_id=action.project_id
+            await self._emit_notify(
+                "notify.task_message",
+                TaskMessageEvent(
+                    task_id=task.id,
+                    message="✅ Rate limit cleared — resuming now.",
+                    message_type="status",
+                    project_id=action.project_id,
+                ),
             )
 
             # Re-initialise the adapter so the next call starts a fresh query.
@@ -4125,25 +4191,31 @@ For EACH workspace listed above, perform these steps IN ORDER:
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)
 
-        # Helper: post to thread if available, otherwise to notifications channel.
+        # Helper: post to task thread (agent_output type) or to channel.
         # Used for in-progress updates (e.g. git errors, paused notices).
-        # When no thread exists and *embed* is provided, the embed is forwarded
-        # to the channel for rich rendering.
         async def _post(msg: str, *, embed: Any = None) -> None:
-            if thread_send:
-                await thread_send(msg)
-            else:
-                await self._notify_channel(msg, project_id=action.project_id, embed=embed)
+            await self._emit_notify(
+                "notify.task_message",
+                TaskMessageEvent(
+                    task_id=task.id,
+                    message=msg,
+                    message_type="agent_output",
+                    project_id=action.project_id,
+                ),
+            )
 
         # Helper: post a brief notification to the main (notifications) channel.
-        # When a thread exists this replies to the thread-root message so the
-        # notification is visually linked to the thread.  Falls back to a plain
-        # channel message when no thread is available.
+        # When a thread exists the handler replies to the thread-root message.
         async def _notify_brief(msg: str, *, embed: Any = None) -> None:
-            if thread_main_notify:
-                await thread_main_notify(msg, embed=embed)
-            else:
-                await self._notify_channel(msg, project_id=action.project_id, embed=embed)
+            await self._emit_notify(
+                "notify.task_message",
+                TaskMessageEvent(
+                    task_id=task.id,
+                    message=msg,
+                    message_type="brief",
+                    project_id=action.project_id,
+                ),
+            )
 
         # ------------------------------------------------------------------ #
         # Result handling — branch on the agent's exit status.
@@ -4223,16 +4295,17 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     agent_id=action.agent_id,
                 )
                 # Notify in the task thread that a plan was found
-                if thread_send:
-                    await thread_send("📋 **Plan detected** — processing for approval...")
-
-                from src.discord.notifications import (
-                    PlanApprovalView,
-                    format_plan_approval_embed,
+                await self._emit_notify(
+                    "notify.task_message",
+                    TaskMessageEvent(
+                        task_id=task.id,
+                        message="📋 **Plan detected** — processing for approval...",
+                        message_type="agent_output",
+                        project_id=action.project_id,
+                    ),
                 )
 
-                plan_view = PlanApprovalView(task.id, handler=self._get_handler())
-                # Retrieve the stored plan content for the embed
+                # Retrieve the stored plan content for the event
                 plan_contexts = await self.db.get_task_contexts(task.id)
                 raw_ctx = next(
                     (c for c in plan_contexts if c["type"] == "plan_raw"),
@@ -4339,12 +4412,19 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         )
                         # Fall through to manual approval below
                     else:
-                        if thread_send:
-                            await thread_send(
-                                f"✅ **Plan auto-approved** — "
-                                f"{len(created_info)} subtask(s) activated"
-                            )
-                        await self._notify_channel(
+                        await self._emit_notify(
+                            "notify.task_message",
+                            TaskMessageEvent(
+                                task_id=task.id,
+                                message=(
+                                    f"✅ **Plan auto-approved** — "
+                                    f"{len(created_info)} subtask(s) activated"
+                                ),
+                                message_type="agent_output",
+                                project_id=action.project_id,
+                            ),
+                        )
+                        await self._emit_text_notify(
                             f"✅ **Plan auto-approved:** `{task.id}` — "
                             f"{task.title} ({len(created_info)} subtask(s))",
                             project_id=action.project_id,
@@ -4377,18 +4457,16 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         except Exception as e:
                             logger.debug("Could not get thread URL for %s: %s", task.id, e)
 
-                    plan_embed = format_plan_approval_embed(
-                        task,
-                        raw_content=raw_ctx["content"] if raw_ctx else "",
-                        plan_url=plan_url,
-                        parsed_steps=parsed_steps,
-                        thread_url=thread_url,
-                    )
-                    await self._notify_channel(
-                        f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
-                        project_id=action.project_id,
-                        embed=plan_embed,
-                        view=plan_view,
+                    await self._emit_notify(
+                        "notify.plan_awaiting_approval",
+                        PlanAwaitingApprovalEvent(
+                            task=build_task_detail(task),
+                            subtasks=parsed_steps,
+                            plan_url=plan_url,
+                            raw_content=raw_ctx["content"] if raw_ctx else "",
+                            thread_url=thread_url,
+                            project_id=action.project_id,
+                        ),
                     )
                     brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
                     await _notify_brief(brief)
@@ -4407,16 +4485,14 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     agent_id=action.agent_id,
                     payload=pr_url,
                 )
-                approval_view = TaskApprovalView(task.id, handler=self._get_handler())
-                if thread_send:
-                    await thread_send(format_pr_created(task, pr_url))
-                else:
-                    await self._notify_channel(
-                        format_pr_created(task, pr_url),
+                await self._emit_notify(
+                    "notify.pr_created",
+                    PRCreatedEvent(
+                        task=build_task_detail(task),
+                        pr_url=pr_url,
                         project_id=action.project_id,
-                        embed=format_pr_created_embed(task, pr_url),
-                        view=approval_view,
-                    )
+                    ),
+                )
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 await _notify_brief(brief)
             elif task.requires_approval and not pr_url and completed_ok:
@@ -4440,20 +4516,19 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     agent_id=action.agent_id,
                 )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                from datetime import datetime, timezone as _tz
-
-                log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
-                log_path = f"logs/llm/{log_date}/tasks/{task.id}.jsonl"
-                brief_embed = format_task_completed_embed(task, agent, output)
-                brief_embed.set_footer(text=f"Log: {log_path}")
-                # Post brief completion text to the thread so it always has a
-                # clear completion indicator (the ResultMessage is no longer
-                # streamed to avoid duplication with this summary).
+                # Post brief to thread and emit completion event for main channel
                 await _post(brief)
-                # Notify main channel (for new threads, this replies to the
-                # thread root; for reopened threads this is a no-op since the
-                # thread already received the brief via _post above).
-                await _notify_brief(brief, embed=brief_embed)
+                await self._emit_notify(
+                    "notify.task_completed",
+                    TaskCompletedEvent(
+                        task=build_task_detail(task),
+                        agent=build_agent_summary(agent),
+                        summary=output.summary or "",
+                        files_changed=output.files_changed or [],
+                        tokens_used=output.tokens_used or 0,
+                        project_id=action.project_id,
+                    ),
+                )
                 await self.bus.emit(
                     "task.completed",
                     {
@@ -4573,43 +4648,31 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     f"⚠️ Task failed: {task.title} (`{task.id}`) — "
                     f"retry {new_retry}/{task.max_retries}"
                 )
-            # Full failure summary → thread; fallback to notifications if no thread
-            if thread_send:
-                from src.discord.notifications import classify_error
-
-                error_type, suggestion = classify_error(output.error_message)
-                label = "Blocked" if new_retry >= task.max_retries else "Failed"
-                fail_lines = [
-                    f"**Task {label}:** `{task.id}` — {task.title}",
-                    f"Agent: {agent.name} | Retry: {new_retry}/{task.max_retries}",
-                    f"Error type: **{error_type}**",
-                ]
-                if output.error_message:
-                    snippet = output.error_message[:400]
-                    if len(output.error_message) > 400:
-                        snippet += "…"
-                    fail_lines.append(f"```\n{snippet}\n```")
-                fail_lines.append(f"💡 {suggestion}")
-                fail_lines.append(f"_Use `/agent-error {task.id}` for full details._")
-                if output.summary:
-                    fail_lines.append(f"\n**Summary:**\n{output.summary}")
-                await thread_send("\n".join(fail_lines))
+            # Emit typed failure/blocked event — the notification handler
+            # routes detailed info to thread and brief to main channel.
+            if new_retry >= task.max_retries:
+                await self._emit_notify(
+                    "notify.task_blocked",
+                    TaskBlockedEvent(
+                        task=build_task_detail(task),
+                        last_error=output.error_message or "",
+                        project_id=action.project_id,
+                    ),
+                )
             else:
-                handler_ref = self._get_handler()
-                if new_retry >= task.max_retries:
-                    await self._notify_channel(
-                        format_task_blocked(task, last_error=output.error_message),
+                await self._emit_notify(
+                    "notify.task_failed",
+                    TaskFailedEvent(
+                        task=build_task_detail(task),
+                        agent=build_agent_summary(agent),
+                        error_label="",
+                        error_detail=output.error_message or "",
+                        fix_suggestion="",
+                        retry_count=new_retry,
+                        max_retries=task.max_retries,
                         project_id=action.project_id,
-                        embed=format_task_blocked_embed(task, last_error=output.error_message),
-                        view=TaskBlockedView(task.id, handler=handler_ref),
-                    )
-                else:
-                    await self._notify_channel(
-                        format_task_failed(task, agent, output),
-                        project_id=action.project_id,
-                        embed=format_task_failed_embed(task, agent, output),
-                        view=TaskFailedView(task.id, handler=handler_ref),
-                    )
+                    ),
+                )
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)
 
@@ -4685,20 +4748,15 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 agent_id=action.agent_id,
                 payload=question_text[:500],
             )
-            msg = format_agent_question(task, agent, question_text)
-            embed = format_agent_question_embed(task, agent, question_text)
-            question_view = AgentQuestionView(task.id, handler=self._get_handler())
-            if thread_send:
-                await thread_send(msg)
-            else:
-                await self._notify_channel(
-                    msg,
+            await self._emit_notify(
+                "notify.agent_question",
+                AgentQuestionEvent(
+                    task=build_task_detail(task),
+                    agent=build_agent_summary(agent),
+                    question=question_text,
                     project_id=action.project_id,
-                    embed=embed,
-                    view=question_view,
-                )
-            brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
-            await _notify_brief(brief, embed=embed)
+                ),
+            )
 
         # ------------------------------------------------------------------ #
         # Cleanup — runs regardless of which result branch was taken above.
@@ -4715,6 +4773,19 @@ For EACH workspace listed above, perform these steps IN ORDER:
         #   3. Remove adapter reference — allows garbage collection of the
         #      adapter process handle.
         # ------------------------------------------------------------------ #
+
+        # Close the task thread — update the root message with final status
+        # and clean up thread references in the notification handler.
+        if _final_root_content:
+            await self._emit_notify(
+                "notify.task_thread_close",
+                TaskThreadCloseEvent(
+                    task_id=task.id,
+                    final_status=task.status.value if hasattr(task.status, "value") else str(task.status),
+                    final_message=_final_root_content,
+                    project_id=action.project_id,
+                ),
+            )
 
         # Clean up the sentinel file before releasing the workspace lock.
         # The workspace variable is from earlier in _execute_task (the local).

@@ -262,6 +262,12 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
+    async def _emit_notify(self, event_type: str, event) -> None:
+        self._notifications.append(event_type)
+
+    async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
+        self._notifications.append(message)
+
     from src.orchestrator import Orchestrator as _Orch
 
     _create_pr_for_task = _Orch._create_pr_for_task
@@ -309,8 +315,7 @@ class TestCreatePrForTaskForceWithLease:
 
         assert result is None
         assert len(orch._notifications) == 1
-        assert "Push Failed" in orch._notifications[0]
-        assert "task/test-branch" in orch._notifications[0]
+        assert "notify.push_failed" in orch._notifications[0]
 
     @pytest.mark.asyncio
     async def test_link_repo_skips_push(self, orch, git):
@@ -325,7 +330,7 @@ class TestCreatePrForTaskForceWithLease:
         git.apush_branch.assert_not_called()
         assert result is None
         assert len(orch._notifications) == 1
-        assert "Approval Required" in orch._notifications[0]
+        assert "Approval Required" in orch._notifications[0]  # plain text via _emit_text_notify
 
     @pytest.mark.asyncio
     async def test_pr_creation_after_push(self, orch, git):
@@ -361,5 +366,4 @@ class TestCreatePrForTaskForceWithLease:
         git.apush_branch.assert_called_once()
         assert result is None
         assert len(orch._notifications) == 1
-        assert "PR Creation Failed" in orch._notifications[0]
-        assert "pushed" in orch._notifications[0].lower()
+        assert "PR Creation Failed" in orch._notifications[0]  # plain text via _emit_text_notify

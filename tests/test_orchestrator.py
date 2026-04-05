@@ -328,10 +328,10 @@ class TestAwaitingApprovalNopr:
         a notification."""
         notifications = []
 
-        async def capture_notify(msg, project_id=None):
-            notifications.append(msg)
+        async def capture_event(data):
+            notifications.append(data.get("message", data.get("_event_type", "")))
 
-        orch.set_notify_callback(capture_notify)
+        orch.bus.subscribe("notify.text", capture_event)
 
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
@@ -357,10 +357,10 @@ class TestAwaitingApprovalNopr:
         """The same task should not trigger a reminder on every cycle."""
         notifications = []
 
-        async def capture_notify(msg, project_id=None):
-            notifications.append(msg)
+        async def capture_event(data):
+            notifications.append(data.get("message", data.get("_event_type", "")))
 
-        orch.set_notify_callback(capture_notify)
+        orch.bus.subscribe("notify.text", capture_event)
 
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
@@ -389,10 +389,10 @@ class TestAwaitingApprovalNopr:
         """After the escalation threshold, a stronger warning is sent."""
         notifications = []
 
-        async def capture_notify(msg, project_id=None):
-            notifications.append(msg)
+        async def capture_event(data):
+            notifications.append(data.get("message", data.get("_event_type", "")))
 
-        orch.set_notify_callback(capture_notify)
+        orch.bus.subscribe("notify.text", capture_event)
 
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
