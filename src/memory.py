@@ -720,6 +720,155 @@ class MemoryManager:
             return None
 
     # ------------------------------------------------------------------
+    # Phase 3.5: Post-Task Fact Extraction (Memory Consolidation)
+    # ------------------------------------------------------------------
+
+    def _staging_dir(self, project_id: str) -> str:
+        """Path to the fact-staging directory for a project.
+
+        Returns ``{data_dir}/memory/{project_id}/staging/``.
+        """
+        return os.path.join(self._project_memory_dir(project_id), "staging")
+
+    async def extract_task_facts(
+        self,
+        project_id: str,
+        task: Any,
+        output: Any,
+        workspace_path: str,
+    ) -> str | None:
+        """Extract structured facts from a completed task into a staging file.
+
+        Uses an LLM to identify concrete facts (URLs, tech stack, decisions,
+        conventions, architecture, config, contacts) from the task output and
+        writes them to ``memory/{project_id}/staging/{task_id}.json``.
+
+        These staging files are later consumed by the daily consolidation
+        process (Phase 4) to update the project factsheet and knowledge base.
+
+        Returns the staging file path on success, ``None`` on failure or if
+        fact extraction is disabled.
+        """
+        if not self.config.fact_extraction_enabled:
+            return None
+
+        from src.prompts.memory_consolidation import (
+            FACT_EXTRACTION_SYSTEM_PROMPT,
+            FACT_EXTRACTION_USER_PROMPT,
+        )
+
+        # Extract task metadata
+        task_type = (
+            task.task_type.value
+            if (task.task_type and hasattr(task.task_type, "value"))
+            else "unknown"
+        )
+        summary = output.summary or "No summary available."
+        files_changed = (
+            "\n".join(f"- {f}" for f in (output.files_changed or [])) or "No files changed."
+        )
+
+        user_prompt = FACT_EXTRACTION_USER_PROMPT.format(
+            task_id=task.id,
+            task_title=task.title,
+            task_type=task_type,
+            project_id=project_id,
+            task_summary=summary,
+            files_changed=files_changed,
+        )
+
+        try:
+            provider = self._get_revision_provider()
+            if not provider:
+                logger.warning("No LLM provider available for fact extraction")
+                return None
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=FACT_EXTRACTION_SYSTEM_PROMPT,
+                max_tokens=1024,
+            )
+
+            # Extract text from response
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+
+            # Parse the JSON array from the response
+            response_text = response_text.strip()
+            # Handle markdown code fences
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                response_text = "\n".join(lines)
+
+            facts = json.loads(response_text)
+            if not isinstance(facts, list):
+                logger.warning("Fact extraction returned non-array response")
+                return None
+
+            # Validate fact structure — keep only well-formed entries
+            valid_categories = {
+                "url", "tech_stack", "decision", "convention",
+                "architecture", "config", "contact",
+            }
+            validated_facts = []
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    continue
+                category = fact.get("category", "")
+                key = fact.get("key", "")
+                value = fact.get("value", "")
+                if category in valid_categories and key and value:
+                    validated_facts.append({
+                        "category": category,
+                        "key": key,
+                        "value": value,
+                    })
+
+            # Build staging document
+            staging_doc = {
+                "task_id": task.id,
+                "project_id": project_id,
+                "task_title": task.title,
+                "task_type": task_type,
+                "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "facts": validated_facts,
+            }
+
+            # Write staging file
+            staging_dir = self._staging_dir(project_id)
+            os.makedirs(staging_dir, exist_ok=True)
+            staging_path = os.path.join(staging_dir, f"{task.id}.json")
+
+            with open(staging_path, "w") as f:
+                json.dump(staging_doc, f, indent=2)
+
+            if validated_facts:
+                logger.info(
+                    "Extracted %d fact(s) from task %s for project %s",
+                    len(validated_facts),
+                    task.id,
+                    project_id,
+                )
+            else:
+                logger.debug(
+                    "No facts extracted from task %s for project %s",
+                    task.id,
+                    project_id,
+                )
+
+            return staging_path
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to parse fact extraction response: %s", e)
+            return None
+        except Exception as e:
+            logger.warning("Fact extraction failed for project %s: %s", project_id, e)
+            return None
+
+    # ------------------------------------------------------------------
     # Phase 4: Memory Compaction & Enhanced Context Delivery
     # ------------------------------------------------------------------
 

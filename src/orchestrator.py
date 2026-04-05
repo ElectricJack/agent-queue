@@ -4474,6 +4474,23 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 except Exception as e:
                     logger.warning("Note generation failed for task %s: %s", task.id, e)
 
+                # Extract structured facts for later consolidation
+                try:
+                    staging_path = await self.memory_manager.extract_task_facts(
+                        task.project_id, task, output, workspace
+                    )
+                    if staging_path and self.bus:
+                        await self.bus.emit(
+                            "facts.extracted",
+                            {
+                                "project_id": task.project_id,
+                                "task_id": task.id,
+                                "staging_path": staging_path,
+                            },
+                        )
+                except Exception as e:
+                    logger.warning("Fact extraction failed for task %s: %s", task.id, e)
+
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:

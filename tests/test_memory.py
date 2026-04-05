@@ -9,6 +9,7 @@ Also includes tests for the ``memory_search`` hook-engine context step
 (src/hooks.py) which delegates to MemoryManager.
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -984,3 +985,270 @@ class TestMemoryConfigCompaction:
         assert cfg.compact_enabled is True
         assert cfg.compact_recent_days == 14
         assert cfg.compact_archive_days == 60
+
+
+# ---------------------------------------------------------------------------
+# Post-Task Fact Extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestFactExtraction:
+    """Tests for extract_task_facts() — Phase 3.5 of the memory consolidation system."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    async def test_extract_disabled_returns_none(self, tmp_path):
+        """extract_task_facts returns None when fact_extraction_enabled=False."""
+        mgr = self._make_manager(str(tmp_path), fact_extraction_enabled=False)
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_no_provider_returns_none(self, mock_provider, tmp_path):
+        """extract_task_facts returns None when no LLM provider is available."""
+        mock_provider.return_value = None
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_writes_staging_file(self, mock_provider, tmp_path):
+        """extract_task_facts writes a valid JSON staging file."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+            {"category": "decision", "key": "token_storage", "value": "httponly cookies"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        task = FakeTask()
+        result = await mgr.extract_task_facts("proj", task, FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        assert result.endswith(f"{task.id}.json")
+        assert os.path.isfile(result)
+
+        with open(result) as f:
+            staging_doc = json.load(f)
+
+        assert staging_doc["task_id"] == task.id
+        assert staging_doc["project_id"] == "proj"
+        assert staging_doc["task_title"] == task.title
+        assert len(staging_doc["facts"]) == 2
+        assert staging_doc["facts"][0]["category"] == "tech_stack"
+        assert staging_doc["facts"][0]["key"] == "jwt_lib"
+        assert staging_doc["facts"][1]["category"] == "decision"
+        assert "extracted_at" in staging_doc
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_staging_dir_created(self, mock_provider, tmp_path):
+        """extract_task_facts creates staging directory if it doesn't exist."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert not os.path.isdir(staging_dir)
+
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        assert os.path.isdir(staging_dir)
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_empty_facts_writes_file(self, mock_provider, tmp_path):
+        """Empty fact array still writes a staging file (records that extraction ran)."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        assert result is not None
+        with open(result) as f:
+            doc = json.load(f)
+        assert doc["facts"] == []
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_filters_invalid_categories(self, mock_provider, tmp_path):
+        """Facts with invalid categories are dropped during validation."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "valid", "value": "kept"},
+            {"category": "invalid_cat", "key": "bad", "value": "dropped"},
+            {"category": "url", "key": "repo", "value": "https://example.com"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 2
+        categories = [f["category"] for f in doc["facts"]]
+        assert "invalid_cat" not in categories
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_filters_missing_fields(self, mock_provider, tmp_path):
+        """Facts with missing key or value fields are dropped."""
+        facts_json = json.dumps([
+            {"category": "tech_stack", "key": "valid", "value": "kept"},
+            {"category": "decision", "key": "", "value": "no key"},
+            {"category": "url", "key": "no_value", "value": ""},
+            {"category": "config"},  # missing both key and value
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 1
+        assert doc["facts"][0]["key"] == "valid"
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_handles_markdown_fences(self, mock_provider, tmp_path):
+        """LLM response wrapped in ```json fences is parsed correctly."""
+        facts_json = '```json\n[{"category": "url", "key": "docs", "value": "https://docs.io"}]\n```'
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 1
+        assert doc["facts"][0]["value"] == "https://docs.io"
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_llm_error_returns_none(self, mock_provider, tmp_path):
+        """LLM failure returns None without crashing."""
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(side_effect=RuntimeError("LLM down"))
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_invalid_json_returns_none(self, mock_provider, tmp_path):
+        """Malformed JSON response returns None."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_non_array_response_returns_none(self, mock_provider, tmp_path):
+        """Non-array JSON response (e.g., object) returns None."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"not": "an array"}')]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+        assert result is None
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_prompt_includes_task_metadata(self, mock_provider, tmp_path):
+        """User prompt sent to LLM includes task ID, title, summary, and files."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="[]")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        task = FakeTask(id="task-456", title="Upgrade auth system")
+        output = FakeOutput(
+            summary="Switched to OAuth2.",
+            files_changed=["src/auth.py"],
+        )
+
+        await mgr.extract_task_facts("my-proj", task, output, str(tmp_path))
+
+        call_kwargs = provider_instance.create_message.call_args
+        user_msg = call_kwargs.kwargs.get("messages", call_kwargs[1].get("messages", [{}]))[0][
+            "content"
+        ]
+        assert "task-456" in user_msg
+        assert "Upgrade auth system" in user_msg
+        assert "OAuth2" in user_msg
+        assert "src/auth.py" in user_msg
+        assert "my-proj" in user_msg
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_extract_all_valid_categories(self, mock_provider, tmp_path):
+        """All seven valid categories are accepted."""
+        facts_json = json.dumps([
+            {"category": "url", "key": "repo", "value": "https://github.com/test"},
+            {"category": "tech_stack", "key": "db", "value": "PostgreSQL 16"},
+            {"category": "decision", "key": "orm", "value": "Use SQLAlchemy Core"},
+            {"category": "convention", "key": "naming", "value": "snake_case everywhere"},
+            {"category": "architecture", "key": "pattern", "value": "Event-driven"},
+            {"category": "config", "key": "debug", "value": "DEBUG=false in prod"},
+            {"category": "contact", "key": "lead", "value": "Alice (tech lead)"},
+        ])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=facts_json)]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.extract_task_facts("proj", FakeTask(), FakeOutput(), str(tmp_path))
+
+        with open(result) as f:
+            doc = json.load(f)
+        assert len(doc["facts"]) == 7
+
+    def test_staging_dir_path(self, tmp_path):
+        """_staging_dir returns the correct path."""
+        mgr = self._make_manager(str(tmp_path))
+        expected = os.path.join(str(tmp_path), "memory", "proj", "staging")
+        assert mgr._staging_dir("proj") == expected
+
+
+class TestFactExtractionConfig:
+    """Tests for fact_extraction_enabled config field."""
+
+    def test_fact_extraction_enabled_default(self):
+        cfg = MemoryConfig()
+        assert cfg.fact_extraction_enabled is True
+
+    def test_fact_extraction_can_be_disabled(self):
+        cfg = MemoryConfig(fact_extraction_enabled=False)
+        assert cfg.fact_extraction_enabled is False
