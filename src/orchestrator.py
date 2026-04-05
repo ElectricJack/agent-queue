@@ -3908,6 +3908,13 @@ For EACH workspace listed above, perform these steps IN ORDER:
         except Exception as e:
             logger.error("Failed to save task result: %s", e)
 
+        # Persist session ID for potential session forking on reopen
+        if output.session_id:
+            try:
+                await self.db.set_task_meta(action.task_id, "last_session_id", output.session_id)
+            except Exception as e:
+                logger.warning("Failed to persist session_id: %s", e)
+
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)
 

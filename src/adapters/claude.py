@@ -420,6 +420,7 @@ class ClaudeAdapter(AgentAdapter):
 
     def _log_session(self, prompt: str, output: AgentOutput, start: float, time_mod) -> None:
         """Log agent session to LLMLogger if available."""
+        output.session_id = self._session_id
         duration_ms = int((time_mod.monotonic() - start) * 1000)
         task_id = self._task.task_id if self._task else ""
         logger.info(

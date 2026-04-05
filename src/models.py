@@ -380,6 +380,7 @@ class AgentOutput:
     tokens_used: int = 0
     error_message: str | None = None
     question: str | None = None
+    session_id: str | None = None
 
 
 @dataclass

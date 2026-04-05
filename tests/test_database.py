@@ -6,9 +6,7 @@ from src.models import (
     Agent,
     TaskStatus,
     AgentState,
-    ProjectStatus,
     RepoSourceType,
-    VerificationType,
     Workspace,
 )
 
@@ -114,6 +112,57 @@ class TestTaskDependencies:
 
         await db.update_task("t-1", status=TaskStatus.COMPLETED)
         assert await db.are_dependencies_met("t-2")
+
+
+class TestTaskMetadata:
+    async def test_set_and_get(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "session_id", "sess-abc123")
+        assert await db.get_task_meta("t-1", "session_id") == "sess-abc123"
+
+    async def test_get_missing_key_returns_none(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        assert await db.get_task_meta("t-1", "nonexistent") is None
+
+    async def test_upsert_overwrites(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "session_id", "first")
+        await db.set_task_meta("t-1", "session_id", "second")
+        assert await db.get_task_meta("t-1", "session_id") == "second"
+
+    async def test_json_values(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "config", {"retries": 3, "timeout": 60})
+        result = await db.get_task_meta("t-1", "config")
+        assert result == {"retries": 3, "timeout": 60}
+
+    async def test_get_all(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "key1", "val1")
+        await db.set_task_meta("t-1", "key2", 42)
+        result = await db.get_all_task_meta("t-1")
+        assert result == {"key1": "val1", "key2": 42}
+
+    async def test_delete(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.set_task_meta("t-1", "key1", "val1")
+        await db.delete_task_meta("t-1", "key1")
+        assert await db.get_task_meta("t-1", "key1") is None
+
+    async def test_isolated_between_tasks(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
+        await db.set_task_meta("t-1", "session_id", "sess-1")
+        await db.set_task_meta("t-2", "session_id", "sess-2")
+        assert await db.get_task_meta("t-1", "session_id") == "sess-1"
+        assert await db.get_task_meta("t-2", "session_id") == "sess-2"
 
 
 class TestAgentCRUD:
