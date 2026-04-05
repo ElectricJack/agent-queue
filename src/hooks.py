@@ -385,6 +385,9 @@ class HookEngine:
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
 
+        # Batch-fetch paused-project status to avoid N queries per event
+        checked_projects: dict[str, bool] = {}
+
         for hook in hooks:
             if hook.id in self._running:
                 continue
@@ -400,14 +403,19 @@ class HookEngine:
             if event_project and hook.project_id != event_project:
                 continue
 
-            # Skip hooks for paused projects
-            project = await self.db.get_project(hook.project_id)
-            if project and project.status == ProjectStatus.PAUSED:
+            # Skip hooks for paused projects (cached per project)
+            pid = hook.project_id
+            if pid not in checked_projects:
+                project = await self.db.get_project(pid)
+                checked_projects[pid] = (
+                    project is not None and project.status == ProjectStatus.PAUSED
+                )
+            if checked_projects[pid]:
                 logger.debug(
                     "Skipping hook %s (%s): project %s is paused",
                     hook.id,
                     hook.name,
-                    hook.project_id,
+                    pid,
                 )
                 continue
 
@@ -613,13 +621,47 @@ class HookEngine:
                     if thread_send:
                         await thread_send(f"🔧 `{detail}`")
 
-            response, tokens = await self._invoke_llm(
-                hook,
-                prompt,
-                trigger_reason=trigger_reason,
-                on_progress=_on_hook_progress,
-                event_data=event_data,
-            )
+            timeout = self.config.hook_engine.hook_timeout_seconds
+            try:
+                response, tokens = await asyncio.wait_for(
+                    self._invoke_llm(
+                        hook,
+                        prompt,
+                        trigger_reason=trigger_reason,
+                        on_progress=_on_hook_progress,
+                        event_data=event_data,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                elapsed = int(time.time() - run.started_at)
+                logger.warning(
+                    "Hook %s timed out after %ds (limit: %ds)",
+                    hook.name,
+                    elapsed,
+                    timeout,
+                )
+                await self.db.update_hook_run(
+                    run.id,
+                    status="failed",
+                    llm_response=f"Hook execution timed out after {elapsed}s (limit: {timeout}s)",
+                    completed_at=time.time(),
+                )
+                timeout_msg = f"🪝 Hook **{hook.name}** timed out after {elapsed}s."
+                if thread_send:
+                    try:
+                        await thread_send(timeout_msg)
+                    except Exception:
+                        pass
+                elif orchestrator:
+                    try:
+                        await orchestrator._notify_channel(
+                            timeout_msg,
+                            project_id=hook.project_id,
+                        )
+                    except Exception:
+                        pass
+                return
 
             await self.db.update_hook_run(
                 run.id,
@@ -804,8 +846,10 @@ class HookEngine:
         )
 
         if self._supervisor:
-            # Handle per-hook LLM config overrides
-            original_provider = None
+            # Build per-hook provider override (if configured) — passed as a
+            # parameter instead of swapping on the shared Supervisor, so
+            # concurrent hooks don't race on self._supervisor._provider.
+            hook_provider = None
             if hook.llm_config:
                 llm_cfg = json.loads(hook.llm_config)
                 provider_config = ChatProviderConfig(
@@ -813,7 +857,6 @@ class HookEngine:
                     model=llm_cfg.get("model", self.config.chat_provider.model),
                     base_url=llm_cfg.get("base_url", self.config.chat_provider.base_url),
                 )
-                original_provider = self._supervisor._provider
                 hook_provider = create_chat_provider(provider_config)
                 if hook_provider:
                     orchestrator = self._orchestrator
@@ -821,20 +864,15 @@ class HookEngine:
                         hook_provider = LoggedChatProvider(
                             hook_provider, orchestrator.llm_logger, caller="hook_engine"
                         )
-                    self._supervisor._provider = hook_provider
 
-            try:
-                response = await self._supervisor.process_hook_llm(
-                    hook_context=context_preamble,
-                    rendered_prompt=prompt,
-                    project_id=hook.project_id,
-                    hook_name=hook.name,
-                    on_progress=on_progress,
-                )
-            finally:
-                # Restore original provider if we swapped it
-                if original_provider is not None:
-                    self._supervisor._provider = original_provider
+            response = await self._supervisor.process_hook_llm(
+                hook_context=context_preamble,
+                rendered_prompt=prompt,
+                project_id=hook.project_id,
+                hook_name=hook.name,
+                on_progress=on_progress,
+                provider=hook_provider,
+            )
 
             tokens = len(context_preamble + prompt) // 4 + len(response) // 4
             return response, tokens

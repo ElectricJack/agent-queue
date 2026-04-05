@@ -1,8 +1,8 @@
 """baseline schema
 
-Revision ID: 311e98c39ffa
+Revision ID: 9a90d76aba38
 Revises:
-Create Date: 2026-04-03 14:07:24.029284
+Create Date: 2026-04-03 22:22:00.551444
 
 """
 
@@ -37,30 +37,6 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.Float(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name"),
-    )
-    op.create_table(
-        "agents",
-        sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("agent_type", sa.Text(), nullable=False),
-        sa.Column("state", sa.Text(), server_default="IDLE", nullable=False),
-        sa.Column("current_task_id", sa.Text(), nullable=True),
-        sa.Column("checkout_path", sa.Text(), nullable=True),
-        sa.Column("repo_id", sa.Text(), nullable=True),
-        sa.Column("pid", sa.Integer(), nullable=True),
-        sa.Column("last_heartbeat", sa.Float(), nullable=True),
-        sa.Column("total_tokens_used", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("session_tokens_used", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("created_at", sa.Float(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["current_task_id"],
-            ["tasks.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["repo_id"],
-            ["repos.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
         "archived_tasks",
@@ -106,10 +82,15 @@ def upgrade() -> None:
         sa.Column("context_snapshot", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
-    with op.batch_alter_table("chat_analyzer_suggestions", schema=None) as batch_op:
-        batch_op.create_index("idx_chat_analyzer_hash", ["suggestion_hash"], unique=False)
-        batch_op.create_index("idx_chat_analyzer_project", ["project_id", "status"], unique=False)
-
+    op.create_index(
+        "idx_chat_analyzer_hash", "chat_analyzer_suggestions", ["suggestion_hash"], unique=False
+    )
+    op.create_index(
+        "idx_chat_analyzer_project",
+        "chat_analyzer_suggestions",
+        ["project_id", "status"],
+        unique=False,
+    )
     op.create_table(
         "events",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -154,6 +135,123 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("key"),
     )
     op.create_table(
+        "plugin_data",
+        sa.Column("plugin_id", sa.Text(), nullable=False),
+        sa.Column("key", sa.Text(), nullable=False),
+        sa.Column("value", sa.Text(), server_default="{}", nullable=False),
+        sa.Column("updated_at", sa.Float(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["plugin_id"],
+            ["plugins.id"],
+        ),
+        sa.PrimaryKeyConstraint("plugin_id", "key"),
+    )
+    op.create_index("idx_plugin_data_plugin_id", "plugin_data", ["plugin_id"], unique=False)
+    op.create_table(
+        "projects",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("credit_weight", sa.Float(), server_default="1.0", nullable=False),
+        sa.Column("max_concurrent_agents", sa.Integer(), server_default="2", nullable=False),
+        sa.Column("status", sa.Text(), server_default="ACTIVE", nullable=False),
+        sa.Column("total_tokens_used", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("budget_limit", sa.Integer(), nullable=True),
+        sa.Column("workspace_path", sa.Text(), nullable=True),
+        sa.Column("discord_channel_id", sa.Text(), nullable=True),
+        sa.Column("discord_control_channel_id", sa.Text(), nullable=True),
+        sa.Column("repo_url", sa.Text(), server_default="", nullable=True),
+        sa.Column("repo_default_branch", sa.Text(), server_default="main", nullable=True),
+        sa.Column("default_profile_id", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.Float(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["default_profile_id"],
+            ["agent_profiles.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_table(
+        "hooks",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("project_id", sa.Text(), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("enabled", sa.Integer(), server_default="1", nullable=False),
+        sa.Column("trigger", sa.Text(), nullable=False),
+        sa.Column("context_steps", sa.Text(), server_default="[]", nullable=False),
+        sa.Column("prompt_template", sa.Text(), nullable=False),
+        sa.Column("llm_config", sa.Text(), nullable=True),
+        sa.Column("cooldown_seconds", sa.Integer(), server_default="3600", nullable=False),
+        sa.Column("max_tokens_per_run", sa.Integer(), nullable=True),
+        sa.Column("last_triggered_at", sa.Float(), nullable=True),
+        sa.Column("plugin_id", sa.Text(), nullable=True),
+        sa.Column("source_hash", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.Float(), nullable=False),
+        sa.Column("updated_at", sa.Float(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["projects.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("idx_hooks_plugin_id", "hooks", ["plugin_id"], unique=False)
+    op.create_table(
+        "repos",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("project_id", sa.Text(), nullable=False),
+        sa.Column("url", sa.Text(), nullable=False),
+        sa.Column("default_branch", sa.Text(), server_default="main", nullable=False),
+        sa.Column("checkout_base_path", sa.Text(), nullable=False),
+        sa.Column("source_type", sa.Text(), server_default="clone", nullable=False),
+        sa.Column("source_path", sa.Text(), server_default="", nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["projects.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_table(
+        "agents",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("agent_type", sa.Text(), nullable=False),
+        sa.Column("state", sa.Text(), server_default="IDLE", nullable=False),
+        sa.Column("current_task_id", sa.Text(), nullable=True),
+        sa.Column("checkout_path", sa.Text(), nullable=True),
+        sa.Column("repo_id", sa.Text(), nullable=True),
+        sa.Column("pid", sa.Integer(), nullable=True),
+        sa.Column("last_heartbeat", sa.Float(), nullable=True),
+        sa.Column("total_tokens_used", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("session_tokens_used", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("created_at", sa.Float(), nullable=False),
+        sa.ForeignKeyConstraint(["current_task_id"], ["tasks.id"], use_alter=True),
+        sa.ForeignKeyConstraint(
+            ["repo_id"],
+            ["repos.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_table(
+        "hook_runs",
+        sa.Column("id", sa.Text(), nullable=False),
+        sa.Column("hook_id", sa.Text(), nullable=False),
+        sa.Column("project_id", sa.Text(), nullable=False),
+        sa.Column("trigger_reason", sa.Text(), nullable=False),
+        sa.Column("event_data", sa.Text(), nullable=True),
+        sa.Column("context_results", sa.Text(), nullable=True),
+        sa.Column("prompt_sent", sa.Text(), nullable=True),
+        sa.Column("llm_response", sa.Text(), nullable=True),
+        sa.Column("actions_taken", sa.Text(), nullable=True),
+        sa.Column("skipped_reason", sa.Text(), nullable=True),
+        sa.Column("tokens_used", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("status", sa.Text(), server_default="running", nullable=False),
+        sa.Column("started_at", sa.Float(), nullable=False),
+        sa.Column("completed_at", sa.Float(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["hook_id"],
+            ["hooks.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_table(
         "tasks",
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("project_id", sa.Text(), nullable=False),
@@ -188,10 +286,7 @@ def upgrade() -> None:
             ["parent_task_id"],
             ["tasks.id"],
         ),
-        sa.ForeignKeyConstraint(
-            ["preferred_workspace_id"],
-            ["workspaces.id"],
-        ),
+        sa.ForeignKeyConstraint(["preferred_workspace_id"], ["workspaces.id"], use_alter=True),
         sa.ForeignKeyConstraint(
             ["profile_id"],
             ["agent_profiles.id"],
@@ -203,69 +298,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["repo_id"],
             ["repos.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_table(
-        "workspaces",
-        sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("project_id", sa.Text(), nullable=False),
-        sa.Column("workspace_path", sa.Text(), nullable=False),
-        sa.Column("source_type", sa.Text(), server_default="clone", nullable=False),
-        sa.Column("name", sa.Text(), nullable=True),
-        sa.Column("locked_by_agent_id", sa.Text(), nullable=True),
-        sa.Column("locked_by_task_id", sa.Text(), nullable=True),
-        sa.Column("locked_at", sa.Float(), nullable=True),
-        sa.Column("created_at", sa.Float(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["locked_by_agent_id"],
-            ["agents.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["locked_by_task_id"],
-            ["tasks.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["project_id"],
-            ["projects.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("project_id", "workspace_path"),
-    )
-    op.create_table(
-        "plugin_data",
-        sa.Column("plugin_id", sa.Text(), nullable=False),
-        sa.Column("key", sa.Text(), nullable=False),
-        sa.Column("value", sa.Text(), server_default="{}", nullable=False),
-        sa.Column("updated_at", sa.Float(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["plugin_id"],
-            ["plugins.id"],
-        ),
-        sa.PrimaryKeyConstraint("plugin_id", "key"),
-    )
-    with op.batch_alter_table("plugin_data", schema=None) as batch_op:
-        batch_op.create_index("idx_plugin_data_plugin_id", ["plugin_id"], unique=False)
-
-    op.create_table(
-        "projects",
-        sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("credit_weight", sa.Float(), server_default="1.0", nullable=False),
-        sa.Column("max_concurrent_agents", sa.Integer(), server_default="2", nullable=False),
-        sa.Column("status", sa.Text(), server_default="ACTIVE", nullable=False),
-        sa.Column("total_tokens_used", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("budget_limit", sa.Integer(), nullable=True),
-        sa.Column("workspace_path", sa.Text(), nullable=True),
-        sa.Column("discord_channel_id", sa.Text(), nullable=True),
-        sa.Column("discord_control_channel_id", sa.Text(), nullable=True),
-        sa.Column("repo_url", sa.Text(), server_default="", nullable=True),
-        sa.Column("repo_default_branch", sa.Text(), server_default="main", nullable=True),
-        sa.Column("default_profile_id", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.Float(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["default_profile_id"],
-            ["agent_profiles.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -310,10 +342,10 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("task_id", "depends_on_task_id"),
     )
-    with op.batch_alter_table("task_dependencies", schema=None) as batch_op:
-        batch_op.create_index("idx_task_deps_depends_on", ["depends_on_task_id"], unique=False)
-        batch_op.create_index("idx_task_deps_task_id", ["task_id"], unique=False)
-
+    op.create_index(
+        "idx_task_deps_depends_on", "task_dependencies", ["depends_on_task_id"], unique=False
+    )
+    op.create_index("idx_task_deps_task_id", "task_dependencies", ["task_id"], unique=False)
     op.create_table(
         "task_results",
         sa.Column("id", sa.Text(), nullable=False),
@@ -348,47 +380,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
-        "hooks",
-        sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("project_id", sa.Text(), nullable=False),
-        sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("enabled", sa.Integer(), server_default="1", nullable=False),
-        sa.Column("trigger", sa.Text(), nullable=False),
-        sa.Column("context_steps", sa.Text(), server_default="[]", nullable=False),
-        sa.Column("prompt_template", sa.Text(), nullable=False),
-        sa.Column("llm_config", sa.Text(), nullable=True),
-        sa.Column("cooldown_seconds", sa.Integer(), server_default="3600", nullable=False),
-        sa.Column("max_tokens_per_run", sa.Integer(), nullable=True),
-        sa.Column("last_triggered_at", sa.Float(), nullable=True),
-        sa.Column("plugin_id", sa.Text(), nullable=True),
-        sa.Column("source_hash", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.Float(), nullable=False),
-        sa.Column("updated_at", sa.Float(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["project_id"],
-            ["projects.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    with op.batch_alter_table("hooks", schema=None) as batch_op:
-        batch_op.create_index("idx_hooks_plugin_id", ["plugin_id"], unique=False)
-
-    op.create_table(
-        "repos",
-        sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("project_id", sa.Text(), nullable=False),
-        sa.Column("url", sa.Text(), nullable=False),
-        sa.Column("default_branch", sa.Text(), server_default="main", nullable=False),
-        sa.Column("checkout_base_path", sa.Text(), nullable=False),
-        sa.Column("source_type", sa.Text(), server_default="clone", nullable=False),
-        sa.Column("source_path", sa.Text(), server_default="", nullable=False),
-        sa.ForeignKeyConstraint(
-            ["project_id"],
-            ["projects.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_table(
         "token_ledger",
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("project_id", sa.Text(), nullable=False),
@@ -411,26 +402,30 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
-        "hook_runs",
+        "workspaces",
         sa.Column("id", sa.Text(), nullable=False),
-        sa.Column("hook_id", sa.Text(), nullable=False),
         sa.Column("project_id", sa.Text(), nullable=False),
-        sa.Column("trigger_reason", sa.Text(), nullable=False),
-        sa.Column("event_data", sa.Text(), nullable=True),
-        sa.Column("context_results", sa.Text(), nullable=True),
-        sa.Column("prompt_sent", sa.Text(), nullable=True),
-        sa.Column("llm_response", sa.Text(), nullable=True),
-        sa.Column("actions_taken", sa.Text(), nullable=True),
-        sa.Column("skipped_reason", sa.Text(), nullable=True),
-        sa.Column("tokens_used", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("status", sa.Text(), server_default="running", nullable=False),
-        sa.Column("started_at", sa.Float(), nullable=False),
-        sa.Column("completed_at", sa.Float(), nullable=True),
+        sa.Column("workspace_path", sa.Text(), nullable=False),
+        sa.Column("source_type", sa.Text(), server_default="clone", nullable=False),
+        sa.Column("name", sa.Text(), nullable=True),
+        sa.Column("locked_by_agent_id", sa.Text(), nullable=True),
+        sa.Column("locked_by_task_id", sa.Text(), nullable=True),
+        sa.Column("locked_at", sa.Float(), nullable=True),
+        sa.Column("created_at", sa.Float(), nullable=False),
         sa.ForeignKeyConstraint(
-            ["hook_id"],
-            ["hooks.id"],
+            ["locked_by_agent_id"],
+            ["agents.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["locked_by_task_id"],
+            ["tasks.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["projects.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("project_id", "workspace_path"),
     )
     # ### end Alembic commands ###
 
@@ -438,39 +433,31 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_table("hook_runs")
+    op.drop_table("workspaces")
     op.drop_table("token_ledger")
-    op.drop_table("repos")
-    with op.batch_alter_table("hooks", schema=None) as batch_op:
-        batch_op.drop_index("idx_hooks_plugin_id")
-
-    op.drop_table("hooks")
     op.drop_table("task_tools")
     op.drop_table("task_results")
-    with op.batch_alter_table("task_dependencies", schema=None) as batch_op:
-        batch_op.drop_index("idx_task_deps_task_id")
-        batch_op.drop_index("idx_task_deps_depends_on")
-
+    op.drop_index("idx_task_deps_task_id", table_name="task_dependencies")
+    op.drop_index("idx_task_deps_depends_on", table_name="task_dependencies")
     op.drop_table("task_dependencies")
     op.drop_table("task_criteria")
     op.drop_table("task_context")
-    op.drop_table("projects")
-    with op.batch_alter_table("plugin_data", schema=None) as batch_op:
-        batch_op.drop_index("idx_plugin_data_plugin_id")
-
-    op.drop_table("plugin_data")
-    op.drop_table("workspaces")
     op.drop_table("tasks")
+    op.drop_table("hook_runs")
+    op.drop_table("agents")
+    op.drop_table("repos")
+    op.drop_index("idx_hooks_plugin_id", table_name="hooks")
+    op.drop_table("hooks")
+    op.drop_table("projects")
+    op.drop_index("idx_plugin_data_plugin_id", table_name="plugin_data")
+    op.drop_table("plugin_data")
     op.drop_table("system_config")
     op.drop_table("rate_limits")
     op.drop_table("plugins")
     op.drop_table("events")
-    with op.batch_alter_table("chat_analyzer_suggestions", schema=None) as batch_op:
-        batch_op.drop_index("idx_chat_analyzer_project")
-        batch_op.drop_index("idx_chat_analyzer_hash")
-
+    op.drop_index("idx_chat_analyzer_project", table_name="chat_analyzer_suggestions")
+    op.drop_index("idx_chat_analyzer_hash", table_name="chat_analyzer_suggestions")
     op.drop_table("chat_analyzer_suggestions")
     op.drop_table("archived_tasks")
-    op.drop_table("agents")
     op.drop_table("agent_profiles")
     # ### end Alembic commands ###

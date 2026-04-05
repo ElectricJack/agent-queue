@@ -54,16 +54,27 @@ def create_database(config: AppConfig) -> DatabaseBackend:
     """
     db_url = config.database.url or config.database_path
     if config.database.backend == "postgresql":
-        raise NotImplementedError(
-            "PostgreSQL backend is not yet implemented. Use a SQLite database path for now."
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        return PostgreSQLDatabaseAdapter(
+            db_url, config.database.pool_min_size, config.database.pool_max_size
         )
     # Default: SQLite
     return SQLiteDatabaseAdapter(db_url)
 
 
+def __getattr__(name: str):
+    if name == "PostgreSQLDatabaseAdapter":
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        return PostgreSQLDatabaseAdapter
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "Database",
     "DatabaseBackend",
+    "PostgreSQLDatabaseAdapter",
     "SQLiteDatabaseAdapter",
     "create_database",
 ]

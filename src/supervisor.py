@@ -23,6 +23,7 @@ See ``specs/supervisor.md`` for the full behavioral specification.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -41,6 +42,12 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
+
+# Context variable for per-hook provider overrides.  Each asyncio task gets
+# its own copy, so concurrent hooks don't race on a shared attribute.
+_hook_provider_override: contextvars.ContextVar[ChatProvider | None] = contextvars.ContextVar(
+    "_hook_provider_override", default=None
+)
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +465,8 @@ class Supervisor:
                 else:
                     await on_progress("thinking", f"round {round_num + 1}")
 
-            resp = await self._provider.create_message(
+            active_provider = _hook_provider_override.get() or self._provider
+            resp = await active_provider.create_message(
                 messages=messages,
                 system=self._build_system_prompt(),
                 tools=list(active_tools.values()),
@@ -723,17 +731,23 @@ class Supervisor:
         project_id: str | None = None,
         hook_name: str = "unknown",
         on_progress=None,
+        provider: ChatProvider | None = None,
     ) -> str:
         """Process a hook's LLM invocation through the Supervisor."""
         if project_id:
             self.set_active_project(project_id)
         full_prompt = hook_context + rendered_prompt
-        return await self.chat(
-            text=full_prompt,
-            user_name=f"hook:{hook_name}",
-            on_progress=on_progress,
-            _reflection_trigger="hook.completed",
-        )
+        token = _hook_provider_override.set(provider) if provider else None
+        try:
+            return await self.chat(
+                text=full_prompt,
+                user_name=f"hook:{hook_name}",
+                on_progress=on_progress,
+                _reflection_trigger="hook.completed",
+            )
+        finally:
+            if token is not None:
+                _hook_provider_override.reset(token)
 
     async def break_plan_into_tasks(
         self,

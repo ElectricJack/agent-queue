@@ -22,6 +22,24 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
 
 
+def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> AsyncEngine:
+    """Create an async PostgreSQL engine with connection pooling.
+
+    Normalizes ``postgresql://`` or ``postgres://`` schemes to the
+    ``postgresql+asyncpg://`` dialect required by SQLAlchemy async.
+    """
+    import re
+
+    url = re.sub(r"^postgres(ql)?://", "postgresql+asyncpg://", dsn)
+    return create_async_engine(
+        url,
+        pool_size=pool_max,
+        max_overflow=pool_max,
+        pool_pre_ping=True,
+        pool_timeout=30,
+    )
+
+
 def create_sqlite_engine(path: str) -> AsyncEngine:
     """Create an async SQLite engine with WAL mode and FK enforcement.
 

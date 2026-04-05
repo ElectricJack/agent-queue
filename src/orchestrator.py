@@ -326,9 +326,7 @@ class Orchestrator:
             self.plugin_registry.set_active_project_id_getter(
                 lambda: supervisor.handler._active_project_id
             )
-            self.plugin_registry.set_execute_command_callback(
-                supervisor.handler.execute
-            )
+            self.plugin_registry.set_execute_command_callback(supervisor.handler.execute)
 
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
@@ -589,6 +587,7 @@ class Orchestrator:
             await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
+        await self._emit_task_failure(task, "stop_task", error="Manually stopped by user")
         await self._notify_channel(
             f"**Task Stopped:** `{task_id}` — {task.title}",
             project_id=task.project_id,
@@ -619,6 +618,26 @@ class Orchestrator:
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
+
+    async def _emit_task_event(self, event_type: str, task, **extra) -> None:
+        """Emit a task lifecycle event for hooks."""
+        payload = {
+            "task_id": task.id,
+            "project_id": task.project_id,
+            "title": getattr(task, "title", ""),
+        }
+        payload.update(extra)
+        await self.bus.emit(event_type, payload)
+
+    async def _emit_task_failure(self, task, context: str, error: str = "") -> None:
+        """Emit ``task.failed`` event so hooks can react to task failures."""
+        await self._emit_task_event(
+            "task.failed",
+            task,
+            status=task.status.value if hasattr(task.status, "value") else str(task.status),
+            context=context,
+            error=error,
+        )
 
     async def _notify_channel(
         self,
@@ -815,6 +834,7 @@ class Orchestrator:
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
+
         self.plugin_registry = PluginRegistry(
             db=self.db,
             bus=self.bus,
@@ -1245,6 +1265,11 @@ class Orchestrator:
             )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(action.agent_id, None)
+            task = await self.db.get_task(action.task_id)
+            if task:
+                await self._emit_task_failure(
+                    task, "timeout", error=f"Task execution timed out after {timeout}s"
+                )
             await self._notify_channel(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
                 project_id=action.project_id,
@@ -2880,6 +2905,7 @@ class Orchestrator:
         elif merged is None:
             # Closed without merge
             await self.db.transition_task(task.id, TaskStatus.BLOCKED, context="pr_closed")
+            await self._emit_task_failure(task, "pr_closed", error="PR was closed without merging")
             await self._notify_channel(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "
                 f"was closed without merging. Marked as BLOCKED.",
@@ -3198,6 +3224,9 @@ class Orchestrator:
             await self.db.transition_task(
                 action.task_id, TaskStatus.FAILED, context="project_not_found"
             )
+            await self._emit_task_failure(
+                task, "project_not_found", error=f"Project {action.project_id} not found"
+            )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
             return
 
@@ -3259,6 +3288,11 @@ class Orchestrator:
                 )
                 await self.db.transition_task(
                     action.task_id, TaskStatus.FAILED, context="sync_timeout_waiting_for_tasks"
+                )
+                await self._emit_task_failure(
+                    task,
+                    "sync_timeout_waiting_for_tasks",
+                    error=f"Timed out waiting for active tasks after {max_wait}s",
                 )
                 return
 
@@ -3348,6 +3382,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     await self.db.transition_task(
                         action.task_id, TaskStatus.FAILED, context="no_workspace_for_merge"
                     )
+                    await self._emit_task_failure(
+                        task,
+                        "no_workspace_for_merge",
+                        error="No workspace available for merge agent",
+                    )
                     return
 
             # Launch the Claude Code agent for the merge work.
@@ -3355,6 +3394,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 await _notify(f"❌ **Sync `{task.id}`** — No adapter factory configured.")
                 await self.db.transition_task(
                     action.task_id, TaskStatus.FAILED, context="no_adapter_factory"
+                )
+                await self._emit_task_failure(
+                    task, "no_adapter_factory", error="No agent adapter factory configured"
                 )
                 return
 
@@ -3532,6 +3574,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
         task = await self.db.get_task(action.task_id)
         agent = await self.db.get_agent(action.agent_id)
+        await self._emit_task_event("task.started", task, agent_id=action.agent_id)
 
         # ── Sync workflow interception ───────────────────────────────────
         # Sync tasks (task_type=SYNC) are orchestrator-managed workflows,
@@ -3564,6 +3607,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 action.task_id,
                 TaskStatus.PAUSED,
                 context="no_workspace_available",
+                resume_after=time.time() + no_ws_backoff,
+            )
+            await self._emit_task_event(
+                "task.paused",
+                task,
+                reason="no_workspace",
                 resume_after=time.time() + no_ws_backoff,
             )
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
@@ -4216,6 +4265,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     TaskStatus.BLOCKED,
                     context="verification_failed",
                 )
+                await self._emit_task_failure(
+                    task,
+                    "verification_failed",
+                    error="Post-task verification failed, max retries exhausted",
+                )
                 await _post(
                     f"**Verification failed** for `{task.id}` — "
                     f"max retries exhausted, manual resolution needed."
@@ -4265,6 +4319,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
             if new_retry >= task.max_retries:
                 await self.db.transition_task(
                     action.task_id, TaskStatus.BLOCKED, context="max_retries", retry_count=new_retry
+                )
+                await self._emit_task_failure(
+                    task,
+                    "max_retries",
+                    error=f"Max retries ({task.max_retries}) exhausted",
                 )
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "
@@ -4362,6 +4421,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
                 else "token exhaustion"
             )
+            await self._emit_task_event(
+                "task.paused",
+                task,
+                reason=reason,
+                resume_after=time.time() + retry_secs,
+            )
             await _post(
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
@@ -4375,6 +4440,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 action.task_id,
                 TaskStatus.WAITING_INPUT,
                 context="agent_question",
+            )
+            await self._emit_task_event(
+                "task.waiting_input",
+                task,
+                question=question_text,
             )
             await self.db.log_event(
                 "agent_question",
