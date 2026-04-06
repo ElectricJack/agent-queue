@@ -849,6 +849,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
         orch.git = mock_git
 
@@ -875,6 +876,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
@@ -895,6 +897,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
         orch.git = mock_git
 
@@ -1023,7 +1026,8 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        # First call returns True (initial check), second returns False (re-check after commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1324,7 +1328,8 @@ class TestPhaseVerifyIntermediateSubtask:
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
-        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        # First call returns True (initial check), second returns False (re-check after commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)

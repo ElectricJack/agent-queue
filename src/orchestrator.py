@@ -2006,6 +2006,16 @@ class Orchestrator:
             # Ensure workspace is on a clean, up-to-date default branch.
             # The agent will create/switch to the task branch per its prompt.
             if await self.git.avalidate_checkout(workspace):
+                # Discard any uncommitted changes left by a previous task
+                # so the checkout to default_branch doesn't fail due to
+                # conflicts.  This is especially important for LINK
+                # workspaces without remotes, where no hard-reset follows.
+                if await self.git.ahas_uncommitted_changes(workspace):
+                    try:
+                        await self.git._arun(["checkout", "--", "."], cwd=workspace)
+                        await self.git._arun(["clean", "-fd"], cwd=workspace)
+                    except GitError:
+                        pass  # Best-effort cleanup
                 if await self.git.ahas_remote(workspace):
                     await self.git._arun(["fetch", "origin"], cwd=workspace)
                 try:
@@ -2723,11 +2733,18 @@ class Orchestrator:
         # Rather than reopening the task (which often repeats the same
         # mistake, causing retry loops), commit the changes automatically
         # and continue verification.
+        #
+        # We pass exclude_plans=False because this is a system-level
+        # auto-remediation — we need to commit ALL changes including plan
+        # files.  The plan file exclusion is meant to prevent agent-initiated
+        # commits from including plans, but auto-remediation must clean up
+        # everything to avoid verification failures.
         if has_uncommitted:
             try:
                 committed = await self.git.acommit_all(
                     workspace,
                     f"auto-commit: uncommitted changes from task {task.id}",
+                    exclude_plans=False,
                 )
                 if committed:
                     logger.info(
@@ -2735,7 +2752,10 @@ class Orchestrator:
                         task.id,
                         current_branch,
                     )
-                    has_uncommitted = False
+                # Re-check after commit attempt — handles edge cases where
+                # acommit_all returns False but some changes remain (e.g.
+                # gitignored files that show in porcelain output).
+                has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
             except Exception as e:
                 logger.warning(
                     "Task %s: auto-commit of uncommitted changes failed: %s",
@@ -3037,6 +3057,7 @@ class Orchestrator:
                     await self.git.acommit_all(
                         workspace,
                         f"auto-commit: workspace cleanup after task {task_id}",
+                        exclude_plans=False,
                     )
                     logger.info(
                         "Task %s: auto-committed changes during workspace cleanup",
@@ -3134,10 +3155,14 @@ class Orchestrator:
             # .claude/plans/), which dirties the working tree.  Commit the
             # archival so _phase_verify doesn't see it as uncommitted agent
             # changes and incorrectly reopen the task.
+            #
+            # Must use exclude_plans=False because the archived files live
+            # under .claude/plans/ which is in _PLAN_FILE_EXCLUDES.
             if ctx.workspace_path and await self.git.avalidate_checkout(ctx.workspace_path):
                 await self.git.acommit_all(
                     ctx.workspace_path,
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
+                    exclude_plans=False,
                 )
         else:
             reason = (
@@ -3173,6 +3198,7 @@ class Orchestrator:
                 await self.git.acommit_all(
                     ctx.workspace_path,
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
+                    exclude_plans=False,
                 )
             ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
@@ -4798,6 +4824,16 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 brief = f"🔄 Task reopened for git verification: {task.title} (`{task.id}`)"
                 await _post(brief)
                 await _notify_brief(brief)
+                # Clean up workspace so the next attempt starts with a
+                # clean working tree.  Without this, uncommitted changes
+                # persist and cause the same verification failure on retry
+                # (especially for LINK workspaces without remotes, where
+                # _prepare_workspace cannot do a hard reset).
+                await self._cleanup_workspace_for_next_task(
+                    ctx.workspace_path,
+                    ctx.default_branch,
+                    task.id,
+                )
             else:
                 # Pipeline stopped and could not reopen — block the task
                 await self.db.transition_task(

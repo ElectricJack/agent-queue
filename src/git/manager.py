@@ -758,7 +758,7 @@ class GitManager:
         "plan.md",
     ]
 
-    def commit_all(self, checkout_path: str, message: str) -> bool:
+    def commit_all(self, checkout_path: str, message: str, *, exclude_plans: bool = True) -> bool:
         """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
         Uses add-all-then-check-staged pattern: ``git add -A`` stages
@@ -769,15 +769,19 @@ class GitManager:
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
-        target repos.
+        target repos unless *exclude_plans* is ``False``.  System-level
+        operations (auto-remediation, plan archival, workspace cleanup)
+        should pass ``exclude_plans=False`` to ensure all changes are
+        committed.
         """
         self._run(["add", "-A"], cwd=checkout_path)
         # Unstage plan files so they never reach target repo history.
-        for pattern in self._PLAN_FILE_EXCLUDES:
-            try:
-                self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass  # Not staged or doesn't exist — fine
+        if exclude_plans:
+            for pattern in self._PLAN_FILE_EXCLUDES:
+                try:
+                    self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+                except GitError:
+                    pass  # Not staged or doesn't exist — fine
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1437,14 +1441,22 @@ class GitManager:
         except GitError:
             return []
 
-    async def acommit_all(self, checkout_path: str, message: str) -> bool:
-        """Async version of :meth:`commit_all`."""
+    async def acommit_all(
+        self, checkout_path: str, message: str, *, exclude_plans: bool = True
+    ) -> bool:
+        """Async version of :meth:`commit_all`.
+
+        See :meth:`commit_all` for parameter docs.  Pass
+        ``exclude_plans=False`` for system-level operations that need
+        to commit all changes including plan files.
+        """
         await self._arun(["add", "-A"], cwd=checkout_path)
-        for pattern in self._PLAN_FILE_EXCLUDES:
-            try:
-                await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass
+        if exclude_plans:
+            for pattern in self._PLAN_FILE_EXCLUDES:
+                try:
+                    await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+                except GitError:
+                    pass
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
