@@ -233,6 +233,18 @@ Methods:
 - `get_rules_for_prompt(project_id, query) -> str` — Load rules for PromptBuilder Layer 3
 - `install_defaults() -> list[str]` — Install default global rules from bundled templates
 
+### Bundled Default Rules
+
+`install_defaults()` copies templates from `src/prompts/default_rules/` as global rules on first run. Each rule uses the standard Intent / Trigger / Logic structure:
+
+| Rule | Trigger | Purpose |
+|---|---|---|
+| `dependency-update-check` | Every 24 hours | Run `scripts/check-outdated-deps.py` and `pip-audit` to find outdated or vulnerable packages; create tasks for critical updates |
+| `error-recovery-monitor` | `event:task.failed` | Inspect failure details, retry transient errors, create fix tasks for code bugs |
+| `periodic-project-review` | Every 30 minutes | Detect stuck/orphaned tasks, verify rule-hook sync, surface BLOCKED tasks |
+| `post-action-reflection` | `event:task.completed` | Evaluate task results against acceptance criteria, trigger follow-up work, update project memory |
+| `spec-drift-detector` | `event:task.completed` | Compare modified source files against corresponding specs, update stale specs or create tasks to reconcile |
+
 ### Commands (Primary Automation Interface)
 
 These are the tools available to users and LLM agents for managing automation:

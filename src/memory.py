@@ -2717,7 +2717,8 @@ class MemoryManager:
         persistent state like timestamps, counters, or any structured data
         that should be retrievable via ``memory_search`` or ``read_memory``.
 
-        Returns the file path on success, ``None`` otherwise.
+        Returns the file path on success.  Raises ``OSError`` if the
+        write fails (callers should catch and surface to the user).
         """
         memory_dir = self._project_memory_dir(project_id)
         # Sanitize key to be filesystem-safe

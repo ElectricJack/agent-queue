@@ -1,6 +1,6 @@
 # Memory Consolidation System
 
-> **Status:** Design Proposal
+> **Status:** Implemented
 > **Author:** Agent (fleet-beacon)
 > **Date:** 2026-04-05
 
@@ -518,11 +518,12 @@ Exposed via `memory_stats` tool enhancement and API endpoint.
 
 | File | Change Type | Description |
 |------|-------------|-------------|
-| `src/memory.py` | Extend | Add factsheet management, knowledge base, fact extraction, consolidation methods |
+| `src/memory.py` | Extend | Add factsheet management, knowledge base, fact extraction, consolidation methods; `write_memory` raises `OSError` on I/O failure (not silent `None`) |
 | `src/models.py` | Extend | Add `factsheet` field to `MemoryContext`, new `ExtractedFact` dataclass |
 | `src/config.py` | Extend | Add consolidation config fields to `MemoryConfig` |
 | `src/prompts/memory_consolidation.py` | New | Prompts for fact extraction, consolidation, knowledge base |
 | `src/plugins/internal/memory.py` | Extend | Add `project_factsheet`, `project_knowledge`, `search_all_projects` tools |
+| `src/plugins/services.py` | Extend | Add 13 method delegations to `MemoryServiceImpl` for factsheet, knowledge base, consolidation, and key-value memory ops |
 | `src/orchestrator.py` | Extend | Call fact extraction after task completion, register consolidation hooks |
 | `src/supervisor.py` | Extend | Update prompts to check factsheet first |
 | `specs/memory-consolidation.md` | New | This spec |
