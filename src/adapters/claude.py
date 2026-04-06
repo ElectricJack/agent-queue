@@ -316,6 +316,7 @@ class ClaudeAdapter(AgentAdapter):
 
             # Main query loop — runs once normally, but repeats when a
             # message is injected mid-execution (cancel → resume cycle).
+            _resume_retry_attempted = False
             while True:
                 cli_error: str | None = None
                 _interrupted_by_inject = False
@@ -378,6 +379,27 @@ class ClaudeAdapter(AgentAdapter):
                     # Check inject_event before treating as a real error.
                     if self._inject_event.is_set() and not self._cancel_event.is_set():
                         _interrupted_by_inject = True
+                    elif (
+                        getattr(options, "resume", None)
+                        and not _resume_retry_attempted
+                        and not self._cancel_event.is_set()
+                    ):
+                        # Session resume/fork failed (e.g. session no longer
+                        # exists on disk, corrupt, or CLI version mismatch).
+                        # Fall back to a fresh session instead of failing the
+                        # entire task.
+                        from dataclasses import replace as _replace
+
+                        error_msg = str(e)
+                        print(
+                            f"Claude adapter: session resume failed ({error_msg}), "
+                            f"retrying as fresh session"
+                        )
+                        if on_message:
+                            await on_message("⚠️ Session resume failed — starting fresh session")
+                        options = _replace(options, resume=None, fork_session=False)
+                        _resume_retry_attempted = True
+                        continue
                     else:
                         import traceback
 
