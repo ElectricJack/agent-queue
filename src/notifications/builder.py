@@ -44,6 +44,8 @@ def build_task_detail(task: Task) -> TaskDetail:
         auto_approve_plan=task.auto_approve_plan,
         skip_verification=task.skip_verification,
         pr_url=task.pr_url,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
     )
 
 

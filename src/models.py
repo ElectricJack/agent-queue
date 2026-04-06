@@ -317,6 +317,7 @@ class Task:
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
     created_at: float = 0.0  # unix timestamp when the task was created
+    updated_at: float = 0.0  # unix timestamp when the task was last updated
 
 
 @dataclass

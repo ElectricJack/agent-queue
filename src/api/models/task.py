@@ -35,6 +35,8 @@ class TaskDetail(BaseModel):
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
     subtasks: list[TaskRef] = []
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 class TaskDict(BaseModel):
