@@ -69,6 +69,7 @@ class ArchiveQueryMixin:
                     preferred_workspace_id=task.preferred_workspace_id,
                     attachments=json.dumps(task.attachments) if task.attachments else "[]",
                     auto_approve_plan=int(task.auto_approve_plan),
+                    skip_verification=int(task.skip_verification),
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,

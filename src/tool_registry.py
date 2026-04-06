@@ -620,6 +620,15 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                     "default": False,
                 },
+                "skip_verification": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, skip git verification on task completion. "
+                        "Use for investigation/research tasks that don't produce "
+                        "code changes requiring git cleanup."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["title"],
         },
@@ -786,7 +795,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
-            "status, max_retries, verification_type, profile_id, or auto_approve_plan. Use this "
+            "status, max_retries, verification_type, profile_id, auto_approve_plan, "
+            "or skip_verification. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
             "(admin), assign a profile, or adjust retry/verification settings."
         ),
@@ -834,6 +844,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "auto_approve_plan": {
                     "type": "boolean",
                     "description": "If true, any plan this task generates will be automatically approved without human review (optional)",
+                },
+                "skip_verification": {
+                    "type": "boolean",
+                    "description": "If true, skip git verification on task completion (optional)",
                 },
             },
             "required": ["task_id"],

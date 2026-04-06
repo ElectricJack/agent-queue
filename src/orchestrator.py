@@ -2685,6 +2685,12 @@ class Orchestrator:
         """
         workspace = ctx.workspace_path
         task = ctx.task
+
+        # Skip verification if the task opted out (e.g. research/investigation tasks)
+        if task.skip_verification:
+            logger.info("Task %s: skip_verification=True, skipping git verification", task.id)
+            return PhaseResult.CONTINUE
+
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return PhaseResult.CONTINUE
         if not task.branch_name:

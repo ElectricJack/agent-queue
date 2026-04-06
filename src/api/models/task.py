@@ -30,6 +30,7 @@ class TaskDetail(BaseModel):
     parent_task_id: str | None = None
     profile_id: str | None = None
     auto_approve_plan: bool = False
+    skip_verification: bool = False
     pr_url: str | None = None
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
@@ -69,6 +70,7 @@ class CreateTaskResponse(BaseModel):
     preferred_workspace_id: str | None = None
     attachments: list[str] | None = None
     auto_approve_plan: bool = False
+    skip_verification: bool = False
     warning: str | None = None
 
 

@@ -68,6 +68,7 @@ def _task_proxy(td: Any) -> SimpleNamespace:
         pr_url=getattr(td, "pr_url", None),
         profile_id=getattr(td, "profile_id", None),
         auto_approve_plan=getattr(td, "auto_approve_plan", False),
+        skip_verification=getattr(td, "skip_verification", False),
     )
 
 
