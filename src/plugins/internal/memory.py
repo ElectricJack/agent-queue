@@ -169,7 +169,11 @@ TOOL_DEFINITIONS = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to store (markdown or plain text)",
+                    "description": (
+                        "The value to store (required). For simple values "
+                        "like timestamps, pass the string directly (e.g. "
+                        "'2026-01-15T12:00:00Z'). Also accepts markdown."
+                    ),
                 },
             },
             "required": ["project_id", "key", "content"],
@@ -663,9 +667,16 @@ class MemoryPlugin(InternalPlugin):
         key = args.get("key")
         if not key:
             return {"error": "key is required"}
-        content = args.get("content")
+        # Accept 'value' as alias for 'content' (common LLM variation
+        # since the tool describes itself as a "key-value" store).
+        content = args.get("content") or args.get("value") or args.get("data")
         if not content:
-            return {"error": "content is required"}
+            return {
+                "error": (
+                    "content is required — pass the value to store in the "
+                    "'content' parameter (or 'value' alias)"
+                )
+            }
 
         workspace, err = await self._require_workspace(project_id)
         if err:
