@@ -3445,6 +3445,51 @@ class Orchestrator:
 
             logger.info("Sync workflow %s: all active tasks completed", task.id)
 
+            # ── Early-out: check if workspaces are already synced ───────
+            # After waiting for active tasks, re-check whether any workspace
+            # actually has feature branches.  If all workspaces are already
+            # on the default branch with no feature branches, skip the
+            # expensive merge agent entirely.
+            needs_merge = False
+            for ws in workspaces:
+                ws_path = ws.workspace_path
+                if not os.path.isdir(ws_path):
+                    continue  # skip missing paths
+                try:
+                    current = await self.git.aget_current_branch(ws_path)
+                    branches = await self.git.alist_branches(ws_path)
+                    clean_branches = [b.lstrip("* ").strip() for b in branches if b.strip()]
+                    non_default = [
+                        b for b in clean_branches if b and b != default_branch
+                    ]
+                    if current != default_branch or non_default:
+                        needs_merge = True
+                        break
+                except Exception:
+                    # Can't check — assume merge is needed
+                    needs_merge = True
+                    break
+
+            if not needs_merge:
+                logger.info(
+                    "Sync workflow %s: all workspaces already on %s — skipping merge",
+                    task.id,
+                    default_branch,
+                )
+                await self.db.transition_task(
+                    action.task_id,
+                    TaskStatus.COMPLETED,
+                    context="sync_already_synced",
+                )
+                await _notify(
+                    f"✅ **Sync `{task.id}`** — All workspaces already on "
+                    f"`{default_branch}` with no feature branches. Skipping merge."
+                )
+                # Jump to cleanup (the finally block handles resume).
+                # Task is already COMPLETED, so the finally block's
+                # IN_PROGRESS check won't send a duplicate notification.
+                return
+
             # ── Phase 3: Merge feature branches ─────────────────────────
             await _notify(
                 f"🔄 **Sync `{task.id}`** — Phase 3/4: "

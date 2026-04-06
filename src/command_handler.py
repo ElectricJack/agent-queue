@@ -4638,6 +4638,10 @@ class CommandHandler:
 
         This is used for periodic workspace consolidation when feature branches
         have drifted from the default branch.
+
+        Early-out conditions (no task queued):
+        - A SYNC task already exists for this project (READY/ASSIGNED/IN_PROGRESS).
+        - All workspaces are already on the default branch with no feature branches.
         """
         from src.task_names import generate_task_id
 
@@ -4654,6 +4658,80 @@ class CommandHandler:
             return {"error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
+
+        # ── Early-out: duplicate sync task ─────────────────────────────
+        # If there's already a SYNC task queued or running for this project,
+        # don't create another one.
+        active_tasks = await self.db.list_active_tasks(
+            project_id=project_id,
+            exclude_statuses={TaskStatus.COMPLETED, TaskStatus.FAILED},
+        )
+        existing_sync = [
+            t for t in active_tasks
+            if t.task_type == TaskType.SYNC
+            and t.status in (TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+        ]
+        if existing_sync:
+            existing_ids = ", ".join(t.id for t in existing_sync)
+            return {
+                "already_queued": True,
+                "existing_task_ids": [t.id for t in existing_sync],
+                "project_id": project_id,
+                "message": (
+                    f"Sync Workspaces task already exists for '{project_id}': {existing_ids}. "
+                    f"Skipping duplicate."
+                ),
+            }
+
+        # ── Early-out: workspaces already synced ───────────────────────
+        # Check if all workspaces are already on the default branch with no
+        # feature branches.  If so, there's nothing to merge — skip the sync.
+        git = self.orchestrator.git
+        needs_sync = False
+        workspace_details = []
+        for ws in workspaces:
+            ws_path = ws.workspace_path
+            if not os.path.isdir(ws_path):
+                # Workspace path doesn't exist — can't check, assume needs sync
+                needs_sync = True
+                workspace_details.append(f"  - {ws_path}: directory not found")
+                break
+            try:
+                current = await git.aget_current_branch(ws_path)
+                branches = await git.alist_branches(ws_path)
+                # alist_branches returns lines like "* main", "  feature-x"
+                # Strip the leading "* " or "  " to get clean branch names.
+                clean_branches = [b.lstrip("* ").strip() for b in branches if b.strip()]
+                non_default = [
+                    b for b in clean_branches
+                    if b and b != default_branch
+                ]
+                if current != default_branch or non_default:
+                    needs_sync = True
+                    workspace_details.append(
+                        f"  - {ws_path}: branch={current}, "
+                        f"other_branches={non_default or '(none)'}"
+                    )
+                    break
+                workspace_details.append(f"  - {ws_path}: on {default_branch}, no feature branches")
+            except Exception:
+                # Git error — can't determine state, assume needs sync
+                needs_sync = True
+                workspace_details.append(f"  - {ws_path}: git check failed")
+                break
+
+        if not needs_sync:
+            return {
+                "already_synced": True,
+                "project_id": project_id,
+                "workspace_count": len(workspaces),
+                "default_branch": default_branch,
+                "message": (
+                    f"All {len(workspaces)} workspace(s) for '{project_id}' are already on "
+                    f"'{default_branch}' with no feature branches. No sync needed."
+                ),
+            }
+
         workspace_root = "/home/jkern/agent-queue-workspaces"
 
         # Build a self-contained description with all context for the sync workflow.
