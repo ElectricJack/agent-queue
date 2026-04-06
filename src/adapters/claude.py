@@ -298,17 +298,32 @@ class ClaudeAdapter(AgentAdapter):
                     if pattern not in allowed:
                         allowed.append(pattern)
 
+            # Capture stderr from the CLI subprocess for diagnostics.
+            # Without this, the SDK's ProcessError only says "Check stderr
+            # output for details" which is useless for debugging.
+            _stderr_lines: list[str] = []
+
+            def _capture_stderr(line: str) -> None:
+                _stderr_lines.append(line)
+                logger.debug("Claude CLI stderr: %s", line)
+
             options = ClaudeAgentOptions(
                 allowed_tools=allowed,
                 permission_mode=self._config.permission_mode,
                 max_turns=self._config.max_turns,
                 cwd=self._task.checkout_path or None,
                 cli_path=system_claude,  # None → falls back to bundled binary
+                stderr=_capture_stderr,
             )
             if self._config.model:
                 options.model = self._config.model
             if self._task.mcp_servers:
                 options.mcp_servers = self._task.mcp_servers
+
+            # Track whether the original options included a resume request.
+            # This flag survives even if `options` is replaced during retry,
+            # so the error handler always knows a resume was attempted.
+            _is_resume_attempt = False
             if self._task.resume_session_id:
                 try:
                     from claude_agent_sdk import get_session_messages
@@ -317,32 +332,45 @@ class ClaudeAdapter(AgentAdapter):
                     if msgs:
                         options.resume = self._task.resume_session_id
                         options.fork_session = True
-                        print(f"Claude adapter: forking session {self._task.resume_session_id}")
+                        _is_resume_attempt = True
+                        logger.info(
+                            "Claude adapter: forking session %s",
+                            self._task.resume_session_id,
+                        )
                     else:
-                        print(
-                            f"Claude adapter: session "
-                            f"{self._task.resume_session_id} not found, "
-                            f"starting fresh"
+                        logger.info(
+                            "Claude adapter: session %s not found, starting fresh",
+                            self._task.resume_session_id,
                         )
                 except Exception as e:
-                    print(f"Claude adapter: session fork check failed ({e}), starting fresh")
+                    logger.warning(
+                        "Claude adapter: session fork check failed (%s), starting fresh",
+                        e,
+                    )
 
             summary_parts = []
             tokens_used = 0
             current_prompt = self._build_prompt()
 
             mcp_names = list(self._task.mcp_servers.keys()) if self._task.mcp_servers else []
-            print(
-                f"Claude adapter: starting query (session={self._session_id or 'new'}, "
-                f"prompt={len(current_prompt)} chars, "
-                f"allowed_tools={allowed}, mcp_servers={mcp_names})"
+            logger.info(
+                "Claude adapter: starting query (session=%s, prompt=%d chars, "
+                "allowed_tools=%s, mcp_servers=%s)",
+                self._session_id or "new",
+                len(current_prompt),
+                allowed,
+                mcp_names,
             )
 
-            # Import ProcessError for specific error classification
+            # Import SDK error types for specific error classification
             try:
                 from claude_agent_sdk._errors import ProcessError as _ProcessError
             except ImportError:
                 _ProcessError = None
+            try:
+                from claude_agent_sdk._errors import CLIConnectionError as _CLIConnError
+            except ImportError:
+                _CLIConnError = None
 
             # Main query loop — runs once normally, but repeats when a
             # message is injected mid-execution (cancel → resume cycle).
@@ -372,7 +400,10 @@ class ClaudeAdapter(AgentAdapter):
                                 if isinstance(data, dict)
                                 else getattr(message, "session_id", None)
                             )
-                            print(f"Claude adapter: session started ({self._session_id})")
+                            logger.info(
+                                "Claude adapter: session started (%s)",
+                                self._session_id,
+                            )
 
                         # Forward interesting messages to the callback
                         if on_message:
@@ -388,7 +419,10 @@ class ClaudeAdapter(AgentAdapter):
                                 cli_error = (
                                     f"{err_subtype}: {err_result}".strip(": ") or err_subtype
                                 )
-                                print(f"Claude adapter: CLI returned error result: {cli_error}")
+                                logger.warning(
+                                    "Claude adapter: CLI returned error result: %s",
+                                    cli_error,
+                                )
                             else:
                                 if message.result:
                                     summary_parts.append(str(message.result))
@@ -406,7 +440,11 @@ class ClaudeAdapter(AgentAdapter):
                     if self._inject_event.is_set() and not self._cancel_event.is_set():
                         _interrupted_by_inject = True
                     elif (
-                        getattr(options, "resume", None)
+                        # Use _is_resume_attempt (set before query starts) in
+                        # addition to checking options.resume.  This handles
+                        # the race where a CLIConnectionError is raised instead
+                        # of ProcessError (process exits before write completes).
+                        (_is_resume_attempt or getattr(options, "resume", None))
                         and not _resume_retry_attempted
                         and not self._cancel_event.is_set()
                     ):
@@ -417,44 +455,58 @@ class ClaudeAdapter(AgentAdapter):
                         from dataclasses import replace as _replace
 
                         error_msg = str(e)
+                        # Append captured stderr for diagnostics
+                        stderr_tail = "\n".join(_stderr_lines[-20:])
+                        if stderr_tail:
+                            error_msg += f"\nCLI stderr:\n{stderr_tail}"
                         _resume_original_error = error_msg
                         # Classify the error for better diagnostics
                         is_process_error = _ProcessError is not None and isinstance(
                             e, _ProcessError
                         )
+                        is_conn_error = _CLIConnError is not None and isinstance(e, _CLIConnError)
                         exit_code = getattr(e, "exit_code", None) if is_process_error else None
-                        print(
-                            f"Claude adapter: session resume failed "
-                            f"(error={error_msg}, "
-                            f"process_error={is_process_error}, "
-                            f"exit_code={exit_code}), "
-                            f"retrying as fresh session"
+                        logger.warning(
+                            "Claude adapter: session resume failed "
+                            "(error=%s, process_error=%s, conn_error=%s, "
+                            "exit_code=%s), retrying as fresh session",
+                            error_msg,
+                            is_process_error,
+                            is_conn_error,
+                            exit_code,
                         )
                         if on_message:
                             await on_message("⚠️ Session resume failed — starting fresh session")
                         options = _replace(options, resume=None, fork_session=False)
+                        _is_resume_attempt = False  # Fresh session, no longer a resume
                         _resume_retry_attempted = True
+                        _stderr_lines.clear()  # Reset stderr for the fresh attempt
                         continue
                     else:
                         import traceback
 
                         error_msg = str(e)
+                        # Append captured stderr for diagnostics
+                        stderr_tail = "\n".join(_stderr_lines[-20:])
+                        if stderr_tail:
+                            error_msg += f"\nCLI stderr:\n{stderr_tail}"
                         full_traceback = traceback.format_exc()
                         # If this is a retry failure, include context about the
                         # original resume error so the user understands the full
                         # sequence of events.
                         if _resume_retry_attempted and _resume_original_error:
-                            print(
-                                f"Claude adapter: fresh session also failed "
-                                f"(original resume error: {_resume_original_error})"
+                            logger.error(
+                                "Claude adapter: fresh session also failed "
+                                "(original resume error: %s)",
+                                _resume_original_error,
                             )
                             error_msg = (
                                 f"Session resume failed ({_resume_original_error}), "
                                 f"and fresh session also failed: {error_msg}"
                             )
                         else:
-                            print(f"Claude adapter error: {error_msg}")
-                        print(full_traceback)
+                            logger.error("Claude adapter error: %s", error_msg)
+                        logger.debug("Full traceback:\n%s", full_traceback)
                         if "token" in error_msg.lower() or "quota" in error_msg.lower():
                             output = AgentOutput(
                                 result=AgentResult.PAUSED_TOKENS,
@@ -478,9 +530,10 @@ class ClaudeAdapter(AgentAdapter):
                 if _interrupted_by_inject and not self._inject_queue.empty():
                     injected = self._inject_queue.get_nowait()
                     self._inject_event.clear()
-                    print(
-                        f"Claude adapter: injecting message into session "
-                        f"{self._session_id} ({len(injected)} chars)"
+                    logger.info(
+                        "Claude adapter: injecting message into session %s (%d chars)",
+                        self._session_id,
+                        len(injected),
                     )
                     if on_message:
                         await on_message("💬 **User message received** — resuming session")
@@ -501,25 +554,28 @@ class ClaudeAdapter(AgentAdapter):
                     # error via ResultMessage (rather than an exception),
                     # retry as a fresh session before giving up.
                     if (
-                        getattr(options, "resume", None)
+                        (_is_resume_attempt or getattr(options, "resume", None))
                         and not _resume_retry_attempted
                         and not self._cancel_event.is_set()
                     ):
                         from dataclasses import replace as _replace
 
                         _resume_original_error = cli_error
-                        print(
-                            f"Claude adapter: CLI error during session resume "
-                            f"({cli_error}), retrying as fresh session"
+                        logger.warning(
+                            "Claude adapter: CLI error during session resume "
+                            "(%s), retrying as fresh session",
+                            cli_error,
                         )
                         if on_message:
                             await on_message("⚠️ Session resume failed — starting fresh session")
                         options = _replace(options, resume=None, fork_session=False)
+                        _is_resume_attempt = False
                         _resume_retry_attempted = True
                         cli_error = None
+                        _stderr_lines.clear()
                         continue
 
-                    print(f"Claude adapter: query failed with CLI error: {cli_error}")
+                    logger.error("Claude adapter: query failed with CLI error: %s", cli_error)
                     if _resume_retry_attempted and _resume_original_error:
                         cli_error = (
                             f"Session resume failed ({_resume_original_error}), "
@@ -533,23 +589,24 @@ class ClaudeAdapter(AgentAdapter):
                     self._log_session(current_prompt, output, _wait_start, _time)
                     return output
 
-                print(
-                    f"Claude adapter: query completed, {len(summary_parts)} result parts, "
-                    f"{tokens_used} tokens"
+                logger.info(
+                    "Claude adapter: query completed, %d result parts, %d tokens",
+                    len(summary_parts),
+                    tokens_used,
                 )
 
                 if tokens_used == 0 and not summary_parts:
                     # If this was a resume attempt that silently failed (process
                     # exited without error but produced no output), retry fresh.
                     if (
-                        getattr(options, "resume", None)
+                        (_is_resume_attempt or getattr(options, "resume", None))
                         and not _resume_retry_attempted
                         and not self._cancel_event.is_set()
                     ):
                         from dataclasses import replace as _replace
 
                         _resume_original_error = "0 tokens and no output during resume"
-                        print(
+                        logger.warning(
                             "Claude adapter: resume produced no output, retrying as fresh session"
                         )
                         if on_message:
@@ -557,10 +614,12 @@ class ClaudeAdapter(AgentAdapter):
                                 "⚠️ Session resume produced no output — starting fresh session"
                             )
                         options = _replace(options, resume=None, fork_session=False)
+                        _is_resume_attempt = False
                         _resume_retry_attempted = True
+                        _stderr_lines.clear()
                         continue
 
-                    print("Claude adapter: 0 tokens and no output — treating as failure")
+                    logger.error("Claude adapter: 0 tokens and no output — treating as failure")
                     output = AgentOutput(
                         result=AgentResult.FAILED,
                         error_message=(
