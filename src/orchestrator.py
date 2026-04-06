@@ -4459,6 +4459,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     {
                         "task_id": task.id,
                         "project_id": task.project_id,
+                        "title": task.title,
                     },
                 )
 

@@ -820,6 +820,23 @@ class HookEngine:
                 parts.append("Last run: *first run*")
             timing_line = "\n".join(parts) + "\n"
 
+        # Build event context for event-driven hooks so the LLM knows
+        # which entity triggered the hook (e.g. the completed task's ID).
+        event_context_line = ""
+        if event_data and trigger_reason.startswith("event:"):
+            parts = []
+            if event_data.get("task_id"):
+                parts.append(f"Triggering task ID: `{event_data['task_id']}`")
+            if event_data.get("title"):
+                parts.append(f"Task title: {event_data['title']}")
+            # Include any other notable event fields (excluding internal/already-shown ones)
+            skip_keys = {"_event_type", "task_id", "project_id", "title"}
+            for key, value in event_data.items():
+                if key not in skip_keys and value:
+                    parts.append(f"{key}: `{value}`")
+            if parts:
+                event_context_line = "\n".join(parts) + "\n"
+
         # Build available plugin tools context so the LLM knows which
         # plugin tools it can call (prevents hallucinating "unavailable").
         plugin_tools_line = ""
@@ -861,6 +878,7 @@ class HookEngine:
                 "default_branch": branch_line,
                 "trigger_reason": trigger_reason,
                 "timing_context": timing_line,
+                "event_context": event_context_line,
             },
         )
         result, _ = builder.build()

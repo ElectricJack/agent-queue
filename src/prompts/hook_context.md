@@ -27,6 +27,9 @@ variables:
   - name: timing_context
     description: Timing info for periodic hooks (current time, last run time, elapsed)
     required: false
+  - name: event_context
+    description: Event data for event-triggered hooks (e.g. triggering task ID)
+    required: false
 tags: [hooks, system, context]
 version: 1
 ---
@@ -35,7 +38,7 @@ version: 1
 
 You are executing as hook **{{hook_name}}** for project **{{project_name}}** (`{{project_id}}`).
 Trigger: `{{trigger_reason}}`
-{{workspace_dir}}{{repo_url}}{{default_branch}}{{timing_context}}
+{{workspace_dir}}{{repo_url}}{{default_branch}}{{timing_context}}{{event_context}}
 
 ## Your Role
 
