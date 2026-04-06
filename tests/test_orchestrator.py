@@ -945,6 +945,8 @@ class TestPhaseVerifyNormalTask:
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o
@@ -1077,8 +1079,8 @@ class TestPhaseVerifyNormalTask:
         assert result == PhaseResult.CONTINUE
         orch.git.acommit_all.assert_awaited_once()
 
-    async def test_fails_when_auto_commit_fails(self, pipeline_orch):
-        """Falls back to failure when auto-commit raises an exception."""
+    async def test_fails_when_all_remediation_fails(self, pipeline_orch):
+        """Falls back to failure when all auto-remediation attempts fail."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -1094,12 +1096,42 @@ class TestPhaseVerifyNormalTask:
 
         orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
         orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean also fails to clean the workspace
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+    async def test_force_cleans_when_commit_fails(self, pipeline_orch):
+        """Force-clean recovers the workspace when auto-commit fails."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3b2",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3b2",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean succeeds — workspace is clean after reset+clean
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=True)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Force-clean should have recovered the workspace
+        assert result == PhaseResult.CONTINUE
+        orch.git.aforce_clean_workspace.assert_awaited_once()
 
     async def test_auto_commit_and_merge_when_on_task_branch(self, pipeline_orch):
         """Uncommitted changes on task branch are auto-committed, then auto-merged."""
@@ -1222,6 +1254,8 @@ class TestPhaseVerifyApprovalTask:
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o
@@ -1362,6 +1396,8 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git._arun = AsyncMock(return_value="0")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o, sub1
@@ -1410,13 +1446,15 @@ class TestPhaseVerifyIntermediateSubtask:
         assert result == PhaseResult.CONTINUE
         orch.git.acommit_all.assert_awaited_once()
 
-    async def test_fails_when_auto_commit_fails(self, pipeline_orch):
-        """Intermediate subtask fails when auto-commit raises an exception."""
+    async def test_fails_when_all_remediation_fails(self, pipeline_orch):
+        """Intermediate subtask fails when all auto-remediation attempts fail."""
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
         orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
         orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean also fails to clean the workspace
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)
@@ -1444,6 +1482,8 @@ class TestCleanupWorkspaceForNextTask:
         mock_git.aget_current_branch = AsyncMock(return_value="main")
         mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git._arun = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o

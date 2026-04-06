@@ -2010,10 +2010,15 @@ class Orchestrator:
                 # so the checkout to default_branch doesn't fail due to
                 # conflicts.  This is especially important for LINK
                 # workspaces without remotes, where no hard-reset follows.
+                #
+                # We first abort any in-progress operations (merge/rebase)
+                # and remove stale lock files, then force-clean the workspace.
+                # The old approach (checkout -- . + clean -fd) failed when
+                # the workspace was in a mid-merge/rebase state or had
+                # staged-but-uncommitted changes.
                 if await self.git.ahas_uncommitted_changes(workspace):
                     try:
-                        await self.git._arun(["checkout", "--", "."], cwd=workspace)
-                        await self.git._arun(["clean", "-fd"], cwd=workspace)
+                        await self.git.aforce_clean_workspace(workspace)
                     except GitError:
                         pass  # Best-effort cleanup
                 if await self.git.ahas_remote(workspace):
@@ -3037,10 +3042,25 @@ class Orchestrator:
         False if the workspace is now clean.
 
         Fallback cascade:
+        0. Abort any in-progress git operations (merge/rebase/cherry-pick)
+           and remove stale lock files left by crashed processes.
         1. ``git commit`` with ``--no-verify`` to bypass pre-commit hooks.
         2. ``git stash`` to save changes without committing.
-        3. ``git checkout -- . && git clean -fd`` to discard changes.
+        3. ``git reset --hard HEAD && git clean -fdx`` to discard ALL changes.
         """
+        # Attempt 0: Clear any in-progress operations and lock files that
+        # would cause all subsequent git operations to fail.  This handles
+        # the common case where a killed agent left the workspace in a
+        # mid-merge/rebase state or left a stale index.lock.
+        try:
+            await self.git.aabort_in_progress_operations(workspace)
+        except Exception as e:
+            logger.warning(
+                "Task %s: abort in-progress operations failed: %s",
+                task_id,
+                e,
+            )
+
         # Attempt 1: commit with --no-verify to bypass pre-commit hooks.
         # Hooks (e.g. ruff formatting) are the most common reason
         # auto-commit fails, causing retry loops.
@@ -3096,21 +3116,23 @@ class Orchestrator:
                 e,
             )
 
-        # Attempt 3: discard all changes (last resort).
+        # Attempt 3: nuclear option — hard-reset and clean everything
+        # including ignored files.  Uses git reset --hard HEAD (resets
+        # index + working tree for all tracked files) instead of
+        # git checkout -- . (which misses staged changes, deleted files,
+        # and fails during merge conflicts).
         try:
-            await self.git._arun(["checkout", "--", "."], cwd=workspace)
-            await self.git._arun(["clean", "-fd"], cwd=workspace)
-            logger.info(
-                "Task %s: discarded uncommitted changes on branch '%s'",
-                task_id,
-                current_branch,
-            )
-            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
-            if not has_uncommitted:
+            clean = await self.git.aforce_clean_workspace(workspace)
+            if clean:
+                logger.info(
+                    "Task %s: force-cleaned workspace on branch '%s'",
+                    task_id,
+                    current_branch,
+                )
                 return False
         except Exception as e:
             logger.warning(
-                "Task %s: discard changes failed: %s",
+                "Task %s: force-clean workspace failed: %s",
                 task_id,
                 e,
             )
@@ -3203,13 +3225,15 @@ class Orchestrator:
         """Ensure the workspace is clean and on the default branch.
 
         Called when a task reaches a terminal non-success state (BLOCKED,
-        FAILED with retries exhausted) to prevent dirty workspace state
-        from blocking or confusing the next task assigned to this workspace.
+        FAILED with retries exhausted) or when a task is reopened for
+        verification retry, to prevent dirty workspace state from blocking
+        or confusing the next task assigned to this workspace.
 
         Cleanup strategy (best-effort, most-conservative-first):
+        0. Abort any in-progress git operations and remove stale lock files.
         1. Commit any uncommitted changes (preserves work).
         2. Stash if commit fails (preserves work, less accessible).
-        3. Discard changes as last resort.
+        3. Force-clean workspace as last resort (reset --hard + clean -fdx).
         4. Switch to the default branch.
         """
         if not workspace:
@@ -3219,6 +3243,17 @@ class Orchestrator:
                 return
         except Exception:
             return
+
+        # Step 0: Abort any in-progress operations and remove lock files
+        # so that subsequent git commands don't fail due to stale state.
+        try:
+            await self.git.aabort_in_progress_operations(workspace)
+        except Exception as e:
+            logger.warning(
+                "Task %s: abort in-progress operations failed during cleanup: %s",
+                task_id,
+                e,
+            )
 
         # Step 1: Handle uncommitted changes
         try:
@@ -3256,25 +3291,24 @@ class Orchestrator:
                             task_id,
                         )
                     except Exception:
-                        # Last resort — discard changes
+                        # Last resort — force-clean (reset --hard + clean -fdx)
                         try:
-                            await self.git._arun(
-                                ["checkout", "--", "."],
-                                cwd=workspace,
-                            )
-                            await self.git._arun(
-                                ["clean", "-fd"],
-                                cwd=workspace,
-                            )
-                            logger.info(
-                                "Task %s: discarded uncommitted changes during cleanup",
-                                task_id,
-                            )
-                        except Exception as discard_err:
+                            clean = await self.git.aforce_clean_workspace(workspace)
+                            if clean:
+                                logger.info(
+                                    "Task %s: force-cleaned workspace during cleanup",
+                                    task_id,
+                                )
+                            else:
+                                logger.warning(
+                                    "Task %s: force-clean did not fully clean workspace",
+                                    task_id,
+                                )
+                        except Exception as force_err:
                             logger.warning(
                                 "Task %s: all cleanup attempts failed: %s",
                                 task_id,
-                                discard_err,
+                                force_err,
                             )
                             return
         except Exception as e:

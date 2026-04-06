@@ -1568,6 +1568,72 @@ class GitManager:
         except Exception:
             return False
 
+    async def aabort_in_progress_operations(self, checkout_path: str) -> None:
+        """Abort any in-progress merge, rebase, or cherry-pick.
+
+        Also removes stale ``.git/index.lock`` files left by crashed
+        processes (e.g. a killed agent) that would block all subsequent
+        git operations.
+
+        This is a best-effort method — individual failures are silently
+        ignored because not all operations may be in progress.
+        """
+        # Remove stale git lock files that block all operations
+        git_dir = os.path.join(checkout_path, ".git")
+        for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
+            lock_path = os.path.join(git_dir, lock_name)
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except OSError:
+                pass
+
+        # Abort in-progress merge
+        try:
+            await self._arun(["merge", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Abort in-progress rebase
+        try:
+            await self._arun(["rebase", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Abort in-progress cherry-pick
+        try:
+            await self._arun(["cherry-pick", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+    async def aforce_clean_workspace(self, checkout_path: str) -> bool:
+        """Force the workspace into a clean state using the most aggressive
+        git operations available.
+
+        This is the nuclear option — it resets the index and working tree
+        to HEAD, removes all untracked files (including those in
+        ``.gitignore``), and aborts any in-progress operations first.
+
+        Returns True if the workspace is clean after all attempts,
+        False if cleanup failed (extremely unlikely).
+        """
+        # Step 1: Abort any in-progress operations
+        await self.aabort_in_progress_operations(checkout_path)
+
+        # Step 2: Hard-reset index and working tree to HEAD
+        try:
+            await self._arun(["reset", "--hard", "HEAD"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Step 3: Remove all untracked files including ignored ones
+        try:
+            await self._arun(["clean", "-fdx"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        return not await self.ahas_uncommitted_changes(checkout_path)
+
     async def afind_open_pr(
         self,
         checkout_path: str,
