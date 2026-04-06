@@ -390,6 +390,10 @@ In both cases, remove the task from `_running_tasks` in a `finally` block.
 **Step 3 — Fetch current records.**
 `task = db.get_task(task_id)`, `agent = db.get_agent(agent_id)`.
 
+**Step 3½ — Sync workflow interception.**
+If `task.task_type == TaskType.SYNC`, delegate to `_execute_sync_workflow(action, task, agent)`
+and return immediately.  See §9c for the sync workflow specification.
+
 **Step 4 — Prepare workspace.**
 `project = db.get_project(project_id)`.
 Call `_prepare_workspace(task, agent)` inside a try/except.  `_prepare_workspace` returns
@@ -522,6 +526,53 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 
 **Step 16 — Free agent.**
 `db.update_agent(agent_id, state=IDLE, current_task_id=None)`.
+
+### 9c. `_execute_sync_workflow` — Orchestrator-Managed Sync
+
+Tasks with `task_type=SYNC` bypass normal agent execution.  Instead, `_execute_task`
+delegates to `_execute_sync_workflow(action, task, agent)` which coordinates a
+multi-phase workflow entirely within the orchestrator.
+
+**Phase 1 — Pause the project.**
+Set `project.status = PAUSED` via `db.update_project` to prevent the scheduler from
+assigning new tasks to this project.
+
+**Phase 2 — Wait for active tasks.**
+Poll `db.list_active_tasks` (excluding `COMPLETED`, `FAILED`, `BLOCKED`) every 10 seconds,
+filtering out the sync task itself.  Wait up to 3 600 seconds (1 hour).  If the timeout
+expires, transition the sync task to `FAILED` with `context="sync_timeout_waiting_for_tasks"`
+and return.  Progress is reported to the notification channel every 60 seconds.
+
+**Early-out: workspaces already synced.**
+After active tasks have drained, re-check whether any workspace actually needs merging.
+For each workspace, inspect `git.aget_current_branch` and `git.alist_branches`.  If
+every workspace is already on the default branch with no feature branches:
+
+- Transition the sync task to `COMPLETED` (`context="sync_already_synced"`).
+- Notify the channel that no merge was needed.
+- Return early — the `finally` block still handles project resume.
+
+If a workspace directory is missing, it is skipped.  If a git check raises an exception,
+the workflow assumes a merge is needed (errs on the side of proceeding).
+
+**Phase 3 — Merge feature branches.**
+Acquire a workspace via `_prepare_workspace`.  If that fails, fall back to the first
+workspace's path; if no workspaces exist, fail the task.  Build a detailed merge
+description instructing the Claude Code agent to merge all feature branches into the
+default branch one workspace at a time.  Launch an adapter, stream output to a Discord
+thread, and record token usage.
+
+**Phase 4 — Cleanup & resume.**
+Executed in a `finally` block so it runs regardless of success or failure:
+
+- Release all project workspace locks via `db.release_workspace`.
+- Resume the project via `db.update_project(status=ACTIVE)`.
+- If the task is still `IN_PROGRESS`, transition to `COMPLETED` — either with
+  `context="sync_completed"` (merge succeeded) or `context="sync_completed_with_warnings"`
+  (merge agent did not return `COMPLETED`).
+- Notify the channel with a summary.
+- Free the agent: set to `IDLE` (or preserve `PAUSED` if the agent was already paused).
+- Remove from `_adapters`.
 
 ---
 

@@ -928,10 +928,65 @@ Admin force-release a stuck workspace lock.
 
 #### `queue_sync_workspaces`
 
-Queues a workspace sync task for a project.
+Queues a high-priority `SYNC` task that orchestrates a full workspace sync workflow (see
+orchestrator spec §9c for the execution flow).  Before creating the task, two early-out
+checks prevent unnecessary work.
 
 **Parameters:**
-- `project_id` (required)
+- `project_id` (required; falls back to `_active_project_id`)
+
+**Early-out: duplicate sync task.**
+Queries `db.list_active_tasks` for the project, filtering to tasks with
+`task_type=SYNC` and `status in (READY, ASSIGNED, IN_PROGRESS)`.  If any exist, returns
+immediately without creating a new task:
+
+```python
+{
+    "already_queued": True,
+    "existing_task_ids": [<str>, ...],
+    "project_id": <str>,
+    "message": "Sync Workspaces task already exists for '...': .... Skipping duplicate.",
+}
+```
+
+**Early-out: workspaces already synced.**
+Iterates over all workspaces for the project and checks each with
+`git.aget_current_branch` and `git.alist_branches`.  If every workspace is on the
+default branch with no feature branches, returns immediately:
+
+```python
+{
+    "already_synced": True,
+    "project_id": <str>,
+    "workspace_count": <int>,
+    "default_branch": <str>,
+    "message": "All N workspace(s) for '...' are already on '...' with no feature branches. No sync needed.",
+}
+```
+
+If a workspace directory does not exist or a git check raises an exception, assumes the
+workspace needs syncing (errs on the side of creating the task).
+
+**Normal path.**
+Creates a `Task` with `task_type=SYNC`, `priority=1` (highest), `status=READY`.
+Returns:
+
+```python
+{
+    "queued": <str: task_id>,
+    "project_id": <str>,
+    "title": "Sync Workspaces — <project_id>",
+    "priority": 1,
+    "workspace_count": <int>,
+    "default_branch": <str>,
+    "message": "Sync Workspaces task queued with highest priority ...",
+}
+```
+
+**Errors:**
+- `project_id` not provided (and no active project set).
+- Project not found.
+- No workspaces found for the project.
 
 ---
 
