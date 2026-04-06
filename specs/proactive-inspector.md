@@ -1,6 +1,6 @@
 # Proactive Codebase Inspector — Specification
 
-**Source files (planned):** default rule + inspector support in supervisor
+**Source files:** `src/prompts/default_rules/proactive-codebase-inspector.md` (default rule)
 **Related:** `specs/rule-system.md`, `specs/hooks.md`, `specs/chat-observer.md`
 
 ---
@@ -185,37 +185,14 @@ Proactive inspection should not consume excessive tokens. Controls:
 
 ## 3. Rule Definition
 
-The inspector ships as a default global rule installed by `install_defaults()`:
+The inspector ships as a default global rule installed by `install_defaults()`.
+The rule file lives at `src/prompts/default_rules/proactive-codebase-inspector.md`
+and is installed as `rule-proactive-codebase-inspector` (global scope).
 
-```markdown
-# Proactive Codebase Inspector
-
-## Intent
-Periodically inspect random sections of the project's source code, documentation,
-specs, and tests to identify potential improvements, issues, or risks that haven't
-been explicitly flagged by the team.
-
-## Trigger
-Check every 4 hours.
-
-## Logic
-1. List files in the project workspace, excluding binary/generated/vendor files
-2. Randomly select one file, weighted toward source code (40%), docs/specs (20%),
-   tests (15%), config (10%), and recently modified files (15%)
-3. If the file is large (>300 lines), select a random ~150-line section
-4. Read the selected content and analyze it for:
-   - Code quality issues (complexity, dead code, naming, duplication)
-   - Performance concerns (blocking calls, missing async, inefficiencies)
-   - Security risks (hardcoded secrets, injection, missing validation)
-   - Documentation accuracy and completeness
-   - Test coverage gaps
-   - Architectural concerns (coupling, missing abstractions)
-   - Stale TODO/FIXME/HACK comments
-5. Decide if any finding is significant enough to suggest to the team
-6. If yes: post a suggestion with the finding, affected file, and recommended action
-7. If no: log that the inspection completed with no actionable findings
-8. Record the inspected file in project memory to ensure broad coverage over time
-```
+It fires every 4 hours per project, randomly selects a file using weighted categories
+(source 40%, docs 20%, tests 15%, config 10%, recently-modified 15%), reads and
+analyzes it across multiple quality dimensions, and posts a suggestion only when a
+concrete, actionable finding is discovered. See the rule file for the full logic.
 
 ---
 
