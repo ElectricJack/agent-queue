@@ -1315,7 +1315,7 @@ class TestVerificationReopen:
         )
         await orch.db.create_task(task)
 
-        failures = ["You left uncommitted changes."]
+        failures = [("You left uncommitted changes.", True)]
         result = await orch._reopen_with_verification_feedback(task, failures)
 
         assert result is True
@@ -1360,7 +1360,7 @@ class TestVerificationReopen:
             content="attempt 2",
         )
 
-        failures = ["Still has uncommitted changes."]
+        failures = [("Still has uncommitted changes.", True)]
         result = await orch._reopen_with_verification_feedback(task, failures)
 
         assert result is False

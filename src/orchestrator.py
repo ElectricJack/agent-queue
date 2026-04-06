@@ -2606,28 +2606,35 @@ class Orchestrator:
         else:
             requires_approval = task.requires_approval
 
-        failures: list[str] = []
+        # Failures are (message, fixable) tuples. Fixable means the agent can
+        # resolve the issue (uncommitted changes, missing merge/push/PR).
+        # Unfixable issues (behind origin, diverged history) block immediately.
+        failures: list[tuple[str, bool]] = []
 
         if is_intermediate:
             # Intermediate subtask: should be on task branch with work committed
             if has_uncommitted:
-                failures.append(
+                failures.append((
                     "You left uncommitted changes in the workspace. "
-                    f"Please `git add` and `git commit` your changes on branch `{task.branch_name}`."
-                )
+                    f"Please `git add` and `git commit` your changes on branch "
+                    f"`{task.branch_name}`.",
+                    True,  # fixable — agent can commit
+                ))
             if current_branch != task.branch_name and current_branch != default_branch:
-                failures.append(
+                failures.append((
                     f"Expected workspace to be on branch `{task.branch_name}` "
                     f"but found `{current_branch}`. "
-                    f"Please switch to `{task.branch_name}` and commit your work."
-                )
+                    f"Please switch to `{task.branch_name}` and commit your work.",
+                    True,  # fixable — agent can switch branches
+                ))
         elif requires_approval:
             # PR workflow: should be on task branch, branch pushed, PR exists
             if has_uncommitted:
-                failures.append(
+                failures.append((
                     "You left uncommitted changes. Please commit them on "
-                    f"branch `{task.branch_name}` and push."
-                )
+                    f"branch `{task.branch_name}` and push.",
+                    True,  # fixable — agent can commit and push
+                ))
             # Allow being on default if no changes were made (research task)
             if current_branch == default_branch:
                 # No-change task — acceptable, skip PR checks
@@ -2638,22 +2645,24 @@ class Orchestrator:
                     if pr_url:
                         ctx.pr_url = pr_url
                     else:
-                        failures.append(
+                        failures.append((
                             f"No open PR found for branch `{task.branch_name}`. "
                             f"Please push your branch and create a PR: "
                             f"`git push origin {task.branch_name}` then "
                             f"`gh pr create --base {default_branch} "
-                            f"--head {task.branch_name}`."
-                        )
+                            f"--head {task.branch_name}`.",
+                            True,  # fixable — agent can push and create PR
+                        ))
         else:
             # Normal task / final subtask: should be on default, merged, pushed
             if current_branch == default_branch:
                 # On default branch — check it's clean and in sync
                 if has_uncommitted:
-                    failures.append(
+                    failures.append((
                         "You left uncommitted changes on "
-                        f"`{default_branch}`. Please commit or discard them."
-                    )
+                        f"`{default_branch}`. Please commit or discard them.",
+                        True,  # fixable — agent can commit
+                    ))
                 if has_remote:
                     try:
                         behind = await self.git._arun(
@@ -2661,11 +2670,12 @@ class Orchestrator:
                             cwd=workspace,
                         )
                         if behind.strip() != "0":
-                            failures.append(
+                            failures.append((
                                 f"Local `{default_branch}` is behind "
                                 f"`origin/{default_branch}`. "
-                                f"Please `git pull origin {default_branch}`."
-                            )
+                                f"Please `git pull origin {default_branch}`.",
+                                False,  # unfixable — external changes
+                            ))
                     except GitError:
                         pass
                     try:
@@ -2674,44 +2684,74 @@ class Orchestrator:
                             cwd=workspace,
                         )
                         if ahead.strip() != "0":
-                            failures.append(
+                            failures.append((
                                 f"Local `{default_branch}` has unpushed commits. "
-                                f"Please `git push origin {default_branch}`."
-                            )
+                                f"Please `git push origin {default_branch}`.",
+                                True,  # fixable — agent can push
+                            ))
                     except GitError:
                         pass
             else:
                 # Not on default — the agent forgot to merge
-                failures.append(
+                failures.append((
                     f"Workspace is on branch `{current_branch}` instead of "
                     f"`{default_branch}`. Please merge your work into "
                     f"`{default_branch}` and push:\n"
                     f"  `git checkout {default_branch} && "
                     f"git merge {task.branch_name} && "
-                    f"git push origin {default_branch}`"
-                )
+                    f"git push origin {default_branch}`",
+                    True,  # fixable — agent can merge and push
+                ))
 
         if not failures:
             logger.info("Task %s: git verification passed", task.id)
             return PhaseResult.CONTINUE
 
-        # Verification failed — attempt to reopen with feedback
+        # Separate fixable vs unfixable failures
+        fixable = [(msg, f) for msg, f in failures if f]
+        unfixable = [(msg, f) for msg, f in failures if not f]
+        all_msgs = [msg for msg, _ in failures]
+
+        if unfixable:
+            # Unfixable issues present — block immediately, don't waste retries
+            unfixable_msgs = [msg for msg, _ in unfixable]
+            logger.warning(
+                "Task %s: git verification found unfixable issues (%d), blocking: %s",
+                task.id,
+                len(unfixable),
+                "; ".join(unfixable_msgs),
+            )
+            bullet_list = "\n".join(f"- {msg}" for msg in all_msgs)
+            await self._emit_text_notify(
+                f"⛔ **Verification Blocked:** Task `{task.id}` — "
+                f"git state has unfixable issues (not reopening):\n{bullet_list}",
+                project_id=task.project_id,
+            )
+            ctx.verification_reopened = False
+            return PhaseResult.STOP
+
+        # Only fixable issues — attempt to reopen with feedback
         logger.warning(
-            "Task %s: git verification failed (%d issues): %s",
+            "Task %s: git verification failed (%d fixable issues): %s",
             task.id,
-            len(failures),
-            "; ".join(failures),
+            len(fixable),
+            "; ".join(all_msgs),
         )
-        reopened = await self._reopen_with_verification_feedback(task, failures)
+        reopened = await self._reopen_with_verification_feedback(task, fixable)
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
 
     async def _reopen_with_verification_feedback(
         self,
         task,
-        failures: list[str],
+        failures: list[tuple[str, bool]],
     ) -> bool:
         """Reopen a task with git verification feedback.
+
+        Args:
+            task: The task to reopen.
+            failures: List of (message, fixable) tuples. Only fixable failures
+                should be passed here — unfixable ones are handled by the caller.
 
         Returns True if the task was reopened (transitioned to READY),
         False if max retries were exceeded (task left for caller to block).
@@ -2737,7 +2777,7 @@ class Orchestrator:
             return False
 
         # Build feedback message
-        bullet_list = "\n".join(f"- {f}" for f in failures)
+        bullet_list = "\n".join(f"- {msg}" for msg, _ in failures)
         feedback = (
             f"**Git Verification Feedback (auto-retry "
             f"{retry_count + 1}/{max_retries}):**\n"
