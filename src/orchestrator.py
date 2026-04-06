@@ -2795,6 +2795,54 @@ class Orchestrator:
                 except Exception:
                     pass
 
+        # ── Auto-remediate: merge task branch to default ─────────────────
+        # For normal tasks (no approval, not intermediate), the agent is
+        # expected to merge the task branch into the default branch. Agents
+        # frequently forget this step, leaving the workspace on the task
+        # branch.  Rather than reopening (which often repeats the mistake),
+        # perform the merge automatically.
+        if (
+            not is_intermediate
+            and not requires_approval
+            and not has_uncommitted
+            and current_branch != default_branch
+            and task.branch_name
+        ):
+            try:
+                # Checkout default branch
+                await self.git._arun(["checkout", default_branch], cwd=workspace)
+                # Merge the task branch into default
+                await self.git._arun(["merge", current_branch], cwd=workspace)
+                logger.info(
+                    "Task %s: auto-merged branch '%s' into '%s'",
+                    task.id,
+                    current_branch,
+                    default_branch,
+                )
+                # Delete the task branch (best-effort)
+                try:
+                    await self.git._arun(["branch", "-d", current_branch], cwd=workspace)
+                except Exception:
+                    pass  # Non-critical — branch delete can fail safely
+                current_branch = default_branch
+            except Exception as e:
+                logger.warning(
+                    "Task %s: auto-merge of '%s' into '%s' failed: %s",
+                    task.id,
+                    current_branch,
+                    default_branch,
+                    e,
+                )
+                # Abort any partial merge and switch back to the task branch
+                try:
+                    await self.git._arun(["merge", "--abort"], cwd=workspace)
+                except Exception:
+                    pass
+                try:
+                    await self.git._arun(["checkout", current_branch], cwd=workspace)
+                except Exception:
+                    pass
+
         # ── Auto-remediate: push unpushed commits ───────────────────────
         # After auto-committing/merging (or if agent committed but forgot
         # to push), push to the remote to avoid unnecessary retries.

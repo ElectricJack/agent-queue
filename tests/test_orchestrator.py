@@ -987,8 +987,8 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
 
-    async def test_fails_when_on_task_branch(self, pipeline_orch):
-        """Normal task fails when workspace is still on task branch (not default)."""
+    async def test_auto_merges_when_on_task_branch(self, pipeline_orch):
+        """Normal task auto-merges task branch to default when agent forgot to merge."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -1009,6 +1009,46 @@ class TestPhaseVerifyNormalTask:
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
+        # Auto-merge should handle the branch switch + merge automatically
+        assert result == PhaseResult.CONTINUE
+        # Verify that checkout and merge were called
+        calls = [str(c) for c in orch.git._arun.call_args_list]
+        assert any("checkout" in c and "main" in c for c in calls)
+        assert any("merge" in c and "feature-2" in c for c in calls)
+
+    async def test_fails_when_auto_merge_fails(self, pipeline_orch):
+        """Falls back to failure when auto-merge raises an exception (e.g. conflict)."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-2b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-2b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left workspace on task branch instead of default
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-2b")
+
+        # Checkout default succeeds, but merge fails (conflict)
+        async def mock_arun(args, cwd=None):
+            if args[0] == "merge":
+                raise Exception("merge conflict")
+            if args[0] == "checkout" and args[1] == "feature-2b":
+                return ""  # Recovery checkout back to task branch
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=mock_arun)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-merge failed, should fall through to verification failure
         assert result == PhaseResult.STOP
 
     async def test_auto_commits_uncommitted_changes(self, pipeline_orch):
@@ -1060,6 +1100,37 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+    async def test_auto_commit_and_merge_when_on_task_branch(self, pipeline_orch):
+        """Uncommitted changes on task branch are auto-committed, then auto-merged."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3c",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3c",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left uncommitted changes on task branch
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-3c")
+        # First call True (initial), second False (after auto-commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-commit cleans up changes, then auto-merge merges to default
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+        # Verify merge happened
+        calls = [str(c) for c in orch.git._arun.call_args_list]
+        assert any("merge" in c and "feature-3c" in c for c in calls)
 
     async def test_auto_pushes_unpushed_commits(self, pipeline_orch):
         """Unpushed commits on default branch are auto-pushed."""
