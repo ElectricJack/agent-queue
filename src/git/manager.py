@@ -758,7 +758,14 @@ class GitManager:
         "plan.md",
     ]
 
-    def commit_all(self, checkout_path: str, message: str, *, exclude_plans: bool = True) -> bool:
+    def commit_all(
+        self,
+        checkout_path: str,
+        message: str,
+        *,
+        exclude_plans: bool = True,
+        no_verify: bool = False,
+    ) -> bool:
         """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
         Uses add-all-then-check-staged pattern: ``git add -A`` stages
@@ -773,6 +780,10 @@ class GitManager:
         operations (auto-remediation, plan archival, workspace cleanup)
         should pass ``exclude_plans=False`` to ensure all changes are
         committed.
+
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
         """
         self._run(["add", "-A"], cwd=checkout_path)
         # Unstage plan files so they never reach target repo history.
@@ -792,7 +803,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False  # Nothing to commit
-        self._run(["commit", "-m", message], cwd=checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        self._run(commit_args, cwd=checkout_path)
         return True
 
     def create_pr(
@@ -1442,13 +1456,22 @@ class GitManager:
             return []
 
     async def acommit_all(
-        self, checkout_path: str, message: str, *, exclude_plans: bool = True
+        self,
+        checkout_path: str,
+        message: str,
+        *,
+        exclude_plans: bool = True,
+        no_verify: bool = False,
     ) -> bool:
         """Async version of :meth:`commit_all`.
 
         See :meth:`commit_all` for parameter docs.  Pass
         ``exclude_plans=False`` for system-level operations that need
         to commit all changes including plan files.
+
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
         """
         await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
@@ -1464,7 +1487,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False
-        await self._arun(["commit", "-m", message], cwd=checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        await self._arun(commit_args, cwd=checkout_path)
         return True
 
     async def acreate_pr(

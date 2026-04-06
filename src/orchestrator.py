@@ -2739,33 +2739,65 @@ class Orchestrator:
         # files.  The plan file exclusion is meant to prevent agent-initiated
         # commits from including plans, but auto-remediation must clean up
         # everything to avoid verification failures.
+        #
+        # We use no_verify=True to bypass pre-commit hooks which can
+        # reject the auto-commit (e.g. ruff formatting) and cause the
+        # very retry loops we're trying to prevent.
         if has_uncommitted:
+            has_uncommitted = await self._auto_remediate_uncommitted(
+                workspace, task.id, current_branch
+            )
+
+        # ── Auto-remediate: merge to default branch ────────────────────
+        # For normal tasks (not intermediate, not PR workflow), the agent
+        # should have merged to the default branch.  If they forgot, do
+        # it automatically to avoid retry loops.
+        if (
+            not is_intermediate
+            and not requires_approval
+            and not has_uncommitted
+            and current_branch != default_branch
+            and current_branch == task.branch_name
+        ):
             try:
-                committed = await self.git.acommit_all(
-                    workspace,
-                    f"auto-commit: uncommitted changes from task {task.id}",
-                    exclude_plans=False,
+                await self.git._arun(["checkout", default_branch], cwd=workspace)
+                await self.git._arun(["merge", current_branch, "--no-edit"], cwd=workspace)
+                logger.info(
+                    "Task %s: auto-merged branch '%s' into '%s'",
+                    task.id,
+                    current_branch,
+                    default_branch,
                 )
-                if committed:
-                    logger.info(
-                        "Task %s: auto-committed uncommitted changes on branch '%s'",
-                        task.id,
-                        current_branch,
-                    )
-                # Re-check after commit attempt — handles edge cases where
-                # acommit_all returns False but some changes remain (e.g.
-                # gitignored files that show in porcelain output).
+                current_branch = default_branch
+                # Check for uncommitted changes after merge (e.g. conflicts
+                # that resulted in a dirty state)
                 has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+                if has_uncommitted:
+                    has_uncommitted = await self._auto_remediate_uncommitted(
+                        workspace, task.id, current_branch
+                    )
             except Exception as e:
                 logger.warning(
-                    "Task %s: auto-commit of uncommitted changes failed: %s",
+                    "Task %s: auto-merge of '%s' into '%s' failed: %s",
                     task.id,
+                    current_branch,
+                    default_branch,
                     e,
                 )
+                # Abort merge if it left us in a conflicted state
+                try:
+                    await self.git._arun(["merge", "--abort"], cwd=workspace)
+                except Exception:
+                    pass
+                # Try to get back to the branch we were on
+                try:
+                    current_branch = await self.git.aget_current_branch(workspace)
+                except Exception:
+                    pass
 
         # ── Auto-remediate: push unpushed commits ───────────────────────
-        # After auto-committing (or if agent committed but forgot to push),
-        # push to the remote to avoid unnecessary retries.
+        # After auto-committing/merging (or if agent committed but forgot
+        # to push), push to the remote to avoid unnecessary retries.
         if has_remote and not has_uncommitted:
             # Determine the expected branch for this task type
             if is_intermediate or requires_approval:
@@ -2945,6 +2977,98 @@ class Orchestrator:
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
 
+    async def _auto_remediate_uncommitted(
+        self,
+        workspace: str,
+        task_id: str,
+        current_branch: str,
+    ) -> bool:
+        """Try to commit uncommitted changes using a robust fallback cascade.
+
+        Returns True if uncommitted changes still remain after all attempts,
+        False if the workspace is now clean.
+
+        Fallback cascade:
+        1. ``git commit`` with ``--no-verify`` to bypass pre-commit hooks.
+        2. ``git stash`` to save changes without committing.
+        3. ``git checkout -- . && git clean -fd`` to discard changes.
+        """
+        # Attempt 1: commit with --no-verify to bypass pre-commit hooks.
+        # Hooks (e.g. ruff formatting) are the most common reason
+        # auto-commit fails, causing retry loops.
+        try:
+            committed = await self.git.acommit_all(
+                workspace,
+                f"auto-commit: uncommitted changes from task {task_id}",
+                exclude_plans=False,
+                no_verify=True,
+            )
+            if committed:
+                logger.info(
+                    "Task %s: auto-committed uncommitted changes on branch '%s'",
+                    task_id,
+                    current_branch,
+                )
+            # Re-check after commit attempt — handles edge cases where
+            # acommit_all returns False but some changes remain (e.g.
+            # gitignored files that show in porcelain output).
+            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if not has_uncommitted:
+                return False
+        except Exception as e:
+            logger.warning(
+                "Task %s: auto-commit (--no-verify) failed: %s",
+                task_id,
+                e,
+            )
+
+        # Attempt 2: stash changes (preserves work, less accessible).
+        try:
+            await self.git._arun(
+                [
+                    "stash",
+                    "--include-untracked",
+                    "-m",
+                    f"auto-stash: uncommitted changes from task {task_id}",
+                ],
+                cwd=workspace,
+            )
+            logger.info(
+                "Task %s: stashed uncommitted changes on branch '%s'",
+                task_id,
+                current_branch,
+            )
+            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if not has_uncommitted:
+                return False
+        except Exception as e:
+            logger.warning(
+                "Task %s: auto-stash failed: %s",
+                task_id,
+                e,
+            )
+
+        # Attempt 3: discard all changes (last resort).
+        try:
+            await self.git._arun(["checkout", "--", "."], cwd=workspace)
+            await self.git._arun(["clean", "-fd"], cwd=workspace)
+            logger.info(
+                "Task %s: discarded uncommitted changes on branch '%s'",
+                task_id,
+                current_branch,
+            )
+            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if not has_uncommitted:
+                return False
+        except Exception as e:
+            logger.warning(
+                "Task %s: discard changes failed: %s",
+                task_id,
+                e,
+            )
+
+        return True
+
     async def _reopen_with_verification_feedback(
         self,
         task,
@@ -3052,12 +3176,16 @@ class Orchestrator:
         try:
             has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
             if has_uncommitted:
-                # Try to commit first (safest — preserves work)
+                # Try to commit first (safest — preserves work).
+                # Use --no-verify to bypass pre-commit hooks which can
+                # reject the commit (e.g. ruff formatting) and prevent
+                # workspace cleanup.
                 try:
                     await self.git.acommit_all(
                         workspace,
                         f"auto-commit: workspace cleanup after task {task_id}",
                         exclude_plans=False,
+                        no_verify=True,
                     )
                     logger.info(
                         "Task %s: auto-committed changes during workspace cleanup",
