@@ -1247,3 +1247,517 @@ class TestPluginDiscovery:
         assert "vibecop_scan" in tool_names
         assert "vibecop_check" in tool_names
         assert "vibecop_status" in tool_names
+
+    def test_cli_formatters_collected(self):
+        """Verify collect_internal_formatters includes vibecop formatters."""
+        from src.plugins.internal import collect_internal_formatters
+
+        fmts = collect_internal_formatters()
+        assert "vibecop_scan" in fmts
+        assert "vibecop_check" in fmts
+        assert "vibecop_status" in fmts
+
+
+# ---------------------------------------------------------------------------
+# CLI formatters
+# ---------------------------------------------------------------------------
+
+
+class TestCLIFormatters:
+    """Tests for CLI rich-text formatters."""
+
+    def test_build_cli_formatters_returns_three_keys(self):
+        from src.plugins.internal.vibecop import _build_cli_formatters
+
+        fmts = _build_cli_formatters()
+        assert "vibecop_scan" in fmts
+        assert "vibecop_check" in fmts
+        assert "vibecop_status" in fmts
+
+    def test_formatter_spec_attributes(self):
+        from src.plugins.internal.vibecop import _build_cli_formatters
+
+        fmts = _build_cli_formatters()
+        for name, spec in fmts.items():
+            assert hasattr(spec, "render")
+            assert callable(spec.render)
+            assert spec.many is False
+
+    def test_fmt_vibecop_scan_no_findings(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_scan
+
+        panel = _fmt_vibecop_scan({
+            "findings": [],
+            "summary": "",
+            "total_findings": 0,
+            "shown": 0,
+            "files_scanned": 10,
+        })
+        # Should produce a Rich Panel
+        from rich.panel import Panel
+
+        assert isinstance(panel, Panel)
+
+    def test_fmt_vibecop_scan_with_findings(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_scan
+
+        panel = _fmt_vibecop_scan({
+            "findings": [_make_finding()],
+            "summary": "Vibecop: 1 finding(s) | 1 warning(s)\n[WARN] src/app.py:42 [god-function]",
+            "total_findings": 1,
+            "shown": 1,
+            "files_scanned": 5,
+        })
+        from rich.panel import Panel
+
+        assert isinstance(panel, Panel)
+
+    def test_fmt_vibecop_scan_truncation_indicator(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_scan
+
+        panel = _fmt_vibecop_scan({
+            "findings": [_make_finding()],
+            "summary": "summary text",
+            "total_findings": 50,
+            "shown": 10,
+            "files_scanned": 20,
+        })
+        from rich.panel import Panel
+
+        assert isinstance(panel, Panel)
+
+    def test_fmt_vibecop_status_installed(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_status
+        from rich.text import Text
+
+        result = _fmt_vibecop_status({
+            "installed": True,
+            "version": "1.2.3",
+            "node_version": "v20.10.0",
+            "detectors": ["god-function", "sql-injection"],
+            "errors": [],
+        })
+        assert isinstance(result, Text)
+        plain = result.plain
+        assert "1.2.3" in plain
+        assert "v20.10.0" in plain
+        assert "2 available" in plain
+
+    def test_fmt_vibecop_status_not_installed(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_status
+        from rich.text import Text
+
+        result = _fmt_vibecop_status({
+            "installed": False,
+            "version": "unknown",
+            "node_version": "unknown",
+            "detectors": [],
+            "errors": ["vibecop not found"],
+        })
+        assert isinstance(result, Text)
+        plain = result.plain
+        assert "not installed" in plain
+        assert "vibecop not found" in plain
+
+    def test_fmt_vibecop_status_with_errors(self):
+        from src.plugins.internal.vibecop import _fmt_vibecop_status
+        from rich.text import Text
+
+        result = _fmt_vibecop_status({
+            "installed": True,
+            "version": "1.0.0",
+            "node_version": "v20.0.0",
+            "detectors": [],
+            "errors": ["Some warning", "Another issue"],
+        })
+        assert isinstance(result, Text)
+        plain = result.plain
+        assert "Some warning" in plain
+        assert "Another issue" in plain
+
+
+# ---------------------------------------------------------------------------
+# Weekly project scan (cron)
+# ---------------------------------------------------------------------------
+
+
+class TestWeeklyProjectScan:
+    """Tests for the weekly_project_scan cron method."""
+
+    @pytest.fixture
+    def plugin_with_runner(self, mock_ctx):
+        """Create an initialized plugin with a mocked runner."""
+        plugin = VibeCopPlugin()
+        plugin._ctx = mock_ctx
+        plugin._runner = MagicMock()
+        plugin._runner.scan = AsyncMock(return_value={
+            "success": True,
+            "findings": [],
+            "files_scanned": 10,
+            "errors": [],
+        })
+        return plugin
+
+    async def test_weekly_scan_no_runner(self, mock_ctx):
+        """Should return early if runner is not initialized."""
+        plugin = VibeCopPlugin()
+        plugin._ctx = mock_ctx
+        plugin._runner = None
+
+        await plugin.weekly_project_scan(mock_ctx)
+
+        mock_ctx.execute_command.assert_not_called()
+
+    async def test_weekly_scan_list_projects_failure(self, mock_ctx, plugin_with_runner):
+        """Should handle list_projects failure gracefully."""
+        mock_ctx.execute_command = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # Should not crash — exception is caught internally
+
+    async def test_weekly_scan_no_active_projects(self, mock_ctx, plugin_with_runner):
+        """Should skip if no active projects."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={"projects": [{"id": "p1", "status": "ARCHIVED"}]}
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # scan should not be called
+        plugin_with_runner._runner.scan.assert_not_called()
+
+    async def test_weekly_scan_skips_projects_without_workspace(
+        self, mock_ctx, plugin_with_runner
+    ):
+        """Should skip projects that have no workspace path."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {"id": "p1", "name": "Project 1", "status": "ACTIVE", "workspace": None}
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        plugin_with_runner._runner.scan.assert_not_called()
+
+    async def test_weekly_scan_clean_project(self, mock_ctx, plugin_with_runner):
+        """Should scan and notify when no findings."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        plugin_with_runner._runner.scan.assert_called_once_with(path="/tmp/workspace")
+        mock_ctx.emit_event.assert_called()
+        mock_ctx.notify.assert_called_once()
+
+        # Verify scan_completed event was emitted
+        event_types = {call.args[0] for call in mock_ctx.emit_event.call_args_list}
+        assert "vibecop.scan_completed" in event_types
+
+    async def test_weekly_scan_with_findings(self, mock_ctx, plugin_with_runner):
+        """Should emit findings_detected event and notify when findings exist."""
+        plugin_with_runner._runner.scan = AsyncMock(return_value={
+            "success": True,
+            "findings": [
+                _make_finding(severity="warning"),
+                _make_finding(severity="error", file="src/bad.py"),
+            ],
+            "files_scanned": 20,
+            "errors": [],
+        })
+
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # Should have emitted both events
+        event_types = {call.args[0] for call in mock_ctx.emit_event.call_args_list}
+        assert "vibecop.scan_completed" in event_types
+        assert "vibecop.findings_detected" in event_types
+
+    async def test_weekly_scan_creates_task_for_errors(self, mock_ctx, plugin_with_runner):
+        """Should create a fix task when error-severity findings are found."""
+        plugin_with_runner._runner.scan = AsyncMock(return_value={
+            "success": True,
+            "findings": [
+                _make_finding(severity="error", file="src/danger.py", message="SQL injection"),
+            ],
+            "files_scanned": 15,
+            "errors": [],
+        })
+
+        call_count = 0
+
+        async def side_effect(cmd, args):
+            nonlocal call_count
+            call_count += 1
+            if cmd == "list_projects":
+                return {
+                    "projects": [
+                        {
+                            "id": "p1",
+                            "name": "My Project",
+                            "status": "ACTIVE",
+                            "workspace": "/tmp/workspace",
+                        }
+                    ]
+                }
+            if cmd == "create_task":
+                assert "vibecop" in args.get("title", "").lower() or "error" in args.get(
+                    "title", ""
+                ).lower()
+                return {"success": True, "task_id": "t-fix"}
+            return {"success": True}
+
+        mock_ctx.execute_command = AsyncMock(side_effect=side_effect)
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # Should have called create_task
+        create_task_calls = [
+            call for call in mock_ctx.execute_command.call_args_list
+            if call.args[0] == "create_task"
+        ]
+        assert len(create_task_calls) == 1
+
+    async def test_weekly_scan_multiple_projects(self, mock_ctx, plugin_with_runner):
+        """Should scan all active projects."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "Project A",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/ws-a",
+                    },
+                    {
+                        "id": "p2",
+                        "name": "Project B",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/ws-b",
+                    },
+                    {
+                        "id": "p3",
+                        "name": "Archived",
+                        "status": "ARCHIVED",
+                        "workspace": "/tmp/ws-c",
+                    },
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # Should scan 2 active projects, skip archived
+        assert plugin_with_runner._runner.scan.call_count == 2
+        scan_paths = {call.kwargs["path"] for call in plugin_with_runner._runner.scan.call_args_list}
+        assert "/tmp/ws-a" in scan_paths
+        assert "/tmp/ws-b" in scan_paths
+
+    async def test_weekly_scan_handles_scan_exception(self, mock_ctx, plugin_with_runner):
+        """Should handle exceptions during individual project scan gracefully."""
+        plugin_with_runner._runner.scan = AsyncMock(
+            side_effect=RuntimeError("Subprocess crash")
+        )
+
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        # Should not raise — exception is caught internally
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+    async def test_weekly_scan_uses_config_severity(self, mock_ctx, plugin_with_runner):
+        """Should respect default_severity config for filtering."""
+        mock_ctx.get_config.return_value = {"default_severity": "error"}
+
+        plugin_with_runner._runner.scan = AsyncMock(return_value={
+            "success": True,
+            "findings": [
+                _make_finding(severity="warning"),
+                _make_finding(severity="info"),
+                _make_finding(severity="error", file="src/critical.py"),
+            ],
+            "files_scanned": 10,
+            "errors": [],
+        })
+
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        # With error threshold, only 1 finding should be in events
+        findings_events = [
+            call for call in mock_ctx.emit_event.call_args_list
+            if call.args[0] == "vibecop.findings_detected"
+        ]
+        assert len(findings_events) == 1
+        assert findings_events[0].args[1]["findings_count"] == 1
+
+    async def test_weekly_scan_notification_includes_weekly_type(
+        self, mock_ctx, plugin_with_runner
+    ):
+        """Should send notification with weekly scan type."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        mock_ctx.notify.assert_called_once()
+        notification_text = mock_ctx.notify.call_args.args[0]
+        assert "Weekly Scan" in notification_text
+
+    async def test_weekly_scan_event_has_scan_type(self, mock_ctx, plugin_with_runner):
+        """Scan completed events should include scan_type=weekly."""
+        mock_ctx.execute_command = AsyncMock(
+            return_value={
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "My Project",
+                        "status": "ACTIVE",
+                        "workspace": "/tmp/workspace",
+                    }
+                ]
+            }
+        )
+
+        await plugin_with_runner.weekly_project_scan(mock_ctx)
+
+        scan_events = [
+            call for call in mock_ctx.emit_event.call_args_list
+            if call.args[0] == "vibecop.scan_completed"
+        ]
+        assert len(scan_events) == 1
+        assert scan_events[0].args[1]["scan_type"] == "weekly"
+
+
+# ---------------------------------------------------------------------------
+# Additional Discord notification edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestDiscordNotificationEdgeCases:
+    """Additional edge case tests for Discord notification formatting."""
+
+    def test_info_only_findings(self):
+        """Notification with only info-severity findings."""
+        result = _format_discord_notification(
+            project_name="proj",
+            task_id="t1",
+            findings=[_make_finding(severity="info")],
+            workspace_path="/ws",
+            files_scanned=5,
+        )
+        assert "1 info" in result
+
+    def test_all_severity_levels(self):
+        """Notification with all three severity levels."""
+        findings = [
+            _make_finding(severity="error"),
+            _make_finding(severity="warning"),
+            _make_finding(severity="info"),
+        ]
+        result = _format_discord_notification(
+            project_name="proj",
+            task_id="t1",
+            findings=findings,
+            workspace_path="/ws",
+            files_scanned=10,
+        )
+        assert "1 error(s)" in result
+        assert "1 warning(s)" in result
+        assert "1 info" in result
+
+    def test_long_message_truncation(self):
+        """Finding messages longer than 60 chars should be truncated."""
+        long_msg = "A" * 80
+        findings = [_make_finding(message=long_msg)]
+        result = _format_discord_notification(
+            project_name="proj",
+            task_id="t1",
+            findings=findings,
+            workspace_path="/ws",
+        )
+        # The function truncates to 57 chars + "..."
+        assert "..." in result
+        assert long_msg not in result
+
+    def test_finding_with_missing_fields(self):
+        """Should handle findings with missing optional fields gracefully."""
+        minimal_finding = {"severity": "warning"}
+        result = _format_discord_notification(
+            project_name="proj",
+            task_id="t1",
+            findings=[minimal_finding],
+            workspace_path="/ws",
+            files_scanned=1,
+        )
+        assert "1 warning(s)" in result
+
+    def test_unknown_severity_icon(self):
+        """Finding with unknown severity should get [?] icon."""
+        finding = _make_finding(severity="critical")
+        result = _format_discord_notification(
+            project_name="proj",
+            task_id="t1",
+            findings=[finding],
+            workspace_path="/ws",
+        )
+        assert "[?]" in result
