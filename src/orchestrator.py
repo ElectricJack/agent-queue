@@ -2038,84 +2038,154 @@ class Orchestrator:
         # 2. A new task failing to write its own plan because the file already exists
         # This covers both archived plans (.claude/plans/) and primary plan files
         # (.claude/plan.md, plan.md, etc.).
-        await self._cleanup_plan_files_before_task(workspace, task.id)
+        await self._cleanup_plan_files_before_task(
+            workspace, task.id, branch_name=branch_name, default_branch=default_branch
+        )
 
         return workspace
 
-    async def _cleanup_plan_files_before_task(self, workspace: str, task_id: str) -> None:
+    async def _cleanup_plan_files_before_task(
+        self,
+        workspace: str,
+        task_id: str,
+        *,
+        branch_name: str | None = None,
+        default_branch: str = "main",
+    ) -> None:
         """Remove all plan files from previous tasks before starting a new one.
 
-        Cleans up both:
-        1. **Primary plan files** (``.claude/plan.md``, ``plan.md``, etc.) —
-           the locations where agents write new plans.  Leftover files here
-           can cause agents to fail to write their own plan ("file already
-           exists") or lead to stale plan re-discovery.
+        Cleans up:
+
+        1. **Primary plan files** (``.claude/plan.md``, ``plan.md``, etc.) on
+           the current (default) branch — leftover files can cause agents to
+           fail to write their own plan ("file already exists") or lead to
+           stale plan re-discovery.
         2. **Archived plan files** (``.claude/plans/<task_id>-plan.md``) —
            clearly attributable to specific tasks via their filename prefix.
            Any that don't belong to the current task are removed.
+        3. **Plan files on the task branch** (if ``branch_name`` is provided
+           and the branch already exists locally or as a remote tracking
+           branch).  When a task is retried, or a plan subtask follows a
+           sibling, the agent may have committed plan files directly to the
+           task branch via ``git add && git commit``.  Those files would
+           reappear when the new agent checks out the branch.
+
+        .. note::
+
+           Deletions are committed using direct ``git add -A`` + ``git commit``
+           instead of :meth:`GitManager.acommit_all`, because ``acommit_all``
+           excludes plan files from commits (via ``_PLAN_FILE_EXCLUDES``).
         """
         import glob as _glob
 
-        deleted_any = False
-
-        # ── 1. Delete primary plan files (configured patterns) ────────────
         plan_patterns = self.config.auto_task.plan_file_patterns
-        for pattern in plan_patterns:
-            full_pattern = os.path.join(workspace, pattern)
-            # glob.glob handles both exact paths and wildcard patterns
-            for fpath in _glob.glob(full_pattern):
-                if os.path.isfile(fpath):
-                    try:
-                        os.remove(fpath)
-                        deleted_any = True
-                        logger.info(
-                            "Pre-task cleanup: removed plan file %s (task %s)",
-                            fpath,
-                            task_id,
+
+        def _remove_plan_files() -> bool:
+            """Delete primary plan files + archived plans.  Returns True if any deleted."""
+            deleted = False
+            for pattern in plan_patterns:
+                full_pattern = os.path.join(workspace, pattern)
+                for fpath in _glob.glob(full_pattern):
+                    if os.path.isfile(fpath):
+                        try:
+                            os.remove(fpath)
+                            deleted = True
+                            logger.info(
+                                "Pre-task cleanup: removed plan file %s (task %s)",
+                                fpath,
+                                task_id,
+                            )
+                        except OSError as e:
+                            logger.warning(
+                                "Pre-task cleanup: failed to remove plan file %s: %s",
+                                fpath,
+                                e,
+                            )
+
+            plans_dir = os.path.join(workspace, ".claude", "plans")
+            if os.path.isdir(plans_dir):
+                try:
+                    for entry in os.listdir(plans_dir):
+                        if entry.startswith(task_id):
+                            continue
+                        fpath = os.path.join(plans_dir, entry)
+                        if os.path.isfile(fpath) and entry.endswith(".md"):
+                            os.remove(fpath)
+                            deleted = True
+                            logger.info(
+                                "Pre-task cleanup: removed archived plan %s (task %s)",
+                                fpath,
+                                task_id,
+                            )
+                except OSError as e:
+                    logger.warning(
+                        "Pre-task cleanup: failed to clean plans dir %s: %s",
+                        plans_dir,
+                        e,
+                    )
+            return deleted
+
+        async def _commit_plan_deletions(msg: str) -> None:
+            """Commit all pending changes including plan file deletions.
+
+            Uses direct ``git add -A`` + ``git commit`` instead of
+            ``acommit_all`` which excludes plan files via
+            ``_PLAN_FILE_EXCLUDES``.
+            """
+            try:
+                if not await self.git.avalidate_checkout(workspace):
+                    return
+                await self.git._arun(["add", "-A"], cwd=workspace)
+                result = await self.git._arun_subprocess(
+                    ["git", "diff", "--cached", "--quiet"],
+                    cwd=workspace,
+                    timeout=self.git._GIT_TIMEOUT,
+                )
+                if result.returncode != 0:
+                    await self.git._arun(["commit", "-m", msg], cwd=workspace)
+            except Exception as e:
+                logger.warning("Pre-task cleanup: failed to commit: %s", e)
+
+        # ── 1. Clean current (default) branch ─────────────────────────────
+        if _remove_plan_files():
+            await _commit_plan_deletions(
+                f"chore: clean up stale plan files before task {task_id}",
+            )
+
+        # ── 2. Clean the task branch if it already exists ─────────────────
+        # When a task is retried (or a plan subtask follows a sibling),
+        # the task branch may carry plan files committed by a previous
+        # agent run.  Checkout that branch, purge plan files, commit the
+        # deletion, and return to the default branch so the agent starts
+        # from a clean state.
+        if branch_name and await self.git.avalidate_checkout(workspace):
+            switched = False
+            try:
+                await self.git._arun(["checkout", branch_name], cwd=workspace)
+                switched = True
+            except GitError:
+                pass  # Branch does not exist — nothing to clean
+
+            if switched:
+                try:
+                    if _remove_plan_files():
+                        await _commit_plan_deletions(
+                            f"chore: clean up stale plan files before task {task_id}",
                         )
-                    except OSError as e:
-                        logger.warning(
-                            "Pre-task cleanup: failed to remove plan file %s: %s",
-                            fpath,
+                finally:
+                    # Always return to the default branch even if cleanup failed.
+                    try:
+                        await self.git._arun(
+                            ["checkout", default_branch], cwd=workspace
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Pre-task cleanup: CRITICAL — failed to return to %s "
+                            "after cleaning task branch %s: %s",
+                            default_branch,
+                            branch_name,
                             e,
                         )
-
-        # ── 2. Delete archived plans from previous tasks ──────────────────
-        plans_dir = os.path.join(workspace, ".claude", "plans")
-        if os.path.isdir(plans_dir):
-            try:
-                for entry in os.listdir(plans_dir):
-                    # Skip files belonging to the current task (retry scenario)
-                    if entry.startswith(task_id):
-                        continue
-                    fpath = os.path.join(plans_dir, entry)
-                    if os.path.isfile(fpath) and entry.endswith(".md"):
-                        os.remove(fpath)
-                        deleted_any = True
-                        logger.info(
-                            "Pre-task cleanup: removed archived plan %s (task %s)",
-                            fpath,
-                            task_id,
-                        )
-            except OSError as e:
-                logger.warning(
-                    "Pre-task cleanup: failed to clean plans dir %s: %s",
-                    plans_dir,
-                    e,
-                )
-
-        if deleted_any:
-            try:
-                if await self.git.avalidate_checkout(workspace):
-                    await self.git.acommit_all(
-                        workspace,
-                        f"chore: clean up stale plan files before task {task_id}",
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Pre-task cleanup: failed to commit plan deletions: %s",
-                    e,
-                )
 
     async def _is_last_subtask(self, task: Task) -> bool:
         """Check if this subtask is the final one to complete in a plan chain.
