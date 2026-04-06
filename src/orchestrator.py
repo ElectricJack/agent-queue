@@ -2033,49 +2033,76 @@ class Orchestrator:
             await self.db.release_workspace(ws.id)
             return None
 
-        # Clean up plan files from previous tasks to prevent a new task from
-        # discovering and claiming a stale plan that belongs to another task.
-        # Archived plans (.claude/plans/) have task IDs in filenames and are
-        # cleaned up here.  Main plan files (.claude/plan.md, plan.md, etc.)
-        # are handled by a staleness check in _discover_and_store_plan() which
-        # compares the plan file's mtime against the sentinel file written at
-        # task start.  Plans that predate the sentinel are ignored.
-        await self._cleanup_archived_plans(workspace, task.id)
+        # Clean up ALL plan files from previous tasks to prevent:
+        # 1. A new task from discovering a stale plan that belongs to another task
+        # 2. A new task failing to write its own plan because the file already exists
+        # This covers both archived plans (.claude/plans/) and primary plan files
+        # (.claude/plan.md, plan.md, etc.).
+        await self._cleanup_plan_files_before_task(workspace, task.id)
 
         return workspace
 
-    async def _cleanup_archived_plans(self, workspace: str, task_id: str) -> None:
-        """Remove archived plan files from previous tasks in the workspace.
+    async def _cleanup_plan_files_before_task(self, workspace: str, task_id: str) -> None:
+        """Remove all plan files from previous tasks before starting a new one.
 
-        Archived plans live in ``.claude/plans/<task_id>-plan.md`` and are
-        clearly attributable to specific tasks via their filename prefix.
-        This removes any that don't belong to the current task.
+        Cleans up both:
+        1. **Primary plan files** (``.claude/plan.md``, ``plan.md``, etc.) —
+           the locations where agents write new plans.  Leftover files here
+           can cause agents to fail to write their own plan ("file already
+           exists") or lead to stale plan re-discovery.
+        2. **Archived plan files** (``.claude/plans/<task_id>-plan.md``) —
+           clearly attributable to specific tasks via their filename prefix.
+           Any that don't belong to the current task are removed.
         """
-        plans_dir = os.path.join(workspace, ".claude", "plans")
-        if not os.path.isdir(plans_dir):
-            return
+        import glob as _glob
 
         deleted_any = False
-        try:
-            for entry in os.listdir(plans_dir):
-                # Skip files belonging to the current task (retry scenario)
-                if entry.startswith(task_id):
-                    continue
-                fpath = os.path.join(plans_dir, entry)
-                if os.path.isfile(fpath) and entry.endswith(".md"):
-                    os.remove(fpath)
-                    deleted_any = True
-                    logger.info(
-                        "Pre-task cleanup: removed archived plan %s (task %s)",
-                        fpath,
-                        task_id,
-                    )
-        except OSError as e:
-            logger.warning(
-                "Pre-task cleanup: failed to clean plans dir %s: %s",
-                plans_dir,
-                e,
-            )
+
+        # ── 1. Delete primary plan files (configured patterns) ────────────
+        plan_patterns = self.config.auto_task.plan_file_patterns
+        for pattern in plan_patterns:
+            full_pattern = os.path.join(workspace, pattern)
+            # glob.glob handles both exact paths and wildcard patterns
+            for fpath in _glob.glob(full_pattern):
+                if os.path.isfile(fpath):
+                    try:
+                        os.remove(fpath)
+                        deleted_any = True
+                        logger.info(
+                            "Pre-task cleanup: removed plan file %s (task %s)",
+                            fpath,
+                            task_id,
+                        )
+                    except OSError as e:
+                        logger.warning(
+                            "Pre-task cleanup: failed to remove plan file %s: %s",
+                            fpath,
+                            e,
+                        )
+
+        # ── 2. Delete archived plans from previous tasks ──────────────────
+        plans_dir = os.path.join(workspace, ".claude", "plans")
+        if os.path.isdir(plans_dir):
+            try:
+                for entry in os.listdir(plans_dir):
+                    # Skip files belonging to the current task (retry scenario)
+                    if entry.startswith(task_id):
+                        continue
+                    fpath = os.path.join(plans_dir, entry)
+                    if os.path.isfile(fpath) and entry.endswith(".md"):
+                        os.remove(fpath)
+                        deleted_any = True
+                        logger.info(
+                            "Pre-task cleanup: removed archived plan %s (task %s)",
+                            fpath,
+                            task_id,
+                        )
+            except OSError as e:
+                logger.warning(
+                    "Pre-task cleanup: failed to clean plans dir %s: %s",
+                    plans_dir,
+                    e,
+                )
 
         if deleted_any:
             try:

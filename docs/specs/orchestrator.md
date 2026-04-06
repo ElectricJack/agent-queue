@@ -607,14 +607,22 @@ workspace for the project.  If no workspace is available (all locked or none exi
 **Database updates.**  After the git operations:
 `db.update_task(task.id, branch_name=branch_name)`
 
-**Archived plan cleanup.**  Before returning, call `_cleanup_archived_plans(workspace, task.id)`.
-This removes stale archived plan files (in `.claude/plans/`) left by previous tasks that
-ran in the same workspace.  Archived plan filenames contain the originating task ID as a
-prefix, so files belonging to the *current* task (retry scenario) are preserved while all
-others are deleted.  If any files are removed and the workspace is a valid git checkout,
-the deletions are committed with `git.acommit_all`.  `OSError` during listing/removal and
-any exception during the commit are caught and logged as warnings — they never prevent the
-workspace from being returned.
+**Plan file cleanup.**  Before returning, call `_cleanup_plan_files_before_task(workspace, task.id)`.
+This removes ALL plan files left by previous tasks to prevent:
+1. Agents failing to write a new plan because the file already exists.
+2. Stale plans from being incorrectly discovered after task completion.
+
+Cleanup covers two categories:
+- **Primary plan files** (`.claude/plan.md`, `plan.md`, etc.) matching the configured
+  `plan_file_patterns` — deleted unconditionally via `glob.glob` expansion.
+- **Archived plan files** (in `.claude/plans/`) — filenames contain the originating task ID
+  as a prefix, so files belonging to the *current* task (retry scenario) are preserved while
+  all others are deleted.
+
+If any files are removed and the workspace is a valid git checkout, the deletions are
+committed with `git.acommit_all`.  `OSError` during listing/removal and any exception
+during the commit are caught and logged as warnings — they never prevent the workspace
+from being returned.
 
 **Error handling.**  All git operations in `_prepare_workspace` are wrapped in a
 try/except.  If any git operation fails, a warning notification is sent but the method
@@ -875,11 +883,12 @@ Runs after both `approve_plan` and `delete_plan` commands.
    the branch.
 Uses `ws.workspace_path` (not `ws.path`) from the workspace record.
 
-**Pre-task cleanup** (`Orchestrator._cleanup_archived_plans`):
-Runs during `_prepare_workspace` as defense-in-depth.  Removes archived plan files from
-`.claude/plans/` that belong to *other* tasks (identified by task ID prefix in the
-filename).  Files belonging to the current task are preserved (retry scenario).  Removals
-are committed to git.  See §10 for details.
+**Pre-task cleanup** (`Orchestrator._cleanup_plan_files_before_task`):
+Runs during `_prepare_workspace` before every task launch.  Removes both primary plan files
+(matching configured `plan_file_patterns`) and archived plan files from `.claude/plans/`
+that belong to *other* tasks (identified by task ID prefix in the filename).  Files belonging
+to the current task are preserved (retry scenario).  Removals are committed to git.  See §10
+for details.
 
 ---
 
