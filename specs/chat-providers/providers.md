@@ -478,7 +478,12 @@ Inspects `response.candidates[0].content.parts`:
 
 - Parts with `.text` become `TextBlock(text=...)`.
 - Parts with `.function_call` become `ToolUseBlock(id=<random-8-char-uuid>, name=fc.name, input=dict(fc.args))`. Gemini does not provide tool call IDs, so a random 8-character UUID prefix is generated.
-- If `response.candidates` is empty, returns a `ChatResponse` with a single empty `TextBlock`.
+
+**Empty / missing response guards** (returns a `ChatResponse` with a single empty `TextBlock` in each case):
+
+- If `response.candidates` is empty or falsy.
+- If the first candidate's `.content` is `None` or its `.content.parts` is `None`/empty (e.g., safety-filtered responses where Gemini omits content entirely).
+- If none of the parts matched as text or function_call, so the assembled `content` list is empty after iteration.
 
 ### Schema Conversion Helper
 
