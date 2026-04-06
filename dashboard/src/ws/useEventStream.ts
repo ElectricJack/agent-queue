@@ -1,14 +1,12 @@
 /**
- * Hook that connects to the /ws/events WebSocket and dispatches
- * incoming notify.* events to the TanStack Query cache.
+ * Singleton WebSocket connection to /ws/events.
  *
- * - State-change events (task_started, task_completed, etc.) invalidate
- *   the relevant query keys so TanStack Query refetches.
- * - task_message events are dispatched via a callback for the live log.
- * - Reconnects with exponential backoff on disconnect.
+ * The connection lives at module scope — React components subscribe
+ * to it via the useEventStream hook but never own its lifecycle.
+ * Reconnects with exponential backoff.
  */
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { NotifyEvent, TaskMessageEvent } from "./types";
 
@@ -17,26 +15,96 @@ const MAX_RECONNECT_MS = 30_000;
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
+// --- Module-level singleton state ---
+
+type Listener = (event: NotifyEvent) => void;
+type StatusListener = (status: ConnectionStatus) => void;
+
+let ws: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectDelay = BASE_RECONNECT_MS;
+let currentStatus: ConnectionStatus = "disconnected";
+
+const eventListeners = new Set<Listener>();
+const statusListeners = new Set<StatusListener>();
+
+function setStatus(s: ConnectionStatus) {
+  currentStatus = s;
+  for (const fn of statusListeners) fn(s);
+}
+
+function connect() {
+  if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
+    return;
+  }
+
+  const wsBase = import.meta.env.VITE_WS_URL
+    || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const url = `${wsBase}/ws/events`;
+
+  setStatus("connecting");
+  const sock = new WebSocket(url);
+  ws = sock;
+
+  sock.onopen = () => {
+    reconnectDelay = BASE_RECONNECT_MS;
+    setStatus("connected");
+  };
+
+  sock.onmessage = (msg) => {
+    try {
+      const event = JSON.parse(msg.data) as NotifyEvent;
+      for (const fn of eventListeners) fn(event);
+    } catch {
+      // ignore
+    }
+  };
+
+  sock.onclose = () => {
+    ws = null;
+    setStatus("disconnected");
+    reconnectTimer = setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_MS);
+      connect();
+    }, reconnectDelay);
+  };
+
+  sock.onerror = () => {
+    // onclose fires after — reconnect handled there
+  };
+}
+
+// Start immediately on module load
+connect();
+
+// --- React hook ---
+
 interface UseEventStreamOptions {
   onTaskMessage?: (event: TaskMessageEvent) => void;
+  onEvent?: (event: NotifyEvent) => void;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
 export function useEventStream(options: UseEventStreamOptions = {}) {
   const queryClient = useQueryClient();
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectDelay = useRef(BASE_RECONNECT_MS);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
-  const unmounted = useRef(false);
+  const { onTaskMessage, onEvent, onStatusChange } = options;
 
-  const { onTaskMessage, onStatusChange } = options;
+  // Subscribe to status changes
+  useEffect(() => {
+    if (!onStatusChange) return;
+    statusListeners.add(onStatusChange);
+    // Fire current status immediately
+    onStatusChange(currentStatus);
+    return () => { statusListeners.delete(onStatusChange); };
+  }, [onStatusChange]);
 
-  const dispatchEvent = useCallback(
+  // Subscribe to events
+  const handleEvent = useCallback(
     (event: NotifyEvent) => {
-      const type = event.event_type;
+      onEvent?.(event);
 
+      const type = event.event_type;
       switch (type) {
-        // Task lifecycle — invalidate task + agent queries
         case "notify.task_started":
         case "notify.task_completed":
         case "notify.task_failed":
@@ -47,14 +115,12 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
           queryClient.invalidateQueries({ queryKey: ["agents"] });
           break;
 
-        // Interaction — invalidate the specific task
         case "notify.agent_question":
         case "notify.plan_awaiting_approval":
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
           break;
 
-        // VCS events
         case "notify.pr_created":
         case "notify.merge_conflict":
         case "notify.push_failed":
@@ -62,7 +128,6 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           break;
 
-        // Budget / system
         case "notify.budget_warning":
           queryClient.invalidateQueries({ queryKey: ["system"] });
           break;
@@ -72,83 +137,28 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
           queryClient.invalidateQueries({ queryKey: ["system"] });
           break;
 
-        // Streaming — forward to callback, don't invalidate
         case "notify.task_message":
           onTaskMessage?.(event as TaskMessageEvent);
           break;
 
-        // Thread open/close — invalidate tasks to pick up status changes
         case "notify.task_thread_open":
         case "notify.task_thread_close":
           break;
 
-        // Chain stuck
         case "notify.chain_stuck":
         case "notify.stuck_defined_task":
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           break;
 
-        // Text notifications — no cache impact
         case "notify.text":
           break;
       }
     },
-    [queryClient, onTaskMessage],
+    [queryClient, onTaskMessage, onEvent],
   );
 
-  const connect = useCallback(() => {
-    if (unmounted.current) return;
-
-    const wsBase = import.meta.env.VITE_WS_URL
-      || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-    const url = `${wsBase}/ws/events`;
-
-    onStatusChange?.("connecting");
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      reconnectDelay.current = BASE_RECONNECT_MS;
-      onStatusChange?.("connected");
-    };
-
-    ws.onmessage = (msg) => {
-      try {
-        const event = JSON.parse(msg.data) as NotifyEvent;
-        dispatchEvent(event);
-      } catch {
-        // Ignore malformed messages
-      }
-    };
-
-    ws.onclose = () => {
-      wsRef.current = null;
-      onStatusChange?.("disconnected");
-
-      if (!unmounted.current) {
-        reconnectTimer.current = setTimeout(() => {
-          reconnectDelay.current = Math.min(
-            reconnectDelay.current * 2,
-            MAX_RECONNECT_MS,
-          );
-          connect();
-        }, reconnectDelay.current);
-      }
-    };
-
-    ws.onerror = () => {
-      // onclose will fire after this — reconnect handled there
-    };
-  }, [dispatchEvent, onStatusChange]);
-
   useEffect(() => {
-    unmounted.current = false;
-    connect();
-
-    return () => {
-      unmounted.current = true;
-      clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
-    };
-  }, [connect]);
+    eventListeners.add(handleEvent);
+    return () => { eventListeners.delete(handleEvent); };
+  }, [handleEvent]);
 }

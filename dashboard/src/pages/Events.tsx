@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Radio, Trash2, ArrowDown, Pause, Play } from "lucide-react";
-import { useEventStreamStatus } from "../ws/EventStreamProvider";
+import {
+  useEventStreamStatus,
+  useEventBuffer,
+  type EventEntry,
+} from "../ws/EventStreamProvider";
 import type { NotifyEvent } from "../ws/types";
-
-interface EventEntry {
-  id: number;
-  timestamp: Date;
-  event: NotifyEvent;
-}
 
 const severityColors: Record<string, string> = {
   info: "text-blue-400",
@@ -25,8 +23,6 @@ const categoryColors: Record<string, string> = {
   system: "bg-green-500/10 text-green-400",
   task_stream: "bg-gray-500/10 text-gray-400",
 };
-
-const MAX_EVENTS = 500;
 
 function formatTime(d: Date): string {
   return d.toLocaleTimeString("en-US", { hour12: false });
@@ -91,94 +87,34 @@ const ALL_CATEGORIES = [
 ];
 
 export default function Events() {
-  const [events, setEvents] = useState<EventEntry[]>([]);
-  const [paused, setPaused] = useState(false);
+  const status = useEventStreamStatus();
+  const { events, clearEvents } = useEventBuffer();
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<Set<string>>(new Set(ALL_CATEGORIES));
   const [showMessages, setShowMessages] = useState(false);
-  const nextId = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const status = useEventStreamStatus();
 
-  // Buffer events while paused
-  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
-  const bufferRef = useRef<EventEntry[]>([]);
+  const filteredEvents = events.filter((e) => {
+    const cat = e.event.category ?? "system";
+    if (!filter.has(cat)) return false;
+    if (e.event.event_type === "notify.task_message" && !showMessages) return false;
+    return true;
+  });
 
-  const addEvent = useCallback((event: NotifyEvent) => {
-    const entry: EventEntry = {
-      id: nextId.current++,
-      timestamp: new Date(),
-      event,
-    };
-    if (pausedRef.current) {
-      bufferRef.current.push(entry);
-      return;
-    }
-    setEvents((prev) => {
-      const next = [...prev, entry];
-      return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
-    });
-  }, []);
-
-  // Own WS connection dedicated to event display (the provider's WS
-  // handles cache invalidation; this one captures for the log view)
+  // Auto-scroll when new events arrive
   useEffect(() => {
-    const wsBase = import.meta.env.VITE_WS_URL
-      || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-    const url = `${wsBase}/ws/events`;
-    const ws = new WebSocket(url);
-
-    ws.onopen = () => {
-      console.log("[Events] WS connected to", url);
-    };
-
-    ws.onmessage = (msg) => {
-      console.log("[Events] WS raw message:", msg.data.slice(0, 200));
-      try {
-        const event = JSON.parse(msg.data) as NotifyEvent;
-        console.log("[Events] parsed event:", event.event_type, "category:", event.category);
-        // Skip task_message unless opted in (they're high volume)
-        if (event.event_type === "notify.task_message" && !showMessages) return;
-        addEvent(event);
-        console.log("[Events] addEvent called");
-      } catch (e) {
-        console.error("[Events] parse error:", e);
-      }
-    };
-
-    return () => ws.close();
-  }, [addEvent, showMessages]);
-
-  // Flush buffer when unpaused
-  useEffect(() => {
-    if (!paused && bufferRef.current.length > 0) {
-      const buffered = bufferRef.current;
-      bufferRef.current = [];
-      setEvents((prev) => {
-        const next = [...prev, ...buffered];
-        return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
-      });
-    }
-  }, [paused]);
-
-  // Auto-scroll
-  useEffect(() => {
-    if (autoScroll && !paused) {
+    if (autoScroll) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [events, autoScroll, paused]);
+  }, [events, autoScroll]);
 
-  // Detect manual scroll-up to disable auto-scroll
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
     setAutoScroll(atBottom);
   }, []);
-
-  const filteredEvents = events.filter((e) => filter.has(e.event.category ?? "system"));
 
   const toggleCategory = (cat: string) => {
     setFilter((prev) => {
@@ -209,13 +145,6 @@ export default function Events() {
           <span className="text-sm text-gray-500">{filteredEvents.length} events</span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPaused((p) => !p)}
-            className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800"
-          >
-            {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-            {paused ? `Resume (${bufferRef.current.length} buffered)` : "Pause"}
-          </button>
           {!autoScroll && (
             <button
               onClick={() => {
@@ -229,7 +158,7 @@ export default function Events() {
             </button>
           )}
           <button
-            onClick={() => setEvents([])}
+            onClick={clearEvents}
             className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800"
           >
             <Trash2 className="h-3.5 w-3.5" />
