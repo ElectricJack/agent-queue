@@ -1,10 +1,11 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Bot, ListTodo } from "lucide-react";
+import { LayoutDashboard, Bot, ListTodo, Radio } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/tasks", label: "Tasks", icon: ListTodo },
+  { to: "/events", label: "Events", icon: Radio },
 ] as const;
 
 export default function Sidebar() {

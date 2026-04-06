@@ -32,7 +32,10 @@ class WebSocketManager:
 
     def start(self) -> None:
         """Subscribe to all bus events and filter for notify.*."""
+        logger.info("WebSocketManager subscribing to bus %s (id=%d)", self._bus, id(self._bus))
+        logger.info("Bus handlers before subscribe: %s", dict(self._bus._handlers))
         self._unsub = self._bus.subscribe("*", self._on_event)
+        logger.info("Bus handlers after subscribe: %s", dict(self._bus._handlers))
 
     def shutdown(self) -> None:
         """Unsubscribe from the bus."""
@@ -43,8 +46,10 @@ class WebSocketManager:
     def _on_event(self, data: dict[str, Any]) -> None:
         """Fan out notify.* events to all connected clients."""
         event_type = data.get("_event_type", "")
+        logger.debug("WS _on_event received: %s (clients=%d)", event_type, len(self._clients))
         if not event_type.startswith("notify."):
             return
+        logger.info("WS forwarding notify event: %s to %d clients", event_type, len(self._clients))
 
         for ws, queue in list(self._clients.items()):
             try:
@@ -71,11 +76,15 @@ class WebSocketManager:
         try:
             while True:
                 event = await queue.get()
+                logger.info(
+                    "WS sending event to client %s: %s", client_id, event.get("_event_type")
+                )
                 await websocket.send_json(event)
+                logger.info("WS sent successfully to client %s", client_id)
         except WebSocketDisconnect:
-            pass
+            logger.info("WS client %s disconnected normally", client_id)
         except Exception as e:
-            logger.debug("WebSocket client %s error: %s", client_id, e)
+            logger.error("WebSocket client %s error: %s", client_id, e, exc_info=True)
         finally:
             self._clients.pop(websocket, None)
             logger.info(

@@ -120,6 +120,14 @@ class EventBus:
         data["_event_type"] = event_type
         entries = list(self._handlers.get(event_type, []))
         entries.extend(self._handlers.get("*", []))
+        if event_type.startswith("notify."):
+            logger.info(
+                "EventBus emit %s — %d handlers (direct=%d, wildcard=%d)",
+                event_type,
+                len(entries),
+                len(self._handlers.get(event_type, [])),
+                len(self._handlers.get("*", [])),
+            )
         for handler, filter in entries:
             if not self._matches_filter(data, filter):
                 continue

@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import Agents from "./pages/Agents";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
+import Events from "./pages/Events";
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="agents" element={<Agents />} />
         <Route path="tasks" element={<Tasks />} />
         <Route path="tasks/:taskId" element={<TaskDetail />} />
+        <Route path="events" element={<Events />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

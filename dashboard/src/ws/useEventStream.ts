@@ -99,8 +99,9 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
   const connect = useCallback(() => {
     if (unmounted.current) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws/events`;
+    const wsBase = import.meta.env.VITE_WS_URL
+      || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+    const url = `${wsBase}/ws/events`;
 
     onStatusChange?.("connecting");
     const ws = new WebSocket(url);
