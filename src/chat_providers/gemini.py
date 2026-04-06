@@ -174,7 +174,11 @@ class GeminiChatProvider(ChatProvider):
         if not response.candidates:
             return ChatResponse(content=[TextBlock(text="")])
 
-        for part in response.candidates[0].content.parts:
+        candidate = response.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            return ChatResponse(content=[TextBlock(text="")])
+
+        for part in candidate.content.parts:
             if part.text:
                 content.append(TextBlock(text=part.text))
             elif part.function_call:
@@ -188,7 +192,7 @@ class GeminiChatProvider(ChatProvider):
                     )
                 )
 
-        return ChatResponse(content=content)
+        return ChatResponse(content=content or [TextBlock(text="")])
 
 
 # ── Schema conversion helper ──────────────────────────────────────────
