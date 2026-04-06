@@ -26,6 +26,7 @@ import asyncio
 import contextvars
 import json
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import structlog
@@ -72,6 +73,34 @@ Workspaces root: {workspace_dir}
 Use browse_tools/load_tools to discover and load tool categories on demand."""
 
 
+# Maps tool names to the input_data key (str) or extractor (callable) used
+# to build a short label for observer output.  Keeps _tool_label compact and
+# easy to extend when new tools are added.
+_TOOL_DETAIL_KEYS: dict[str, str | Callable[[dict], str | None]] = {
+    "run_command": "command",
+    "search_files": lambda d: (
+        f"{d.get('mode', 'grep')}: {d['pattern']}" if d.get("pattern") else d.get("mode", "grep")
+    ),
+    "create_task": "title",
+    "update_task": "task_id",
+    "git_log": "project_id",
+    "git_diff": "project_id",
+    "git_status": "project_id",
+    "git_commit": "message",
+    "git_push": "branch",
+    "git_pull": "branch",
+    "git_checkout": "branch",
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "glob_files": "pattern",
+    "grep": "pattern",
+    "list_directory": lambda d: d.get("path") or d.get("project_id"),
+    "list_tasks": "status",
+    "assign_task": "task_id",
+}
+
+
 def _tool_label(name: str, input_data: dict) -> str:
     """Return a short descriptive label for a tool call.
 
@@ -79,49 +108,11 @@ def _tool_label(name: str, input_data: dict) -> str:
     ``run_command(pytest tests/)``, giving observers a quick sense of
     what the agent is actually doing at each step.
     """
-    detail: str | None = None
+    extractor = _TOOL_DETAIL_KEYS.get(name)
+    if extractor is None:
+        return name
 
-    if name == "run_command":
-        detail = input_data.get("command")
-    elif name == "search_files":
-        mode = input_data.get("mode", "grep")
-        pattern = input_data.get("pattern", "")
-        detail = f"{mode}: {pattern}" if pattern else mode
-    elif name == "create_task":
-        detail = input_data.get("title")
-    elif name == "update_task":
-        detail = input_data.get("task_id")
-    elif name == "git_log":
-        detail = input_data.get("project_id")
-    elif name == "git_diff":
-        detail = input_data.get("project_id")
-    elif name == "git_status":
-        detail = input_data.get("project_id")
-    elif name == "git_commit":
-        detail = input_data.get("message")
-    elif name == "git_push":
-        detail = input_data.get("branch")
-    elif name == "git_pull":
-        detail = input_data.get("branch")
-    elif name == "git_checkout":
-        detail = input_data.get("branch")
-    elif name == "read_file":
-        detail = input_data.get("path")
-    elif name == "write_file":
-        detail = input_data.get("path")
-    elif name == "edit_file":
-        detail = input_data.get("path")
-    elif name == "glob_files":
-        detail = input_data.get("pattern")
-    elif name == "grep":
-        detail = input_data.get("pattern")
-    elif name == "list_directory":
-        detail = input_data.get("path") or input_data.get("project_id")
-    elif name == "list_tasks":
-        detail = input_data.get("status")
-    elif name == "assign_task":
-        detail = input_data.get("task_id")
-
+    detail = extractor(input_data) if callable(extractor) else input_data.get(extractor)
     if detail:
         # Truncate long details (e.g. long shell commands)
         if len(detail) > 60:
@@ -237,9 +228,7 @@ class Supervisor:
         )
         if self._active_project_id:
             # Fetch project metadata to include in context
-            project_context = await self._build_active_project_context(
-                self._active_project_id
-            )
+            project_context = await self._build_active_project_context(self._active_project_id)
             builder.add_context("active_project", project_context)
         tool_index = self._registry.get_tool_index()
         if tool_index:
@@ -276,9 +265,7 @@ class Supervisor:
                         detected = await self.orchestrator.git.aget_remote_url(ws_path)
                         if detected:
                             repo_url = detected
-                            await self.orchestrator.db.update_project(
-                                project_id, repo_url=repo_url
-                            )
+                            await self.orchestrator.db.update_project(project_id, repo_url=repo_url)
                     except Exception:
                         pass  # Non-fatal — proceed without URL
 
@@ -384,7 +371,11 @@ class Supervisor:
         """
         async with self._llm_lock:
             return await self._chat_unlocked(
-                text, user_name, history, on_progress, _reflection_trigger,
+                text,
+                user_name,
+                history,
+                on_progress,
+                _reflection_trigger,
             )
 
     async def _chat_unlocked(
@@ -907,17 +898,20 @@ class Supervisor:
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
-        prompt = builder.render_template(
-            "plan-parser-system",
-            {
-                "base_priority": str(base_priority),
-                "dep_instructions": dep_instructions,
-                "ws_instructions": ws_instructions,
-                "approval_instructions": approval_instructions,
-                "parent_task_id": parent_task_id,
-                "raw_plan": raw_plan,
-            },
-        ) or ""
+        prompt = (
+            builder.render_template(
+                "plan-parser-system",
+                {
+                    "base_priority": str(base_priority),
+                    "dep_instructions": dep_instructions,
+                    "ws_instructions": ws_instructions,
+                    "approval_instructions": approval_instructions,
+                    "parent_task_id": parent_task_id,
+                    "raw_plan": raw_plan,
+                },
+            )
+            or ""
+        )
 
         try:
             async with self._llm_lock:
@@ -1052,7 +1046,10 @@ class Supervisor:
 
         async with self._llm_lock:
             return await self._on_task_completed_unlocked(
-                task_id, project_id, workspace_path, logger,
+                task_id,
+                project_id,
+                workspace_path,
+                logger,
             )
 
     async def _on_task_completed_unlocked(
