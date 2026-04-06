@@ -93,46 +93,53 @@ async def _resilient_query(prompt, options, adapter=None):
     from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
     transport = SubprocessCLITransport(prompt=prompt, options=configured_options)
-    await transport.connect()
 
-    sdk_mcp_servers = {}
-    if configured_options.mcp_servers and isinstance(configured_options.mcp_servers, dict):
-        for name, config in configured_options.mcp_servers.items():
-            if isinstance(config, dict) and config.get("type") == "sdk":
-                sdk_mcp_servers[name] = config["instance"]
-
-    from dataclasses import asdict
-
-    agents_dict = None
-    if configured_options.agents:
-        agents_dict = {
-            name: {k: v for k, v in asdict(agent_def).items() if v is not None}
-            for name, agent_def in configured_options.agents.items()
-        }
-
-    hooks = (
-        client._convert_hooks_to_internal_format(configured_options.hooks)
-        if configured_options.hooks
-        else None
-    )
-
-    from claude_agent_sdk._internal.query import Query
-
-    query_obj = Query(
-        transport=transport,
-        is_streaming_mode=True,
-        can_use_tool=configured_options.can_use_tool,
-        hooks=hooks,
-        sdk_mcp_servers=sdk_mcp_servers,
-        agents=agents_dict,
-    )
-
-    # Store references on the adapter so stop() can force-close the subprocess.
-    if adapter is not None:
-        adapter._active_transport = transport
-        adapter._active_query = query_obj
+    # Track our own transport/query so cleanup only clears references we own
+    _our_transport = None
+    _our_query = None
 
     try:
+        await transport.connect()
+        _our_transport = transport
+
+        sdk_mcp_servers = {}
+        if configured_options.mcp_servers and isinstance(configured_options.mcp_servers, dict):
+            for name, config in configured_options.mcp_servers.items():
+                if isinstance(config, dict) and config.get("type") == "sdk":
+                    sdk_mcp_servers[name] = config["instance"]
+
+        from dataclasses import asdict
+
+        agents_dict = None
+        if configured_options.agents:
+            agents_dict = {
+                name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+                for name, agent_def in configured_options.agents.items()
+            }
+
+        hooks = (
+            client._convert_hooks_to_internal_format(configured_options.hooks)
+            if configured_options.hooks
+            else None
+        )
+
+        from claude_agent_sdk._internal.query import Query
+
+        query_obj = Query(
+            transport=transport,
+            is_streaming_mode=True,
+            can_use_tool=configured_options.can_use_tool,
+            hooks=hooks,
+            sdk_mcp_servers=sdk_mcp_servers,
+            agents=agents_dict,
+        )
+        _our_query = query_obj
+
+        # Store references on the adapter so stop() can force-close the subprocess.
+        if adapter is not None:
+            adapter._active_transport = transport
+            adapter._active_query = query_obj
+
         await query_obj.start()
         await query_obj.initialize()
 
@@ -157,10 +164,27 @@ async def _resilient_query(prompt, options, adapter=None):
                 print(f"Claude adapter: skipping unrecognised message type '{msg_type}': {e}")
                 continue
     finally:
+        # Only clear adapter references if they still point to OUR objects.
+        # A retry may have already created a new generator that set its own
+        # references — we must not clobber them.
         if adapter is not None:
-            adapter._active_transport = None
-            adapter._active_query = None
-        await query_obj.close()
+            if adapter._active_transport is _our_transport:
+                adapter._active_transport = None
+            if adapter._active_query is _our_query:
+                adapter._active_query = None
+        # Wrap close() in try/except so cleanup errors never mask the
+        # original exception (e.g. ProcessError from a failed resume).
+        if _our_query is not None:
+            try:
+                await _our_query.close()
+            except Exception as close_err:
+                print(f"Claude adapter: cleanup error (suppressed): {close_err}")
+        elif _our_transport is not None:
+            # connect() succeeded but Query wasn't created — close transport directly
+            try:
+                await _our_transport.close()
+            except Exception as close_err:
+                print(f"Claude adapter: transport cleanup error (suppressed): {close_err}")
 
 
 @dataclass
@@ -314,9 +338,16 @@ class ClaudeAdapter(AgentAdapter):
                 f"allowed_tools={allowed}, mcp_servers={mcp_names})"
             )
 
+            # Import ProcessError for specific error classification
+            try:
+                from claude_agent_sdk._errors import ProcessError as _ProcessError
+            except ImportError:
+                _ProcessError = None
+
             # Main query loop — runs once normally, but repeats when a
             # message is injected mid-execution (cancel → resume cycle).
             _resume_retry_attempted = False
+            _resume_original_error: str | None = None
             while True:
                 cli_error: str | None = None
                 _interrupted_by_inject = False
@@ -391,8 +422,17 @@ class ClaudeAdapter(AgentAdapter):
                         from dataclasses import replace as _replace
 
                         error_msg = str(e)
+                        _resume_original_error = error_msg
+                        # Classify the error for better diagnostics
+                        is_process_error = _ProcessError is not None and isinstance(
+                            e, _ProcessError
+                        )
+                        exit_code = getattr(e, "exit_code", None) if is_process_error else None
                         print(
-                            f"Claude adapter: session resume failed ({error_msg}), "
+                            f"Claude adapter: session resume failed "
+                            f"(error={error_msg}, "
+                            f"process_error={is_process_error}, "
+                            f"exit_code={exit_code}), "
                             f"retrying as fresh session"
                         )
                         if on_message:
@@ -405,7 +445,20 @@ class ClaudeAdapter(AgentAdapter):
 
                         error_msg = str(e)
                         full_traceback = traceback.format_exc()
-                        print(f"Claude adapter error: {error_msg}")
+                        # If this is a retry failure, include context about the
+                        # original resume error so the user understands the full
+                        # sequence of events.
+                        if _resume_retry_attempted and _resume_original_error:
+                            print(
+                                f"Claude adapter: fresh session also failed "
+                                f"(original resume error: {_resume_original_error})"
+                            )
+                            error_msg = (
+                                f"Session resume failed ({_resume_original_error}), "
+                                f"and fresh session also failed: {error_msg}"
+                            )
+                        else:
+                            print(f"Claude adapter error: {error_msg}")
                         print(full_traceback)
                         if "token" in error_msg.lower() or "quota" in error_msg.lower():
                             output = AgentOutput(
@@ -449,7 +502,34 @@ class ClaudeAdapter(AgentAdapter):
 
                 # Normal exit — no injection pending
                 if cli_error:
+                    # If this was a resume attempt and the CLI reported an
+                    # error via ResultMessage (rather than an exception),
+                    # retry as a fresh session before giving up.
+                    if (
+                        getattr(options, "resume", None)
+                        and not _resume_retry_attempted
+                        and not self._cancel_event.is_set()
+                    ):
+                        from dataclasses import replace as _replace
+
+                        _resume_original_error = cli_error
+                        print(
+                            f"Claude adapter: CLI error during session resume "
+                            f"({cli_error}), retrying as fresh session"
+                        )
+                        if on_message:
+                            await on_message("⚠️ Session resume failed — starting fresh session")
+                        options = _replace(options, resume=None, fork_session=False)
+                        _resume_retry_attempted = True
+                        cli_error = None
+                        continue
+
                     print(f"Claude adapter: query failed with CLI error: {cli_error}")
+                    if _resume_retry_attempted and _resume_original_error:
+                        cli_error = (
+                            f"Session resume failed ({_resume_original_error}), "
+                            f"and fresh session also failed: {cli_error}"
+                        )
                     output = AgentOutput(
                         result=AgentResult.FAILED,
                         error_message=cli_error,
@@ -464,6 +544,27 @@ class ClaudeAdapter(AgentAdapter):
                 )
 
                 if tokens_used == 0 and not summary_parts:
+                    # If this was a resume attempt that silently failed (process
+                    # exited without error but produced no output), retry fresh.
+                    if (
+                        getattr(options, "resume", None)
+                        and not _resume_retry_attempted
+                        and not self._cancel_event.is_set()
+                    ):
+                        from dataclasses import replace as _replace
+
+                        _resume_original_error = "0 tokens and no output during resume"
+                        print(
+                            "Claude adapter: resume produced no output, retrying as fresh session"
+                        )
+                        if on_message:
+                            await on_message(
+                                "⚠️ Session resume produced no output — starting fresh session"
+                            )
+                        options = _replace(options, resume=None, fork_session=False)
+                        _resume_retry_attempted = True
+                        continue
+
                     print("Claude adapter: 0 tokens and no output — treating as failure")
                     output = AgentOutput(
                         result=AgentResult.FAILED,
