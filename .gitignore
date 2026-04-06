@@ -22,3 +22,9 @@ archived_tasks/
 .claude
 plan.md
 .claude
+
+# Frontend
+node_modules/
+dashboard/dist/
+packages/aq-ts-client/src/
+!packages/aq-ts-client/src/index.ts
