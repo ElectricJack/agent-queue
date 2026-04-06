@@ -599,7 +599,9 @@ class TestPlanApprovalBlocking:
 
         # Parent should be IN_PROGRESS, not COMPLETED
         plan = await orch.db.get_task("t-plan")
-        assert plan.status == TaskStatus.IN_PROGRESS, "Plan parent should be IN_PROGRESS after approval"
+        assert plan.status == TaskStatus.IN_PROGRESS, (
+            "Plan parent should be IN_PROGRESS after approval"
+        )
 
         # Now run _check_defined_tasks — first subtask should promote
         await orch._check_defined_tasks()
@@ -938,6 +940,8 @@ class TestPhaseVerifyNormalTask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
         o.git = mock_git
 
         yield o
@@ -1004,8 +1008,8 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
 
-    async def test_fails_when_uncommitted_changes(self, pipeline_orch):
-        """Normal task fails when there are uncommitted changes on default branch."""
+    async def test_auto_commits_uncommitted_changes(self, pipeline_orch):
+        """Uncommitted changes on default branch are auto-committed."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -1025,10 +1029,36 @@ class TestPhaseVerifyNormalTask:
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
+        # Auto-commit should fix the uncommitted changes
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_fails_when_auto_commit_fails(self, pipeline_orch):
+        """Falls back to failure when auto-commit raises an exception."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
 
-    async def test_fails_when_ahead_of_origin(self, pipeline_orch):
-        """Normal task fails when local default branch has unpushed commits."""
+    async def test_auto_pushes_unpushed_commits(self, pipeline_orch):
+        """Unpushed commits on default branch are auto-pushed."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -1042,9 +1072,38 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # First _arun call is for "behind" check (returns "0" = ok),
-        # second is for "ahead" check (returns "3" = unpushed commits)
-        orch.git._arun = AsyncMock(side_effect=["0", "3"])
+        # Auto-push rev-list returns "3" (ahead), then scenario behind
+        # check returns "0", then scenario ahead check returns "0"
+        # (pushed successfully — mock won't change state but verification
+        # re-checks via _arun which we feed with subsequent values).
+        orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        orch.git.apush_branch.assert_awaited_once()
+
+    async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
+        """Falls back to failure when auto-push raises an exception."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-4b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-4b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Auto-push rev-list returns "3" (ahead) — triggers push
+        # Push fails, so scenario behind check gets "0", ahead check gets "3"
+        orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
+        orch.git.apush_branch = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1086,6 +1145,8 @@ class TestPhaseVerifyApprovalTask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
         o.git = mock_git
 
         yield o
@@ -1224,6 +1285,8 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
         o.git = mock_git
 
         yield o, sub1
@@ -1256,8 +1319,8 @@ class TestPhaseVerifyIntermediateSubtask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
 
-    async def test_fails_when_uncommitted_changes(self, pipeline_orch):
-        """Intermediate subtask fails when there are uncommitted changes."""
+    async def test_auto_commits_uncommitted_changes(self, pipeline_orch):
+        """Intermediate subtask auto-commits uncommitted changes."""
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
@@ -1267,7 +1330,91 @@ class TestPhaseVerifyIntermediateSubtask:
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
+        # Auto-commit should fix the uncommitted changes
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_fails_when_auto_commit_fails(self, pipeline_orch):
+        """Intermediate subtask fails when auto-commit raises an exception."""
+        orch, sub1 = pipeline_orch
+        from src.models import PhaseResult
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, sub1, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+
+class TestCleanupWorkspaceForNextTask:
+    """Tests for _cleanup_workspace_for_next_task."""
+
+    @pytest.fixture
+    async def cleanup_orch(self, tmp_path):
+        """Orchestrator with mocked git for workspace cleanup tests."""
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+
+        mock_git = MagicMock()
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.aget_current_branch = AsyncMock(return_value="main")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git._arun = AsyncMock(return_value=None)
+        o.git = mock_git
+
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_noop_when_workspace_is_none(self, cleanup_orch):
+        """Does nothing when workspace is None."""
+        orch = cleanup_orch
+        await orch._cleanup_workspace_for_next_task(None, "main", "t-1")
+        orch.git.avalidate_checkout.assert_not_awaited()
+
+    async def test_noop_when_no_uncommitted_on_default(self, cleanup_orch):
+        """Does nothing when workspace is clean and on default branch."""
+        orch = cleanup_orch
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        orch.git.acommit_all.assert_not_awaited()
+
+    async def test_commits_uncommitted_changes(self, cleanup_orch):
+        """Commits uncommitted changes during cleanup."""
+        orch = cleanup_orch
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_stashes_when_commit_fails(self, cleanup_orch):
+        """Falls back to git stash when auto-commit fails."""
+        orch = cleanup_orch
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        # Should have tried stash via _arun
+        orch.git._arun.assert_awaited()
+        stash_call = orch.git._arun.call_args_list[0]
+        assert stash_call[0][0][0] == "stash"
+
+    async def test_switches_to_default_branch(self, cleanup_orch):
+        """Switches to default branch when on a different branch."""
+        orch = cleanup_orch
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-branch")
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        # Should checkout default branch
+        checkout_call = orch.git._arun.call_args_list[0]
+        assert checkout_call[0][0] == ["checkout", "main"]
 
 
 class TestVerificationReopen:

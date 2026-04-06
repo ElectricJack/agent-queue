@@ -2175,9 +2175,7 @@ class Orchestrator:
                 finally:
                     # Always return to the default branch even if cleanup failed.
                     try:
-                        await self.git._arun(
-                            ["checkout", default_branch], cwd=workspace
-                        )
+                        await self.git._arun(["checkout", default_branch], cwd=workspace)
                     except Exception as e:
                         logger.error(
                             "Pre-task cleanup: CRITICAL — failed to return to %s "
@@ -2709,6 +2707,62 @@ class Orchestrator:
         else:
             requires_approval = task.requires_approval
 
+        # ── Auto-remediate: commit uncommitted changes ──────────────────
+        # Agents frequently forget to commit their work before completing.
+        # Rather than reopening the task (which often repeats the same
+        # mistake, causing retry loops), commit the changes automatically
+        # and continue verification.
+        if has_uncommitted:
+            try:
+                committed = await self.git.acommit_all(
+                    workspace,
+                    f"auto-commit: uncommitted changes from task {task.id}",
+                )
+                if committed:
+                    logger.info(
+                        "Task %s: auto-committed uncommitted changes on branch '%s'",
+                        task.id,
+                        current_branch,
+                    )
+                    has_uncommitted = False
+            except Exception as e:
+                logger.warning(
+                    "Task %s: auto-commit of uncommitted changes failed: %s",
+                    task.id,
+                    e,
+                )
+
+        # ── Auto-remediate: push unpushed commits ───────────────────────
+        # After auto-committing (or if agent committed but forgot to push),
+        # push to the remote to avoid unnecessary retries.
+        if has_remote and not has_uncommitted:
+            # Determine the expected branch for this task type
+            if is_intermediate or requires_approval:
+                expected_push_branch = task.branch_name
+            else:
+                expected_push_branch = default_branch
+            if current_branch == expected_push_branch:
+                try:
+                    ahead_output = await self.git._arun(
+                        ["rev-list", f"origin/{current_branch}..HEAD", "--count"],
+                        cwd=workspace,
+                    )
+                    if ahead_output.strip() != "0":
+                        await self.git.apush_branch(workspace, current_branch)
+                        logger.info(
+                            "Task %s: auto-pushed %s commit(s) on branch '%s'",
+                            task.id,
+                            ahead_output.strip(),
+                            current_branch,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: auto-push on branch '%s' failed: %s",
+                        task.id,
+                        current_branch,
+                        e,
+                    )
+
         # Failures are (message, fixable) tuples. Fixable means the agent can
         # resolve the issue (uncommitted changes, missing merge/push/PR).
         # Unfixable issues (behind origin, diverged history) block immediately.
@@ -2717,27 +2771,33 @@ class Orchestrator:
         if is_intermediate:
             # Intermediate subtask: should be on task branch with work committed
             if has_uncommitted:
-                failures.append((
-                    "You left uncommitted changes in the workspace. "
-                    f"Please `git add` and `git commit` your changes on branch "
-                    f"`{task.branch_name}`.",
-                    True,  # fixable — agent can commit
-                ))
+                failures.append(
+                    (
+                        "You left uncommitted changes in the workspace. "
+                        f"Please `git add` and `git commit` your changes on branch "
+                        f"`{task.branch_name}`.",
+                        True,  # fixable — agent can commit
+                    )
+                )
             if current_branch != task.branch_name and current_branch != default_branch:
-                failures.append((
-                    f"Expected workspace to be on branch `{task.branch_name}` "
-                    f"but found `{current_branch}`. "
-                    f"Please switch to `{task.branch_name}` and commit your work.",
-                    True,  # fixable — agent can switch branches
-                ))
+                failures.append(
+                    (
+                        f"Expected workspace to be on branch `{task.branch_name}` "
+                        f"but found `{current_branch}`. "
+                        f"Please switch to `{task.branch_name}` and commit your work.",
+                        True,  # fixable — agent can switch branches
+                    )
+                )
         elif requires_approval:
             # PR workflow: should be on task branch, branch pushed, PR exists
             if has_uncommitted:
-                failures.append((
-                    "You left uncommitted changes. Please commit them on "
-                    f"branch `{task.branch_name}` and push.",
-                    True,  # fixable — agent can commit and push
-                ))
+                failures.append(
+                    (
+                        "You left uncommitted changes. Please commit them on "
+                        f"branch `{task.branch_name}` and push.",
+                        True,  # fixable — agent can commit and push
+                    )
+                )
             # Allow being on default if no changes were made (research task)
             if current_branch == default_branch:
                 # No-change task — acceptable, skip PR checks
@@ -2748,24 +2808,28 @@ class Orchestrator:
                     if pr_url:
                         ctx.pr_url = pr_url
                     else:
-                        failures.append((
-                            f"No open PR found for branch `{task.branch_name}`. "
-                            f"Please push your branch and create a PR: "
-                            f"`git push origin {task.branch_name}` then "
-                            f"`gh pr create --base {default_branch} "
-                            f"--head {task.branch_name}`.",
-                            True,  # fixable — agent can push and create PR
-                        ))
+                        failures.append(
+                            (
+                                f"No open PR found for branch `{task.branch_name}`. "
+                                f"Please push your branch and create a PR: "
+                                f"`git push origin {task.branch_name}` then "
+                                f"`gh pr create --base {default_branch} "
+                                f"--head {task.branch_name}`.",
+                                True,  # fixable — agent can push and create PR
+                            )
+                        )
         else:
             # Normal task / final subtask: should be on default, merged, pushed
             if current_branch == default_branch:
                 # On default branch — check it's clean and in sync
                 if has_uncommitted:
-                    failures.append((
-                        "You left uncommitted changes on "
-                        f"`{default_branch}`. Please commit or discard them.",
-                        True,  # fixable — agent can commit
-                    ))
+                    failures.append(
+                        (
+                            "You left uncommitted changes on "
+                            f"`{default_branch}`. Please commit or discard them.",
+                            True,  # fixable — agent can commit
+                        )
+                    )
                 if has_remote:
                     try:
                         behind = await self.git._arun(
@@ -2773,12 +2837,14 @@ class Orchestrator:
                             cwd=workspace,
                         )
                         if behind.strip() != "0":
-                            failures.append((
-                                f"Local `{default_branch}` is behind "
-                                f"`origin/{default_branch}`. "
-                                f"Please `git pull origin {default_branch}`.",
-                                False,  # unfixable — external changes
-                            ))
+                            failures.append(
+                                (
+                                    f"Local `{default_branch}` is behind "
+                                    f"`origin/{default_branch}`. "
+                                    f"Please `git pull origin {default_branch}`.",
+                                    False,  # unfixable — external changes
+                                )
+                            )
                     except GitError:
                         pass
                     try:
@@ -2787,24 +2853,28 @@ class Orchestrator:
                             cwd=workspace,
                         )
                         if ahead.strip() != "0":
-                            failures.append((
-                                f"Local `{default_branch}` has unpushed commits. "
-                                f"Please `git push origin {default_branch}`.",
-                                True,  # fixable — agent can push
-                            ))
+                            failures.append(
+                                (
+                                    f"Local `{default_branch}` has unpushed commits. "
+                                    f"Please `git push origin {default_branch}`.",
+                                    True,  # fixable — agent can push
+                                )
+                            )
                     except GitError:
                         pass
             else:
                 # Not on default — the agent forgot to merge
-                failures.append((
-                    f"Workspace is on branch `{current_branch}` instead of "
-                    f"`{default_branch}`. Please merge your work into "
-                    f"`{default_branch}` and push:\n"
-                    f"  `git checkout {default_branch} && "
-                    f"git merge {task.branch_name} && "
-                    f"git push origin {default_branch}`",
-                    True,  # fixable — agent can merge and push
-                ))
+                failures.append(
+                    (
+                        f"Workspace is on branch `{current_branch}` instead of "
+                        f"`{default_branch}`. Please merge your work into "
+                        f"`{default_branch}` and push:\n"
+                        f"  `git checkout {default_branch} && "
+                        f"git merge {task.branch_name} && "
+                        f"git push origin {default_branch}`",
+                        True,  # fixable — agent can merge and push
+                    )
+                )
 
         if not failures:
             logger.info("Task %s: git verification passed", task.id)
@@ -2920,6 +2990,109 @@ class Orchestrator:
             max_retries,
         )
         return True
+
+    async def _cleanup_workspace_for_next_task(
+        self,
+        workspace: str | None,
+        default_branch: str,
+        task_id: str,
+    ) -> None:
+        """Ensure the workspace is clean and on the default branch.
+
+        Called when a task reaches a terminal non-success state (BLOCKED,
+        FAILED with retries exhausted) to prevent dirty workspace state
+        from blocking or confusing the next task assigned to this workspace.
+
+        Cleanup strategy (best-effort, most-conservative-first):
+        1. Commit any uncommitted changes (preserves work).
+        2. Stash if commit fails (preserves work, less accessible).
+        3. Discard changes as last resort.
+        4. Switch to the default branch.
+        """
+        if not workspace:
+            return
+        try:
+            if not await self.git.avalidate_checkout(workspace):
+                return
+        except Exception:
+            return
+
+        # Step 1: Handle uncommitted changes
+        try:
+            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
+                # Try to commit first (safest — preserves work)
+                try:
+                    await self.git.acommit_all(
+                        workspace,
+                        f"auto-commit: workspace cleanup after task {task_id}",
+                    )
+                    logger.info(
+                        "Task %s: auto-committed changes during workspace cleanup",
+                        task_id,
+                    )
+                except Exception:
+                    # Commit failed — try stash (still preserves work)
+                    try:
+                        await self.git._arun(
+                            [
+                                "stash",
+                                "--include-untracked",
+                                "-m",
+                                f"auto-stash: workspace cleanup for task {task_id}",
+                            ],
+                            cwd=workspace,
+                        )
+                        logger.info(
+                            "Task %s: stashed changes during workspace cleanup",
+                            task_id,
+                        )
+                    except Exception:
+                        # Last resort — discard changes
+                        try:
+                            await self.git._arun(
+                                ["checkout", "--", "."],
+                                cwd=workspace,
+                            )
+                            await self.git._arun(
+                                ["clean", "-fd"],
+                                cwd=workspace,
+                            )
+                            logger.info(
+                                "Task %s: discarded uncommitted changes during cleanup",
+                                task_id,
+                            )
+                        except Exception as discard_err:
+                            logger.warning(
+                                "Task %s: all cleanup attempts failed: %s",
+                                task_id,
+                                discard_err,
+                            )
+                            return
+        except Exception as e:
+            logger.warning(
+                "Task %s: failed to check uncommitted changes during cleanup: %s",
+                task_id,
+                e,
+            )
+
+        # Step 2: Switch to default branch
+        try:
+            current = await self.git.aget_current_branch(workspace)
+            if current != default_branch:
+                await self.git._arun(["checkout", default_branch], cwd=workspace)
+                logger.info(
+                    "Task %s: switched to '%s' during workspace cleanup",
+                    task_id,
+                    default_branch,
+                )
+        except Exception as e:
+            logger.warning(
+                "Task %s: failed to switch to '%s' during cleanup: %s",
+                task_id,
+                default_branch,
+                e,
+            )
 
     async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
         """Delegate plan discovery to the Supervisor."""
@@ -3585,9 +3758,7 @@ class Orchestrator:
                     current = await self.git.aget_current_branch(ws_path)
                     branches = await self.git.alist_branches(ws_path)
                     clean_branches = [b.lstrip("* ").strip() for b in branches if b.strip()]
-                    non_default = [
-                        b for b in clean_branches if b and b != default_branch
-                    ]
+                    non_default = [b for b in clean_branches if b and b != default_branch]
                     if current != default_branch or non_default:
                         needs_merge = True
                         break
@@ -4632,6 +4803,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     f"**Verification failed** for `{task.id}` — "
                     f"max retries exhausted, manual resolution needed."
                 )
+                # Clean up workspace so it's ready for the next task
+                await self._cleanup_workspace_for_next_task(
+                    ctx.workspace_path,
+                    ctx.default_branch,
+                    task.id,
+                )
 
             # Re-check DEFINED tasks so newly created subtasks get promoted
             await self._check_defined_tasks()
@@ -4762,6 +4939,26 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 except Exception as e:
                     logger.warning("Memory remember failed for task %s: %s", task.id, e)
 
+            # Clean up workspace git state so it's ready for the next task.
+            # For retries, this ensures the workspace isn't left dirty from
+            # a failed agent run; for blocked tasks, it ensures the workspace
+            # is available in a clean state.
+            if workspace:
+                try:
+                    fail_project = await self.db.get_project(task.project_id)
+                    fail_default_branch = await self._get_default_branch(fail_project, workspace)
+                    await self._cleanup_workspace_for_next_task(
+                        workspace,
+                        fail_default_branch,
+                        task.id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: workspace cleanup after failure failed: %s",
+                        task.id,
+                        e,
+                    )
+
         elif output.result in (AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT):
             # PAUSED path — the agent hit an API limit (rate or context window).
             # We set a future resume_after timestamp; _resume_paused_tasks()
@@ -4849,7 +5046,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 "notify.task_thread_close",
                 TaskThreadCloseEvent(
                     task_id=task.id,
-                    final_status=task.status.value if hasattr(task.status, "value") else str(task.status),
+                    final_status=task.status.value
+                    if hasattr(task.status, "value")
+                    else str(task.status),
                     final_message=_final_root_content,
                     project_id=action.project_id,
                 ),
