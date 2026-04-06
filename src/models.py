@@ -383,6 +383,7 @@ class AgentOutput:
     files_changed: list[str] = field(default_factory=list)
     tokens_used: int = 0
     error_message: str | None = None
+    exit_code: int | None = None
     question: str | None = None
     session_id: str | None = None
 

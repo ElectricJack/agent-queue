@@ -2684,6 +2684,17 @@ class Orchestrator:
         workspace = ctx.workspace_path
         task = ctx.task
 
+        # Skip verification if the agent exited with an error — bad git state
+        # is a symptom, not the root cause.  Let normal error handling deal
+        # with the task instead of reopening for git fixes.
+        if ctx.output.exit_code and ctx.output.exit_code != 0:
+            logger.info(
+                "Task %s: agent exited with non-zero exit code (%d), skipping git verification",
+                task.id,
+                ctx.output.exit_code,
+            )
+            return PhaseResult.CONTINUE
+
         # Skip verification if the task opted out (e.g. research/investigation tasks)
         if task.skip_verification:
             logger.info("Task %s: skip_verification=True, skipping git verification", task.id)
