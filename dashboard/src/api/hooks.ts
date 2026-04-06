@@ -7,7 +7,7 @@ export function useHealth() {
   return useQuery({
     queryKey: ["health"],
     queryFn: () => apiGet<{ status: string }>("/health"),
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -15,7 +15,7 @@ export function useSystemStatus() {
   return useQuery({
     queryKey: ["system", "status"],
     queryFn: () => apiPost<Record<string, unknown>>("/system/get-status"),
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -39,7 +39,7 @@ export function useAgents(projectId?: string) {
       const data = await apiPost<{ success: boolean; agents: Agent[] }>("/agent/list", body);
       return data.agents ?? [];
     },
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     enabled: !!projectId,
   });
 }
@@ -55,7 +55,7 @@ export function useAllAgents(projectIds: string[]) {
       );
       return results.flatMap((r) => r.agents ?? []);
     },
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     enabled: projectIds.length > 0,
   });
 }
@@ -103,7 +103,7 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
       const data = await apiPost<{ success: boolean; tasks: Task[] }>("/task/list", body);
       return data.tasks ?? [];
     },
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -111,7 +111,7 @@ export function useTask(taskId: string) {
   return useQuery({
     queryKey: ["task", taskId],
     queryFn: () => apiPost<Task>("/task/get", { task_id: taskId }),
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
     enabled: !!taskId,
   });
 }
@@ -123,7 +123,7 @@ export function useActiveTasksAllProjects() {
       const data = await apiPost<{ success: boolean; tasks: Task[] }>("/task/list-active-all-projects");
       return data.tasks ?? [];
     },
-    refetchInterval: 5_000,
+    refetchInterval: 60_000,
   });
 }
 

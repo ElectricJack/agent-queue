@@ -14,12 +14,13 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 
 from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
 from src.api.middleware import RequestContextMiddleware
+from src.api.websocket import WebSocketManager
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -82,5 +83,17 @@ def create_app(
     from src.api.routers import register_all_routers
 
     register_all_routers(app)
+
+    # WebSocket event stream — forward notify.* events to connected clients
+    ws_manager = WebSocketManager(orchestrator.bus)
+    ws_manager.start()
+
+    @app.websocket("/ws/events")
+    async def ws_events(websocket: WebSocket):
+        await ws_manager.handle(websocket)
+
+    @app.on_event("shutdown")
+    async def _shutdown_ws():
+        ws_manager.shutdown()
 
     return app
