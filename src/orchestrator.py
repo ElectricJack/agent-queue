@@ -2734,9 +2734,7 @@ class Orchestrator:
                 try:
                     if await self.git.ahas_uncommitted_changes(workspace):
                         current = await self.git.aget_current_branch(workspace)
-                        await self._auto_remediate_uncommitted(
-                            workspace, task.id, current
-                        )
+                        await self._auto_remediate_uncommitted(workspace, task.id, current)
                 except Exception as e:
                     logger.warning(
                         "Task %s: auto-remediation during skip failed: %s",
@@ -5128,7 +5126,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 # to clean the workspace before blocking.  This catches the
                 # case where auto-remediation mostly worked but a remaining
                 # issue (e.g. unpushed commits) exhausted retries.
-                workspace_cleaned = False
                 if ctx.workspace_path:
                     try:
                         has_dirty = await self.git.ahas_uncommitted_changes(ctx.workspace_path)
@@ -5138,7 +5135,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
                                 ctx.workspace_path, task.id, cur
                             )
                             if not still_dirty:
-                                workspace_cleaned = True
                                 logger.info(
                                     "Task %s: last-ditch remediation cleaned workspace",
                                     task.id,
@@ -5177,11 +5173,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # completion outcomes (normal completion, plan approval, PR
             # approval), clean up here so dirty workspace state doesn't
             # bleed into the next task assigned to this workspace.
-            if (
-                not ctx.verification_reopened
-                and completed_ok
-                and ctx.workspace_path
-            ):
+            if not ctx.verification_reopened and completed_ok and ctx.workspace_path:
                 await self._cleanup_workspace_for_next_task(
                     ctx.workspace_path,
                     ctx.default_branch,
@@ -5377,9 +5369,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             if workspace:
                 try:
                     pause_project = await self.db.get_project(task.project_id)
-                    pause_default_branch = await self._get_default_branch(
-                        pause_project, workspace
-                    )
+                    pause_default_branch = await self._get_default_branch(pause_project, workspace)
                     await self._cleanup_workspace_for_next_task(
                         workspace,
                         pause_default_branch,
