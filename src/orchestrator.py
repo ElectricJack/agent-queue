@@ -2654,28 +2654,47 @@ class Orchestrator:
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
-        """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
-        phases = [
-            ("plan_discover", self._phase_plan_discover),
-            ("verify", self._phase_verify),
-        ]
+        """Run the post-completion pipeline. Returns (pr_url, completed_ok).
 
-        for name, handler in phases:
-            try:
-                result = await handler(ctx)
-            except Exception as e:
-                logger.error(
-                    "Pipeline phase '%s' failed for task %s: %s",
-                    name,
+        Phase execution strategy:
+        - **plan_discover**: Non-critical — if it crashes, log and continue
+          to the verify phase.  Plan discovery failure should not prevent
+          git verification and auto-remediation from running.
+        - **verify**: Critical — if it crashes or returns STOP, the task
+          cannot be marked completed.
+        """
+        # Phase 1: Plan discovery (non-critical)
+        try:
+            result = await self._phase_plan_discover(ctx)
+            if result == PhaseResult.STOP or result == PhaseResult.ERROR:
+                logger.warning(
+                    "Pipeline phase 'plan_discover' returned %s for task %s — continuing to verify",
+                    result,
                     ctx.task.id,
-                    e,
-                    exc_info=True,
                 )
-                return (ctx.pr_url, False)
-            if result == PhaseResult.STOP:
-                return (ctx.pr_url, False)
-            if result == PhaseResult.ERROR:
-                return (ctx.pr_url, False)
+        except Exception as e:
+            logger.error(
+                "Pipeline phase 'plan_discover' failed for task %s: %s — continuing to verify",
+                ctx.task.id,
+                e,
+                exc_info=True,
+            )
+
+        # Phase 2: Git verification (critical)
+        try:
+            result = await self._phase_verify(ctx)
+        except Exception as e:
+            logger.error(
+                "Pipeline phase 'verify' failed for task %s: %s",
+                ctx.task.id,
+                e,
+                exc_info=True,
+            )
+            return (ctx.pr_url, False)
+        if result == PhaseResult.STOP:
+            return (ctx.pr_url, False)
+        if result == PhaseResult.ERROR:
+            return (ctx.pr_url, False)
 
         return (ctx.pr_url, True)
 
@@ -2708,6 +2727,22 @@ class Orchestrator:
                 task.id,
                 ctx.output.exit_code,
             )
+            # Still auto-remediate uncommitted changes so the workspace is
+            # clean for the next task.  Without this, a crashed agent leaves
+            # dirty state that bleeds into subsequent tasks.
+            if workspace and await self.git.avalidate_checkout(workspace):
+                try:
+                    if await self.git.ahas_uncommitted_changes(workspace):
+                        current = await self.git.aget_current_branch(workspace)
+                        await self._auto_remediate_uncommitted(
+                            workspace, task.id, current
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: auto-remediation during skip failed: %s",
+                        task.id,
+                        e,
+                    )
             return PhaseResult.CONTINUE
 
         # Skip verification if the task opted out (e.g. research/investigation tasks)
@@ -2799,6 +2834,16 @@ class Orchestrator:
                     current_branch = await self.git.aget_current_branch(workspace)
                 except Exception:
                     pass
+                # Re-check for uncommitted changes — the failed merge or
+                # abort may have left the workspace dirty.
+                try:
+                    has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+                    if has_uncommitted:
+                        has_uncommitted = await self._auto_remediate_uncommitted(
+                            workspace, task.id, current_branch
+                        )
+                except Exception:
+                    pass
 
         # ── Auto-remediate: merge task branch to default ─────────────────
         # For normal tasks (no approval, not intermediate), the agent is
@@ -2847,6 +2892,16 @@ class Orchestrator:
                     await self.git._arun(["checkout", current_branch], cwd=workspace)
                 except Exception:
                     pass
+                # Re-check for uncommitted changes — the failed merge or
+                # abort may have left the workspace dirty.
+                try:
+                    has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+                    if has_uncommitted:
+                        has_uncommitted = await self._auto_remediate_uncommitted(
+                            workspace, task.id, current_branch
+                        )
+                except Exception:
+                    pass
 
         # ── Auto-remediate: push unpushed commits ───────────────────────
         # After auto-committing/merging (or if agent committed but forgot
@@ -2878,6 +2933,21 @@ class Orchestrator:
                         current_branch,
                         e,
                     )
+
+        # ── Final safety net: one last remediation sweep ─────────────────
+        # Intermediate steps (merge, merge-abort, push attempts) may have
+        # introduced new uncommitted changes that weren't caught by the
+        # earlier remediation.  Re-check and remediate one more time before
+        # building the failure list.
+        try:
+            has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
+                current_branch = await self.git.aget_current_branch(workspace)
+                has_uncommitted = await self._auto_remediate_uncommitted(
+                    workspace, task.id, current_branch
+                )
+        except Exception:
+            pass
 
         # Failures are (message, fixable) tuples. Fixable means the agent can
         # resolve the issue (uncommitted changes, missing merge/push/PR).
@@ -3368,11 +3438,17 @@ class Orchestrator:
             #
             # Must use exclude_plans=False because the archived files live
             # under .claude/plans/ which is in _PLAN_FILE_EXCLUDES.
+            #
+            # Must use no_verify=True to bypass pre-commit hooks (e.g. ruff)
+            # which can reject the commit and crash the pipeline before
+            # _phase_verify even runs — causing the task to be blocked with
+            # a misleading "verification failed" error.
             if ctx.workspace_path and await self.git.avalidate_checkout(ctx.workspace_path):
                 await self.git.acommit_all(
                     ctx.workspace_path,
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
                     exclude_plans=False,
+                    no_verify=True,
                 )
         else:
             reason = (
@@ -3403,12 +3479,15 @@ class Orchestrator:
         plan_stored = await self._discover_and_store_plan(ctx.task, ctx.workspace_path)
         # If a plan was stored, the plan file was archived (renamed).
         # Commit the archival so the merge won't carry the plan file to main.
+        # Use no_verify=True to bypass pre-commit hooks that could crash the
+        # pipeline before _phase_verify runs.
         if plan_stored and ctx.task.branch_name:
             if await self.git.avalidate_checkout(ctx.workspace_path):
                 await self.git.acommit_all(
                     ctx.workspace_path,
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
                     exclude_plans=False,
+                    no_verify=True,
                 )
             ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
@@ -5045,7 +5124,32 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     task.id,
                 )
             else:
-                # Pipeline stopped and could not reopen — block the task
+                # Pipeline stopped and could not reopen — last-ditch attempt
+                # to clean the workspace before blocking.  This catches the
+                # case where auto-remediation mostly worked but a remaining
+                # issue (e.g. unpushed commits) exhausted retries.
+                workspace_cleaned = False
+                if ctx.workspace_path:
+                    try:
+                        has_dirty = await self.git.ahas_uncommitted_changes(ctx.workspace_path)
+                        if has_dirty:
+                            cur = await self.git.aget_current_branch(ctx.workspace_path)
+                            still_dirty = await self._auto_remediate_uncommitted(
+                                ctx.workspace_path, task.id, cur
+                            )
+                            if not still_dirty:
+                                workspace_cleaned = True
+                                logger.info(
+                                    "Task %s: last-ditch remediation cleaned workspace",
+                                    task.id,
+                                )
+                    except Exception as e:
+                        logger.warning(
+                            "Task %s: last-ditch remediation failed: %s",
+                            task.id,
+                            e,
+                        )
+
                 await self.db.transition_task(
                     action.task_id,
                     TaskStatus.BLOCKED,
@@ -5061,6 +5165,23 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     f"max retries exhausted, manual resolution needed."
                 )
                 # Clean up workspace so it's ready for the next task
+                await self._cleanup_workspace_for_next_task(
+                    ctx.workspace_path,
+                    ctx.default_branch,
+                    task.id,
+                )
+
+            # Ensure workspace is clean for the next task.  The
+            # verification_reopened and verification_blocked paths above
+            # already call _cleanup_workspace_for_next_task.  For all other
+            # completion outcomes (normal completion, plan approval, PR
+            # approval), clean up here so dirty workspace state doesn't
+            # bleed into the next task assigned to this workspace.
+            if (
+                not ctx.verification_reopened
+                and completed_ok
+                and ctx.workspace_path
+            ):
                 await self._cleanup_workspace_for_next_task(
                     ctx.workspace_path,
                     ctx.default_branch,
@@ -5248,6 +5369,28 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
             )
+
+            # Clean up workspace git state so the next task (or the resumed
+            # version of this task) starts with a clean working tree.  The
+            # workspace lock is released below for all result types, so any
+            # dirty state left here would bleed into the next occupant.
+            if workspace:
+                try:
+                    pause_project = await self.db.get_project(task.project_id)
+                    pause_default_branch = await self._get_default_branch(
+                        pause_project, workspace
+                    )
+                    await self._cleanup_workspace_for_next_task(
+                        workspace,
+                        pause_default_branch,
+                        task.id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: workspace cleanup after pause failed: %s",
+                        task.id,
+                        e,
+                    )
 
         elif output.result == AgentResult.WAITING_INPUT:
             # Agent is blocked on a question — transition to WAITING_INPUT
