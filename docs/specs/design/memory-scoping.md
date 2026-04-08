@@ -12,13 +12,128 @@ tags: [design, memory, scoping, tools]
 
 ## 1. Overview
 
-Memory is organized into **scopes** that form a specificity hierarchy. More specific
-scopes override or supplement broader ones. Agents interact with memory through a
-unified set of MCP tools that handle scope resolution automatically.
+Memory is organized into **scopes** that form a specificity hierarchy and **tiers**
+that control when knowledge is loaded. Not all memory requires a search — some
+knowledge is important enough to be pre-loaded into every agent context. Agents
+interact with memory through a unified set of MCP tools that handle scope resolution
+and tier management automatically.
+
+Inspired by tiered memory architectures (see
+[MemPalace](https://github.com/milla-jovovich/mempalace)), the system distinguishes
+between knowledge that is always present, knowledge loaded on-demand by topic, and
+knowledge found through deep semantic search.
 
 ---
 
-## 2. Scope Hierarchy (Broadest to Most Specific)
+## 2. Memory Tiers (L0–L3)
+
+Not everything should require a search query. Memory is organized into four tiers
+based on how and when it's loaded into agent context:
+
+| Tier | Name | Token Budget | When Loaded | What It Contains |
+|---|---|---|---|---|
+| **L0** | Identity | ~50 tokens | Always | Agent type role description from [[profiles]] `## Role` section |
+| **L1** | Critical Facts | ~200 tokens | Always at task start | Project `facts.md` KV entries + agent-type `facts.md` entries. Eagerly loaded, no search needed. |
+| **L2** | Topic Context | ~500 tokens | On-demand by topic | Memories filtered by `topic` field matching the current work area. Loaded when the agent enters a topic or the playbook specifies one. |
+| **L3** | Deep Search | Variable | Explicit query | Full semantic search across all scopes. Agent calls `memory_search` when it needs to find something not covered by L0–L2. |
+
+### How Tiers Compose at Task Start
+
+When an agent starts a task on project `mech-fighters`:
+
+```
+1. L0: Inject profile.md ## Role section (always present)
+2. L1: Load project facts.md + agent-type facts.md KV entries
+       → "tech_stack: [Python, SQLAlchemy, Pygame]"
+       → "test_command: pytest tests/ -v"
+       → "deploy_branch: main"
+3. L2: If the task description mentions "combat system", pre-filter
+       memories with topic: combat from project + agent-type scopes
+       → "vibecop frequently catches unhandled None checks in combat systems"
+4. L3: Available via memory_search tool if the agent needs more
+```
+
+L0 and L1 are **injected automatically** — the agent never needs to search for them.
+L2 is **topic-triggered** — loaded when the context implies a topic. L3 is
+**agent-initiated** — the agent decides when to search.
+
+This tiering keeps the base context small (~250 tokens of always-present knowledge)
+while ensuring critical facts are never missed because the agent forgot to search.
+
+---
+
+## 3. Topic Filtering
+
+Memories can be categorized by **topic** — a structured field that enables
+intra-scope filtering before vector search runs. This dramatically improves
+retrieval precision for large collections.
+
+### Why Topics Matter
+
+Flat semantic search across a large collection returns noisy results. A project with
+hundreds of memories about authentication, database, testing, deployment, and UI will
+return a mix of all topics for any query. Filtering by topic first narrows the search
+space, improving both precision and performance.
+
+Evidence from similar systems shows structured scoping before semantic search can
+improve retrieval by 30%+ compared to flat search alone.
+
+### Topic Field
+
+Every memory file can include a `topic` field in its frontmatter:
+
+```markdown
+---
+tags: [insight, auto-generated]
+topic: authentication
+source_task: task-abc123
+created: 2026-04-07
+---
+
+# OAuth token refresh requires explicit scope re-request
+
+When refreshing expired OAuth tokens, the provider requires...
+```
+
+Topics are:
+- **Optional** — memories without a topic are included in all searches (no filtering)
+- **Free-form strings** — no predefined list, agents create topics naturally
+- **Indexed as scalar fields** in Milvus for fast pre-filtering
+- **Auto-detected** when possible — the `memory_save` tool can infer a topic from
+  the content and the current task context
+
+### Topic-Filtered Search
+
+When a topic is known (from task context, playbook node, or explicit query), the
+search pipeline adds a metadata filter before vector similarity:
+
+```python
+async def search(
+    query: str,
+    agent_type: str,
+    project_id: str,
+    topic: str | None = None,
+    limit: int = 10,
+) -> list[MemoryResult]:
+    """Semantic search with optional topic pre-filtering."""
+    filter_expr = f'topic == "{topic}"' if topic else None
+    results = await asyncio.gather(
+        self._search_collection(f"aq_project_{project_id}", query,
+                                weight=1.0, filter=filter_expr),
+        self._search_collection(f"aq_agenttype_{agent_type}", query,
+                                weight=0.7, filter=filter_expr),
+        self._search_collection(f"aq_system", query,
+                                weight=0.4, filter=filter_expr),
+    )
+    return merge_and_rank(results, limit=limit)
+```
+
+If the topic filter returns too few results (< 3), the search automatically falls
+back to unfiltered search to avoid missing relevant cross-topic knowledge.
+
+---
+
+## 4. Scope Hierarchy (Broadest to Most Specific)
 
 ```
 system
@@ -42,7 +157,7 @@ relevant project-specific memory outranks a highly relevant system memory.
 
 ---
 
-## 3. Override Model
+## 5. Override Model
 
 Overrides are **freeform English** that supplement or tweak the parent agent-type
 [[profiles|profile]] for a specific project. They are not structured config — an LLM
@@ -76,26 +191,13 @@ the override taking precedence as the more specific guidance.
 
 ---
 
-## 4. Multi-Scope Query
+## 6. Multi-Scope Query
 
 The [[memory-plugin]] queries all relevant collections in parallel and merges
-results. This applies to both semantic search and KV lookups:
+results. This applies to both semantic search and KV lookups. Searches can
+optionally be filtered by topic (see Section 3) for improved precision.
 
 ```python
-async def search(
-    query: str,
-    agent_type: str,
-    project_id: str,
-    limit: int = 10,
-) -> list[MemoryResult]:
-    """Semantic search across all relevant scopes, weighted by specificity."""
-    results = await asyncio.gather(
-        self._search_collection(f"aq_project_{project_id}", query, weight=1.0),
-        self._search_collection(f"aq_agenttype_{agent_type}", query, weight=0.7),
-        self._search_collection(f"aq_system", query, weight=0.4),
-    )
-    return merge_and_rank(results, limit=limit)
-
 async def recall(
     key: str,
     agent_type: str,
@@ -112,13 +214,14 @@ async def recall(
 
 KV lookups follow **first-match-wins** (most specific scope first). Semantic search
 uses **weighted merging** (all scopes contribute, specificity boosts ranking).
+See Section 3 for the full `search()` signature with topic filtering.
 
 Override files (`overrides/coding.md`) are indexed into the project collection. They
 are found by project-scope search and naturally weighted highest.
 
 ---
 
-## 5. Agent Memory Tools (MCP)
+## 7. Agent Memory Tools (MCP)
 
 Agents interact with memory through MCP tools, not direct file access. This ensures
 proper indexing, deduplication, and file placement.
@@ -150,10 +253,10 @@ specific tools when they know what they want, or `memory_get` when they don't.
 
 ---
 
-## 6. `memory_save` Flow
+## 8. `memory_save` Flow
 
 ```
-Agent calls memory_save(content, tags)
+Agent calls memory_save(content, tags, topic?)
        │
        ▼
   MemoryManager determines scope:
@@ -191,7 +294,30 @@ reasoning about a complex problem. It uses a cheap/fast model.
 
 ---
 
-## 7. Reflection Playbook (Periodic Consolidation)
+## 9. Summary + Original Pattern
+
+When saving a memory, the system stores both a **summary** (optimized for search)
+and the **original content** (available for full context):
+
+- The **summary** is the indexed document in the vector collection. It's concise,
+  focused on the key insight, and produces better search results than verbose originals.
+- The **original** is preserved in the memory file's body below the summary, or in
+  a linked attachment for very large content.
+
+This pattern means retrieval returns focused, relevant summaries. If the agent needs
+the full context, it can request the original via the `source` field.
+
+For `memory_save`, the flow is:
+1. Agent provides full content
+2. If content exceeds ~200 tokens, the system generates a summary (cheap LLM call)
+3. Summary is embedded and indexed; original is stored in the file body
+4. Search results return summaries; `memory_get` with `full=true` returns the original
+
+Short insights (< 200 tokens) are stored as-is — they're already summary-length.
+
+---
+
+## 10. Reflection Playbook (Periodic Consolidation)
 
 Agents write insights immediately during task execution. A separate
 **[[playbooks|reflection playbook]]** runs periodically to:

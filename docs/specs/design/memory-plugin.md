@@ -90,27 +90,55 @@ and exact KV retrieval go through one backend with zero additional infrastructur
 
 ---
 
-## 6. KV Storage in Milvus
+## 6. Collection Schema
 
-Each scope's collection includes entries that are pure key-value (no vector):
+Each scope's collection uses a unified schema supporting three entry types: documents
+(semantic search), KV pairs (exact lookup), and temporal facts (validity-windowed).
 
 ```python
-# KV schema within each Milvus collection
-kv_fields = [
+# Unified schema for each Milvus collection
+fields = [
+    # Core identity
     FieldSchema("entry_id", DataType.VARCHAR, is_primary=True),
-    FieldSchema("entry_type", DataType.VARCHAR),   # "document" | "kv"
-    FieldSchema("kv_namespace", DataType.VARCHAR),  # "project", "conventions", "stats"
+    FieldSchema("entry_type", DataType.VARCHAR),       # "document" | "kv" | "temporal"
+
+    # Vector search (documents only)
+    FieldSchema("embedding", DataType.FLOAT_VECTOR, dim=768),  # zero for KV/temporal
+    FieldSchema("content", DataType.VARCHAR),           # Summary text (indexed)
+    FieldSchema("original", DataType.VARCHAR),          # Full original (not indexed)
+
+    # KV fields
+    FieldSchema("kv_namespace", DataType.VARCHAR),      # "project", "conventions", "stats"
     FieldSchema("kv_key", DataType.VARCHAR),
-    FieldSchema("kv_value", DataType.VARCHAR),      # JSON-encoded
-    FieldSchema("embedding", DataType.FLOAT_VECTOR, dim=768),  # null/zero for KV entries
-    FieldSchema("content", DataType.VARCHAR),
-    FieldSchema("source", DataType.VARCHAR),
-    FieldSchema("tags", DataType.VARCHAR),           # JSON array
+    FieldSchema("kv_value", DataType.VARCHAR),          # JSON-encoded
+
+    # Temporal validity (KV and temporal entries)
+    FieldSchema("valid_from", DataType.INT64),          # Unix timestamp, 0 = always
+    FieldSchema("valid_to", DataType.INT64),            # Unix timestamp, 0 = current/open
+
+    # Topic filtering (documents)
+    FieldSchema("topic", DataType.VARCHAR),             # e.g., "authentication", "testing"
+
+    # Metadata (all entry types)
+    FieldSchema("source", DataType.VARCHAR),            # Vault file path
+    FieldSchema("tags", DataType.VARCHAR),              # JSON array
     FieldSchema("updated_at", DataType.INT64),
 ]
 ```
 
-KV entries have `entry_type = "kv"` and are queried via scalar filters:
+### Entry Types
+
+**`document`** — Memory files with embeddings for semantic search. The `content`
+field holds a summary (optimized for retrieval); `original` holds the full text.
+`topic` enables pre-filtering before vector search (see [[memory-scoping]] Section 3).
+
+**`kv`** — Key-value pairs for exact lookup. No embedding needed. Queried via
+scalar filters on `kv_namespace` and `kv_key`.
+
+**`temporal`** — Facts with validity windows. Like KV entries but with `valid_from`
+and `valid_to` timestamps. Enables "as-of" queries and automatic expiry detection.
+
+### KV Queries
 
 ```python
 # Exact KV lookup — no vector search, pure scalar query
@@ -126,8 +154,46 @@ results = collection.query(
 )
 ```
 
-Document entries (memory files with embeddings) have `entry_type = "document"` and
-are queried via vector similarity as before.
+### Temporal Queries
+
+```python
+import time
+
+# Current value — valid_to is 0 (open) or in the future
+now = int(time.time())
+results = collection.query(
+    filter=f'entry_type == "temporal" AND kv_key == "deploy_branch" '
+           f'AND valid_from <= {now} AND (valid_to == 0 OR valid_to > {now})',
+    output_fields=["kv_value", "valid_from", "valid_to"]
+)
+
+# Historical "as-of" query — what was the deploy branch on a specific date?
+as_of = int(datetime(2026, 3, 15).timestamp())
+results = collection.query(
+    filter=f'entry_type == "temporal" AND kv_key == "deploy_branch" '
+           f'AND valid_from <= {as_of} AND (valid_to == 0 OR valid_to > {as_of})',
+    output_fields=["kv_value", "valid_from", "valid_to"]
+)
+
+# Full history of a key
+results = collection.query(
+    filter='entry_type == "temporal" AND kv_key == "deploy_branch"',
+    output_fields=["kv_value", "valid_from", "valid_to"],
+)
+# Returns: [("main", 0, 1710000000), ("release", 1710000000, 0)]
+```
+
+### Temporal Fact Lifecycle
+
+When a temporal fact is updated (e.g., deploy branch changes from `main` to `release`):
+1. The current entry's `valid_to` is set to now (closing the validity window)
+2. A new entry is created with `valid_from` = now and `valid_to` = 0 (open)
+3. Both entries persist — the history is preserved
+4. The vault `facts.md` file is updated to show the current value
+
+The reflection playbook can use temporal history to detect patterns: "this project
+changes deploy branches frequently" or "this config was stable for 6 months then
+changed — investigate why."
 
 ---
 
