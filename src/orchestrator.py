@@ -185,7 +185,10 @@ class Orchestrator:
         """
         self.config = config
         self.db = create_database(config)
-        self.bus = EventBus()
+        self.bus = EventBus(
+            env=config.env,
+            validate_events=config.validate_events,
+        )
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
         self._adapter_factory = adapter_factory

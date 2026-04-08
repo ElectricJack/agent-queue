@@ -734,6 +734,7 @@ class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
+    validate_events: bool = True
     messaging_platform: str = "discord"  # "discord" or "telegram"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
@@ -1260,6 +1261,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     config._config_path = path
     config.profile = resolved_profile
     config.env = env
+    # Event validation toggle: YAML key or env var override
+    if "validate_events" in raw:
+        config.validate_events = bool(raw["validate_events"])
+    env_val = os.environ.get("AGENT_QUEUE_VALIDATE_EVENTS")
+    if env_val is not None:
+        config.validate_events = env_val.lower() not in ("0", "false", "no", "off")
 
     if "data_dir" in raw:
         config.data_dir = raw["data_dir"]
