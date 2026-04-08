@@ -78,7 +78,7 @@ execute a single task. It triggers on events like `task.created` or
 managing the flow between them.
 
 Coordination playbooks live alongside other playbooks in the
-[[vault-and-memory#4. Vault Structure|vault]]:
+[[vault|vault]]:
 - `vault/system/playbooks/` for system-wide coordination patterns
 - `vault/projects/{id}/playbooks/` for project-specific coordination
 - `vault/agent-types/{type}/playbooks/` for agent-type-specific behavior
@@ -110,11 +110,11 @@ A preference (not a hard requirement) for which agent should handle a task. Affi
 is based on:
 - **Context continuity** — prefer the agent that previously worked on related tasks
   (it has relevant conversation history and workspace state). Over time,
-  [[vault-and-memory#11. The Self-Improvement Loop|agent-type memory]] reduces the
+  [[self-improvement|agent-type memory]] reduces the
   cost of context loss, but affinity still helps for in-flight workflows.
 - **Workspace locality** — prefer an agent that already has the workspace locked
 - **Type matching** — a review task should go to a review agent, not a coding agent.
-  Agent types are defined by [[vault-and-memory#7. Profiles as Markdown|profiles]]
+  Agent types are defined by [[profiles|profiles]]
   in the vault.
 
 Affinity is advisory. The scheduler respects it when possible but overrides it when
@@ -413,7 +413,7 @@ Ship with sensible defaults that encode current best practices:
 | `exploration` | EXPLORATION task | Parallel multi-agent investigation |
 
 These are starting points. Users customize or replace them by editing the markdown
-in the [[vault-and-memory#4. Vault Structure|vault]] — per
+in the [[vault|vault]] — per
 [[guiding-design-principles#2. Everything is visible and editable|principle #2]].
 
 ---

@@ -336,4 +336,4 @@ agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 | `src/tool_registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
 | `src/command_handler.py` | [[specs/command-handler|CommandHandler]].execute() -- the single execution layer |
 
-> **Future evolution:** MCP tools expand to include [[design/vault-and-memory|memory tools]] (memory_search, memory_recall, memory_save, memory_store, memory_get).
+> **Future evolution:** MCP tools expand to include [[design/memory-scoping|memory tools]] (memory_search, memory_recall, memory_save, memory_store, memory_get).

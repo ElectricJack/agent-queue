@@ -12,9 +12,14 @@ systems. They are **design documents under active development** — not yet impl
 | Spec | Status | Summary |
 |---|---|---|
 | [[guiding-design-principles]] | Draft | The 10 core principles behind all design decisions |
-| [[playbooks]] | Draft | Agent workflow graphs — directed graphs of LLM decision points that replace the rules + hooks system with structured multi-step reasoning flows |
-| [[vault-and-memory]] | Draft | Vault folder structure, scoped memory per agent type, self-contained memory plugin v2 (memsearch fork with KV + vector in Milvus), Obsidian integration, profiles as markdown, self-improvement loop |
-| [[agent-coordination]] | Draft | Playbook-driven multi-agent coordination — replaces rigid scheduling with editable workflows that define how agents collaborate, pipeline stages, agent affinity, and workspace strategies |
+| [[playbooks]] | Draft | Agent workflow graphs — directed graphs of LLM decision points replacing rules + hooks |
+| [[vault-and-memory]] | Draft | Hub document — overview, migration path, and open questions for the vault & memory system |
+| [[vault]] | Draft | Vault directory structure, what lives where, reference stubs, Obsidian integration |
+| [[memory-plugin]] | Draft | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
+| [[memory-scoping]] | Draft | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
+| [[profiles]] | Draft | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
+| [[self-improvement]] | Draft | Self-improvement loop, orchestrator memory, reflection, health & observability |
+| [[agent-coordination]] | Draft | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
 
 ## How They Relate
 
@@ -43,7 +48,7 @@ vault-and-memory                       playbooks
 All four specs share the same [[guiding-design-principles|design principles]].
 The [[vault-and-memory|vault]] is the prerequisite for [[playbooks|playbook]]
 storage. [[playbooks|Playbooks]] are the mechanism for the
-[[vault-and-memory#11. The Self-Improvement Loop|self-improvement loop]].
+[[self-improvement|self-improvement loop]].
 [[agent-coordination|Coordination playbooks]] extend the playbook model to
 multi-agent workflows.
 

@@ -7,7 +7,8 @@ tags: [design, principles]
 These are the core principles behind Agent Queue. When making design decisions,
 trade-offs, or implementation choices — refer here.
 
-See also: [[playbooks]], [[vault-and-memory]], [[agent-coordination]]
+See also: [[playbooks]], [[vault]], [[memory-plugin]], [[memory-scoping]],
+[[profiles]], [[self-improvement]], [[agent-coordination]]
 
 ---
 
@@ -19,8 +20,8 @@ systems — databases, indices, compiled formats — are caches that can be rebu
 at any time. When the file and the cache disagree, the file wins. Data flows one
 direction: files to runtime, never the reverse.
 
-Applied in: [[vault-and-memory]] (vault as source of truth for memory, profiles,
-facts), [[playbooks]] (markdown compiled to JSON).
+Applied in: [[vault]] (vault as source of truth), [[profiles]] (markdown profiles
+synced to DB), [[playbooks]] (markdown compiled to JSON).
 
 ## 2. Everything is visible and editable
 
@@ -29,7 +30,7 @@ rule it follows, every decision it has made can be found, read, and changed by a
 human. If the system learned something wrong, someone can fix it with a text
 editor. Transparency is not a feature — it is a prerequisite for trust.
 
-Applied in: [[vault-and-memory]] (Obsidian integration, vault structure),
+Applied in: [[vault]] (Obsidian integration, vault structure),
 [[agent-coordination]] (coordination playbooks are readable markdown).
 
 ## 3. Structure guides, intelligence decides
@@ -50,8 +51,8 @@ Agents reflect on their work, distill patterns, and remember what they learn.
 A system that doesn't get smarter over time is just an expensive way to run
 scripts. Self-improvement is the core value proposition — not a nice-to-have.
 
-Applied in: [[vault-and-memory]] (self-improvement loop, reflection playbooks,
-scoped memory), [[playbooks]] (playbook-driven insight extraction).
+Applied in: [[self-improvement]] (the full loop), [[memory-scoping]] (scoped
+memory accumulation), [[playbooks]] (playbook-driven insight extraction).
 
 ## 5. Reduce human effort, don't eliminate human judgment
 
@@ -70,8 +71,8 @@ answer wins. A project convention overrides a general default. Local knowledge
 outranks global knowledge. The system layers from broad to narrow and never forces
 a generic answer when a specific one is available.
 
-Applied in: [[vault-and-memory]] (memory scoping hierarchy, override model,
-multi-scope query weighting).
+Applied in: [[memory-scoping]] (scope hierarchy, override model, multi-scope
+query weighting).
 
 ## 7. Communicate through events, not direct coupling
 
@@ -91,7 +92,7 @@ component's infrastructure or assume resources it doesn't manage. This keeps
 components replaceable, testable, and independently understandable. Tight
 coupling between subsystems is a design failure, not a convenience.
 
-Applied in: [[vault-and-memory]] (memory plugin v2 owns Milvus via memsearch
+Applied in: [[memory-plugin]] (memory plugin v2 owns Milvus via memsearch
 fork, no PostgreSQL dependency).
 
 ## 9. Simple interfaces, smart routing
@@ -101,7 +102,7 @@ that means an exact lookup, a semantic search, or a compiled graph execution is
 an implementation detail the caller never sees. Complexity belongs behind clean
 interfaces, not in front of them.
 
-Applied in: [[vault-and-memory]] (unified memory_get auto-routes between KV
+Applied in: [[memory-scoping]] (unified memory_get auto-routes between KV
 and vector search), [[playbooks]] (agents call tools without knowing which
 backend serves them).
 
@@ -112,5 +113,5 @@ dependencies, or storage backends — choose that one. Every additional moving
 part is a maintenance burden, a failure mode, and a concept someone has to
 understand. Consolidate where possible. Separate only when the benefit is clear.
 
-Applied in: [[vault-and-memory]] (unified Milvus backend for both vectors and
+Applied in: [[memory-plugin]] (unified Milvus backend for both vectors and
 KV instead of separate databases).

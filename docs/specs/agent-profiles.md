@@ -6,7 +6,7 @@ tags: [spec, agents, profiles]
 
 ## Overview
 
-> **Future evolution:** Profiles move to markdown in the vault. See [[design/vault-and-memory]] Section 7 for the hybrid profile format.
+> **Future evolution:** Profiles move to markdown in the vault. See [[design/profiles]] for the hybrid profile format.
 
 Agent Profiles are capability bundles that configure agents with specific tools, MCP servers, model overrides, and system prompt additions at task execution time. They allow task-level specialization (e.g., a code reviewer vs. a web developer) without changing the scheduler or agent pool.
 

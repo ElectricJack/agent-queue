@@ -634,7 +634,7 @@ behavioral rules. Behavioral rules ("always run tests before committing") live i
 the agent's `profile.md` under `## Rules` and are injected into the agent's prompt
 as trust-based guidance. Agent-type playbooks are event-driven workflows that run
 alongside agents, not instructions injected into them. See
-[[vault-and-memory#7. Profiles as Markdown|profiles as markdown]] for the profile model.
+[[profiles|profiles as markdown]] for the profile model.
 
 ### Scope Resolution
 
@@ -650,7 +650,7 @@ sequencing.
 
 ### Storage
 
-Playbooks live inside the [[vault-and-memory#4. Vault Structure|vault]].
+Playbooks live inside the [[vault|vault]].
 Compiled JSON lives outside the vault in `~/.agent-queue/compiled/`.
 
 ```
@@ -855,7 +855,7 @@ object references in async SQLAlchemy sessions...
 
 ### Playbook-Driven Self-Improvement
 
-Two categories of playbooks directly drive the [[vault-and-memory#11. The Self-Improvement Loop|self-improvement loop]]:
+Two categories of playbooks directly drive the [[self-improvement|self-improvement loop]]:
 
 **Reflection playbooks** (agent-type scoped) run after task completion and extract
 insights from the agent's work into its type memory. These live at
@@ -1078,7 +1078,7 @@ unloaded while a playbook run is in progress, tool calls to that plugin's tools
 will fail. The playbook's error handling (fail the node, preserve context) applies.
 
 **Plugins do NOT register playbooks.** Playbooks are user/system-authored artifacts
-in the [[vault-and-memory#4. Vault Structure|vault]]. A plugin that wants to provide
+in the [[vault|vault]]. A plugin that wants to provide
 automation ships a default playbook markdown in its package, which gets installed to
 the vault via `install_defaults()` — the same pattern as current default rules.
 
