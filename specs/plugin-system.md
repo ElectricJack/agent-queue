@@ -1,11 +1,13 @@
 # Plugin System Specification
 
 **Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
-**Related specs:** `hooks.md`, `rule-system.md`, `command-handler.md`, `tiered-tools.md`
+**Related specs:** [[hooks]], [[rule-system]], [[command-handler]], [[tiered-tools]]
 
 ---
 
 ## 1. Overview
+
+> **Future evolution:** See [[design/vault-and-memory]] Section 3 for how the memory plugin v2 extends the plugin architecture.
 
 The plugin system enables extending AgentQueue with installable, self-contained Python packages that can register commands, tools, cron-scheduled functions, CLI commands, and Discord slash commands. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
 

@@ -4,6 +4,8 @@
 > **Author:** Agent (fleet-beacon)
 > **Date:** 2026-04-05
 
+> **Future evolution:** See [[design/vault-and-memory]] for the next-generation memory architecture with scoped collections and agent-type memory.
+
 ## Problem Statement
 
 The memory system currently functions as bulk storage of completed task information. When a user asks "what's the GitHub URL for project X?" or "what stack does project Y use?", the answer may be buried across dozens of task memory files, weekly digests, or only discoverable through semantic search that may not surface it reliably.

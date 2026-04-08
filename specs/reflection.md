@@ -1,6 +1,8 @@
 # Reflection Engine Specification
 
-The ReflectionEngine manages the Supervisor's action-reflect cycle.
+The ReflectionEngine manages the [[supervisor|Supervisor]]'s action-reflect cycle.
+
+> **Future evolution:** Reflection becomes a [[design/playbooks|playbook]]-driven process. See [[design/vault-and-memory]] Section 11 for the self-improvement loop.
 
 ## Class: ReflectionEngine (src/reflection.py)
 

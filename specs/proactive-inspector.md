@@ -1,11 +1,13 @@
 # Proactive Codebase Inspector — Specification
 
 **Source files:** `src/prompts/default_rules/proactive-codebase-inspector.md` (default rule)
-**Related:** `specs/rule-system.md`, `specs/hooks.md`, `specs/chat-observer.md`
+**Related:** [[rule-system]], [[hooks]], [[chat-observer]]
 
 ---
 
 ## 1. Overview
+
+> **Future evolution:** Becomes a system [[design/playbooks|playbook]]. See [[design/playbooks]] Section 12.
 
 The Proactive Codebase Inspector is a periodic automation that randomly selects
 sections of a project's source code, documentation, specs, tests, and configuration
