@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The plan parser converts markdown implementation plan files into structured task definitions that the orchestrator can schedule as follow-up work.
+The plan parser converts markdown implementation plan files into structured task definitions that the [[orchestrator]] can schedule as follow-up work.
 
 When an agent completes a task, it may write a plan file (e.g. `.claude/plan.md`) to its workspace describing the steps required to carry out that work. The plan parser reads this file, identifies the actionable steps, and returns them as an ordered list of `PlanStep` objects wrapped in a `ParsedPlan`. The orchestrator then creates one child task per step, chaining them with dependencies.
 
