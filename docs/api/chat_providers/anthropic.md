@@ -4,7 +4,7 @@ tags: [api, chat-providers]
 
 # Anthropic Chat Provider
 
-> **Spec:** [[specs/chat-providers/providers]]
+> **Spec:** [[specs/chat-providers/anthropic]]
 
 Anthropic API chat provider for the conversational interface.
 

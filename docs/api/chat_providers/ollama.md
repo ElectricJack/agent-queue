@@ -4,7 +4,7 @@ tags: [api, chat-providers]
 
 # Ollama Chat Provider
 
-> **Spec:** [[specs/chat-providers/providers]]
+> **Spec:** [[specs/chat-providers/ollama]]
 
 Ollama local LLM chat provider for the conversational interface.
 

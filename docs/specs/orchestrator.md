@@ -587,7 +587,7 @@ Executed in a `finally` block so it runs regardless of success or failure:
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See [[git/git]] §10 for the full design principles reference.
+See [[git]] §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -601,7 +601,7 @@ See [[git/git]] §10 for the full design principles reference.
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-[[git/git]] §11 for the full gap catalogue.
+[[git]] §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|

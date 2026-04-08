@@ -6,7 +6,7 @@ tags: [spec, setup, cli]
 
 ## 1. Overview
 
-The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude, chat provider) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
+The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord or Telegram, Claude, chat provider) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
 
 ## Source Files
 

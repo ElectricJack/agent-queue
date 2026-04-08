@@ -1,12 +1,14 @@
 ---
-tags: [spec, discord, bot, interface]
+tags: [spec, messaging, discord, bot]
 ---
 
 # Discord Integration Specification
 
+**Related:** [[base]], [[telegram]], [[supervisor]], [[command-handler]]
+
 ## 1. Overview
 
-Discord is the exclusive control plane for Agent Queue. There are no other user-facing interfaces — all commands, status queries, and notifications flow through Discord. The integration has three distinct layers:
+Discord is one of the supported messaging platforms for Agent Queue, implementing the [[base|MessagingAdapter]] interface. All commands, status queries, and notifications flow through the shared abstraction layer. The integration has three distinct layers:
 
 - **Bot Core** (`src/discord/bot.py`) — `AgentQueueBot`, a `discord.ext.commands.Bot` subclass. Owns channel routing, message history, authorization, and thread management.
 - **Slash Commands** (`src/discord/commands.py`) — All interactive commands registered on the application command tree. Thin wrappers that delegate business logic to the shared [[command-handler|CommandHandler]].

@@ -4,7 +4,7 @@ tags: [api, discord, commands]
 
 # Discord Commands
 
-> **Spec:** [[specs/discord/discord]]
+> **Spec:** [[specs/messaging/discord]]
 
 Discord slash command definitions and handlers.
 

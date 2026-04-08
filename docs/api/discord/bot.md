@@ -4,7 +4,7 @@ tags: [api, discord]
 
 # Discord Bot
 
-> **Spec:** [[specs/discord/discord]]
+> **Spec:** [[specs/messaging/discord]]
 
 Core Discord bot implementation and event handling.
 

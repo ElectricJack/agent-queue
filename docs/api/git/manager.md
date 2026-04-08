@@ -4,7 +4,7 @@ tags: [api, git]
 
 # Git Manager
 
-> **Spec:** [[specs/git/git]]
+> **Spec:** [[specs/git]]
 
 Git operations manager for branch management and worktrees.
 

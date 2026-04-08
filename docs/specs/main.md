@@ -54,7 +54,7 @@ The `run(config_path: str) -> bool` coroutine performs startup in the following 
 
 4. **Create and initialize orchestrator** — Instantiate `Orchestrator` (see [[orchestrator]]) with `(config, adapter_factory=adapter_factory)`, then `await orch.initialize()`. The `initialize()` call opens the database connection, runs migrations, and prepares internal state.
 
-5. **Create Discord bot** — Instantiate `AgentQueueBot(config, orch)` (see [[discord/discord|Discord Integration]]). The bot holds a reference to the orchestrator so that Discord commands can invoke orchestrator operations directly.
+5. **Create Discord bot** — Instantiate `AgentQueueBot(config, orch)` (see [[messaging/discord|Discord Integration]]). The bot holds a reference to the orchestrator so that Discord commands can invoke orchestrator operations directly.
 
 6. **Create shutdown event** — Create an `asyncio.Event()` named `shutdown_event`. This event is the single mechanism by which signal handlers, the main coroutine, and the scheduler loop coordinate a clean stop.
 

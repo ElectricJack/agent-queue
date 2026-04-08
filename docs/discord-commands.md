@@ -4,7 +4,7 @@ tags: [discord, commands, interface]
 
 # Discord Commands
 
-Agent Queue gives you two ways to interact through Discord. See [[specs/discord/discord|Discord spec]] and [[specs/command-handler|CommandHandler spec]] for implementation details.
+Agent Queue gives you two ways to interact through Discord. See [[specs/messaging/discord|Discord spec]] and [[specs/command-handler|CommandHandler spec]] for implementation details.
 
 | Method | How it works | Best for |
 |--------|-------------|----------|
