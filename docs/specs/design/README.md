@@ -19,6 +19,7 @@ systems. They are **design documents under active development** — not yet impl
 | [[profiles]] | Draft | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
 | [[self-improvement]] | Draft | Self-improvement loop, orchestrator memory, reflection, health & observability |
 | [[agent-coordination]] | Draft | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
+| [[roadmap]] | Draft | 196-task implementation roadmap across 8 phases with dependencies and test checkpoints |
 
 ## How They Relate
 
