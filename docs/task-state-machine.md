@@ -1,7 +1,14 @@
+---
+tags: [tasks, state-machine, lifecycle]
+---
+
 # Task State Machine
 
 This document describes the full task state machine including all states,
 events, transitions, and the rules governing task lifecycle progression.
+See [[specs/models-and-state-machine|Models and State Machine spec]] for the formal specification.
+
+> See also: [[specs/design/agent-coordination]] for workflow-level coordination on top of the task state machine.
 
 ## States
 

@@ -1,7 +1,11 @@
+---
+tags: [git, workspace, gaps]
+---
+
 # Git Sync for Agent Workspaces — Identified Gaps
 
 **Source files:** `src/git/manager.py`, `src/orchestrator.py`
-**Companion doc:** [Current State](git-sync-current-state.md)
+**Companion doc:** [[git-sync-current-state|Current State]]
 
 This document catalogues the gaps in the current git sync workflow that can
 cause merge conflicts, failed pushes, and stale code when multiple agents work

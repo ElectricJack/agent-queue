@@ -1,3 +1,7 @@
+---
+tags: [cli, interface]
+---
+
 # AgentQueue CLI
 
 A modern, interactive terminal interface for AgentQueue that mirrors Discord

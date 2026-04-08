@@ -1,3 +1,7 @@
+---
+tags: [overview, index]
+---
+
 # Agent Queue
 
 **Put your AI agents to work. Go touch grass.**
@@ -85,10 +89,12 @@ Bot:  Created task `task-1` — "Add rate limiting to API"
 
 ## Next steps
 
-- **[Getting Started](getting-started.md)** — Detailed installation and setup guide
-- **[Discord Commands](discord-commands.md)** — Complete guide to slash commands and chat interactions
-- **[Architecture](architecture.md)** — How the system is designed
-- **[Specifications](specs/models-and-state-machine.md)** — Detailed specs for each module
+- **[[getting-started|Getting Started]]** — Detailed installation and setup guide
+- **[[discord-commands|Discord Commands]]** — Complete guide to slash commands and chat interactions
+- **[[architecture|Architecture]]** — How the system is designed
+- **[[cli|CLI]]** — Terminal interface reference
+- **[[specs/design/README|Design Specs]]** — Design philosophy and guiding principles
+- **[[specs/models-and-state-machine|Specifications]]** — Detailed specs for each module
 - **[API Reference](api/index.md)** — Auto-generated API documentation from source code
 
 ## License

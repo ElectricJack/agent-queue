@@ -1,6 +1,6 @@
 # Adapter Development Guide
 
-> **Consolidated:** See [adapter-development.md](adapter-development.md) for the
+> **Consolidated:** See [[adapter-development]] for the
 > full step-by-step guide with code examples, interface documentation, and testing
 > instructions.
 

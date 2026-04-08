@@ -1,8 +1,13 @@
+---
+tags: [database, migrations, technical-debt]
+---
+
 # Database Migrations — Technical Debt Inventory
 
 All migrations run in `Database.initialize()` on every startup. They are
 idempotent (safe to re-run) but represent technical debt from schema evolution.
 This document catalogs every migration and its removal criteria.
+See [[specs/database|Database spec]] for the current schema specification.
 
 ---
 

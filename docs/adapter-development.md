@@ -1,10 +1,18 @@
+---
+tags: [adapters, development-guide]
+---
+
 # Adapter Development Guide
 
 How to add a new AI agent backend to Agent Queue.
 
+> See also: [[specs/adapters/claude|Claude adapter spec]] and [[specs/adapters/development-guide|Adapter Development Guide spec]] for detailed reference.
+>
+> See also: [[specs/design/agent-coordination]] for how adapters interact with coordination playbooks.
+
 ## Architecture Overview
 
-Agent adapters are the bridge between the orchestrator and external AI coding
+Agent adapters are the bridge between the [[specs/orchestrator|orchestrator]] and external AI coding
 agents. Each adapter implements a minimal 4-method interface that the
 orchestrator calls during the task execution pipeline. The adapter is
 responsible for launching the agent process, streaming its output, and
@@ -344,7 +352,7 @@ async def test_stop():
 
 ## Reference: ClaudeAdapter
 
-The existing `ClaudeAdapter` (`src/adapters/claude.py`) is the reference
+The existing [[specs/adapters/claude|ClaudeAdapter]] (`src/adapters/claude.py`) is the reference
 implementation. Key patterns to follow:
 
 - **Environment scrubbing**: Clear agent-specific env vars to avoid conflicts

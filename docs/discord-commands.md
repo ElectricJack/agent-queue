@@ -1,13 +1,17 @@
+---
+tags: [discord, commands, interface]
+---
+
 # Discord Commands
 
-Agent Queue gives you two ways to interact through Discord:
+Agent Queue gives you two ways to interact through Discord. See [[specs/discord/discord|Discord spec]] and [[specs/command-handler|CommandHandler spec]] for implementation details.
 
 | Method | How it works | Best for |
 |--------|-------------|----------|
 | **Slash commands** | Type `/` and pick from the autocomplete menu | Structured operations with clear parameters |
 | **Natural language chat** | Just type a message in the bot's channel | Quick requests, complex descriptions, multi-step workflows |
 
-Both methods call the same underlying logic — slash commands are just a structured shortcut for what you can always ask the Supervisor to do in plain English.
+Both methods call the same underlying [[specs/command-handler|CommandHandler]] logic — slash commands are just a structured shortcut for what you can always ask the [[specs/supervisor|Supervisor]] to do in plain English.
 
 **Example — creating a task both ways:**
 

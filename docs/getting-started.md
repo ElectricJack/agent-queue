@@ -1,3 +1,7 @@
+---
+tags: [getting-started, setup]
+---
+
 # Getting Started
 
 ## Prerequisites
@@ -15,7 +19,7 @@ git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
 ```
 
-### 2. Run the Setup Wizard
+### 2. Run the [[specs/setup-wizard|Setup Wizard]]
 
 The interactive setup wizard will walk you through configuration:
 
@@ -42,7 +46,7 @@ Other useful commands:
 
 ## Configuration
 
-Agent Queue uses a YAML configuration file. The setup wizard creates this for you, but you can also edit it manually. See the [Configuration Spec](specs/config.md) for full details.
+Agent Queue uses a YAML configuration file. The setup wizard creates this for you, but you can also edit it manually. See the [[specs/config|Configuration Spec]] for full details.
 
 Key configuration sections:
 
@@ -62,4 +66,4 @@ Once the daemon is running and connected to Discord:
 
 The bot uses a **Supervisor** — an LLM-powered conversation interface that translates your natural language into system commands. You can also use Discord slash commands (type `/` to see them) for structured operations. Both methods call the same underlying logic.
 
-For a complete reference of all available commands, see the [Discord Commands Guide](discord-commands.md).
+For a complete reference of all available commands, see the [[discord-commands|Discord Commands Guide]].

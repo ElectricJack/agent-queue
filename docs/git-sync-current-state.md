@@ -1,7 +1,11 @@
+---
+tags: [git, workspace, sync]
+---
+
 # Git Sync for Agent Workspaces — Current State
 
 **Source files:** `src/git/manager.py`, `src/orchestrator.py`
-**Design principles reference:** `specs/git/git.md` §10
+**Design principles reference:** [[specs/git/git]] §10
 
 This document captures what the current git sync workflow does well, identifies
 the design decisions already in place, and serves as a baseline for future
@@ -182,8 +186,9 @@ the user being notified.
 ## Identified Gaps
 
 The following gaps have been identified in the current workflow. Each is
-labeled G1–G7 for traceability. See `specs/git/git.md` §11 for the formal
+labeled G1--G7 for traceability. See [[specs/git/git]] §11 for the formal
 gap catalogue with affected code references and violated design principles.
+For the full gap analysis, see [[git-sync-gaps]].
 
 ### G1. `_merge_and_push` Never Pulls Main Before Merging — **RESOLVED**
 

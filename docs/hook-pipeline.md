@@ -1,7 +1,11 @@
+---
+tags: [hooks, automation, pipeline]
+---
+
 # Hook Pipeline Guide
 
 Hooks enable automated workflows that react to task lifecycle events or run
-on schedules. Each hook follows a simple pipeline:
+on schedules. See [[specs/hooks|Hooks spec]] and [[specs/rule-system|Rule System spec]] for implementation details. Each hook follows a simple pipeline:
 
 ```
 trigger → render prompt → invoke LLM
@@ -144,6 +148,8 @@ Generate a daily project status summary:
     "cooldown_seconds": 82800
 }
 ```
+
+> **Future evolution:** Hooks evolve into [[specs/design/playbooks|playbooks]]. See [[specs/design/playbooks]] for the planned replacement.
 
 ### Test Gate After Completion
 

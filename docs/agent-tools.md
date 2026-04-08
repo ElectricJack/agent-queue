@@ -1,14 +1,18 @@
+---
+tags: [tools, agent, reference]
+---
+
 # Agent Queue — Internal Tool Reference for AI Agents
 
 > **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for Discord slash commands or human-facing interfaces.
 
-All tools are called through `CommandHandler.execute(tool_name, params)`. Parameters are passed as a JSON object. Tools return `{"success": bool, ...}` dicts.
+All tools are called through [[specs/command-handler|CommandHandler]]`.execute(tool_name, params)`. Parameters are passed as a JSON object. Tools return `{"success": bool, ...}` dicts.
 
 ---
 
 ## Tool Loading System
 
-To optimize context window usage, tools are split into **core** (always loaded) and **categorized** (loaded on demand).
+To optimize context window usage, tools are split into **core** (always loaded) and **categorized** (loaded on demand). See [[specs/tiered-tools|Tiered Tools]] for the design rationale.
 
 **To discover and load tools:**
 1. Call `browse_tools` (no params) → returns category names with descriptions and tool counts

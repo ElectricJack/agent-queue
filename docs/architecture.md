@@ -1,3 +1,7 @@
+---
+tags: [architecture, overview]
+---
+
 # Architecture
 
 ## Overview
@@ -43,9 +47,11 @@ graph TD
 
 ## Key Design Decisions
 
+> See [[specs/design/guiding-design-principles|Guiding Design Principles]] for the full design philosophy.
+
 ### Zero LLM Overhead for Orchestration
 
-The scheduler and task routing use no LLM calls. Every token the system spends is a token an agent spends on actual work. Scheduling decisions are made via proportional credit-weight allocation.
+The [[specs/scheduler-and-budget|scheduler]] and task routing use no LLM calls. Every token the system spends is a token an agent spends on actual work. Scheduling decisions are made via proportional credit-weight allocation.
 
 ### Spec-Driven Development
 
@@ -64,18 +70,18 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | Module | Purpose |
 |--------|---------|
 | `src/main.py` | Entry point, signal handling, restart support |
-| `src/orchestrator.py` | Core task/agent lifecycle management |
+| `src/orchestrator.py` | Core task/agent lifecycle management ([[specs/orchestrator|spec]]) |
 | `src/models.py` | Data models (Task, Agent, Project, Hook, etc.) |
-| `src/database.py` | SQLite persistence layer (19 tables) |
+| `src/database.py` | SQLite persistence layer (19 tables) ([[specs/database|spec]]) |
 | `src/config.py` | YAML config loading with environment variable substitution |
-| `src/scheduler.py` | Proportional credit-weight scheduling |
+| `src/scheduler.py` | Proportional credit-weight scheduling ([[specs/scheduler-and-budget|spec]]) |
 | `src/state_machine.py` | Task state transitions and DAG validation |
-| `src/event_bus.py` | Async pub/sub with wildcard support |
+| `src/event_bus.py` | Async pub/sub with wildcard support ([[specs/event-bus|spec]]) |
 | `src/plan_parser.py` | Plan file parsing (regex + LLM) |
-| `src/hooks.py` | Hook engine for automation |
-| `src/supervisor.py` | LLM-powered conversation interface (Supervisor) |
+| `src/hooks.py` | Hook engine for automation ([[specs/hooks|spec]]) |
+| `src/supervisor.py` | LLM-powered conversation interface ([[specs/supervisor|Supervisor]]) |
 | `src/prompt_builder.py` | 5-layer prompt assembly pipeline |
-| `src/rule_manager.py` | Active/passive rule system with hook generation |
+| `src/rule_manager.py` | Active/passive rule system with hook generation ([[specs/rule-system|spec]]) |
 | `src/reflection.py` | Post-action reflection engine |
 | `src/chat_observer.py` | Passive observation (ignore/memory/suggest) |
 | `src/memory.py` | Semantic search and context retrieval |
