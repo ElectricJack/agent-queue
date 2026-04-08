@@ -2,19 +2,15 @@
 tags: [spec, messaging, discord, bot]
 ---
 
-# Discord Integration Specification
+# Discord Bot Specification
 
 **Related:** [[base]], [[telegram]], [[supervisor]], [[command-handler]]
 
 ## 1. Overview
 
-Discord is one of the supported messaging platforms for Agent Queue, implementing the [[base|MessagingAdapter]] interface. All commands, status queries, and notifications flow through the shared abstraction layer. The integration has three distinct layers:
+> Shared pattern. See [[base]] for the common three-layer architecture, authorization model, message history, channel routing, thread creation, orchestrator callback wiring, notification types, and error classification. This document covers Discord-specific implementation.
 
-- **Bot Core** (`src/discord/bot.py`) — `AgentQueueBot`, a `discord.ext.commands.Bot` subclass. Owns channel routing, message history, authorization, and thread management.
-- **Slash Commands** (`src/discord/commands.py`) — All interactive commands registered on the application command tree. Thin wrappers that delegate business logic to the shared [[command-handler|CommandHandler]].
-- **Notification Formatters** (`src/discord/notifications.py`) — Pure functions that produce structured Discord message text for task lifecycle events.
-
-The bot uses `discord.Intents.default()` plus `message_content`. The command prefix `!` is registered but unused; all interaction happens through slash commands and @-mentions.
+Discord is one of the supported messaging platforms for Agent Queue, implementing the [[base|MessagingAdapter]] interface. The bot is built on the `discord.py` library (`discord.ext.commands.Bot` subclass) and uses `discord.Intents.default()` plus `message_content`. The command prefix `!` is registered but unused; all interaction happens through slash commands and @-mentions.
 
 ## Source Files
 - `src/discord/bot.py`
@@ -71,6 +67,8 @@ If `guild_id` is configured, commands are copied to the guild and synced immedia
 
 ### 2.4 Authorization
 
+> Shared pattern. See [[base]] Section 4 for the common authorization model. This section covers Discord-specific enforcement.
+
 Authorization is enforced at two levels:
 
 **Slash commands** — The `_auth_interaction_check` hook on `self.tree.interaction_check` runs before every interaction. Unauthorized users receive an ephemeral rejection and the command is not executed.
@@ -80,6 +78,8 @@ Authorization is enforced at two levels:
 The check itself (`_is_authorized`) reads `config.discord.authorized_users` (a list of user ID strings). If the list is empty, all users are permitted. Otherwise, `str(user_id)` must appear in the list.
 
 ### 2.5 Channel Management
+
+> Shared pattern. See [[base]] Section 6 for the common channel/chat routing model. This section covers Discord-specific channel resolution and caching.
 
 #### Per-project channels
 
@@ -165,6 +165,8 @@ On `AuthenticationError`, credentials are reloaded via `agent.reload_credentials
 
 ### 2.8 Message History
 
+> Shared pattern. See [[base]] Section 5 for the common message history pattern. This section covers Discord-specific fetching and compaction.
+
 `_build_message_history(channel, before)` fetches up to `MAX_HISTORY_MESSAGES = 50` messages from the channel history (oldest-first after reversing). It converts them to the LLM message format:
 
 - Bot messages → `{"role": "assistant", "content": msg.content}`
@@ -197,6 +199,8 @@ followed by a synthetic assistant acknowledgement `"Understood, I have the conve
 
 ### 2.10 Thread Creation
 
+> Shared pattern. See [[base]] Section 7 for the common thread/topic creation pattern and callback pair contract. This section covers Discord-specific thread creation.
+
 `_create_task_thread(thread_name, initial_message, project_id)` creates a Discord thread for streaming agent output. It:
 
 1. Resolves the target channel (project-specific or global).
@@ -217,6 +221,8 @@ followed by a synthetic assistant acknowledgement `"Understood, I have the conve
 - `len(text) > 6000`: a preview (first paragraph or first 300 chars) is sent with the full content attached as a file (`filename`, default `"response.md"`).
 
 ### 2.12 Orchestrator Callbacks
+
+> Shared pattern. See [[base]] Section 8 for the common callback wiring contract. This section covers Discord-specific wiring.
 
 The orchestrator receives two callbacks wired in `on_ready`:
 
@@ -963,128 +969,24 @@ If the rendered content exceeds 1950 chars, it re-renders with a tighter cap of 
 
 ---
 
-## 4. Notification Formats
+## 4. Notification Rendering
 
-All notification formatters are pure functions in `src/discord/notifications.py`. They return plain text strings (no embeds). They are called by the orchestrator and consumed by the `notify_callback`, which routes them to the appropriate channel.
+> Shared pattern. See [[base]] Sections 9–10 for the notification type catalog, interactive action buttons, and error classification table. This section covers Discord-specific rendering.
 
-### 4.1 Error Classification
+All notification formatters are pure functions in `src/discord/notifications.py`. They return **plain text strings** (not embeds). They are called by the orchestrator and consumed by the `notify_callback`, which routes them to the appropriate channel.
 
-`classify_error(error_message)` maps error messages to `(label, suggestion)` pairs by keyword matching on the lowercased error string. The first matching pattern wins.
+### 4.1 Discord Message Format
 
-| Keyword | Label | Suggestion |
-|---|---|---|
-| `"error_max_structured_output_retries"` | Structured-output failure | Simplify the task description or remove JSON-schema constraints. |
-| `"auth"` or `"authentication"` | Authentication error | Check that ANTHROPIC_API_KEY (or claude login) is valid and not expired. |
-| `"rate_limit"`, `"rate limit"`, or `"429"` | Rate-limit | The API rate limit was hit. The task will be retried automatically. |
-| `"quota"` | Token quota exhausted | Daily or session token quota exceeded. Wait for quota reset or increase limits. |
-| `"token"` | Token limit | The context window or token budget was exceeded. Break the task into smaller pieces. |
-| `"timeout"` | Timeout | The agent exceeded the stuck-timeout. Increase stuck_timeout_seconds or simplify the task. |
-| `"config"` | Configuration error | A config value is invalid. Check model name, allowed_tools, and MCP server settings. |
-| `"mcp"` | MCP server error | An MCP server failed. Verify MCP server configs in the task context. |
-| `"permission"` | Permission denied | The agent couldn't access a file or directory. Check workspace permissions. |
-| `"cancelled"` | Cancelled | The task was stopped manually. |
-| (no match) | Unexpected error | Check daemon logs (`~/.agent-queue/daemon.log`) for full details. |
-| (empty/None message) | Unknown error | Check daemon logs for details. |
-
-### 4.2 Notification Types
-
-#### `format_task_completed(task, agent, output)`
-
-Emitted when a task finishes successfully.
+Discord notifications use markdown-formatted plain text. The general structure is:
 
 ```
-**Task Completed:** `{task.id}` — {task.title}
+**{Event Type}:** `{task.id}` — {task.title}
 Project: `{task.project_id}` | Agent: {agent.name}
-Tokens used: {output.tokens_used:,}
-Summary: {output.summary}           [only if summary present]
-Files changed: {file1}, {file2}, …  [only if files_changed present]
+{event-specific details}
 ```
 
-#### `format_task_failed(task, agent, output)`
+Error notifications include the classified error label, a truncated error message (300 chars max with `…` appended), and a fix suggestion prefixed with the lightbulb emoji. A footer line directs users to `/agent-error {task.id}` for the full error log.
 
-Emitted when a task fails (before exhausting retries).
+Chain-stuck and stuck-defined-task notifications list dependent/blocking tasks as bulleted items (up to 10 or 5 respectively, with `"… and N more"` overflow) and include actionable `/skip-task` and `/restart-task` suggestions.
 
-```
-**Task Failed:** `{task.id}` — {task.title}
-Project: `{task.project_id}` | Agent: {agent.name} | Retry: {retry_count}/{max_retries}
-Error type: **{error_type_label}**
-```
-{error_message[:300]}…
-```
-💡 {fix_suggestion}
-_Use `/agent-error {task.id}` for the full error log._
-```
-
-The error message is truncated to 300 chars with `…` (unicode ellipsis) appended if longer.
-
-#### `format_task_blocked(task, last_error)`
-
-Emitted when a task exhausts its retry limit and enters BLOCKED state.
-
-```
-**Task Blocked:** `{task.id}` — {task.title}
-Project: `{task.project_id}` | Max retries ({max_retries}) exhausted. Manual intervention required.
-Last error type: **{error_type_label}**  [only if last_error present]
-💡 {fix_suggestion}                      [only if last_error present]
-_Use `/agent-error {task.id}` to inspect the last error._
-```
-
-#### `format_pr_created(task, pr_url)`
-
-Emitted when an agent creates a GitHub pull request and the task moves to AWAITING_APPROVAL.
-
-```
-**PR Created:** `{task.id}` — {task.title}
-Project: `{task.project_id}`
-Review and merge to complete: {pr_url}
-Status: AWAITING_APPROVAL
-```
-
-#### `format_agent_question(task, agent, question)`
-
-Emitted when an agent enters WAITING_INPUT state with a question requiring human input.
-
-```
-**Agent Question:** `{task.id}` — {task.title}
-Project: `{task.project_id}` | Agent: {agent.name}
-> {question[:500]}
-```
-
-The question is truncated to 500 chars.
-
-#### `format_chain_stuck(blocked_task, stuck_tasks)`
-
-Emitted when a blocked task has downstream dependents that are now permanently stuck.
-
-```
-⛓️ **Dependency Chain Stuck:** `{blocked_task.id}` — {blocked_task.title} is BLOCKED
-Project: `{blocked_task.project_id}` | {N} downstream task(s) are now permanently stuck:
-  • `{id}` — {title} (status: {status})
-  …                                         [up to 10 tasks; then "… and N more"]
-_Use `/skip-task {blocked_task.id}` to skip the blocked task and unblock the chain, or `/restart-task {blocked_task.id}` to retry it._
-```
-
-#### `format_stuck_defined_task(task, blocking_deps, stuck_hours)`
-
-Emitted by the orchestrator's stuck-task monitor when a DEFINED task has not been promoted to READY for an extended period.
-
-```
-⏳ **Stuck Task:** `{task.id}` — {task.title}
-Project: `{task.project_id}` | Has been DEFINED for **{stuck_hours:.1f} hours** without promotion to READY.
-Blocked by:
-  • `{dep_id}` — {dep_title} (status: {dep_status})
-  …                                         [up to 5 deps; then "… and N more"]
-_Use `/skip-task <blocking-task-id>` to skip a blocker, or `/restart-task <blocking-task-id>` to retry it._
-```
-
-If no unmet dependencies are found, the blocking section is replaced with: `_No unmet dependencies found — this may be a bug in promotion logic._`
-
-#### `format_budget_warning(project_name, usage, limit)`
-
-Emitted when a project's token usage crosses a warning threshold.
-
-```
-**Budget Warning:** Project **{project_name}** at {pct:.0f}% ({usage:,} / {limit:,} tokens)
-```
-
-`pct` is `usage / limit * 100`. If `limit` is zero, `pct` is reported as 0.
+Budget warnings show the project name, percentage, and token counts formatted with thousands separators.
