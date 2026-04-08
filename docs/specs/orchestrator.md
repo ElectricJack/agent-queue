@@ -458,7 +458,7 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see [[prompt-builder]]).
+Task execution context is assembled using `PromptBuilder` (see [[specs/prompt-builder]]).
 The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
 to compose system metadata, execution rules, upstream dependency summaries, agent role
 instructions, and the task description into a single prompt string.
@@ -587,7 +587,7 @@ Executed in a `finally` block so it runs regardless of success or failure:
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See [[git]] §10 for the full design principles reference.
+See [[specs/git]] §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -601,7 +601,7 @@ See [[git]] §10 for the full design principles reference.
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-[[git]] §11 for the full gap catalogue.
+[[specs/git]] §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|
@@ -842,7 +842,7 @@ After a task completes, the orchestrator delegates plan discovery to the Supervi
 via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
 parse, and store plan files, then returns whether a plan was found. If found, the
 task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
-human approves the plan via the `approve_plan` command (see [[command-handler]]).
+human approves the plan via the `approve_plan` command (see [[specs/command-handler]]).
 
 ### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
 
@@ -1201,4 +1201,4 @@ During `initialize()`, after hook engine setup:
 > after the Supervisor is available (the supervisor is needed for rule prompt expansion).
 
 The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
-for rule CRUD operations. See [[rule-system]] for the full Rule System spec.
+for rule CRUD operations. See [[specs/rule-system]] for the full Rule System spec.

@@ -4,7 +4,7 @@ tags: [spec, reflection, self-improvement]
 
 # Reflection Engine Specification
 
-The ReflectionEngine manages the [[supervisor|Supervisor]]'s action-reflect cycle.
+The ReflectionEngine manages the [[specs/supervisor|Supervisor]]'s action-reflect cycle.
 
 > **Future evolution:** Reflection becomes a [[design/playbooks|playbook]]-driven process. See [[design/vault-and-memory]] Section 11 for the self-improvement loop.
 

@@ -4,7 +4,7 @@ tags: [spec, chat-providers, logged, llm, observability]
 
 # LoggedChatProvider — Specification
 
-Wraps any [[base|ChatProvider]] implementation. See also: [[llm-logging]].
+Wraps any [[chat-providers/base|ChatProvider]] implementation. See also: [[specs/llm-logging]].
 
 Defined in `src/chat_providers/logged.py`. Class: `LoggedChatProvider`.
 

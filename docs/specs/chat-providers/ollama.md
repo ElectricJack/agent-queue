@@ -4,7 +4,7 @@ tags: [spec, chat-providers, ollama, llm]
 
 # Ollama Provider — Specification
 
-Implements [[base|ChatProvider]] interface.
+Implements [[chat-providers/base|ChatProvider]] interface.
 
 Defined in `src/chat_providers/ollama.py`. Class: `OllamaChatProvider`.
 

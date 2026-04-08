@@ -4,7 +4,7 @@ tags: [spec, chat-providers, gemini, llm]
 
 # Gemini Provider — Specification
 
-Implements [[base|ChatProvider]] interface.
+Implements [[chat-providers/base|ChatProvider]] interface.
 
 Defined in `src/chat_providers/gemini.py`. Class: `GeminiChatProvider`.
 

@@ -4,15 +4,15 @@ tags: [spec, chat-providers, base, llm]
 
 # Chat Providers — Base Specification
 
-See also: [[anthropic]], [[ollama]], [[gemini]], [[logged]], [[supervisor]]
+See also: [[chat-providers/anthropic]], [[chat-providers/ollama]], [[chat-providers/gemini]], [[chat-providers/logged]], [[specs/supervisor]]
 
 ## 1. Overview
 
-The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by the [[supervisor]] (`src/supervisor.py`) to drive the conversational interface.
+The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by the [[specs/supervisor]] (`src/supervisor.py`) to drive the conversational interface.
 
 The abstraction serves two purposes:
 
-1. Allow the [[supervisor]] to call a single `create_message` method regardless of which backend is configured, receiving a normalized response object it can inspect without knowing provider-specific details.
+1. Allow the [[specs/supervisor]] to call a single `create_message` method regardless of which backend is configured, receiving a normalized response object it can inspect without knowing provider-specific details.
 2. Keep provider-specific credential detection, format conversion, and SDK calls isolated from the rest of the codebase.
 
 The package contains eight modules:
@@ -154,7 +154,7 @@ Accepts a `ChatProviderConfig` dataclass (from `src/config.py`) and returns an i
 
 3. For any other `config.provider` value (including the default, `"anthropic"`), construct an `AnthropicChatProvider`. If `provider.is_configured` is `False` (no credentials were found during `__init__`), return `None`.
 
-`create_chat_provider` returning `None` signals to the [[supervisor]] that no LLM-backed chat interface is available; it must handle this gracefully.
+`create_chat_provider` returning `None` signals to the [[specs/supervisor]] that no LLM-backed chat interface is available; it must handle this gracefully.
 
 **Public exports from `__init__.py`:**
 

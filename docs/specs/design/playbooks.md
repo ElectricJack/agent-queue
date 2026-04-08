@@ -8,7 +8,7 @@ tags: [design, playbooks, automation, workflows]
 **Supersedes:** `rule-system.md`, `hooks.md` (planned migration)
 **Source files:** TBD
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[vault-and-memory]], [[agent-coordination]], [[event-bus]], [[supervisor]], [[plugin-system]]
+**Related:** [[vault-and-memory]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
 
 ---
 

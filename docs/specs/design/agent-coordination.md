@@ -6,7 +6,7 @@ tags: [design, coordination, multi-agent, workflows]
 
 **Status:** Draft
 **Principles:** [[guiding-design-principles]] (#2 visible and editable, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[playbooks]], [[vault-and-memory]], [[scheduler-and-budget]], [[models-and-state-machine]], [[orchestrator]]
+**Related:** [[playbooks]], [[vault-and-memory]], [[specs/scheduler-and-budget]], [[specs/models-and-state-machine]], [[specs/orchestrator]]
 
 ---
 

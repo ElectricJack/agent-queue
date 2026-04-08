@@ -5,8 +5,8 @@ tags: [spec, hooks, automation, deprecated]
 # Hook Engine Specification
 
 **Source files:** `src/hooks.py`, `src/file_watcher.py`
-**Related models:** [[models]] (`Hook`, `HookRun`)
-**Related config:** [[config]] (`HookEngineConfig`, `ChatProviderConfig`)
+**Related models:** [[specs/models-and-state-machine]] (`Hook`, `HookRun`)
+**Related config:** [[specs/config]] (`HookEngineConfig`, `ChatProviderConfig`)
 
 ---
 

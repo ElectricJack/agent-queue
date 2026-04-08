@@ -8,7 +8,7 @@ tags: [spec, logging, llm, observability]
 - `src/llm_logger.py`
 - `src/chat_providers/logged.py`
 
-**Related config:** `LLMLoggingConfig` in `src/config.py` (see [[config]])
+**Related config:** `LLMLoggingConfig` in `src/config.py` (see [[specs/config]])
 **Related models:** `ChatProvider` in `src/chat_providers/base.py` (see [[chat-providers/base|Chat Providers]])
 
 ## 1. Overview

@@ -5,7 +5,7 @@ tags: [spec, messaging, base, interface]
 # Messaging Abstraction
 
 **Source files:** `src/messaging/base.py`, `src/messaging/port.py`, `src/messaging/factory.py`
-**Related:** [[discord]], [[telegram]], [[supervisor]], [[command-handler]]
+**Related:** [[messaging/discord]], [[messaging/telegram]], [[specs/supervisor]], [[specs/command-handler]]
 
 ## 1. Overview
 

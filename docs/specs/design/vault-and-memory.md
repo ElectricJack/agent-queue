@@ -6,7 +6,7 @@ tags: [design, vault, memory, obsidian, plugins]
 
 **Status:** Draft
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #6 specificity wins, #8 components own dependencies)
-**Related:** [[playbooks]], [[agent-coordination]], [[agent-profiles]], [[memory-consolidation]], [[plugin-system]]
+**Related:** [[playbooks]], [[agent-coordination]], [[specs/agent-profiles]], [[specs/memory-consolidation]], [[specs/plugin-system]]
 
 ---
 

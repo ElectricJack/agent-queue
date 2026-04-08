@@ -5,15 +5,15 @@ tags: [spec, messaging, telegram, bot]
 # Telegram Bot Specification
 
 **Source files:** `src/telegram/bot.py`, `src/telegram/adapter.py`, `src/telegram/commands.py`, `src/telegram/views.py`, `src/telegram/notifications.py`
-**Related:** [[base]], [[discord]], [[supervisor]], [[command-handler]]
+**Related:** [[messaging/base]], [[messaging/discord]], [[specs/supervisor]], [[specs/command-handler]]
 
 > **Future evolution:** See [[design/agent-coordination]] for how messaging platforms surface workflow status and human-in-the-loop prompts.
 
 ## 1. Overview
 
-> Shared pattern. See [[base]] for the common three-layer architecture, authorization model, message history, channel routing, thread creation, orchestrator callback wiring, notification types, and error classification. This document covers Telegram-specific implementation.
+> Shared pattern. See [[messaging/base]] for the common three-layer architecture, authorization model, message history, channel routing, thread creation, orchestrator callback wiring, notification types, and error classification. This document covers Telegram-specific implementation.
 
-The Telegram bot provides a chat interface to Agent Queue via the `python-telegram-bot` library (async, long polling). It implements the [[base|MessagingAdapter]] interface, providing feature parity with the [[discord|Discord bot]] through the shared [[command-handler|CommandHandler]] and [[supervisor|Supervisor]].
+The Telegram bot provides a chat interface to Agent Queue via the `python-telegram-bot` library (async, long polling). It implements the [[messaging/base|MessagingAdapter]] interface, providing feature parity with the [[messaging/discord|Discord bot]] through the shared [[specs/command-handler|CommandHandler]] and [[specs/supervisor|Supervisor]].
 
 Key library-level differences from the Discord implementation:
 
@@ -110,7 +110,7 @@ After constructing instance state, the constructor:
 
 ### 3.5 Authorization
 
-> Shared pattern. See [[base]] Section 4 for the common authorization model. This section covers Telegram-specific enforcement.
+> Shared pattern. See [[messaging/base]] Section 4 for the common authorization model. This section covers Telegram-specific enforcement.
 
 `_is_authorized(user_id)` reads `config.telegram.authorized_users` (a list of user ID strings). If the list is empty, all users are permitted. Otherwise, `str(user_id)` must appear in the list.
 
@@ -122,7 +122,7 @@ Commands do not have a separate auth guard (unlike Discord's `interaction_check`
 
 ### 3.6 Chat Routing
 
-> Shared pattern. See [[base]] Section 6 for the common channel/chat routing model. This section covers Telegram-specific resolution.
+> Shared pattern. See [[messaging/base]] Section 6 for the common channel/chat routing model. This section covers Telegram-specific resolution.
 
 #### `_resolve_project_chats()`
 
@@ -142,7 +142,7 @@ Called after project deletion. Removes entries from both `_project_chats` and `_
 
 ### 3.7 Message Handling
 
-> Shared pattern. See [[base]] Section 5 for the common message history pattern. This section covers Telegram-specific buffering and processing.
+> Shared pattern. See [[messaging/base]] Section 5 for the common message history pattern. This section covers Telegram-specific buffering and processing.
 
 #### Incoming message flow
 
@@ -207,7 +207,7 @@ For Supervisor responses (which may contain arbitrary LLM output). Splits the te
 
 ### 3.9 Thread / Topic Model
 
-> Shared pattern. See [[base]] Section 7 for the common thread/topic creation pattern and callback pair contract. This section covers Telegram-specific topic and reply-chain creation.
+> Shared pattern. See [[messaging/base]] Section 7 for the common thread/topic creation pattern and callback pair contract. This section covers Telegram-specific topic and reply-chain creation.
 
 `create_task_topic(thread_name, initial_message, project_id, task_id)` creates a task-scoped conversation space for streaming agent output.
 
@@ -239,7 +239,7 @@ When topics are disabled or unavailable:
 
 **`_make_reply_callbacks(chat_id, root_message_id)`** — `send_to_thread` replies to the root message via `reply_to_message_id`. `notify_main_channel` also replies to the root message, with a fallback to a plain send if the reply fails.
 
-Both callback implementations log errors but do not raise, matching the contract described in [[base]] Section 7.
+Both callback implementations log errors but do not raise, matching the contract described in [[messaging/base]] Section 7.
 
 ### 3.10 Notification Sending
 

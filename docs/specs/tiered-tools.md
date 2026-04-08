@@ -9,7 +9,7 @@ tags: [spec, tools, context-management]
 Reduce the LLM's per-interaction context by presenting only ~11 core tools by default.
 All other tools are organized into 6 named categories that can be loaded on demand.
 This affects only which tool **definitions** the LLM sees -- the execution path through
-[[command-handler|CommandHandler]] is unchanged.
+[[specs/command-handler|CommandHandler]] is unchanged.
 
 ## Concepts
 
@@ -89,8 +89,8 @@ The tool schemas themselves are NOT in this response -- they are injected into t
 ## Source Files
 
 - `src/tool_registry.py` -- ToolRegistry class, category metadata, all tool definitions
-- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias (see [[supervisor]])
-- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs (see [[command-handler]])
+- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias (see [[specs/supervisor]])
+- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs (see [[specs/command-handler]])
 
 ## Core Tool List
 

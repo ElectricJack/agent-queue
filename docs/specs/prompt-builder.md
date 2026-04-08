@@ -6,7 +6,7 @@ tags: [spec, prompts, context]
 
 ## Purpose
 
-Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[adapters]], chat agent, [[hooks]], and agent_prompting.
+Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[specs/adapters/claude]], chat agent, [[specs/hooks]], and agent_prompting.
 
 ## Concepts
 
@@ -15,9 +15,9 @@ Single entry point for all prompt assembly in the system. Replaces scattered str
 Every prompt is assembled from up to 5 ordered layers:
 
 1. **Identity** — Who is the LLM acting as? Loaded from a prompt template file in `src/prompts/`.
-   - `supervisor` — the Discord-facing [[supervisor|Supervisor]] (from `chat_agent_system.md`)
+   - `supervisor` — the Discord-facing [[specs/supervisor|Supervisor]] (from `chat_agent_system.md`)
    - `task-agent` — a Claude Code agent executing a task
-   - `hook-executor` — the [[supervisor|Supervisor]] reasoning about a hook result (from `hook_context.md`)
+   - `hook-executor` — the [[specs/supervisor|Supervisor]] reasoning about a hook result (from `hook_context.md`)
 
 2. **Project Context** — What project is this for? Pulled from the memory system:
    - Project profile (from `profile.md`)

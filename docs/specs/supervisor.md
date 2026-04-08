@@ -13,8 +13,8 @@ It replaces the former `ChatAgent` class. All LLM reasoning flows through it.
 
 ### Constructor
 - `Supervisor(orchestrator, config, llm_logger=None)`
-- Creates a [[command-handler|CommandHandler]] for tool execution
-- Creates a [[reflection|ReflectionEngine]] from `config.supervisor.reflection`
+- Creates a [[specs/command-handler|CommandHandler]] for tool execution
+- Creates a [[specs/reflection|ReflectionEngine]] from `config.supervisor.reflection`
 
 ### Methods
 
@@ -42,7 +42,7 @@ multi-turn tool-use loop. The loop is structured around the LLM calling
 a `reply_to_user` tool to deliver its final response — if the LLM stops
 without calling it, a nudge mechanism (up to 2 nudges) prompts it to
 use the tool. If tools were used prior to `reply_to_user`, triggers a
-reflection pass. Starts with core tools only; expands via `load_tools` (see [[tiered-tools]]).
+reflection pass. Starts with core tools only; expands via `load_tools` (see [[specs/tiered-tools]]).
 
 When reflection returns a verdict that did not pass, the supervisor
 recursively calls `chat()` with a retry prompt (self-correction loop).
@@ -143,7 +143,7 @@ context windows, isolated workspaces, and comprehensive tool suites.
 ### System Prompt Architecture
 
 The system prompt (`src/prompts/supervisor_system.md`) is assembled dynamically
-by `_build_system_prompt()` using [[prompt-builder|PromptBuilder]]. It combines the static prompt
+by `_build_system_prompt()` using [[specs/prompt-builder|PromptBuilder]]. It combines the static prompt
 template with runtime context injected at each conversation turn.
 
 **Tool Name Index** (`ToolRegistry.get_tool_index()`)

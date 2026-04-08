@@ -46,13 +46,13 @@ No flags, no subcommands, no `argparse` — the path is read directly from `sys.
 
 The `run(config_path: str) -> bool` coroutine performs startup in the following strict order:
 
-1. **Load configuration** — Call `load_config(config_path)` (see [[config]]). This returns a fully-populated config dataclass with all `${ENV_VAR}` substitutions resolved.
+1. **Load configuration** — Call `load_config(config_path)` (see [[specs/config]]). This returns a fully-populated config dataclass with all `${ENV_VAR}` substitutions resolved.
 
 2. **Ensure database directory exists** — Call `os.makedirs(os.path.dirname(config.database_path), exist_ok=True)`. This guarantees the SQLite file can be created without a missing-directory error.
 
 3. **Create adapter factory** — Instantiate `AdapterFactory()`. This is the registry/factory used by the orchestrator to construct agent adapters (e.g. Claude Code).
 
-4. **Create and initialize orchestrator** — Instantiate `Orchestrator` (see [[orchestrator]]) with `(config, adapter_factory=adapter_factory)`, then `await orch.initialize()`. The `initialize()` call opens the database connection, runs migrations, and prepares internal state.
+4. **Create and initialize orchestrator** — Instantiate `Orchestrator` (see [[specs/orchestrator]]) with `(config, adapter_factory=adapter_factory)`, then `await orch.initialize()`. The `initialize()` call opens the database connection, runs migrations, and prepares internal state.
 
 5. **Create Discord bot** — Instantiate `AgentQueueBot(config, orch)` (see [[messaging/discord|Discord Integration]]). The bot holds a reference to the orchestrator so that Discord commands can invoke orchestrator operations directly.
 

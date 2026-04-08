@@ -5,8 +5,8 @@ tags: [spec, chat, observer, discord]
 # Chat Observer Specification
 
 The ChatObserver replaces the ChatAnalyzer with integrated observation
-in the [[supervisor|Supervisor]]. It processes project channel messages through a two-stage
-pipeline: deterministic filtering (Stage 1) followed by [[supervisor|Supervisor]] LLM
+in the [[specs/supervisor|Supervisor]]. It processes project channel messages through a two-stage
+pipeline: deterministic filtering (Stage 1) followed by [[specs/supervisor|Supervisor]] LLM
 evaluation (Stage 2).
 
 ## Class: ChatObserver (src/chat_observer.py)

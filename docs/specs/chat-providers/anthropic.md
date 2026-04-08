@@ -4,7 +4,7 @@ tags: [spec, chat-providers, anthropic, llm]
 
 # Anthropic Provider — Specification
 
-Implements [[base|ChatProvider]] interface. See also: [[supervisor]].
+Implements [[chat-providers/base|ChatProvider]] interface. See also: [[specs/supervisor]].
 
 Defined in `src/chat_providers/anthropic.py`. Class: `AnthropicChatProvider`.
 

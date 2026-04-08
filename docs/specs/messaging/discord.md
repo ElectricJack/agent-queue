@@ -4,13 +4,13 @@ tags: [spec, messaging, discord, bot]
 
 # Discord Bot Specification
 
-**Related:** [[base]], [[telegram]], [[supervisor]], [[command-handler]]
+**Related:** [[messaging/base]], [[messaging/telegram]], [[specs/supervisor]], [[specs/command-handler]]
 
 ## 1. Overview
 
-> Shared pattern. See [[base]] for the common three-layer architecture, authorization model, message history, channel routing, thread creation, orchestrator callback wiring, notification types, and error classification. This document covers Discord-specific implementation.
+> Shared pattern. See [[messaging/base]] for the common three-layer architecture, authorization model, message history, channel routing, thread creation, orchestrator callback wiring, notification types, and error classification. This document covers Discord-specific implementation.
 
-Discord is one of the supported messaging platforms for Agent Queue, implementing the [[base|MessagingAdapter]] interface. The bot is built on the `discord.py` library (`discord.ext.commands.Bot` subclass) and uses `discord.Intents.default()` plus `message_content`. The command prefix `!` is registered but unused; all interaction happens through slash commands and @-mentions.
+Discord is one of the supported messaging platforms for Agent Queue, implementing the [[messaging/base|MessagingAdapter]] interface. The bot is built on the `discord.py` library (`discord.ext.commands.Bot` subclass) and uses `discord.Intents.default()` plus `message_content`. The command prefix `!` is registered but unused; all interaction happens through slash commands and @-mentions.
 
 ## Source Files
 - `src/discord/bot.py`
@@ -23,7 +23,7 @@ Discord is one of the supported messaging platforms for Agent Queue, implementin
 
 ### 2.1 Initialization
 
-`AgentQueueBot.__init__` receives `AppConfig` and [[orchestrator|Orchestrator]]. It constructs a `ChatAgent` (the LLM interface) and wires the `_on_project_deleted` callback from the command handler to `self.clear_project_channels`, so that any caller that deletes a project (not just Discord commands) automatically clears the bot's in-memory channel caches.
+`AgentQueueBot.__init__` receives `AppConfig` and [[specs/orchestrator|Orchestrator]]. It constructs a `ChatAgent` (the LLM interface) and wires the `_on_project_deleted` callback from the command handler to `self.clear_project_channels`, so that any caller that deletes a project (not just Discord commands) automatically clears the bot's in-memory channel caches.
 
 Key instance state initialized at construction:
 
@@ -67,7 +67,7 @@ If `guild_id` is configured, commands are copied to the guild and synced immedia
 
 ### 2.4 Authorization
 
-> Shared pattern. See [[base]] Section 4 for the common authorization model. This section covers Discord-specific enforcement.
+> Shared pattern. See [[messaging/base]] Section 4 for the common authorization model. This section covers Discord-specific enforcement.
 
 Authorization is enforced at two levels:
 
@@ -79,7 +79,7 @@ The check itself (`_is_authorized`) reads `config.discord.authorized_users` (a l
 
 ### 2.5 Channel Management
 
-> Shared pattern. See [[base]] Section 6 for the common channel/chat routing model. This section covers Discord-specific channel resolution and caching.
+> Shared pattern. See [[messaging/base]] Section 6 for the common channel/chat routing model. This section covers Discord-specific channel resolution and caching.
 
 #### Per-project channels
 
@@ -165,7 +165,7 @@ On `AuthenticationError`, credentials are reloaded via `agent.reload_credentials
 
 ### 2.8 Message History
 
-> Shared pattern. See [[base]] Section 5 for the common message history pattern. This section covers Discord-specific fetching and compaction.
+> Shared pattern. See [[messaging/base]] Section 5 for the common message history pattern. This section covers Discord-specific fetching and compaction.
 
 `_build_message_history(channel, before)` fetches up to `MAX_HISTORY_MESSAGES = 50` messages from the channel history (oldest-first after reversing). It converts them to the LLM message format:
 
@@ -199,7 +199,7 @@ followed by a synthetic assistant acknowledgement `"Understood, I have the conve
 
 ### 2.10 Thread Creation
 
-> Shared pattern. See [[base]] Section 7 for the common thread/topic creation pattern and callback pair contract. This section covers Discord-specific thread creation.
+> Shared pattern. See [[messaging/base]] Section 7 for the common thread/topic creation pattern and callback pair contract. This section covers Discord-specific thread creation.
 
 `_create_task_thread(thread_name, initial_message, project_id)` creates a Discord thread for streaming agent output. It:
 
@@ -222,7 +222,7 @@ followed by a synthetic assistant acknowledgement `"Understood, I have the conve
 
 ### 2.12 Orchestrator Callbacks
 
-> Shared pattern. See [[base]] Section 8 for the common callback wiring contract. This section covers Discord-specific wiring.
+> Shared pattern. See [[messaging/base]] Section 8 for the common callback wiring contract. This section covers Discord-specific wiring.
 
 The orchestrator receives two callbacks wired in `on_ready`:
 
@@ -233,7 +233,7 @@ The orchestrator receives two callbacks wired in `on_ready`:
 
 ## 3. Slash Commands
 
-All slash commands are registered in `setup_commands(bot)` inside `src/discord/commands.py`. Every command delegates its business logic to `bot.agent.handler` (the shared [[command-handler|CommandHandler]]). Commands are thin formatting wrappers; they handle Discord-specific concerns (embeds, file uploads, deferral, ephemeral responses) but contain no business logic themselves.
+All slash commands are registered in `setup_commands(bot)` inside `src/discord/commands.py`. Every command delegates its business logic to `bot.agent.handler` (the shared [[specs/command-handler|CommandHandler]]). Commands are thin formatting wrappers; they handle Discord-specific concerns (embeds, file uploads, deferral, ephemeral responses) but contain no business logic themselves.
 
 ### Channel-to-project resolution
 
@@ -971,7 +971,7 @@ If the rendered content exceeds 1950 chars, it re-renders with a tighter cap of 
 
 ## 4. Notification Rendering
 
-> Shared pattern. See [[base]] Sections 9–10 for the notification type catalog, interactive action buttons, and error classification table. This section covers Discord-specific rendering.
+> Shared pattern. See [[messaging/base]] Sections 9–10 for the notification type catalog, interactive action buttons, and error classification table. This section covers Discord-specific rendering.
 
 All notification formatters are pure functions in `src/discord/notifications.py`. They return **plain text strings** (not embeds). They are called by the orchestrator and consumed by the `notify_callback`, which routes them to the appropriate channel.
 

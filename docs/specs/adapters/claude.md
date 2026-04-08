@@ -6,7 +6,7 @@ tags: [spec, adapters, claude-code]
 
 ## 1. Overview
 
-The adapter subsystem provides a pluggable interface between the [[orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`AgentAdapter`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
+The adapter subsystem provides a pluggable interface between the [[specs/orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`AgentAdapter`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
 
 Currently one concrete implementation exists: `ClaudeAdapter`, which runs Claude Code via the `claude_agent_sdk` Python package. The `AdapterFactory` class handles instantiation by agent-type string.
 

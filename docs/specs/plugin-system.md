@@ -5,7 +5,7 @@ tags: [spec, plugins, extensibility]
 # Plugin System Specification
 
 **Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
-**Related specs:** [[hooks]], [[rule-system]], [[command-handler]], [[tiered-tools]]
+**Related specs:** [[specs/hooks]], [[specs/rule-system]], [[specs/command-handler]], [[specs/tiered-tools]]
 
 ---
 
