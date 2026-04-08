@@ -2734,7 +2734,13 @@ class Orchestrator:
                 try:
                     if await self.git.ahas_uncommitted_changes(workspace):
                         current = await self.git.aget_current_branch(workspace)
-                        await self._auto_remediate_uncommitted(workspace, task.id, current)
+                        await self._auto_remediate_uncommitted(
+                            workspace,
+                            task.id,
+                            current,
+                            project_id=task.project_id,
+                            agent_id=ctx.agent.id,
+                        )
                 except Exception as e:
                     logger.warning(
                         "Task %s: auto-remediation during skip failed: %s",
@@ -2783,7 +2789,11 @@ class Orchestrator:
         # very retry loops we're trying to prevent.
         if has_uncommitted:
             has_uncommitted = await self._auto_remediate_uncommitted(
-                workspace, task.id, current_branch
+                workspace,
+                task.id,
+                current_branch,
+                project_id=task.project_id,
+                agent_id=ctx.agent.id,
             )
 
         # ── Auto-remediate: merge to default branch ────────────────────
@@ -2812,7 +2822,11 @@ class Orchestrator:
                 has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
                 if has_uncommitted:
                     has_uncommitted = await self._auto_remediate_uncommitted(
-                        workspace, task.id, current_branch
+                        workspace,
+                        task.id,
+                        current_branch,
+                        project_id=task.project_id,
+                        agent_id=ctx.agent.id,
                     )
             except Exception as e:
                 logger.warning(
@@ -2838,7 +2852,11 @@ class Orchestrator:
                     has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
                     if has_uncommitted:
                         has_uncommitted = await self._auto_remediate_uncommitted(
-                            workspace, task.id, current_branch
+                            workspace,
+                            task.id,
+                            current_branch,
+                            project_id=task.project_id,
+                            agent_id=ctx.agent.id,
                         )
                 except Exception:
                     pass
@@ -2896,7 +2914,11 @@ class Orchestrator:
                     has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
                     if has_uncommitted:
                         has_uncommitted = await self._auto_remediate_uncommitted(
-                            workspace, task.id, current_branch
+                            workspace,
+                            task.id,
+                            current_branch,
+                            project_id=task.project_id,
+                            agent_id=ctx.agent.id,
                         )
                 except Exception:
                     pass
@@ -2942,7 +2964,11 @@ class Orchestrator:
             if has_uncommitted:
                 current_branch = await self.git.aget_current_branch(workspace)
                 has_uncommitted = await self._auto_remediate_uncommitted(
-                    workspace, task.id, current_branch
+                    workspace,
+                    task.id,
+                    current_branch,
+                    project_id=task.project_id,
+                    agent_id=ctx.agent.id,
                 )
         except Exception:
             pass
@@ -3103,11 +3129,17 @@ class Orchestrator:
         workspace: str,
         task_id: str,
         current_branch: str,
+        *,
+        project_id: str | None = None,
+        agent_id: str | None = None,
     ) -> bool:
         """Try to commit uncommitted changes using a robust fallback cascade.
 
         Returns True if uncommitted changes still remain after all attempts,
         False if the workspace is now clean.
+
+        When *project_id* and/or *agent_id* are given, a ``git.commit`` event
+        is emitted on the orchestrator's event bus after a successful commit.
 
         Fallback cascade:
         0. Abort any in-progress git operations (merge/rebase/cherry-pick)
@@ -3138,6 +3170,9 @@ class Orchestrator:
                 f"auto-commit: uncommitted changes from task {task_id}",
                 exclude_plans=False,
                 no_verify=True,
+                event_bus=self.bus,
+                project_id=project_id,
+                agent_id=agent_id,
             )
             if committed:
                 logger.info(
@@ -3289,6 +3324,9 @@ class Orchestrator:
         workspace: str | None,
         default_branch: str,
         task_id: str,
+        *,
+        project_id: str | None = None,
+        agent_id: str | None = None,
     ) -> None:
         """Ensure the workspace is clean and on the default branch.
 
@@ -3337,6 +3375,9 @@ class Orchestrator:
                         f"auto-commit: workspace cleanup after task {task_id}",
                         exclude_plans=False,
                         no_verify=True,
+                        event_bus=self.bus,
+                        project_id=project_id,
+                        agent_id=agent_id,
                     )
                     logger.info(
                         "Task %s: auto-committed changes during workspace cleanup",
@@ -3447,6 +3488,9 @@ class Orchestrator:
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
                     exclude_plans=False,
                     no_verify=True,
+                    event_bus=self.bus,
+                    project_id=ctx.task.project_id,
+                    agent_id=ctx.agent.id,
                 )
         else:
             reason = (
@@ -3486,6 +3530,9 @@ class Orchestrator:
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
                     exclude_plans=False,
                     no_verify=True,
+                    event_bus=self.bus,
+                    project_id=ctx.task.project_id,
+                    agent_id=ctx.agent.id,
                 )
             ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
@@ -5120,6 +5167,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     ctx.workspace_path,
                     ctx.default_branch,
                     task.id,
+                    project_id=task.project_id,
+                    agent_id=ctx.agent.id,
                 )
             else:
                 # Pipeline stopped and could not reopen — last-ditch attempt
@@ -5132,7 +5181,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         if has_dirty:
                             cur = await self.git.aget_current_branch(ctx.workspace_path)
                             still_dirty = await self._auto_remediate_uncommitted(
-                                ctx.workspace_path, task.id, cur
+                                ctx.workspace_path,
+                                task.id,
+                                cur,
+                                project_id=task.project_id,
+                                agent_id=ctx.agent.id,
                             )
                             if not still_dirty:
                                 logger.info(
@@ -5165,6 +5218,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     ctx.workspace_path,
                     ctx.default_branch,
                     task.id,
+                    project_id=task.project_id,
+                    agent_id=ctx.agent.id,
                 )
 
             # Ensure workspace is clean for the next task.  The
@@ -5178,6 +5233,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     ctx.workspace_path,
                     ctx.default_branch,
                     task.id,
+                    project_id=task.project_id,
+                    agent_id=ctx.agent.id,
                 )
 
             # Re-check DEFINED tasks so newly created subtasks get promoted
@@ -5321,6 +5378,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         workspace,
                         fail_default_branch,
                         task.id,
+                        project_id=task.project_id,
+                        agent_id=task.assigned_agent_id,
                     )
                 except Exception as e:
                     logger.warning(
@@ -5374,6 +5433,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         workspace,
                         pause_default_branch,
                         task.id,
+                        project_id=task.project_id,
+                        agent_id=task.assigned_agent_id,
                     )
                 except Exception as e:
                     logger.warning(

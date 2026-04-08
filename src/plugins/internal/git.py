@@ -733,8 +733,15 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         project_id = args.get("project_id", "")
+        agent_id = args.get("agent_id")
         try:
-            committed = await self._git.acommit_all(checkout_path, message)
+            committed = await self._git.acommit_all(
+                checkout_path,
+                message,
+                event_bus=self._ctx._bus,
+                project_id=project_id or None,
+                agent_id=agent_id,
+            )
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -985,7 +992,13 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         try:
-            committed = await self._git.acommit_all(checkout_path, message)
+            committed = await self._git.acommit_all(
+                checkout_path,
+                message,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id") or None,
+                agent_id=args.get("agent_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -1122,7 +1135,13 @@ class GitPlugin(InternalPlugin):
 
         git = self._git
         try:
-            committed = await git.acommit_all(checkout_path, "Add generated README.md")
+            committed = await git.acommit_all(
+                checkout_path,
+                "Add generated README.md",
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id") or None,
+                agent_id=args.get("agent_id"),
+            )
         except GitError as e:
             return {"error": f"Failed to commit README.md: {e}"}
 

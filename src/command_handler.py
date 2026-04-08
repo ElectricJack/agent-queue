@@ -3623,6 +3623,9 @@ class CommandHandler:
                         await self.orchestrator.git.acommit_all(
                             ws_path,
                             f"chore: delete plan files after approval\n\nTask-Id: {task.id}",
+                            event_bus=self.orchestrator.bus,
+                            project_id=task.project_id,
+                            agent_id=task.assigned_agent_id,
                         )
                         logger.info(
                             "Plan cleanup: committed plan file deletion in %s for task %s",

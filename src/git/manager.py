@@ -65,9 +65,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.event_bus import EventBus
+
+logger = logging.getLogger(__name__)
 
 
 class GitError(Exception):
@@ -1462,6 +1469,9 @@ class GitManager:
         *,
         exclude_plans: bool = True,
         no_verify: bool = False,
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
     ) -> bool:
         """Async version of :meth:`commit_all`.
 
@@ -1472,6 +1482,10 @@ class GitManager:
         Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
         This is intended for system-level auto-remediation commits where
         hook failures would prevent workspace cleanup.
+
+        When *event_bus* is provided, a ``git.commit`` event is emitted
+        after a successful commit with the commit hash, branch, changed
+        files, message, and optional *project_id* / *agent_id*.
         """
         await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
@@ -1491,6 +1505,44 @@ class GitManager:
         if no_verify:
             commit_args.append("--no-verify")
         await self._arun(commit_args, cwd=checkout_path)
+
+        # Emit git.commit event on success
+        if event_bus is not None:
+            try:
+                commit_hash = await self._arun(
+                    ["rev-parse", "HEAD"], cwd=checkout_path
+                )
+                branch = await self._arun(
+                    ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path
+                )
+                # Get the list of files changed in the commit we just made
+                changed_output = await self._arun(
+                    ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+                    cwd=checkout_path,
+                )
+                changed_files = [
+                    f for f in changed_output.splitlines() if f
+                ]
+                await event_bus.emit(
+                    "git.commit",
+                    {
+                        "commit_hash": commit_hash,
+                        "branch": branch,
+                        "changed_files": changed_files,
+                        "message": message,
+                        "project_id": project_id,
+                        "agent_id": agent_id,
+                    },
+                )
+            except Exception:
+                # Event emission is best-effort; never fail the commit
+                # because we couldn't emit the event.
+                logger.debug(
+                    "Failed to emit git.commit event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
+
         return True
 
     async def acreate_pr(
