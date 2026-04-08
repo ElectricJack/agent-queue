@@ -13,7 +13,7 @@ Structure::
         },
     }
 
-See docs/specs/design/playbooks.md Section 17 and docs/specs/design/roadmap.md
+See docs/specs/design/playbooks.md Section 7 and docs/specs/design/roadmap.md
 Phase 0.2 for the full specification.
 """
 
@@ -274,6 +274,88 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Git events  (emitted by GitManager — Phase 0.2.5 / playbooks)
+#
+# These events will be emitted by GitManager once the playbook system is
+# wired up.  Schemas are defined now so validation and tooling can reference
+# them ahead of time.
+# ---------------------------------------------------------------------------
+
+_GIT_SCHEMAS: dict[str, EventSchema] = {
+    "git.commit": {
+        "required": ["commit_hash", "branch", "changed_files", "project_id"],
+        "optional": ["message", "author", "agent_id"],
+    },
+    "git.push": {
+        "required": ["branch", "remote", "project_id"],
+        "optional": ["commit_range"],
+    },
+    "git.pr.created": {
+        "required": ["pr_url", "branch", "title", "project_id"],
+        "optional": [],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Playbook events  (emitted by PlaybookExecutor — Phase 0.2.5)
+# ---------------------------------------------------------------------------
+
+_PLAYBOOK_SCHEMAS: dict[str, EventSchema] = {
+    "playbook.run.completed": {
+        "required": ["playbook_id", "run_id"],
+        "optional": ["final_context"],
+    },
+    "playbook.run.failed": {
+        "required": ["playbook_id", "run_id", "failed_at_node"],
+        "optional": ["error"],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Human interaction events  (emitted by Dashboard / Discord — Phase 0.2.5)
+# ---------------------------------------------------------------------------
+
+_HUMAN_SCHEMAS: dict[str, EventSchema] = {
+    "human.review.completed": {
+        "required": ["playbook_id", "run_id", "node_id", "decision"],
+        "optional": ["edits"],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Workflow events  (Phase 0.2.5)
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_SCHEMAS: dict[str, EventSchema] = {
+    "workflow.stage.completed": {
+        "required": ["workflow_id", "stage"],
+        "optional": ["task_ids"],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Timer events  (synthetic events emitted by the timer service)
+#
+# Timer events follow the pattern ``timer.{interval}`` (e.g. ``timer.30m``,
+# ``timer.4h``, ``timer.24h``).  Since arbitrary intervals are supported, we
+# cannot enumerate all possible event types.  Instead we store the canonical
+# timer schema separately and register a few common intervals explicitly.
+# ``get_schema()`` falls back to ``TIMER_SCHEMA`` for any ``timer.*`` event
+# not explicitly listed.
+# ---------------------------------------------------------------------------
+
+TIMER_SCHEMA: EventSchema = {
+    "required": ["tick_time", "interval"],
+    "optional": [],
+}
+"""Canonical schema shared by all ``timer.*`` events."""
+
+_TIMER_SCHEMAS: dict[str, EventSchema] = {
+    f"timer.{interval}": TIMER_SCHEMA
+    for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h")
+}
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -285,6 +367,11 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CONFIG_SCHEMAS,
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
+    **_GIT_SCHEMAS,
+    **_PLAYBOOK_SCHEMAS,
+    **_HUMAN_SCHEMAS,
+    **_WORKFLOW_SCHEMAS,
+    **_TIMER_SCHEMAS,
 }
 """Master registry of all event schemas.
 
@@ -295,8 +382,16 @@ layer (Phase 0.2.2) to check payloads at emit time.
 
 
 def get_schema(event_type: str) -> EventSchema | None:
-    """Return the schema for *event_type*, or ``None`` if unregistered."""
-    return EVENT_SCHEMAS.get(event_type)
+    """Return the schema for *event_type*, or ``None`` if unregistered.
+
+    For ``timer.*`` events that are not explicitly registered, falls back to
+    the canonical :data:`TIMER_SCHEMA` so that arbitrary intervals (e.g.
+    ``timer.7m``, ``timer.2h``) are validated correctly.
+    """
+    schema = EVENT_SCHEMAS.get(event_type)
+    if schema is None and event_type.startswith("timer."):
+        return TIMER_SCHEMA
+    return schema
 
 
 def registered_event_types() -> list[str]:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from src.event_schemas import (
     EVENT_SCHEMAS,
+    TIMER_SCHEMA,
     get_schema,
     registered_event_types,
+    validate_payload,
 )
 
 
@@ -39,9 +41,7 @@ class TestEventSchemasStructure:
         for event_type, schema in EVENT_SCHEMAS.items():
             for key in ("required", "optional"):
                 fields = schema[key]
-                assert len(fields) == len(set(fields)), (
-                    f"{event_type}.{key} has duplicate fields"
-                )
+                assert len(fields) == len(set(fields)), f"{event_type}.{key} has duplicate fields"
 
 
 class TestExpectedEventTypes:
@@ -107,6 +107,27 @@ class TestExpectedEventTypes:
 
     def test_chat_events(self):
         assert "chat.message" in EVENT_SCHEMAS
+
+    def test_git_events(self):
+        expected = ["git.commit", "git.push", "git.pr.created"]
+        for et in expected:
+            assert et in EVENT_SCHEMAS, f"Missing schema for {et}"
+
+    def test_playbook_events(self):
+        expected = ["playbook.run.completed", "playbook.run.failed"]
+        for et in expected:
+            assert et in EVENT_SCHEMAS, f"Missing schema for {et}"
+
+    def test_human_events(self):
+        assert "human.review.completed" in EVENT_SCHEMAS
+
+    def test_workflow_events(self):
+        assert "workflow.stage.completed" in EVENT_SCHEMAS
+
+    def test_timer_events_common_intervals(self):
+        for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
+            et = f"timer.{interval}"
+            assert et in EVENT_SCHEMAS, f"Missing schema for {et}"
 
 
 class TestTaskEventSchemas:
@@ -200,3 +221,127 @@ class TestHelperFunctions:
         assert "task.completed" in types
         assert "notify.text" in types
         assert "plugin.loaded" in types
+        assert "git.commit" in types
+        assert "playbook.run.completed" in types
+        assert "timer.30m" in types
+
+
+class TestGitEventSchemas:
+    """Validate specific field requirements for git events."""
+
+    def test_git_commit_required_fields(self):
+        schema = EVENT_SCHEMAS["git.commit"]
+        for field in ("commit_hash", "branch", "changed_files", "project_id"):
+            assert field in schema["required"], f"git.commit missing required field: {field}"
+
+    def test_git_commit_optional_fields(self):
+        schema = EVENT_SCHEMAS["git.commit"]
+        for field in ("message", "author", "agent_id"):
+            assert field in schema["optional"], f"git.commit missing optional field: {field}"
+
+    def test_git_push_required_fields(self):
+        schema = EVENT_SCHEMAS["git.push"]
+        for field in ("branch", "remote", "project_id"):
+            assert field in schema["required"], f"git.push missing required field: {field}"
+
+    def test_git_push_optional_fields(self):
+        schema = EVENT_SCHEMAS["git.push"]
+        assert "commit_range" in schema["optional"]
+
+    def test_git_pr_created_required_fields(self):
+        schema = EVENT_SCHEMAS["git.pr.created"]
+        for field in ("pr_url", "branch", "title", "project_id"):
+            assert field in schema["required"], f"git.pr.created missing required field: {field}"
+
+    def test_git_pr_created_no_optional_fields(self):
+        schema = EVENT_SCHEMAS["git.pr.created"]
+        assert schema["optional"] == []
+
+
+class TestPlaybookEventSchemas:
+    """Validate playbook event schemas."""
+
+    def test_run_completed_required_fields(self):
+        schema = EVENT_SCHEMAS["playbook.run.completed"]
+        assert "playbook_id" in schema["required"]
+        assert "run_id" in schema["required"]
+
+    def test_run_completed_optional_fields(self):
+        schema = EVENT_SCHEMAS["playbook.run.completed"]
+        assert "final_context" in schema["optional"]
+
+    def test_run_failed_required_fields(self):
+        schema = EVENT_SCHEMAS["playbook.run.failed"]
+        for field in ("playbook_id", "run_id", "failed_at_node"):
+            assert field in schema["required"]
+
+    def test_run_failed_optional_error(self):
+        schema = EVENT_SCHEMAS["playbook.run.failed"]
+        assert "error" in schema["optional"]
+
+
+class TestHumanEventSchemas:
+    """Validate human interaction event schemas."""
+
+    def test_review_completed_required_fields(self):
+        schema = EVENT_SCHEMAS["human.review.completed"]
+        for field in ("playbook_id", "run_id", "node_id", "decision"):
+            assert field in schema["required"]
+
+    def test_review_completed_optional_edits(self):
+        schema = EVENT_SCHEMAS["human.review.completed"]
+        assert "edits" in schema["optional"]
+
+
+class TestWorkflowEventSchemas:
+    """Validate workflow event schemas."""
+
+    def test_stage_completed_required_fields(self):
+        schema = EVENT_SCHEMAS["workflow.stage.completed"]
+        assert "workflow_id" in schema["required"]
+        assert "stage" in schema["required"]
+
+    def test_stage_completed_optional_task_ids(self):
+        schema = EVENT_SCHEMAS["workflow.stage.completed"]
+        assert "task_ids" in schema["optional"]
+
+
+class TestTimerEventSchemas:
+    """Validate timer event schemas and wildcard fallback."""
+
+    def test_common_timer_events_share_same_schema(self):
+        """All registered timer events use the canonical TIMER_SCHEMA."""
+        for event_type, schema in EVENT_SCHEMAS.items():
+            if event_type.startswith("timer."):
+                assert schema is TIMER_SCHEMA, f"{event_type} does not reference TIMER_SCHEMA"
+
+    def test_timer_schema_requires_tick_time_and_interval(self):
+        assert "tick_time" in TIMER_SCHEMA["required"]
+        assert "interval" in TIMER_SCHEMA["required"]
+
+    def test_timer_schema_no_optional_fields(self):
+        assert TIMER_SCHEMA["optional"] == []
+
+    def test_get_schema_returns_timer_schema_for_arbitrary_interval(self):
+        """Arbitrary timer.* events not in the registry still resolve."""
+        schema = get_schema("timer.7m")
+        assert schema is TIMER_SCHEMA
+
+    def test_get_schema_returns_timer_schema_for_registered_interval(self):
+        schema = get_schema("timer.30m")
+        assert schema is TIMER_SCHEMA
+
+    def test_get_schema_does_not_return_timer_for_non_timer(self):
+        """Non-timer unknown events should still return None."""
+        assert get_schema("nonexistent.event") is None
+
+    def test_validate_payload_works_for_arbitrary_timer(self):
+        """validate_payload should work for any timer.* event via fallback."""
+        errors = validate_payload(
+            "timer.42s", {"tick_time": "2026-01-01T00:00:00Z", "interval": "42s"}
+        )
+        assert errors == []
+
+    def test_validate_payload_catches_missing_timer_fields(self):
+        errors = validate_payload("timer.10m", {"tick_time": "2026-01-01T00:00:00Z"})
+        assert any("interval" in e for e in errors)
