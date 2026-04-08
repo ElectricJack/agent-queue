@@ -1509,20 +1509,14 @@ class GitManager:
         # Emit git.commit event on success
         if event_bus is not None:
             try:
-                commit_hash = await self._arun(
-                    ["rev-parse", "HEAD"], cwd=checkout_path
-                )
-                branch = await self._arun(
-                    ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path
-                )
+                commit_hash = await self._arun(["rev-parse", "HEAD"], cwd=checkout_path)
+                branch = await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
                 # Get the list of files changed in the commit we just made
                 changed_output = await self._arun(
                     ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
                     cwd=checkout_path,
                 )
-                changed_files = [
-                    f for f in changed_output.splitlines() if f
-                ]
+                changed_files = [f for f in changed_output.splitlines() if f]
                 await event_bus.emit(
                     "git.commit",
                     {
@@ -1552,6 +1546,8 @@ class GitManager:
         title: str,
         body: str,
         base: str = "main",
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
     ) -> str:
         try:
             result = await self._arun_subprocess(
@@ -1575,7 +1571,28 @@ class GitManager:
             raise GitError("gh pr create timed out (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh pr create failed: {result.stderr.strip()}")
-        return result.stdout.strip()
+        pr_url = result.stdout.strip()
+
+        # Emit git.pr.created event on success
+        if event_bus is not None:
+            try:
+                await event_bus.emit(
+                    "git.pr.created",
+                    {
+                        "pr_url": pr_url,
+                        "branch": branch,
+                        "title": title,
+                        "project_id": project_id,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit git.pr.created event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
+
+        return pr_url
 
     async def acheck_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
         try:

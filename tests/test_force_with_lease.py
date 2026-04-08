@@ -257,6 +257,7 @@ class _FakeOrchestrator:
 
     def __init__(self, git: GitManager):
         self.git = git
+        self.bus = MagicMock()
         self._notifications: list[str] = []
 
     async def _notify_channel(self, message: str, *, project_id: str | None = None):

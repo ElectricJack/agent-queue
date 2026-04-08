@@ -2409,6 +2409,8 @@ class Orchestrator:
                 title=task.title,
                 body=f"Automated PR for task `{task.id}`.\n\n{task.description[:500]}",
                 base=repo.default_branch,
+                event_bus=self.bus,
+                project_id=task.project_id,
             )
             return pr_url
         except Exception as e:

@@ -839,7 +839,15 @@ class GitPlugin(InternalPlugin):
             return {"error": "Could not determine current branch"}
         base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
         try:
-            pr_url = await git.acreate_pr(checkout_path, branch, title, body, base)
+            pr_url = await git.acreate_pr(
+                checkout_path,
+                branch,
+                title,
+                body,
+                base,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id", ""),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {
