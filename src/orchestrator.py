@@ -2389,6 +2389,8 @@ class Orchestrator:
                 workspace,
                 task.branch_name,
                 force_with_lease=True,
+                event_bus=self.bus,
+                project_id=task.project_id,
             )
         except Exception as e:
             await self._emit_notify(
@@ -2944,7 +2946,12 @@ class Orchestrator:
                         cwd=workspace,
                     )
                     if ahead_output.strip() != "0":
-                        await self.git.apush_branch(workspace, current_branch)
+                        await self.git.apush_branch(
+                            workspace,
+                            current_branch,
+                            event_bus=self.bus,
+                            project_id=task.project_id,
+                        )
                         logger.info(
                             "Task %s: auto-pushed %s commit(s) on branch '%s'",
                             task.id,

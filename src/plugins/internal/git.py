@@ -776,7 +776,12 @@ class GitPlugin(InternalPlugin):
         if not branch:
             return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(checkout_path, branch)
+            await git.apush_branch(
+                checkout_path,
+                branch,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args.get("project_id", ""), "pushed": branch}
@@ -1038,7 +1043,12 @@ class GitPlugin(InternalPlugin):
             if not branch_name:
                 return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(checkout_path, branch_name)
+            await git.apush_branch(
+                checkout_path,
+                branch_name,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args["project_id"], "branch": branch_name, "status": "pushed"}
@@ -1165,7 +1175,12 @@ class GitPlugin(InternalPlugin):
         pushed = False
         try:
             branch = await git.aget_current_branch(checkout_path) or "main"
-            await git.apush_branch(checkout_path, branch)
+            await git.apush_branch(
+                checkout_path,
+                branch,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
             pushed = True
         except GitError:
             pass

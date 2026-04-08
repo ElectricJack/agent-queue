@@ -1296,11 +1296,54 @@ class GitManager:
         branch_name: str,
         *,
         force_with_lease: bool = False,
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
     ) -> None:
+        # Capture the remote ref before pushing so we can compute commit_range.
+        remote_ref_before: str | None = None
+        if event_bus is not None:
+            try:
+                remote_ref_before = await self._arun(
+                    ["rev-parse", f"origin/{branch_name}"],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                # Remote branch doesn't exist yet (first push).
+                remote_ref_before = None
+
         args = ["push", "origin", branch_name]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
+
+        # Emit git.push event on success
+        if event_bus is not None:
+            try:
+                local_ref = await self._arun(
+                    ["rev-parse", branch_name],
+                    cwd=checkout_path,
+                )
+                if remote_ref_before:
+                    commit_range = f"{remote_ref_before}..{local_ref}"
+                else:
+                    commit_range = local_ref
+                await event_bus.emit(
+                    "git.push",
+                    {
+                        "branch": branch_name,
+                        "remote": "origin",
+                        "commit_range": commit_range,
+                        "project_id": project_id,
+                    },
+                )
+            except Exception:
+                # Event emission is best-effort; never fail the push
+                # because we couldn't emit the event.
+                logger.debug(
+                    "Failed to emit git.push event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
 
     async def arebase_onto(
         self,

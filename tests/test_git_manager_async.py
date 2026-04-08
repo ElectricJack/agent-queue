@@ -342,6 +342,110 @@ class TestAsyncPushBranch:
         )
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
 
+    @pytest.mark.asyncio
+    async def test_emits_git_push_event(self, clone, mgr):
+        """Successful push emits git.push on the EventBus."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        await mgr.aprepare_for_task(clone, "task/push-event")
+        _commit_file(clone, "push_evt.txt", "data", "push event test")
+        local_ref = _git(["rev-parse", "HEAD"], cwd=clone)
+
+        await mgr.apush_branch(
+            clone,
+            "task/push-event",
+            event_bus=bus,
+            project_id="proj-push",
+        )
+
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["branch"] == "task/push-event"
+        assert evt["remote"] == "origin"
+        assert evt["project_id"] == "proj-push"
+        # First push — no remote ref before, so commit_range is the local ref
+        assert evt["commit_range"] == local_ref
+
+    @pytest.mark.asyncio
+    async def test_git_push_event_commit_range(self, clone, mgr):
+        """Second push should have old..new commit range."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        await mgr.aprepare_for_task(clone, "task/push-range")
+        _commit_file(clone, "first.txt", "1", "first commit")
+        await mgr.apush_branch(clone, "task/push-range")
+        remote_ref = _git(["rev-parse", "origin/task/push-range"], cwd=clone)
+
+        _commit_file(clone, "second.txt", "2", "second commit")
+        local_ref = _git(["rev-parse", "HEAD"], cwd=clone)
+
+        await mgr.apush_branch(
+            clone,
+            "task/push-range",
+            event_bus=bus,
+            project_id="proj-range",
+        )
+
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["commit_range"] == f"{remote_ref}..{local_ref}"
+
+    @pytest.mark.asyncio
+    async def test_no_git_push_event_without_bus(self, clone, mgr):
+        """Without an EventBus, push succeeds silently (backward compat)."""
+        await mgr.aprepare_for_task(clone, "task/push-nobus")
+        _commit_file(clone, "nobus.txt", "data", "no bus push")
+        await mgr.apush_branch(clone, "task/push-nobus")
+        # No exception means success — no bus to emit to
+
+    @pytest.mark.asyncio
+    async def test_no_git_push_event_on_failure(self, clone, mgr):
+        """Failed push should NOT emit a git.push event."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone,
+                "nonexistent-branch-xyz",
+                event_bus=bus,
+                project_id="proj-fail",
+            )
+        assert len(received) == 0
+
+    @pytest.mark.asyncio
+    async def test_git_push_event_emission_failure_does_not_break_push(self, clone, mgr):
+        """If event emission raises, the push should still succeed."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+
+        async def bad_handler(data):
+            raise RuntimeError("boom")
+
+        bus.subscribe("git.push", bad_handler)
+
+        await mgr.aprepare_for_task(clone, "task/push-resilient")
+        _commit_file(clone, "resilient.txt", "data", "resilient push")
+        # Should not raise despite bad handler
+        await mgr.apush_branch(
+            clone,
+            "task/push-resilient",
+            event_bus=bus,
+            project_id="proj-resilient",
+        )
+
 
 class TestAsyncMergeBranch:
     @pytest.mark.asyncio
