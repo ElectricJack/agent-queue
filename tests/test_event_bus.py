@@ -150,6 +150,183 @@ class TestEventBus:
         await bus.emit("evt", {"ok": False})
         assert len(received) == 1
 
+    # --- Filtered subscription test suite (roadmap 0.1.3) ---
+
+    async def test_filter_project_id_match(self):
+        """(a) Subscriber with filter {"project_id": "foo"} receives matching event."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "task.started",
+            lambda d: received.append(d),
+            filter={"project_id": "foo"},
+        )
+        await bus.emit("task.started", {"project_id": "foo", "task_id": "t-42"})
+        assert len(received) == 1
+        assert received[0]["project_id"] == "foo"
+        assert received[0]["task_id"] == "t-42"
+
+    async def test_filter_project_id_no_match(self):
+        """(b) Same subscriber does NOT receive event with different project_id."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "task.started",
+            lambda d: received.append(d),
+            filter={"project_id": "foo"},
+        )
+        await bus.emit("task.started", {"project_id": "bar", "task_id": "t-99"})
+        assert len(received) == 0
+
+    async def test_filter_multi_field_all_must_match(self):
+        """(c) Multi-field filter only fires when ALL fields match (AND semantics)."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "playbook.run.completed",
+            lambda d: received.append(d),
+            filter={"playbook_id": "code-quality-gate", "status": "success"},
+        )
+        # Only playbook_id matches
+        await bus.emit(
+            "playbook.run.completed",
+            {"playbook_id": "code-quality-gate", "status": "failure"},
+        )
+        assert len(received) == 0
+
+        # Only status matches
+        await bus.emit(
+            "playbook.run.completed",
+            {"playbook_id": "deploy-gate", "status": "success"},
+        )
+        assert len(received) == 0
+
+        # Neither matches
+        await bus.emit(
+            "playbook.run.completed",
+            {"playbook_id": "deploy-gate", "status": "failure"},
+        )
+        assert len(received) == 0
+
+        # Both match — this one should be delivered
+        await bus.emit(
+            "playbook.run.completed",
+            {"playbook_id": "code-quality-gate", "status": "success", "run_id": "r-1"},
+        )
+        assert len(received) == 1
+        assert received[0]["run_id"] == "r-1"
+
+    async def test_filter_multiple_filtered_subscribers_same_event(self):
+        """(d) Multiple filtered subscribers on same event type each receive only their matches."""
+        bus = EventBus()
+        proj_foo = []
+        proj_bar = []
+        proj_baz = []
+
+        bus.subscribe("task.done", lambda d: proj_foo.append(d), filter={"project_id": "foo"})
+        bus.subscribe("task.done", lambda d: proj_bar.append(d), filter={"project_id": "bar"})
+        bus.subscribe("task.done", lambda d: proj_baz.append(d), filter={"project_id": "baz"})
+
+        await bus.emit("task.done", {"project_id": "foo", "task_id": "t-1"})
+        await bus.emit("task.done", {"project_id": "bar", "task_id": "t-2"})
+        await bus.emit("task.done", {"project_id": "foo", "task_id": "t-3"})
+
+        assert len(proj_foo) == 2
+        assert proj_foo[0]["task_id"] == "t-1"
+        assert proj_foo[1]["task_id"] == "t-3"
+
+        assert len(proj_bar) == 1
+        assert proj_bar[0]["task_id"] == "t-2"
+
+        assert len(proj_baz) == 0
+
+    async def test_filter_mixed_filtered_and_unfiltered(self):
+        """(e) Unfiltered subscriber gets ALL events; filtered gets only matches."""
+        bus = EventBus()
+        all_events = []
+        foo_events = []
+
+        bus.subscribe("task.done", lambda d: all_events.append(d))  # no filter
+        bus.subscribe(
+            "task.done", lambda d: foo_events.append(d), filter={"project_id": "foo"}
+        )
+
+        await bus.emit("task.done", {"project_id": "foo", "task_id": "t-1"})
+        await bus.emit("task.done", {"project_id": "bar", "task_id": "t-2"})
+        await bus.emit("task.done", {"project_id": "foo", "task_id": "t-3"})
+        await bus.emit("task.done", {"project_id": "qux", "task_id": "t-4"})
+
+        # Unfiltered receives all 4
+        assert len(all_events) == 4
+        assert [e["task_id"] for e in all_events] == ["t-1", "t-2", "t-3", "t-4"]
+
+        # Filtered receives only the 2 with project_id=foo
+        assert len(foo_events) == 2
+        assert [e["task_id"] for e in foo_events] == ["t-1", "t-3"]
+
+    async def test_filter_nested_payload_field(self):
+        """(f) Filter on nested payload field works via dict equality."""
+        bus = EventBus()
+        received = []
+        # Filter on a top-level key whose value is a nested dict
+        bus.subscribe(
+            "build.finished",
+            lambda d: received.append(d),
+            filter={"metadata": {"env": "production", "region": "us-east"}},
+        )
+
+        # Exact nested dict match — should fire
+        await bus.emit(
+            "build.finished",
+            {
+                "build_id": "b-1",
+                "metadata": {"env": "production", "region": "us-east"},
+            },
+        )
+        assert len(received) == 1
+
+        # Nested dict with different values — should NOT fire
+        await bus.emit(
+            "build.finished",
+            {
+                "build_id": "b-2",
+                "metadata": {"env": "staging", "region": "us-east"},
+            },
+        )
+        assert len(received) == 1
+
+        # Nested dict with extra keys — should NOT fire (dict equality is strict)
+        await bus.emit(
+            "build.finished",
+            {
+                "build_id": "b-3",
+                "metadata": {"env": "production", "region": "us-east", "extra": True},
+            },
+        )
+        assert len(received) == 1  # still 1 — extra key means dicts aren't equal
+
+    async def test_filter_none_value_matches_absent_or_null(self):
+        """(g) Filter with None value matches events where field is absent or null."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "task.update",
+            lambda d: received.append(d),
+            filter={"error": None},
+        )
+
+        # Field absent from payload — data.get("error") returns None == None → match
+        await bus.emit("task.update", {"task_id": "t-1", "status": "ok"})
+        assert len(received) == 1
+
+        # Field explicitly set to None — match
+        await bus.emit("task.update", {"task_id": "t-2", "error": None})
+        assert len(received) == 2
+
+        # Field present with a value — no match
+        await bus.emit("task.update", {"task_id": "t-3", "error": "timeout"})
+        assert len(received) == 2  # still 2, this one was skipped
+
 
 class TestEventBusBackwardCompatibility:
     """Backward-compatibility guarantees for the filter parameter.
