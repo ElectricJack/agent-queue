@@ -521,11 +521,23 @@ class AgentQueueBot(commands.Bot):
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
 
-        # Notify Discord that the server is back online
-        await self._send_message(
-            format_server_started(),
-            embed=format_server_started_embed(),
-        )
+        # Notify all transports that the server is back online via the
+        # event bus.  The Discord notification handler subscribes to this
+        # event and formats the message + embed.  Also send directly as a
+        # fallback in case the notification handler isn't subscribed yet.
+        try:
+            from src.notifications.events import SystemOnlineEvent
+
+            await self.orchestrator.bus.emit(
+                "notify.system_online",
+                SystemOnlineEvent().model_dump(mode="json"),
+            )
+        except Exception:
+            # Fallback: send directly if event bus emit fails
+            await self._send_message(
+                format_server_started(),
+                embed=format_server_started_embed(),
+            )
 
     class ThinkingView(discord.ui.View):
         """Attached to the thinking indicator message with a Cancel button.

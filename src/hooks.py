@@ -567,14 +567,18 @@ class HookEngine:
         # Notify that a hook is running via the event bus.
         thread_send = None
         try:
-            await self.bus.emit("notify.text", {
-                "event_type": "notify.text",
-                "message": (
-                    f"🪝 Hook **{hook.name}** is running "
-                    f"(trigger: `{trigger_reason}`)."
-                ),
-                "project_id": hook.project_id,
-            })
+            await self.bus.emit(
+                "notify.text",
+                {
+                    "event_type": "notify.text",
+                    "severity": "info",
+                    "category": "system",
+                    "message": (
+                        f"🪝 Hook **{hook.name}** is running (trigger: `{trigger_reason}`)."
+                    ),
+                    "project_id": hook.project_id,
+                },
+            )
         except Exception:
             logger.debug("Failed to emit hook-running notification", exc_info=True)
 
@@ -661,11 +665,16 @@ class HookEngine:
                     except Exception:
                         pass
                 try:
-                    await self.bus.emit("notify.text", {
-                        "event_type": "notify.text",
-                        "message": timeout_msg,
-                        "project_id": hook.project_id,
-                    })
+                    await self.bus.emit(
+                        "notify.text",
+                        {
+                            "event_type": "notify.text",
+                            "severity": "warning",
+                            "category": "system",
+                            "message": timeout_msg,
+                            "project_id": hook.project_id,
+                        },
+                    )
                 except Exception:
                     pass
                 return
@@ -711,11 +720,16 @@ class HookEngine:
                 await thread_send(completion_msg)
             else:
                 try:
-                    await self.bus.emit("notify.text", {
-                        "event_type": "notify.text",
-                        "message": completion_msg,
-                        "project_id": hook.project_id,
-                    })
+                    await self.bus.emit(
+                        "notify.text",
+                        {
+                            "event_type": "notify.text",
+                            "severity": "info",
+                            "category": "system",
+                            "message": completion_msg,
+                            "project_id": hook.project_id,
+                        },
+                    )
                 except Exception:
                     pass
 
@@ -734,11 +748,16 @@ class HookEngine:
                 except Exception:
                     pass
             try:
-                await self.bus.emit("notify.text", {
-                    "event_type": "notify.text",
-                    "message": error_msg,
-                    "project_id": hook.project_id,
-                })
+                await self.bus.emit(
+                    "notify.text",
+                    {
+                        "event_type": "notify.text",
+                        "severity": "error",
+                        "category": "system",
+                        "message": error_msg,
+                        "project_id": hook.project_id,
+                    },
+                )
             except Exception:
                 pass
 

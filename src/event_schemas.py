@@ -29,6 +29,12 @@ class EventSchema(TypedDict):
     optional: list[str]
 
 
+# Meta-fields injected by infrastructure (e.g. ``_plugin`` added by
+# ``PluginContext.emit_event``).  Validators should ignore these when
+# checking for unexpected extra fields — they are always allowed.
+META_FIELDS: frozenset[str] = frozenset({"_plugin"})
+
+
 # ---------------------------------------------------------------------------
 # Task lifecycle events  (emitted via Orchestrator._emit_task_event)
 # ---------------------------------------------------------------------------
@@ -296,3 +302,38 @@ def get_schema(event_type: str) -> EventSchema | None:
 def registered_event_types() -> list[str]:
     """Return a sorted list of all registered event type strings."""
     return sorted(EVENT_SCHEMAS)
+
+
+def validate_payload(
+    event_type: str,
+    payload: dict,
+    *,
+    strict_extras: bool = False,
+) -> list[str]:
+    """Check *payload* against the schema for *event_type*.
+
+    Returns a list of error strings (empty == valid).  Checks:
+
+    1. All ``required`` fields are present.
+    2. (Optional, when *strict_extras* is ``True``) No fields beyond
+       ``required`` + ``optional`` + ``META_FIELDS`` are present.
+
+    If no schema is registered for *event_type* the payload is considered
+    valid (unregistered events are allowed).
+    """
+    schema = get_schema(event_type)
+    if schema is None:
+        return []
+
+    errors: list[str] = []
+    for field in schema["required"]:
+        if field not in payload:
+            errors.append(f"missing required field '{field}'")
+
+    if strict_extras:
+        allowed = set(schema["required"]) | set(schema["optional"]) | META_FIELDS
+        for field in payload:
+            if field not in allowed:
+                errors.append(f"unexpected field '{field}'")
+
+    return errors
