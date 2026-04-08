@@ -1,4 +1,10 @@
+---
+tags: [api, discord]
+---
+
 # Discord Bot
+
+> **Spec:** [[specs/discord/discord]]
 
 Core Discord bot implementation and event handling.
 

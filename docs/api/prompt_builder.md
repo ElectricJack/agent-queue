@@ -1,4 +1,10 @@
+---
+tags: [api, prompt-builder]
+---
+
 # Prompt Builder
+
+> **Spec:** [[specs/prompt-builder]]
 
 Unified prompt assembly pipeline from composable sections.
 

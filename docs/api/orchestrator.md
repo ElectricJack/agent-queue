@@ -1,4 +1,10 @@
+---
+tags: [api, orchestrator]
+---
+
 # Orchestrator
+
+> **Spec:** [[specs/orchestrator]]
 
 Core task and agent lifecycle management.
 

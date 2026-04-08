@@ -1,4 +1,10 @@
+---
+tags: [api, tokens, budget]
+---
+
 # Token Budget
+
+> **Spec:** [[specs/scheduler-and-budget]]
 
 Token budget management and allocation.
 

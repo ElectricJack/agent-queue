@@ -1,3 +1,7 @@
+---
+tags: [api, prompt-manager]
+---
+
 # Prompt Manager
 
 Discoverable, editable project prompt templates with YAML frontmatter.

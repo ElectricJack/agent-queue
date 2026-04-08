@@ -1,4 +1,10 @@
+---
+tags: [api, state-machine]
+---
+
 # State Machine
+
+> **Spec:** [[specs/models-and-state-machine]]
 
 Task state transitions and DAG validation.
 

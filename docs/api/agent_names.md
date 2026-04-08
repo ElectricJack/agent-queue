@@ -1,3 +1,7 @@
+---
+tags: [api, agent-names]
+---
+
 # Agent Names
 
 Creative agent name generation for personality-rich identifiers.

@@ -1,3 +1,7 @@
+---
+tags: [api, known-tools]
+---
+
 # Known Tools
 
 Registry of known Claude Code tools and well-known MCP servers.

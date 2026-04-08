@@ -1,3 +1,7 @@
+---
+tags: [api, health]
+---
+
 # Health
 
 Lightweight HTTP server for health checks and plan viewing.

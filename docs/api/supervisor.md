@@ -1,4 +1,10 @@
+---
+tags: [api, supervisor]
+---
+
 # Supervisor
+
+> **Spec:** [[specs/supervisor]]
 
 Multi-turn conversation loop that coordinates the agent queue system.
 

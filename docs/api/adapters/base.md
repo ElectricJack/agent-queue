@@ -1,4 +1,10 @@
+---
+tags: [api, adapters]
+---
+
 # Base Adapter
+
+> **Spec:** [[specs/adapters/claude]]
 
 Abstract adapter interface for agent implementations.
 

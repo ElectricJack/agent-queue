@@ -1,4 +1,10 @@
+---
+tags: [api, deprecated]
+---
+
 # Chat Agent (Deprecated)
+
+> **Spec:** [[specs/supervisor]]
 
 !!! warning "Deprecated"
     `ChatAgent` is a backward-compatibility shim. Import

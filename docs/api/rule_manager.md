@@ -1,4 +1,10 @@
+---
+tags: [api, rules]
+---
+
 # Rule Manager
+
+> **Spec:** [[specs/rule-system]]
 
 Persistent autonomous behavior rules with hook integration.
 

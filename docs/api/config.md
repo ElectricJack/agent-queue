@@ -1,4 +1,10 @@
+---
+tags: [api, config]
+---
+
 # Configuration
+
+> **Spec:** [[specs/config]]
 
 Configuration loading and dataclass definitions.
 

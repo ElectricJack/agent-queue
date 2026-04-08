@@ -1,4 +1,10 @@
+---
+tags: [api, plan-parser]
+---
+
 # Plan Parser
+
+> **Spec:** [[specs/plan-parser]]
 
 Plan file parsing for task generation.
 

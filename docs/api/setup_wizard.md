@@ -1,4 +1,10 @@
+---
+tags: [api, setup]
+---
+
 # Setup Wizard
+
+> **Spec:** [[specs/setup-wizard]]
 
 Interactive first-time configuration wizard.
 

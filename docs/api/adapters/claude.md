@@ -1,4 +1,10 @@
+---
+tags: [api, adapters, claude]
+---
+
 # Claude Adapter
+
+> **Spec:** [[specs/adapters/claude]]
 
 Claude Code agent adapter implementation.
 

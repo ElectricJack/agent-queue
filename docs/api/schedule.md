@@ -1,3 +1,7 @@
+---
+tags: [api, schedule]
+---
+
 # Schedule
 
 Cron-like schedule matching for periodic hooks.

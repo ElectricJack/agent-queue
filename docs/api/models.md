@@ -1,4 +1,10 @@
+---
+tags: [api, models]
+---
+
 # Models
+
+> **Spec:** [[specs/models-and-state-machine]]
 
 Core data models and enums used throughout Agent Queue.
 

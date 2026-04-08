@@ -1,4 +1,10 @@
+---
+tags: [api, discord, notifications]
+---
+
 # Notifications
+
+> **Spec:** [[specs/discord/discord]]
 
 Discord notification system for task updates and agent events.
 

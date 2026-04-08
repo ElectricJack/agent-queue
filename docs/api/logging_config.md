@@ -1,3 +1,7 @@
+---
+tags: [api, logging-config]
+---
+
 # Logging Config
 
 Structured JSON-lines logging with correlation IDs.

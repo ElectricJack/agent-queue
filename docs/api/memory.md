@@ -1,4 +1,10 @@
+---
+tags: [api, memory]
+---
+
 # Memory
+
+> **Spec:** [[specs/design/vault-and-memory|Vault & Memory Design]]
 
 Semantic memory manager with per-project indexing and retrieval.
 

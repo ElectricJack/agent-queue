@@ -1,3 +1,7 @@
+---
+tags: [api, main]
+---
+
 # Main
 
 Application entry point and daemon lifecycle.

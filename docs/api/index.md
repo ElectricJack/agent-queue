@@ -1,4 +1,10 @@
+---
+tags: [api, reference]
+---
+
 # API Reference
+
+> **Spec:** [[specs/design/README|Design Specs]]
 
 This section contains auto-generated API documentation from the Agent Queue source code. The documentation is extracted from docstrings, type annotations, and class definitions.
 

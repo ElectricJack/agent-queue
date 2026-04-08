@@ -1,4 +1,10 @@
+---
+tags: [api, event-bus]
+---
+
 # Event Bus
+
+> **Spec:** [[specs/event-bus]]
 
 Async pub/sub event system with wildcard support.
 

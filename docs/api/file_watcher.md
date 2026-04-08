@@ -1,4 +1,10 @@
+---
+tags: [api, file-watcher]
+---
+
 # File Watcher
+
+> **Spec:** [[specs/hooks]]
 
 Filesystem watcher for hook-driven automation via mtime polling.
 

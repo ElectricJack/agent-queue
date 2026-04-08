@@ -1,3 +1,7 @@
+---
+tags: [api, task-names]
+---
+
 # Task Names
 
 Human-friendly adjective-noun task ID generation.

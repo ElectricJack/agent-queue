@@ -1,4 +1,10 @@
+---
+tags: [api, tokens, rate-limiting]
+---
+
 # Token Tracker
+
+> **Spec:** [[specs/scheduler-and-budget]]
 
 Token usage tracking per task and agent.
 

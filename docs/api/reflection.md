@@ -1,4 +1,10 @@
+---
+tags: [api, reflection]
+---
+
 # Reflection
+
+> **Spec:** [[specs/reflection]]
 
 Verification engine for the Supervisor's action-reflect cycle.
 

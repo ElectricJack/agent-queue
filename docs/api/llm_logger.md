@@ -1,4 +1,10 @@
+---
+tags: [api, logging]
+---
+
 # LLM Logger
+
+> **Spec:** [[specs/llm-logging]]
 
 JSONL interaction logging for prompt optimization and debugging.
 
