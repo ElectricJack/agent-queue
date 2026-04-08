@@ -19,14 +19,32 @@ Phase 0.2 for the full specification.
 
 from __future__ import annotations
 
-from typing import TypedDict
+import sys
+
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    from typing import TypedDict
+
+    from typing_extensions import NotRequired
 
 
 class EventSchema(TypedDict):
-    """Schema definition for a single event type."""
+    """Schema definition for a single event type.
+
+    Attributes:
+        required: Field names that must be present in the payload.
+        optional: Field names that may be present but are not required.
+        types: Optional mapping of field names to expected Python types.
+            Values can be a single type (e.g., ``str``) or a tuple of types
+            (e.g., ``(str, int)``).  Fields not listed in *types* skip type
+            checking.  Only present fields are checked — missing required
+            fields are reported separately.
+    """
 
     required: list[str]
     optional: list[str]
+    types: NotRequired[dict[str, type | tuple[type, ...]]]
 
 
 # Meta-fields injected by infrastructure (e.g. ``_plugin`` added by
@@ -399,6 +417,74 @@ def registered_event_types() -> list[str]:
     return sorted(EVENT_SCHEMAS)
 
 
+def validate_event(
+    event_type: str,
+    payload: dict,
+    *,
+    strict_extras: bool = False,
+) -> list[str]:
+    """Validate *payload* against the schema for *event_type*.
+
+    Returns a list of human-readable error strings (empty == valid).
+
+    Checks performed:
+
+    1. All ``required`` fields are present in the payload.
+    2. Field types match expectations if the schema defines a ``types``
+       mapping.  Only fields that are *present* in the payload are type-
+       checked — missing required fields are reported separately in step 1.
+    3. (Optional, when *strict_extras* is ``True``) No fields beyond
+       ``required`` + ``optional`` + ``META_FIELDS`` are present.
+
+    If no schema is registered for *event_type* the payload is considered
+    valid — unregistered events pass through without validation (graceful
+    degradation).
+
+    Error messages include the event type, field name, and expected type
+    to aid debugging::
+
+        "[task.completed] missing required field 'project_id'"
+        "[task.started] field 'task_id' expected type 'str', got 'int'"
+    """
+    schema = get_schema(event_type)
+    if schema is None:
+        return []
+
+    errors: list[str] = []
+
+    # 1. Check required fields are present
+    for field in schema["required"]:
+        if field not in payload:
+            errors.append(f"[{event_type}] missing required field '{field}'")
+
+    # 2. Check field types if the schema specifies a types mapping
+    type_map: dict[str, type | tuple[type, ...]] | None = schema.get("types")  # type: ignore[assignment]
+    if type_map:
+        for field, expected_type in type_map.items():
+            if field not in payload:
+                continue  # missing fields already reported above
+            value = payload[field]
+            if not isinstance(value, expected_type):
+                actual_name = type(value).__name__
+                if isinstance(expected_type, tuple):
+                    expected_name = " | ".join(t.__name__ for t in expected_type)
+                else:
+                    expected_name = expected_type.__name__
+                errors.append(
+                    f"[{event_type}] field '{field}' expected type "
+                    f"'{expected_name}', got '{actual_name}'"
+                )
+
+    # 3. Check for unexpected extra fields in strict mode
+    if strict_extras:
+        allowed = set(schema["required"]) | set(schema["optional"]) | META_FIELDS
+        for field in payload:
+            if field not in allowed:
+                errors.append(f"[{event_type}] unexpected field '{field}'")
+
+    return errors
+
+
 def validate_payload(
     event_type: str,
     payload: dict,
@@ -407,28 +493,10 @@ def validate_payload(
 ) -> list[str]:
     """Check *payload* against the schema for *event_type*.
 
-    Returns a list of error strings (empty == valid).  Checks:
+    .. deprecated::
+        Use :func:`validate_event` instead.  ``validate_payload`` is kept
+        for backward compatibility and delegates to ``validate_event``.
 
-    1. All ``required`` fields are present.
-    2. (Optional, when *strict_extras* is ``True``) No fields beyond
-       ``required`` + ``optional`` + ``META_FIELDS`` are present.
-
-    If no schema is registered for *event_type* the payload is considered
-    valid (unregistered events are allowed).
+    Returns a list of error strings (empty == valid).
     """
-    schema = get_schema(event_type)
-    if schema is None:
-        return []
-
-    errors: list[str] = []
-    for field in schema["required"]:
-        if field not in payload:
-            errors.append(f"missing required field '{field}'")
-
-    if strict_extras:
-        allowed = set(schema["required"]) | set(schema["optional"]) | META_FIELDS
-        for field in payload:
-            if field not in allowed:
-                errors.append(f"unexpected field '{field}'")
-
-    return errors
+    return validate_event(event_type, payload, strict_extras=strict_extras)
