@@ -4,8 +4,8 @@
 - `src/llm_logger.py`
 - `src/chat_providers/logged.py`
 
-**Related config:** `LLMLoggingConfig` in `src/config.py`
-**Related models:** `ChatProvider` in `src/chat_providers/base.py`
+**Related config:** `LLMLoggingConfig` in `src/config.py` (see [[config]])
+**Related models:** `ChatProvider` in `src/chat_providers/base.py` (see [[chat-providers/providers|Chat Providers]])
 
 ## 1. Overview
 

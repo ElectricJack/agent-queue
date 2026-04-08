@@ -2,14 +2,14 @@
 
 ## 1. Overview
 
-The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by `ChatAgent` (`src/chat_agent.py`) to drive the Discord-facing conversational interface.
+The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by the [[supervisor]] (`src/supervisor.py`) to drive the conversational interface.
 
 The abstraction serves two purposes:
 
-1. Allow `ChatAgent` to call a single `create_message` method regardless of which backend is configured, receiving a normalized response object it can inspect without knowing provider-specific details.
+1. Allow the [[supervisor]] to call a single `create_message` method regardless of which backend is configured, receiving a normalized response object it can inspect without knowing provider-specific details.
 2. Keep provider-specific credential detection, format conversion, and SDK calls isolated from the rest of the codebase.
 
-The package contains six modules:
+The package contains eight modules:
 
 | Module | Responsibility |
 |---|---|
@@ -17,6 +17,8 @@ The package contains six modules:
 | `base.py` | Abstract base class `ChatProvider` |
 | `anthropic.py` | Anthropic-backed implementation (direct API, Vertex AI, Bedrock, OAuth) |
 | `ollama.py` | Ollama-backed implementation (OpenAI-compatible `/v1` endpoint) |
+| `gemini.py` | Google Gemini-backed implementation (Gemini API or Vertex AI via `google-genai` SDK) |
+| `logged.py` | `LoggedChatProvider` decorator that wraps any provider with timing and logging |
 | `tool_conversion.py` | Utility to convert Anthropic tool schemas to OpenAI function-calling format |
 | `__init__.py` | Public surface and `create_chat_provider` factory |
 
@@ -30,6 +32,8 @@ The package contains six modules:
 - `src/chat_providers/__init__.py`
 - `src/chat_providers/anthropic.py`
 - `src/chat_providers/ollama.py`
+- `src/chat_providers/gemini.py`
+- `src/chat_providers/logged.py`
 
 ---
 
@@ -132,18 +136,24 @@ Accepts a `ChatProviderConfig` dataclass (from `src/config.py`) and returns an i
 **Routing logic:**
 
 1. If `config.provider == "ollama"`, construct and return an `OllamaChatProvider`. This never returns `None`; it always succeeds because Ollama needs no credentials.
-   - Default model: `"qwen2.5:32b-instruct-q3_K_M"`
+   - Default model: `"qwen3.5:35b"`
    - Default base URL: `"http://localhost:11434/v1"`
-   - Both defaults are overridden by `config.model` and `config.base_url` when set.
+   - Default keep_alive: `"1h"`
+   - Default num_ctx: `0` (model default)
+   - All defaults are overridden by the corresponding `config` fields when set.
 
-2. For any other `config.provider` value (including the default, `"anthropic"`), construct an `AnthropicChatProvider`. If `provider.is_configured` is `False` (no credentials were found during `__init__`), return `None`.
+2. If `config.provider == "gemini"`, construct and return a `GeminiChatProvider`. This never returns `None`.
+   - Default model: `"gemini-2.5-flash"`
+   - API key: `config.api_key` (falls back to `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars inside the provider).
 
-`create_chat_provider` returning `None` signals to `ChatAgent` that no LLM-backed chat interface is available; `ChatAgent` must handle this gracefully.
+3. For any other `config.provider` value (including the default, `"anthropic"`), construct an `AnthropicChatProvider`. If `provider.is_configured` is `False` (no credentials were found during `__init__`), return `None`.
+
+`create_chat_provider` returning `None` signals to the [[supervisor]] that no LLM-backed chat interface is available; it must handle this gracefully.
 
 **Public exports from `__init__.py`:**
 
 ```
-ChatProvider, ChatResponse, TextBlock, ToolUseBlock, create_chat_provider
+ChatProvider, ChatResponse, LoggedChatProvider, TextBlock, ToolUseBlock, create_chat_provider
 ```
 
 ---
@@ -258,10 +268,33 @@ def __init__(
     self,
     model: str = "qwen2.5:32b-instruct-q3_K_M",
     base_url: str = "http://localhost:11434/v1",
+    keep_alive: str = "1h",
+    num_ctx: int = 0,
 ):
 ```
 
 Constructs an `openai.AsyncOpenAI` client pointed at the given `base_url`. Ollama's API does not require authentication, so the `api_key` is set to the literal string `"ollama"` to satisfy the SDK's required-parameter check.
+
+**Additional initialization:**
+
+- `keep_alive` controls how long Ollama keeps the model loaded in memory after the last request. Accepts Go-style duration strings (`"1h"`, `"30m"`, `"5s"`, `"1h30m"`), bare integers (seconds), `"-1"` (infinite), or `"0"` (immediate unload). Parsed into seconds by `_parse_duration()`.
+- `num_ctx` sets the context window size for Ollama. `0` means use the model's default.
+- `_last_request_at` tracks the monotonic timestamp of the last successful response, used by `is_model_loaded()` to skip network probes.
+- The Ollama API root (for non-OpenAI endpoints like `/api/ps`) is derived by stripping the `/v1` suffix from `base_url`.
+
+### Model Loading Check
+
+```python
+async def is_model_loaded(self) -> bool:
+```
+
+Checks whether the configured model is currently loaded in Ollama's memory.
+
+**Fast path:** If a successful response was received within 90% of the `keep_alive` window, returns `True` immediately without a network call — the model is guaranteed to still be loaded.
+
+**Slow path:** Hits Ollama's `/api/ps` endpoint to list running models. Compares base model names (stripping the tag/version suffix after `:`). Returns `True` if found, `False` if not (cold start or timed-out model).
+
+**Fail-open:** Returns `True` on any error, so callers never block on a failed probe.
 
 ### Message Creation
 
@@ -279,10 +312,11 @@ async def create_message(
 Steps:
 
 1. Convert the incoming `messages` + `system` to OpenAI format via `_convert_messages`.
-2. Build kwargs: `model`, `max_tokens`, `messages`.
+2. Build kwargs: `model`, `max_tokens`, `messages`, and an `extra_body` dict containing `keep_alive` and (when `num_ctx > 0`) `options.num_ctx` for Ollama-specific settings.
 3. If `tools` is provided, convert via `anthropic_tools_to_openai` and add as `tools` kwarg.
 4. Call `self._client.chat.completions.create(**kwargs)`.
-5. Inspect `resp.choices[0]`:
+5. Record the current monotonic time in `_last_request_at` so `is_model_loaded()` can skip probes while the model is warm.
+6. Inspect `resp.choices[0]`:
    - If `choice.message.content` is non-empty, append a `TextBlock`.
    - If `choice.message.tool_calls` is non-empty, iterate and append one `ToolUseBlock` per tool call. The `arguments` field of each function call may arrive as a JSON string; if so it is parsed with `json.loads`. The tool call `id` is used as-is; if absent or falsy a random 8-character UUID prefix is generated via `uuid.uuid4()`.
 6. Return `ChatResponse(content=content)`.
@@ -357,4 +391,131 @@ The mapping is:
 - `description` defaults to `""` when absent
 - `input_schema` defaults to `{"type": "object", "properties": {}}` when absent
 
-This function is called by `OllamaChatProvider.create_message` before passing tools to the OpenAI SDK. It is not used by `AnthropicChatProvider`, which passes the original Anthropic-format tool definitions directly to the Anthropic SDK.
+This function is called by `OllamaChatProvider.create_message` before passing tools to the OpenAI SDK. It is not used by `AnthropicChatProvider` or `GeminiChatProvider`, which have their own format requirements.
+
+---
+
+## 8. Gemini Provider
+
+Defined in `src/chat_providers/gemini.py`. Class: `GeminiChatProvider`.
+
+Uses the `google-genai` SDK to communicate with Google's Gemini models. Like the Ollama provider, the main complexity is format conversion: the rest of the codebase uses Anthropic-style tool definitions and message structures, so this module translates between the two formats on every request and response.
+
+### Initialization
+
+```python
+def __init__(
+    self,
+    model: str = "gemini-2.5-flash",
+    api_key: str = "",
+):
+```
+
+Constructs a `google.genai.Client` with the resolved API key.
+
+**API key resolution order:**
+
+1. The `api_key` constructor argument (from `ChatProviderConfig.api_key`)
+2. `GEMINI_API_KEY` environment variable
+3. `GOOGLE_API_KEY` environment variable
+4. Empty string (may still work if Application Default Credentials are configured)
+
+### Message Creation
+
+```python
+async def create_message(
+    self,
+    *,
+    messages: list[dict],
+    system: str,
+    tools: list[dict] | None = None,
+    max_tokens: int = 1024,
+) -> ChatResponse:
+```
+
+Steps:
+
+1. Build a `GenerateContentConfig` with `system_instruction=system` and `max_output_tokens=max_tokens`.
+2. If `tools` is provided, convert via `_convert_tools` and attach to the config.
+3. Convert `messages` to Gemini `Content` objects via `_convert_messages`.
+4. Call `self._client.aio.models.generate_content(model=..., contents=..., config=...)`.
+5. Parse the response via `_parse_response`.
+
+### Tool Definition Conversion
+
+Static method `_convert_tools(anthropic_tools) -> list`.
+
+Converts Anthropic-format tool definitions to a list containing a single `types.Tool` with all function declarations. Each tool becomes a `FunctionDeclaration` with:
+
+- `name`: tool name
+- `description`: tool description (defaults to `""`)
+- `parameters`: the `input_schema` recursively converted to a `types.Schema` object via `_convert_schema`. Set to `None` if the schema has no `properties`.
+
+### Message Format Conversion
+
+Static method `_convert_messages(messages) -> list`.
+
+Converts Anthropic-format conversation history to Gemini `Content` objects. The system prompt is not included here — it is passed via `GenerateContentConfig.system_instruction`.
+
+**Pre-processing:** Before converting, the method builds a `tool_use_id → function_name` mapping from assistant messages. This is needed because Gemini's `FunctionResponse` requires the function name (not the opaque tool call ID used by Anthropic).
+
+**Per-message conversion rules:**
+
+| Incoming role | Incoming content type | Output |
+|---|---|---|
+| `"user"` | `list` | Iterate items. `tool_result` dicts become `Part.from_function_response(name=..., response=...)` where the name is looked up from the pre-built ID-to-name map and the content is JSON-parsed (falling back to `{"result": raw}` on parse failure). `text` dicts become `Part.from_text(...)`. Other items are stringified as text parts. All parts are combined into a single `Content(role="user")`. |
+| `"assistant"` | `list` | Items with a `.text` attribute become `Part.from_text(...)`. Items with `.name` and `.input` attributes become `Part.from_function_call(name=..., args=...)`. Combined into a single `Content(role="model")`. |
+| `"assistant"` | non-list | Single `Content(role="model")` with one text part. |
+| any other role | non-list | Single `Content(role="user")` with one text part. |
+
+Note: Gemini uses `"model"` instead of `"assistant"` for assistant messages.
+
+### Response Parsing
+
+Static method `_parse_response(response) -> ChatResponse`.
+
+Inspects `response.candidates[0].content.parts`:
+
+- Parts with `.text` become `TextBlock(text=...)`.
+- Parts with `.function_call` become `ToolUseBlock(id=<random-8-char-uuid>, name=fc.name, input=dict(fc.args))`. Gemini does not provide tool call IDs, so a random 8-character UUID prefix is generated.
+
+**Empty / missing response guards** (returns a `ChatResponse` with a single empty `TextBlock` in each case):
+
+- If `response.candidates` is empty or falsy.
+- If the first candidate's `.content` is `None` or its `.content.parts` is `None`/empty (e.g., safety-filtered responses where Gemini omits content entirely).
+- If none of the parts matched as text or function_call, so the assembled `content` list is empty after iteration.
+
+### Schema Conversion Helper
+
+Module-level function `_convert_schema(schema: dict) -> types.Schema`.
+
+Recursively converts a JSON Schema dict to a Gemini `types.Schema` object. This is necessary because Gemini does not accept raw JSON Schema — it requires its own `Schema` type.
+
+**Type mapping:**
+
+| JSON Schema type | Gemini type |
+|---|---|
+| `"string"` | `"STRING"` |
+| `"number"` | `"NUMBER"` |
+| `"integer"` | `"INTEGER"` |
+| `"boolean"` | `"BOOLEAN"` |
+| `"array"` | `"ARRAY"` |
+| `"object"` | `"OBJECT"` |
+
+**Special handling:**
+
+- **Union types:** JSON Schema allows `type` to be a list (e.g., `["string", "null"]`). Gemini doesn't support unions, so the first non-`"null"` type is selected.
+- **Enum values:** Gemini requires enum values to be strings. `None` values are filtered out from enum lists.
+- **Object properties:** Recursively converted. `required` fields are passed through.
+- **Array items:** The `items` schema is recursively converted.
+- **Description:** Preserved when present.
+
+---
+
+## 9. LoggedChatProvider
+
+Defined in `src/chat_providers/logged.py`. Class: `LoggedChatProvider`.
+
+A decorator (wrapper) that wraps any `ChatProvider` instance with timing and LLM logging. It delegates all `create_message` calls to the wrapped provider while recording request/response data to the `LLMLogger` subsystem.
+
+This is used by the system to transparently add logging to whichever provider is active, without the provider needing to know about logging concerns.

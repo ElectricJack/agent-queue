@@ -2,8 +2,7 @@
 
 **Status:** Draft
 **Principles:** [[guiding-design-principles]] (#2 visible and editable, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[playbooks]], [[vault-and-memory]], `../scheduler-and-budget.md`,
-`../models-and-state-machine.md`, `../orchestrator.md`
+**Related:** [[playbooks]], [[vault-and-memory]], [[scheduler-and-budget]], [[models-and-state-machine]], [[orchestrator]]
 
 ---
 

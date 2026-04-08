@@ -3,12 +3,14 @@
 The Supervisor is the single intelligent entity in the agent-queue system.
 It replaces the former `ChatAgent` class. All LLM reasoning flows through it.
 
+> **Future evolution:** See [[design/playbooks]] for how playbook execution extends the Supervisor model.
+
 ## Class: Supervisor (src/supervisor.py)
 
 ### Constructor
 - `Supervisor(orchestrator, config, llm_logger=None)`
-- Creates a `CommandHandler` for tool execution
-- Creates a `ReflectionEngine` from `config.supervisor.reflection`
+- Creates a [[command-handler|CommandHandler]] for tool execution
+- Creates a [[reflection|ReflectionEngine]] from `config.supervisor.reflection`
 
 ### Methods
 
@@ -36,7 +38,7 @@ multi-turn tool-use loop. The loop is structured around the LLM calling
 a `reply_to_user` tool to deliver its final response — if the LLM stops
 without calling it, a nudge mechanism (up to 2 nudges) prompts it to
 use the tool. If tools were used prior to `reply_to_user`, triggers a
-reflection pass. Starts with core tools only; expands via `load_tools`.
+reflection pass. Starts with core tools only; expands via `load_tools` (see [[tiered-tools]]).
 
 When reflection returns a verdict that did not pass, the supervisor
 recursively calls `chat()` with a retry prompt (self-correction loop).
@@ -121,6 +123,7 @@ context windows, isolated workspaces, and comprehensive tool suites.
 - When a user reports unexpected behavior — even if the current behavior can be explained, create a task to investigate whether a change is needed
 
 **Do it yourself (no task needed) ONLY for:**
+- Reading files to answer a question (grep, glob, read — investigation only)
 - Running a quick status command to report results
 - Management operations: task/project/agent/rule/hook CRUD
 - Answering questions about system state (list tasks, check status)
@@ -136,7 +139,7 @@ context windows, isolated workspaces, and comprehensive tool suites.
 ### System Prompt Architecture
 
 The system prompt (`src/prompts/supervisor_system.md`) is assembled dynamically
-by `_build_system_prompt()` using `PromptBuilder`. It combines the static prompt
+by `_build_system_prompt()` using [[prompt-builder|PromptBuilder]]. It combines the static prompt
 template with runtime context injected at each conversation turn.
 
 **Tool Name Index** (`ToolRegistry.get_tool_index()`)
@@ -144,7 +147,7 @@ template with runtime context injected at each conversation turn.
   injected into the system prompt at build time.
 - Format: `**category**: tool1, tool2, tool3` — one line per category.
 - Eliminates the need for a `browse_tools` round-trip at the start of every
-  conversation, saving ~2-5 seconds of latency per interaction.
+  conversation, saving ~2–5 seconds of latency per interaction.
 - The index is always current because it is regenerated from the live registry
   on every `_build_system_prompt()` call.
 - Implementation: `src/tool_registry.py` → `get_tool_index()`,

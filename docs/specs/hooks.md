@@ -1,23 +1,26 @@
 # Hook Engine Specification
 
 **Source files:** `src/hooks.py`, `src/file_watcher.py`
-**Related models:** `src/models.py` (`Hook`, `HookRun`)
-**Related config:** `src/config.py` (`HookEngineConfig`, `ChatProviderConfig`)
+**Related models:** [[models]] (`Hook`, `HookRun`)
+**Related config:** [[config]] (`HookEngineConfig`, `ChatProviderConfig`)
 
 ---
 
 ## 1. Overview
 
-The `HookEngine` class implements a generic, event-driven automation layer that runs
-alongside the main orchestrator loop. Its purpose is to let operators attach
-executable reactions to system events or scheduled intervals without writing custom
-code.
+> **Future evolution:** The hook engine will be replaced by [[design/playbooks|playbooks]]. See [[design/playbooks]] for the planned migration.
 
-The pipeline for every hook execution follows two stages:
+The `HookEngine` class implements a generic, event-driven automation layer that runs
+alongside the main orchestrator loop. Hooks are **internal execution artifacts** —
+they are always generated from rules and should not be created or edited directly.
+
+The automation model follows a unified pipeline:
 
 ```mermaid
 flowchart TD
-    A[Trigger<br/><i>event, periodic, or file watch</i>] --> B[Render Prompt<br/><i>substitute event vars</i>]
+    R[Rule Saved<br/><i>markdown file with YAML frontmatter</i>] --> G[Hook Generated<br/><i>RuleManager reconciliation</i>]
+    G --> A[Trigger<br/><i>event, periodic, or file watch</i>]
+    A --> B[Render Prompt<br/><i>substitute event vars</i>]
     B --> C[LLM Invocation<br/><i>Supervisor with full tool access</i>]
     C --> D[Record Run<br/><i>status, response, tokens</i>]
 ```
@@ -36,29 +39,76 @@ deciding whether to run a hook.
 
 ---
 
-## 2. Hook Data Model
+## 2. Hook Provenance — All Hooks Are Rule-Generated
+
+**Rules are the only interface for creating automation.** Hooks are derived, disposable
+execution artifacts managed by the `RuleManager`. Users interact with rules; the system
+manages hooks.
+
+### Lifecycle
+
+```
+Rule saved (markdown file) → RuleManager reconciliation → Hook(s) created in DB
+                                                           → Hook engine fires on trigger
+                                                           → HookRun recorded
+```
+
+### Source Tracking
+
+Every hook traces back to its source rule:
+
+| Field | Description |
+|---|---|
+| `id` prefix | Rule-generated hooks have IDs prefixed with `rule-{rule_id}-` |
+| `source_hash` | Content hash of the rule's trigger config + prompt. Used for idempotent reconciliation — if the hash hasn't changed, the hook is not regenerated. |
+
+### Why No Direct Hook Creation
+
+Previously, hooks could be created directly via `create_hook` or `edit_hook` commands.
+This led to:
+- **Duplicate hooks** from concurrent reconciliation runs
+- **Orphan hooks** invisible to rule management
+- **State confusion** when direct edits were overwritten by reconciliation
+
+The unified model eliminates these problems by making rules the single source of truth.
+
+### Legacy Hook Migration
+
+Existing hooks that were created directly (not via rules) are automatically migrated
+to rule-backed hooks on startup. The `migrate_orphan_hooks()` method:
+1. Finds hooks without a `rule-` ID prefix
+2. Generates a rule markdown file from the hook's configuration
+3. Lets reconciliation regenerate the hook with proper rule backing
+4. Deletes the original orphan hook
+
+This migration is idempotent — re-running it skips already-migrated hooks.
+
+---
+
+## 3. Hook Data Model
 
 A hook is persisted as a `Hook` dataclass in the `hooks` table:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | Unique identifier |
+| `id` | `str` | Unique identifier (prefixed `rule-{rule_id}-` for rule-generated hooks) |
 | `project_id` | `str` | Owning project |
 | `name` | `str` | Human-readable label |
 | `enabled` | `bool` | Whether the engine considers this hook (default `True`) |
 | `trigger` | `str` | JSON object — see Trigger Types below |
-| `context_steps` | `str` | JSON array — see Context Gathering below |
 | `prompt_template` | `str` | Template string with `{{...}}` placeholders |
 | `llm_config` | `str \| None` | JSON object overriding the global chat provider |
 | `cooldown_seconds` | `int` | Minimum seconds between two executions (default `3600`) |
+| `source_hash` | `str \| None` | Content hash of the source rule (for idempotent reconciliation) |
 | `max_tokens_per_run` | `int \| None` | Reserved for future enforcement |
+| `last_triggered_at` | `float \| None` | Epoch seconds of last trigger, persisted across restarts |
 | `created_at` / `updated_at` | `float` | Unix timestamps |
 
 ---
 
-## 3. Hook Lifecycle
+## 4. Hook Lifecycle
 
-### 3.1 Trigger Types
+### 4.1 Trigger Types
 
 A hook's `trigger` field is a JSON object with a `type` key. Two types are supported.
 
@@ -81,13 +131,13 @@ queries all enabled hooks and checks each one in order:
 4. **Project-scoped filtering:** if the event payload contains a `project_id` and it
    does not match the hook's `project_id`, skip the hook. This ensures hooks only fire
    for events in their owning project.
-5. Apply the cooldown check (see 3.3).
-6. Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
+5. Apply the cooldown check (see 4.3).
+6. Apply the global concurrency cap (see 4.4) — if the cap is reached, stop examining
    further hooks (`break`).
 7. If all checks pass, launch the hook with `trigger_reason = "event:<event_type>"`.
 
 The full event payload dict is passed through as `event_data` and made available
-inside context steps and the prompt template.
+inside the prompt template.
 
 **Available event types:**
 
@@ -147,12 +197,6 @@ modified then deleted = report "deleted".
 Watch rules are synchronized from hook configs at `initialize()` and whenever hooks
 are added/removed. Watches for disabled or deleted hooks are automatically cleaned up.
 
-#### Trigger-Level Flags
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `skip_llm` | `bool` | `false` | Run context steps only; do not invoke the LLM. Run is recorded as `completed` with no LLM response. |
-
 #### Periodic (`type: "periodic"`)
 
 ```json
@@ -166,12 +210,12 @@ Periodic hooks are checked during each call to `tick()`, which the orchestrator
 invokes approximately every 5 seconds. For each enabled hook in the list, the engine
 iterates and applies the following checks in order:
 
-1. Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
+1. Apply the global concurrency cap (see 4.4) — if the cap is reached, stop examining
    further hooks for this cycle entirely (`break`).
 2. Skip hooks already in-flight (`hook.id in self._running`).
 3. Skip hooks whose trigger type is not `"periodic"`.
 4. Elapsed time since last run `>= interval_seconds` (default `3600` if omitted).
-5. Cooldown check (see 3.3).
+5. Cooldown check (see 4.3).
 
 If all checks pass, the hook is launched with `trigger_reason = "periodic"` and
 an `event_data` dict containing timing context:
@@ -188,7 +232,7 @@ This timing data is available in prompt templates as `{{event.current_time}}`,
 `{{event.last_run_time}}`, etc., and is also rendered into the context preamble
 so the LLM can scope its work to changes since the last execution.
 
-### 3.2 Execution Entry Point
+### 4.2 Execution Entry Point
 
 Both trigger types ultimately call `_launch_hook`, which:
 
@@ -201,7 +245,7 @@ Both trigger types ultimately call `_launch_hook`, which:
 Completed tasks are cleaned up at the start of each `tick()` call. If a task raised
 an unhandled exception it is logged at `ERROR` level at that point.
 
-### 3.3 Cooldown Logic
+### 4.3 Cooldown Logic
 
 The cooldown is enforced by `_check_cooldown(hook, now)`:
 
@@ -211,13 +255,13 @@ return (now - self._last_run_time.get(hook.id, 0)) >= hook.cooldown_seconds
 
 - `_last_run_time` is an in-memory dict keyed by `hook.id`.
 - On `initialize()`, the last run time for each hook is pre-populated from the
-  database (see Section 8).
+  database (see Section 9).
 - `_launch_hook` updates `_last_run_time` immediately upon launch, not on
   completion, preventing simultaneous overlapping runs.
 - The `fire_hook` manual trigger bypasses the cooldown check entirely but still
   updates `_last_run_time` to prevent an immediate automatic re-run.
 
-### 3.4 Concurrency Limits
+### 4.4 Concurrency Limits
 
 The global cap is read from `config.hook_engine.max_concurrent_hooks` (default
 `2`). Before launching any hook — in both `tick()` and `_on_event` — the engine
@@ -234,7 +278,7 @@ yet been cleaned up by `tick()`) counts toward the cap.
 
 ---
 
-## 4. Prompt Template System
+## 5. Prompt Template System
 
 The `prompt_template` field of a `Hook` is a string that may contain `{{...}}`
 placeholders. `_render_prompt` replaces all placeholders using a regex
@@ -251,7 +295,7 @@ Unrecognised placeholders are left unchanged.
 
 ---
 
-## 5. LLM Invocation
+## 6. LLM Invocation
 
 LLM invocation happens in `_invoke_llm` after prompt rendering.
 
@@ -290,7 +334,7 @@ The preamble is rendered from the `hook-context` prompt template
 
 The hook context preamble is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
 `_build_hook_context()` uses `PromptBuilder.set_identity("hook-context")` with project
-metadata variables. Hook-specific placeholder substitution (`{{step_N}}`, `{{event}}`)
+metadata variables. Hook-specific placeholder substitution (`{{event}}`)
 remains in the hook engine's `_render_prompt()` method.
 
 ### Invocation Mechanism
@@ -308,7 +352,7 @@ commands, create tasks, update projects, etc.
 
 An `on_progress` callback is passed to `chat_agent.chat()` to track tool calls made
 by the hook's LLM. The callback collects tool names and sends live updates to the
-project's Discord channel as tools are called (see Section 13).
+project's Discord channel as tools are called (see Section 12).
 
 ### Token Counting
 
@@ -325,7 +369,7 @@ enforcement.
 
 ---
 
-## 6. Hook Run Recording
+## 7. Hook Run Recording
 
 Every execution creates a `HookRun` record that is updated progressively through
 the pipeline.
@@ -338,14 +382,12 @@ the pipeline.
 | `hook_id` | `str` | Foreign key to the `hooks` table |
 | `project_id` | `str` | Copied from the `Hook` at run time |
 | `trigger_reason` | `str` | `"periodic"`, `"event:<type>"`, or `"manual"` |
-| `status` | `str` | `running` → `completed` / `failed` / `skipped` |
+| `status` | `str` | `running` → `completed` / `failed` |
 | `event_data` | `str \| None` | JSON-serialised `event_data` dict |
-| `context_results` | `str \| None` | JSON-serialised list of step result dicts |
 | `prompt_sent` | `str \| None` | Fully rendered prompt string |
 | `llm_response` | `str \| None` | LLM reply text, or exception message on failure |
 | `actions_taken` | `str \| None` | Reserved; not written by current implementation |
-| `skipped_reason` | `str \| None` | Human-readable skip reason when `status = "skipped"` |
-| `tokens_used` | `int` | Estimated token count (see Section 7) |
+| `tokens_used` | `int` | Estimated token count (see Section 6) |
 | `started_at` | `float` | Unix timestamp set at run creation |
 | `completed_at` | `float \| None` | Unix timestamp set on terminal status transition |
 
@@ -354,21 +396,16 @@ the pipeline.
 ```mermaid
 stateDiagram-v2
     [*] --> running : HookRun created
-    running --> skipped : short-circuit matched
     running --> completed : LLM returned response
     running --> failed : unhandled exception
 ```
 
-- **skipped**: short-circuit condition matched; `skipped_reason` is set.
 - **completed**: LLM returned a response; `llm_response` and `tokens_used` are set.
 - **failed**: any unhandled exception; `llm_response` holds the exception string.
 
-The `context_results` field is written after step execution regardless of the
-terminal status — it captures whatever was gathered before the failure or skip.
-
 ---
 
-## 7. Manual Triggering
+## 8. Manual Triggering
 
 `fire_hook(hook_id: str) -> str` allows an administrator to run a hook immediately,
 bypassing the cooldown and periodic scheduling checks.
@@ -388,7 +425,7 @@ generated inside `_execute_hook` and is not surfaced back to the caller.
 
 ---
 
-## 8. Initialization
+## 9. Initialization
 
 `initialize()` is called once during system startup before the orchestrator loop
 begins.
@@ -412,7 +449,7 @@ begins.
 
 ---
 
-## 9. Shutdown
+## 10. Shutdown
 
 `shutdown()` cancels all in-flight asyncio tasks and waits for them to finish.
 
@@ -432,7 +469,7 @@ final `update_hook_run` call.
 
 ---
 
-## 10. FileWatcher
+## 11. FileWatcher
 
 The `FileWatcher` class (`src/file_watcher.py`) monitors files and directories for
 changes using mtime-based polling. It is created by the `HookEngine` at
@@ -450,6 +487,20 @@ HookEngine.initialize()
     └── Folder watches: accumulate changes, emit folder.changed after debounce window
 ```
 
+### Rule File Watcher
+
+In addition to hook-triggered file watches, the system runs a **Rule File Watcher**
+that monitors all rule directories (`~/.agent-queue/memory/*/rules/` and
+`~/.agent-queue/memory/global/rules/`). When a rule markdown file is created,
+modified, or deleted on disk:
+
+1. The file watcher detects the change (debounced at 5s)
+2. Only the affected rule is reconciled (not all rules)
+3. On file deletion, associated hooks are cleaned up automatically
+
+This makes direct file editing a first-class workflow — there is no need for manual
+`refresh_hooks` after editing rule files on disk.
+
 ### File Watches
 
 Compare file mtime on each poll. Detect creation, modification, and deletion.
@@ -465,7 +516,7 @@ after the debounce window expires.
 
 ---
 
-## 11. Discord Notifications
+## 12. Discord Notifications
 
 Hook execution progress is reported to the project's Discord channel via
 `orchestrator._notify_channel()`. Four notification types are sent:
@@ -474,8 +525,7 @@ Hook execution progress is reported to the project's Discord channel via
 |---|---|
 | **Start** | `🪝 Hook **{name}** is running (trigger: \`{reason}\`).` |
 | **Tool use** (live) | `🪝 Hook **{name}** 🔧 \`tool1\` → \`tool2\`` |
-| **Completed** | `🪝 Hook **{name}** completed.` + tool chain + response summary (truncated to 200 chars) |
-| **Skipped** | `🪝 Hook **{name}** skipped: {reason}` |
+| **Completed** | `🪝 Hook **{name}** completed.` + tool chain + response summary (truncated to 4000 chars) |
 | **Failed** | `🪝 Hook **{name}** failed: {error}` |
 
 This mirrors the tool call visibility that chat agent interactions have in Discord,
@@ -483,7 +533,7 @@ where users can see `💭 Thinking...` → `🔧 Working... tool1 → tool2` →
 
 ---
 
-## 12. Configuration Reference
+## 13. Configuration Reference
 
 `HookEngineConfig` (from `src/config.py`):
 
@@ -505,14 +555,3 @@ hook_engine:
   file_watcher_poll_interval: 10
   file_watcher_debounce_seconds: 5
 ```
-
----
-
-## 13. Rule-Generated Hooks
-
-Hooks can be generated automatically from active rules via the Rule System
-(see `specs/rule-system.md`). Rule-generated hooks:
-- Have IDs prefixed with `rule-{rule_id}-`
-- Include the rule content in their prompt template
-- Are deleted and regenerated when the rule is updated
-- Are verified during startup reconciliation

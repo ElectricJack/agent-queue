@@ -4,6 +4,8 @@
 
 This document specifies the core domain models and task state machine for Agent Queue. Together they define every entity the system tracks (tasks, agents, projects, repos, hooks) and the rules governing how a task moves through its lifecycle from initial definition to completion or permanent failure.
 
+> **Future evolution:** See [[design/agent-coordination]] for workflow-level coordination on top of the task state machine.
+
 ---
 
 ## Source Files
@@ -30,6 +32,7 @@ Represents the current lifecycle position of a task. A task always holds exactly
 | `COMPLETED` | The task is done and all verification or approval requirements are satisfied. Downstream dependents may now be promoted. |
 | `FAILED` | The agent run ended with an error. The task may be retried (up to `max_retries`) by transitioning back to READY. |
 | `BLOCKED` | The task has exhausted its retries, was administratively stopped, timed out without recovery, or its PR was closed. No automatic recovery occurs; manual admin action is required to restart it. |
+| `AWAITING_PLAN_APPROVAL` | The agent completed and a plan file was discovered. The plan must be approved, rejected, or deleted by a human before the task can proceed. |
 
 ---
 
@@ -60,6 +63,30 @@ Events are the inputs to the state machine. Each event, combined with the curren
 | `TIMEOUT` | The task or agent did not produce a heartbeat within the expected window. |
 | `EXECUTION_ERROR` | An unexpected runtime error occurred during task execution; the assigned task is returned to READY for a new attempt. |
 | `RECOVERY` | The daemon restarted and detected a task that was left in ASSIGNED or IN_PROGRESS with no running agent; it resets the task to READY. |
+| `MERGE_FAILED` | The post-completion merge/rebase operation failed. |
+| `MERGE_SUCCEEDED` | The post-completion merge/rebase operation succeeded. |
+| `PLAN_FOUND` | A plan file was discovered in the task's workspace after completion. |
+| `PLAN_APPROVED` | A human approved the discovered plan; subtasks will be created. |
+| `PLAN_REJECTED` | A human rejected the discovered plan with feedback. |
+| `PLAN_DELETED` | A human deleted the discovered plan without creating subtasks. |
+
+---
+
+### TaskType
+
+Classifies the nature of a task for reporting and workflow differentiation.
+
+| Value | Meaning |
+|---|---|
+| `FEATURE` | New feature implementation. |
+| `BUGFIX` | Bug fix. |
+| `REFACTOR` | Code refactoring. |
+| `TEST` | Test creation or improvement. |
+| `DOCS` | Documentation work. |
+| `CHORE` | Maintenance or housekeeping. |
+| `RESEARCH` | Investigation or research. |
+| `PLAN` | Plan generation task. |
+| `SYNC` | Workspace synchronization task (orchestrator-managed). |
 
 ---
 
@@ -67,10 +94,12 @@ Events are the inputs to the state machine. Each event, combined with the curren
 
 Represents the current operational status of an agent worker process.
 
+> **Note:** The `Agent` model and `AgentState` enum are deprecated. They are being replaced
+> by the workspace-as-agent model (`WorkspaceAgent`). See below.
+
 | Value | Meaning |
 |---|---|
 | `IDLE` | The agent is registered and available to accept a new task. |
-| `STARTING` | The agent has been assigned a task and its process is being initialized. |
 | `BUSY` | The agent is actively executing a task. |
 | `PAUSED` | The agent's current task is paused (e.g. token exhaustion); the agent is not executing but is not free for other work. |
 | `ERROR` | The agent encountered an unrecoverable error and is not usable until reset. |
@@ -87,6 +116,7 @@ The outcome value an agent reports when it finishes a task run, whether successf
 | `FAILED` | The agent terminated with an error. |
 | `PAUSED_TOKENS` | The agent stopped because it exhausted its token budget; work may be resumed. |
 | `PAUSED_RATE_LIMIT` | The agent stopped because the upstream API imposed a rate limit; work will resume after a backoff delay. |
+| `WAITING_INPUT` | The agent has asked a question and is waiting for a human response. |
 
 ---
 
@@ -160,6 +190,9 @@ Represents a software project managed by the system. Projects are the top-level 
 | `total_tokens_used` | `int` | Cumulative count of tokens consumed by all agents across all tasks for this project. |
 | `budget_limit` | `int \| None` | Optional hard cap on total tokens. When set, no new tasks are started once this limit is reached. `None` means unlimited. |
 | `discord_channel_id` | `str \| None` | Optional Discord channel ID for project-specific notifications. When set, all task output for this project is routed to this channel instead of the default control channel. |
+| `repo_url` | `str` | Repository URL for the project. Empty string if not set. |
+| `repo_default_branch` | `str` | Default branch name for the project's repository. Defaults to `"main"`. |
+| `default_profile_id` | `str` | Default agent profile ID for tasks in this project. Empty string if not set. |
 
 ---
 
@@ -187,6 +220,10 @@ The central entity of the system. A task represents a unit of work to be execute
 | `pr_url` | `str \| None` | URL of the pull request created for this task. `None` until a PR exists. |
 | `plan_source` | `str \| None` | Filesystem path to the archived plan file that auto-generated this task. `None` for manually created tasks. |
 | `is_plan_subtask` | `bool` | `True` if this task was automatically generated from a parent task's plan output. Defaults to `False`. |
+| `task_type` | `TaskType` | Classification of the task (feature, bugfix, docs, etc.). Defaults to `FEATURE`. |
+| `profile_id` | `str` | ID of the agent profile to use for execution. Empty string if not set. |
+| `preferred_workspace_id` | `str` | ID of a specific workspace to use. Empty string if not set. |
+| `attachments` | `list[str]` | File paths or URLs attached as additional context. Defaults to empty list. |
 
 **Constraints:**
 - `retry_count` must never exceed `max_retries`. When they are equal and the task fails again, it transitions to BLOCKED rather than being retried.
@@ -195,7 +232,11 @@ The central entity of the system. A task represents a unit of work to be execute
 
 ---
 
-### Agent
+### Agent (deprecated)
+
+> **Deprecated:** The `Agent` model is being replaced by the workspace-as-agent model.
+> See `WorkspaceAgent` and `Workspace` below. The `Agent` class remains for backward
+> compatibility but should not be used for new features.
 
 Represents a registered agent worker that can execute tasks.
 
@@ -206,8 +247,6 @@ Represents a registered agent worker that can execute tasks.
 | `agent_type` | `str` | The agent implementation type. Known values: `"claude"`, `"codex"`, `"cursor"`, `"aider"`. |
 | `state` | `AgentState` | Current operational status. Defaults to IDLE. |
 | `current_task_id` | `str \| None` | The task the agent is currently working on. `None` when IDLE. |
-| `checkout_path` | `str \| None` | Filesystem path of the agent's current working directory for its task. |
-| `repo_id` | `str \| None` | Repo the agent currently has checked out. |
 | `pid` | `int \| None` | OS process ID of the running agent subprocess. `None` when not executing. |
 | `last_heartbeat` | `float \| None` | Unix timestamp of the most recent health signal from the agent. Used to detect dead agents. |
 | `total_tokens_used` | `int` | Cumulative token count across all tasks this agent has ever run. |
@@ -221,16 +260,17 @@ The full set of information handed to an agent when a task is assigned. This is 
 
 | Field | Type | Description |
 |---|---|---|
+| `task_id` | `str` | The ID of the task being executed. |
 | `description` | `str` | The task's full description (instructions for the agent). |
 | `acceptance_criteria` | `list[str]` | Ordered list of conditions that define "done". The agent is expected to satisfy all of them. |
 | `test_commands` | `list[str]` | Shell commands to run to verify the work. Used when `verification_type` is AUTO_TEST. |
 | `checkout_path` | `str` | Absolute filesystem path where the agent should work. |
 | `branch_name` | `str` | Git branch the agent should use. |
 | `attached_context` | `list[str]` | Additional text blobs (documentation, examples, notes) injected into the agent's context window. |
-| `mcp_servers` | `list[dict]` | MCP (Model Context Protocol) server configurations available to the agent. Each dict contains server connection parameters. |
-| `tools` | `list[str]` | Names of tools the agent is permitted to use during this task. |
+| `mcp_servers` | `dict[str, dict]` | MCP (Model Context Protocol) server configurations available to the agent. Keys are server names, values are server connection parameters. |
+| `image_paths` | `list[str]` | Paths to images attached to the task context. |
 
-All list fields default to empty lists. `checkout_path` and `branch_name` default to empty strings.
+All list/dict fields default to empty. `checkout_path` and `branch_name` default to empty strings.
 
 ---
 
@@ -245,6 +285,7 @@ The result an agent reports when it finishes (successfully or not).
 | `files_changed` | `list[str]` | List of file paths the agent modified. May be used for notifications or review. |
 | `tokens_used` | `int` | Number of tokens consumed during this run. |
 | `error_message` | `str \| None` | If `result` is FAILED, contains the error details. `None` on success. |
+| `question` | `str` | If `result` is WAITING_INPUT, contains the agent's question. Empty string otherwise. |
 
 ---
 
@@ -266,6 +307,78 @@ A configured automation that fires on a schedule or in response to task lifecycl
 | `max_tokens_per_run` | `int \| None` | Optional per-run token budget cap. `None` means no limit beyond the global budget. |
 | `created_at` | `float` | Unix timestamp when the hook was created. |
 | `updated_at` | `float` | Unix timestamp of the most recent modification. |
+| `last_triggered_at` | `float` | Unix timestamp of the most recent trigger. Used for cooldown enforcement. |
+
+---
+
+### Workspace
+
+Represents a filesystem workspace assigned to a project. Workspaces replace the
+former per-agent checkout model — agents now acquire workspace locks at task time.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `str` | Unique workspace identifier. |
+| `project_id` | `str` | The project this workspace belongs to. |
+| `workspace_path` | `str` | Absolute filesystem path. |
+| `source_type` | `RepoSourceType` | How the workspace was set up (clone, link, or init). |
+| `name` | `str` | Human-readable workspace name. |
+| `locked_by_agent_id` | `str \| None` | Agent currently using this workspace. `None` when available. |
+| `locked_by_task_id` | `str \| None` | Task the workspace is locked for. `None` when available. |
+| `locked_at` | `float \| None` | Unix timestamp when the lock was acquired. |
+| `created_at` | `float` | Unix timestamp when the workspace was created. |
+
+---
+
+### WorkspaceAgent
+
+A lightweight view model that represents an agent derived from a workspace slot.
+Replaces the deprecated `Agent` model in the workspace-as-agent architecture.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `str` | Derived agent identifier (from workspace). |
+| `name` | `str` | Display name. |
+| `agent_type` | `str` | Agent implementation type. |
+| `state` | `AgentState` | Current operational status. |
+| `current_task_id` | `str \| None` | Currently assigned task. |
+| `workspace_id` | `str` | The workspace this agent is derived from. |
+
+---
+
+### AgentProfile
+
+Defines a reusable configuration profile for agents, controlling model, tools,
+permissions, and system prompt customization.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `str` | Unique profile identifier. |
+| `name` | `str` | Human-readable name (unique). |
+| `description` | `str` | What this profile is for. |
+| `model` | `str` | LLM model to use. |
+| `permission_mode` | `str` | Permission level for the agent. |
+| `allowed_tools` | `list[str]` | Tools this profile grants access to. |
+| `mcp_servers` | `dict` | MCP server configurations. |
+| `system_prompt_suffix` | `str` | Additional system prompt text. |
+| `install` | `dict` | Install manifest for dependencies. |
+| `created_at` | `float` | Unix timestamp. |
+| `updated_at` | `float` | Unix timestamp. |
+
+---
+
+### MemoryContext
+
+Contextual memory data retrieved from the semantic memory system.
+
+---
+
+### CompletionPhase / PipelineContext / PhaseResult
+
+Models for the three-phase task completion pipeline (`_run_completion_pipeline`):
+- `PhaseResult` — enum of phase outcomes
+- `CompletionPhase` — a single pipeline phase (commit, plan discover, merge)
+- `PipelineContext` — shared state across all phases of the pipeline
 
 ---
 
@@ -296,7 +409,13 @@ A record of a single execution of a hook.
 
 ### Overview
 
-The state machine defines the only legal ways a task's `status` field may change. Each transition is triggered by a named event. Attempting a transition that is not listed here is an error (`InvalidTransition` exception).
+> **Important: Advisory/Logging Only.** The state machine transitions defined here are
+> **not enforced** in production. The orchestrator writes status changes directly via
+> `db.update_task()` and `db.transition_task()`. The `transition_task` method calls
+> `is_valid_status_transition()` but on failure only emits a `logger.warning()` and
+> **proceeds with the update anyway**. The `task_transition()` function (which does raise
+> `InvalidTransition`) exists but is never called in the production code path. Invalid
+> transitions can occur in practice if the orchestrator has bugs.
 
 The machine is defined as a lookup table keyed by `(current_status, event)` pairs. Given a current status and an event, there is at most one possible next status.
 
@@ -313,7 +432,7 @@ stateDiagram-v2
     ASSIGNED --> READY : EXECUTION_ERROR / RECOVERY
     ASSIGNED --> BLOCKED : TIMEOUT
 
-    IN_PROGRESS --> COMPLETED : AGENT_COMPLETED
+    IN_PROGRESS --> COMPLETED : AGENT_COMPLETED / MERGE_SUCCEEDED
     IN_PROGRESS --> AWAITING_APPROVAL : PR_CREATED
     IN_PROGRESS --> AWAITING_PLAN_APPROVAL : PLAN_FOUND
     IN_PROGRESS --> BLOCKED : MERGE_FAILED / TIMEOUT / ADMIN_STOP / MAX_RETRIES
@@ -322,9 +441,14 @@ stateDiagram-v2
     IN_PROGRESS --> WAITING_INPUT : AGENT_QUESTION
     IN_PROGRESS --> READY : RETRY / RECOVERY
 
+    READY --> AWAITING_PLAN_APPROVAL : PLAN_FOUND
+
     AWAITING_APPROVAL --> COMPLETED : PR_MERGED
     AWAITING_APPROVAL --> BLOCKED : PR_CLOSED
     AWAITING_APPROVAL --> READY : ADMIN_RESTART
+
+    AWAITING_PLAN_APPROVAL --> COMPLETED : PLAN_APPROVED / PLAN_DELETED
+    AWAITING_PLAN_APPROVAL --> READY : PLAN_REJECTED / ADMIN_RESTART
 
     FAILED --> READY : RETRY / ADMIN_RESTART
     FAILED --> BLOCKED : MAX_RETRIES
@@ -412,6 +536,29 @@ Administrative events allow a human operator to override the normal lifecycle.
 | WAITING_INPUT | ADMIN_RESTART | READY | Admin cancels the pending question and restarts. |
 
 Note: `IN_PROGRESS` is the only status from which `ADMIN_RESTART` is not a defined transition. An admin must use `ADMIN_STOP` first to move the task to BLOCKED, then `ADMIN_RESTART` to re-queue it.
+
+---
+
+### Plan Approval Lifecycle Transitions
+
+| From | Event | To | Notes |
+|---|---|---|---|
+| IN_PROGRESS | PLAN_FOUND | AWAITING_PLAN_APPROVAL | A plan file was discovered after agent completion. |
+| READY | PLAN_FOUND | AWAITING_PLAN_APPROVAL | Plan discovered during post-completion processing. |
+| AWAITING_PLAN_APPROVAL | PLAN_APPROVED | IN_PROGRESS | Human approved the plan; subtasks activated. Parent stays IN_PROGRESS until all subtasks complete. |
+| IN_PROGRESS | SUBTASKS_COMPLETED | COMPLETED | All subtasks of a plan have reached COMPLETED; parent auto-completes. |
+| AWAITING_PLAN_APPROVAL | PLAN_REJECTED | READY | Human rejected the plan with feedback; task is re-queued. |
+| AWAITING_PLAN_APPROVAL | PLAN_DELETED | COMPLETED | Human deleted the plan; task marked complete without subtasks. |
+| AWAITING_PLAN_APPROVAL | ADMIN_RESTART | READY | Admin manually resets during plan approval. |
+
+---
+
+### Merge Result Transitions
+
+| From | Event | To | Notes |
+|---|---|---|---|
+| IN_PROGRESS | MERGE_FAILED | BLOCKED | Merge/rebase failed; task is blocked pending manual intervention. |
+| IN_PROGRESS | MERGE_SUCCEEDED | COMPLETED | Merge succeeded; task is complete. |
 
 ---
 

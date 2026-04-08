@@ -1,0 +1,243 @@
+{
+  "main": {
+    "id": "558370d0aa24d1a8",
+    "type": "split",
+    "children": [
+      {
+        "id": "16e8ed817b787def",
+        "type": "tabs",
+        "dimension": 46.901709401709404,
+        "children": [
+          {
+            "id": "1b086325c4d966d0",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "models-and-state-machine.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "models-and-state-machine"
+            }
+          }
+        ]
+      },
+      {
+        "id": "1e4e1beeb25b1361",
+        "type": "tabs",
+        "dimension": 53.098290598290596,
+        "children": [
+          {
+            "id": "d2b320b59e2bd529",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "memory-consolidation.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "memory-consolidation"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "24ac1f017c99c7f9",
+    "type": "split",
+    "children": [
+      {
+        "id": "816b4fdab56275bc",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "48861962580a73dd",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "d02fb5006a2a248a",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "f68684028e51bec2",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 269.5
+  },
+  "right": {
+    "id": "cf1df7a2afcc9fc2",
+    "type": "split",
+    "children": [
+      {
+        "id": "b2a0d2fea9454008",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "7b16993308b83f21",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "mcp-server.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for mcp-server"
+            }
+          },
+          {
+            "id": "fff1755afe8854ae",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "mcp-server.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from mcp-server"
+            }
+          },
+          {
+            "id": "d7054e09c103e8c8",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "3aab908189a84266",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "mcp-server.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of mcp-server"
+            }
+          },
+          {
+            "id": "364fd7f6f57dc867",
+            "type": "leaf",
+            "state": {
+              "type": "claude-code-view",
+              "state": {},
+              "icon": "bot",
+              "title": "Claude Code"
+            }
+          }
+        ],
+        "currentTab": 4
+      }
+    ],
+    "direction": "horizontal",
+    "width": 542.5
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false,
+      "obsidian42-brat:BRAT": false,
+      "claude-code-integration:Open Claude Code": false
+    }
+  },
+  "active": "1b086325c4d966d0",
+  "lastOpenFiles": [
+    "mcp-server.md",
+    "memory-consolidation.md",
+    "models-and-state-machine.md",
+    "plan-parser.md",
+    "orchestrator.md",
+    "reflection.md",
+    "proactive-inspector.md",
+    "prompt-builder.md",
+    "command-handler.md",
+    "design/vault-and-memory.md",
+    "design/README.md",
+    "design/playbooks.md",
+    "design/guiding-design-principles.md",
+    "design/agent-coordination.md",
+    "design",
+    "agent-profiles.md",
+    "chat-analyzer.md",
+    "chat-agent.md",
+    "chat-observer.md",
+    "supervisor.md",
+    "chat-providers/providers.md",
+    "llm-logging.md",
+    "hooks.md",
+    "scheduler-and-budget.md.tmp.39269.1775662552298",
+    "models-and-state-machine.md.tmp.39269.1775662545882",
+    "command-handler.md.tmp.39269.1775662538707",
+    "command-handler.md.tmp.39269.1775662534980",
+    "command-handler.md.tmp.39269.1775662524426",
+    "command-handler.md.tmp.39269.1775662519596",
+    "event-bus.md",
+    "database.md",
+    "tiered-tools.md.tmp.39269.1775661922775",
+    "mcp-server.md.tmp.39269.1775661914041",
+    "command-handler.md.tmp.39269.1775661908411"
+  ]
+}

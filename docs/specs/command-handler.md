@@ -4,7 +4,9 @@
 
 `CommandHandler` is the unified execution layer for all operational commands in AgentQueue. It is the single code path through which every operation must pass — both Discord slash commands and the LLM chat agent tools delegate their business logic here. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
 
-The handler holds a reference to an `Orchestrator` instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+The handler holds a reference to an [[orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+
+> **Future evolution:** See [[design/playbooks]] Section 15 for new playbook management commands.
 
 The `db` property is a convenience accessor that returns `self.orchestrator.db`.
 
@@ -36,6 +38,7 @@ Commands are registered implicitly: any instance method named `_cmd_<command_nam
 ```python
 CommandHandler(orchestrator: Orchestrator, config: AppConfig)
 ```
+See [[models-and-state-machine]] for the domain models referenced throughout these commands.
 
 After construction, callers may set `handler._on_project_deleted = callback` to register a post-deletion hook (signature: `callback(project_id: str) -> None`).
 
@@ -387,11 +390,14 @@ Creates a new task in READY status. If no `project_id` is given, the active proj
 
 **Parameters:**
 - `title` (required): Short task title.
-- `description` (required): Full task description/prompt for the agent.
+- `description` (optional, falls back to `title`): Full task description/prompt for the agent.
 - `project_id` (optional, falls back to active project): Project to assign the task to.
 - `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
-- `repo_id` (optional): Associate the task with a specific repo.
 - `requires_approval` (optional, default: `False`): If true, task moves to AWAITING_APPROVAL instead of COMPLETED when done.
+- `task_type` (optional): Task type classification (feature, bugfix, docs, etc.).
+- `profile_id` (optional): Agent profile to use for execution.
+- `preferred_workspace_id` (optional): Specific workspace to use.
+- `attachments` (optional): List of file paths or URLs for additional context.
 
 **Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status.
 
@@ -448,6 +454,12 @@ Updates one or more mutable fields on a task.
 - `title` (optional)
 - `description` (optional)
 - `priority` (optional)
+- `project_id` (optional): Move task to a different project.
+- `status` (optional): Change status (goes through proper transition logging).
+- `task_type` (optional): Change task type classification.
+- `max_retries` (optional): Update retry limit.
+- `verification_type` (optional): Change verification mode.
+- `profile_id` (optional): Change agent profile.
 
 At least one optional field must be supplied.
 
@@ -730,7 +742,7 @@ Approve a plan and create subtasks from it.
 **Parameters:**
 - `task_id` (required)
 
-**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `orchestrator._create_subtasks_from_stored_plan(task)` to create subtasks from the stored plan data (previously saved as `task_context` entries by `_discover_and_store_plan`). Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Reads stored plan data from `task_context` entries (saved by `_discover_and_store_plan` as `plan_raw`). Creates subtasks directly with dependency chains, delegating to the [[supervisor|Supervisor]] for LLM-based plan splitting when needed. Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
 
 **Returns on success:**
 ```python
@@ -869,66 +881,115 @@ Registers a new agent.
 
 ### Repos
 
+> **Note:** The `add_repo` and `list_repos` commands no longer exist in the implementation.
+> They have been replaced by the workspace subsystem. See Workspaces section below.
+
 ---
 
-#### `add_repo`
+### Workspaces
 
-Adds a repository configuration to a project.
+---
+
+#### `add_workspace`
+
+Creates a workspace for a project.
 
 **Parameters:**
-- `project_id` (required): Must exist.
-- `source` (required): One of `"clone"`, `"link"`, or `"init"` (maps to `RepoSourceType` enum).
-- `url` (required if `source == "clone"`): Git remote URL.
-- `path` (required if `source == "link"`): Local filesystem path to an existing directory.
-- `default_branch` (optional, default `"main"`): The repo's primary branch name.
-- `name` (optional): Repo name. If not provided, derived from the URL (last path segment minus `.git`) or the path basename.
-
-**Behavior:** Validates that for `clone` sources a URL is provided, and for `link` sources a valid directory path is provided. Derives the repo ID by lowercasing the name. Sets `checkout_base_path` from the workspace path (resolved via the `workspaces` table).
-
-**Returns on success:**
-```python
-{
-    "created": <str: repo_id>,
-    "name": <str>,
-    "source_type": <str>,
-    "checkout_base_path": <str>,
-}
-```
-
-**Errors:**
-- Project not found.
-- `url` missing for `clone` source.
-- `path` missing for `link` source.
-- `path` does not exist or is not a directory (for `link` source).
+- `project_id` (required)
+- `path` (required): Filesystem path for the workspace.
+- `source` (optional): One of `"clone"`, `"link"`, or `"init"`.
+- `name` (optional): Human-readable workspace name.
 
 ---
 
-#### `list_repos`
+#### `list_workspaces`
 
-Lists all repo configurations, optionally filtered by project.
+Lists workspaces with lock status.
 
 **Parameters:**
 - `project_id` (optional)
 
-**Returns on success:**
+---
+
+#### `remove_workspace`
+
+Deletes a workspace.
+
+**Parameters:**
+- `workspace_id` (required)
+
+---
+
+#### `release_workspace`
+
+Admin force-release a stuck workspace lock.
+
+**Parameters:**
+- `workspace_id` (required)
+
+---
+
+#### `queue_sync_workspaces`
+
+Queues a high-priority `SYNC` task that orchestrates a full workspace sync workflow (see
+orchestrator spec §9c for the execution flow).  Before creating the task, two early-out
+checks prevent unnecessary work.
+
+**Parameters:**
+- `project_id` (required; falls back to `_active_project_id`)
+
+**Early-out: duplicate sync task.**
+Queries `db.list_active_tasks` for the project, filtering to tasks with
+`task_type=SYNC` and `status in (READY, ASSIGNED, IN_PROGRESS)`.  If any exist, returns
+immediately without creating a new task:
+
 ```python
 {
-    "repos": [
-        {
-            "id": <str>,
-            "project_id": <str>,
-            "source_type": <str>,
-            "url": <str>,
-            "source_path": <str | None>,
-            "default_branch": <str>,
-            "checkout_base_path": <str | None>,
-        },
-        ...
-    ]
+    "already_queued": True,
+    "existing_task_ids": [<str>, ...],
+    "project_id": <str>,
+    "message": "Sync Workspaces task already exists for '...': .... Skipping duplicate.",
 }
 ```
 
-**Errors:** None expected.
+**Early-out: workspaces already synced.**
+Iterates over all workspaces for the project and checks each with
+`git.aget_current_branch` and `git.alist_branches`.  If every workspace is on the
+default branch with no feature branches, returns immediately:
+
+```python
+{
+    "already_synced": True,
+    "project_id": <str>,
+    "workspace_count": <int>,
+    "default_branch": <str>,
+    "message": "All N workspace(s) for '...' are already on '...' with no feature branches. No sync needed.",
+}
+```
+
+If a workspace directory does not exist or a git check raises an exception, assumes the
+workspace needs syncing (errs on the side of creating the task).
+
+**Normal path.**
+Creates a `Task` with `task_type=SYNC`, `priority=1` (highest), `status=READY`.
+Returns:
+
+```python
+{
+    "queued": <str: task_id>,
+    "project_id": <str>,
+    "title": "Sync Workspaces — <project_id>",
+    "priority": 1,
+    "workspace_count": <int>,
+    "default_branch": <str>,
+    "message": "Sync Workspaces task queued with highest priority ...",
+}
+```
+
+**Errors:**
+- `project_id` not provided (and no active project set).
+- Project not found.
+- No workspaces found for the project.
 
 ---
 
@@ -1880,12 +1941,15 @@ Pauses, resumes, or checks the status of the orchestrator loop.
 
 Logs a restart notification to the notification channel, then sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal.
 
+When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal.
+
 **Parameters:**
 - `reason` (optional, default `"No reason provided"`): Human-readable reason for the restart. Logged to the notification channel as `"🔄 **Daemon restart initiated** — {reason}"`.
+- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
 
 **Returns on success:**
 ```python
-{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>}
+{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>, "waited_for_tasks": <bool>}
 ```
 
 **Errors:** None expected.
@@ -1896,12 +1960,15 @@ Logs a restart notification to the notification channel, then sends `SIGTERM` to
 
 Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
 
+When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal. The git pull and pip install happen first, so the code is already updated by the time the wait begins.
+
 **Parameters:**
 - `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
+- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
 
 **Returns on success:**
 ```python
-{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>}
+{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>, "waited_for_tasks": <bool>}
 ```
 
 **Errors:**
@@ -2134,28 +2201,22 @@ The caller is responsible for checking whether `None` was returned and returning
 ## 6. Repo Path Resolution (`_resolve_repo_path`)
 
 ```python
-async def _resolve_repo_path(self, args: dict) -> tuple[str | None, RepoConfig | None, dict | None]
+async def _resolve_repo_path(self, args: dict) -> tuple[str | None, Project | None, dict | None]
 ```
 
-Returns a 3-tuple: `(checkout_path, repo_config, error_dict)`. On success, `error_dict` is `None`. On failure, `checkout_path` is `None`.
+Returns a 3-tuple: `(checkout_path, project, error_dict)`. On success, `error_dict` is `None`. On failure, `checkout_path` is `None`. Note: the second element is a `Project`, not a `RepoConfig`.
 
-**Logic:**
+**Logic (workspace-first resolution):**
 
-1. Reads `project_id` and `repo_id` from `args`.
-2. If neither is provided, returns an error.
-3. If `project_id` is provided, fetches and validates the project exists. `repo_id` alone (without `project_id`) is also a valid input — the repo is looked up directly, which keeps older repo-id-only commands working.
-4. **Repo resolution:**
-   - If `repo_id` is provided, fetches that specific repo (error if not found).
-   - If only `project_id` is provided, fetches the project's repos and takes the first one (or `None` if none exist).
-5. **Path determination:**
-   - If a repo was found:
-     - `LINK` source type: uses `repo.source_path`.
-     - `CLONE` or `INIT` source type: uses `repo.checkout_base_path`.
-     - If neither path is set: error.
-   - If no repo was found: returns an error telling the user to add workspaces via `/add-workspace`.
-6. Validates that the determined path exists as a directory (error if not).
-7. Calls `git.validate_checkout(checkout_path)` to confirm it is a git repository (error if not).
-8. Returns `(checkout_path, repo, None)`.
+1. Reads `project_id`, `repo_id`, and `workspace_id` from `args`.
+2. If neither `project_id` nor `repo_id` is provided, returns an error.
+3. **Path resolution order:**
+   - If `workspace_id` is provided, fetches that specific workspace and uses its path.
+   - If `project_id` is provided, fetches the project's first workspace and uses its path.
+   - Falls back to legacy repos table lookup if no workspaces exist.
+4. Validates that the determined path exists as a directory (error if not).
+5. Calls `git.validate_checkout(checkout_path)` to confirm it is a git repository (error if not).
+6. Returns `(checkout_path, project, None)`.
 
 **Summary of error conditions:**
 - Neither `project_id` nor `repo_id` provided.
@@ -2208,9 +2269,89 @@ Posts a message to a Discord channel via the bot reference. Accepts
 `channel_id` and `content`. Returns error if the Discord bot is not
 available or the channel cannot be found.
 
-### Rule System Stubs (Phase 2)
+### Rule System Commands
 
-- `browse_rules` -- Stub, returns Phase 2 not-implemented error
-- `load_rule` -- Stub
-- `save_rule` -- Stub
-- `delete_rule` -- Stub
+- `browse_rules` — List rules, optionally filtered by project and scope
+- `load_rule` — Load a rule's full content by ID
+- `save_rule` — Create or update a rule (markdown with YAML frontmatter)
+- `delete_rule` — Delete a rule and its associated hook
+
+See [[rule-system]] for full details.
+
+---
+
+## 9. Undocumented Command Subsystems
+
+> The following command groups exist in the implementation but are not yet fully
+> documented in this spec. Each heading lists the `_cmd_*` methods that exist.
+
+### Task Hierarchy & Dependencies
+- `get_task_tree` — hierarchical subtask tree view with formatted text
+- `task_deps` / `get_task_dependencies` — focused dependency view (upstream/downstream)
+- `add_dependency` — add a dependency edge between tasks
+- `remove_dependency` — remove a dependency edge
+
+### Task Lifecycle Extensions
+- `reopen_with_feedback` — reopen a completed/failed task with appended feedback
+- `provide_input` — answer an agent's question (WAITING_INPUT → READY)
+- `process_task_completion` — post-completion plan discovery (called by [[supervisor|Supervisor]])
+- `process_plan` — manually trigger plan file scanning
+- `list_active_tasks_all_projects` — cross-project active task listing
+
+### Task Archive
+- `archive_tasks` — bulk archive completed tasks
+- `archive_task` — archive a single task
+- `list_archived` — list archived tasks
+- `restore_task` — restore an archived task
+- `archive_settings` — view/update auto-archive settings
+
+### Agent Profile Commands
+- `list_profiles` — list agent profiles
+- `create_profile` — create an agent profile
+- `get_profile` — get profile details
+- `edit_profile` — update profile fields
+- `delete_profile` — delete a profile
+- `list_available_tools` — list known Claude Code tools and MCP servers
+- `check_profile` — check profile install manifest
+- `install_profile` — install profile dependencies
+- `export_profile` / `import_profile` — YAML/gist export/import
+
+### Memory Commands
+- `memory_search` — semantic search of project memory
+- `memory_stats` — memory index statistics
+- `memory_reindex` — force reindex
+- `view_profile` — view project profile (synthesized understanding)
+- `regenerate_profile` — regenerate project profile via LLM
+- `compact_memory` — LLM-powered memory compaction
+
+### Prompt Template Commands
+- `list_prompts` — list prompt templates
+- `read_prompt` — read a specific template
+- `render_prompt` — render template with variable substitution
+
+### Hook Schedule Extensions
+- `hook_schedules` — show upcoming hook executions
+- `fire_all_scheduled_hooks` — trigger all matching periodic hooks
+- `toggle_project_hooks` — enable/disable all hooks in a project
+- `schedule_hook` — create a one-shot scheduled hook
+- `list_scheduled` / `cancel_scheduled` — manage one-shot hooks
+
+### Note Extensions
+- `promote_note` — incorporate a note into the project profile via LLM
+
+### Git Extensions
+- `git_pull` — pull (fetch + merge) from remote
+- `create_github_repo` — create a GitHub repo via `gh` CLI
+- `generate_readme` — generate and commit a README.md
+- `set_default_branch` — set/change a project's default branch
+
+### System Extensions
+- `reload_config` — manual config hot-reload
+- `claude_usage` — Claude Code usage stats from session data
+- `shutdown` — graceful/force shutdown
+
+### Deprecated Agent Commands (return error stubs)
+- `edit_agent`, `pause_agent`, `resume_agent`, `delete_agent`
+
+### Deprecated Analyzer Commands (return error stubs)
+- `analyzer_status`, `analyzer_toggle`, `analyzer_history`

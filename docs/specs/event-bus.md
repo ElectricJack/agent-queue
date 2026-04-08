@@ -4,6 +4,8 @@
 
 `EventBus` (`src/event_bus.py`) is a minimal in-process async pub/sub mechanism. It decouples components by allowing any part of the system to emit named events without knowing which handlers will receive them. All orchestration remains deterministic — the bus carries no LLM or scheduling logic.
 
+> **Future evolution:** See [[design/playbooks]] for EventBus payload filtering and event schema registry.
+
 ## Source Files
 - `src/event_bus.py`
 

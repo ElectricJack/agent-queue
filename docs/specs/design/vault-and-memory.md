@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #6 specificity wins, #8 components own dependencies)
-**Related:** [[playbooks]], [[agent-coordination]], `../agent-profiles.md`, `../memory-consolidation.md`, `../plugin-system.md`
+**Related:** [[playbooks]], [[agent-coordination]], [[agent-profiles]], [[memory-consolidation]], [[plugin-system]]
 
 ---
 

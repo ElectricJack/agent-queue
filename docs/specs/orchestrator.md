@@ -23,6 +23,8 @@ scheduling or coordination.  All promotion, assignment, and retry decisions are 
 and derive purely from database state.  LLM calls occur only inside agent adapters (doing
 real work) and, optionally, inside the plan parser when `use_llm_parser` is enabled.
 
+> **Future evolution:** See [[design/playbooks]] and [[design/agent-coordination]] for planned evolution of the orchestration model.
+
 **Concurrency model.**  Everything runs inside a single asyncio event loop.  Each executing
 task is launched as an `asyncio.Task` background coroutine.  The orchestrator keeps a
 `_running_tasks` dict mapping `task_id -> asyncio.Task` so it can detect completion and
@@ -176,21 +178,27 @@ Called once before the scheduling loop starts:
 1. `await self.db.initialize()` — opens the SQLite connection, runs migrations.
 2. `await self._recover_stale_state()` — repairs in-flight state from a previous run
    (see section 4a below).
-3. If `config.hook_engine.enabled` is true:
+3. `_sync_profiles_from_config()` — syncs YAML agent profiles from config into the database.
+4. If `config.hook_engine.enabled` is true:
    - Instantiate `HookEngine(db, bus, config)`.
    - Call `hooks.set_orchestrator(self)`.
    - `await hooks.initialize()`.
+5. Initialize `RuleManager` with `install_defaults()` (note: `reconcile()` runs later
+   in `on_ready`, after the supervisor is available).
+6. Start `ConfigWatcher` for configuration hot-reloading.
 
 ### 4a. Stale state recovery (`_recover_stale_state`)
 
 After a daemon restart, no real agents are running.  Any database records that say
 otherwise must be cleaned up:
 
-1. List all agents.  For each agent whose state is `BUSY` or `STARTING`:
+1. List all agents.  For each agent whose state is `BUSY`:
    - Log a recovery message to stdout.
    - Call `db.update_agent(id, state=IDLE, current_task_id=None)`.
 
-2. List all tasks with status `IN_PROGRESS`.  For each:
+2. Release all workspace locks and clean orphaned sentinel files.
+
+3. List all tasks with status `IN_PROGRESS`.  For each:
    - Log a recovery message to stdout.
    - Call `db.transition_task(id, READY, context="recovery", assigned_agent_id=None)`.
 
@@ -206,13 +214,16 @@ executes the following steps in strict order, wrapped in a single broad `try/exc
 logs unexpected errors with a full traceback but does not crash the loop.
 
 ```
-Step 0  _check_awaiting_approval       — poll PR merge status (rate-limited to 60s)
-Step 1  _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed
-Step 2  _check_defined_tasks           — promote DEFINED tasks whose deps are all COMPLETED
-Step 2b _check_stuck_defined_tasks     — alert on DEFINED tasks stuck beyond threshold
-Step 3  _schedule                      — ask Scheduler for assignment actions (skipped if paused)
-Step 4  Launch background executions  — start new asyncio.Tasks for each AssignAction
-Step 5  hooks.tick()                   — run hook engine tick (if enabled)
+Step 0   _check_awaiting_approval       — poll PR merge status (rate-limited to 60s)
+Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed
+Step 2   _check_defined_tasks           — promote DEFINED tasks whose deps are all COMPLETED
+Step 2b  _check_stuck_defined_tasks     — alert on DEFINED tasks stuck beyond threshold
+Step 3   _schedule                      — ask Scheduler for assignment actions (skipped if paused)
+Step 4   Launch background executions   — start new asyncio.Tasks for each AssignAction
+Step 5   hooks.tick()                   — run hook engine tick (if enabled)
+Step 6   LLM log cleanup / analytics    — clean old log files, flush analytics
+Step 7   Auto-archive terminal tasks    — archive old completed/failed tasks
+Step 8   Periodic memory compaction     — compact project memory indexes
 ```
 
 **Pause behaviour.**  When `self._paused` is true, step 3 is skipped and `actions` is set
@@ -381,10 +392,15 @@ In both cases, remove the task from `_running_tasks` in a `finally` block.
 **Step 3 — Fetch current records.**
 `task = db.get_task(task_id)`, `agent = db.get_agent(agent_id)`.
 
+**Step 3½ — Sync workflow interception.**
+If `task.task_type == TaskType.SYNC`, delegate to `_execute_sync_workflow(action, task, agent)`
+and return immediately.  See §9c for the sync workflow specification.
+
 **Step 4 — Prepare workspace.**
 `project = db.get_project(project_id)`.
 Call `_prepare_workspace(task, agent)` inside a try/except.  `_prepare_workspace` returns
-a path or `None`.  On exception or `None` return, transition the task back to READY,
+a path or `None`.  On exception or `None` return, transition the task to PAUSED with a
+60-second `resume_after` backoff (prevents infinite assign-fail-READY-assign loops),
 set the agent to IDLE, send a notification telling the user to add workspaces, and return
 early.  Re-fetch `task` and `agent` after workspace preparation because
 `_prepare_workspace` may have updated `branch_name`.
@@ -438,7 +454,7 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+Task execution context is assembled using `PromptBuilder` (see [[prompt-builder]]).
 The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
 to compose system metadata, execution rules, upstream dependency summaries, agent role
 instructions, and the task description into a single prompt string.
@@ -483,21 +499,18 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Call `_complete_workspace(task, agent)` (best-effort; git errors posted to thread/channel).
-- If a `pr_url` was returned:
-  - Transition to `AWAITING_APPROVAL` (`context="pr_created"`, `pr_url=pr_url`).
-  - Log a `"pr_created"` event.
-  - Post PR-created notification to thread and main channel.
-- Else if `task.requires_approval` and no PR (e.g. LINK repo):
-  - Transition to `AWAITING_APPROVAL` (`context="approval_required_no_pr"`).
-  - Post "awaiting manual approval" notification.
-- Else:
-  - Transition to `COMPLETED` (`context="completed_no_approval"`).
-  - Log a `"task_completed"` event.
-  - Post full completion summary to thread (or `_notify_channel`); post brief to main.
-- After any of the above paths: call `_generate_tasks_from_plan(task, workspace)`.
-  If subtasks were created, call `_check_defined_tasks()` immediately, then post
-  an auto-generated-tasks notice to thread and main channel.
+- Run the three-phase `_run_completion_pipeline(ctx)` which executes:
+  1. `_phase_commit` — commit agent changes to git
+  2. `_phase_plan_discover` — delegate to Supervisor for plan file discovery; if plan
+     found, transition to `AWAITING_PLAN_APPROVAL` and return early
+  3. `_phase_merge` — merge/push or create PR based on configuration; on merge
+     success transitions to `COMPLETED`, on PR creation transitions to
+     `AWAITING_APPROVAL`, on merge failure transitions to `BLOCKED`
+- The pipeline handles PR creation, approval transitions, and completion notifications.
+- Post full completion summary to thread (or `_notify_channel`); post brief to main.
+
+> **Note:** `_complete_workspace` still exists in the code but is dead code — it is
+> never called from `_execute_task`. The active code path is `_run_completion_pipeline`.
 
 *`FAILED`:*
 - Increment `retry_count`.
@@ -516,6 +529,53 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 16 — Free agent.**
 `db.update_agent(agent_id, state=IDLE, current_task_id=None)`.
 
+### 9c. `_execute_sync_workflow` — Orchestrator-Managed Sync
+
+Tasks with `task_type=SYNC` bypass normal agent execution.  Instead, `_execute_task`
+delegates to `_execute_sync_workflow(action, task, agent)` which coordinates a
+multi-phase workflow entirely within the orchestrator.
+
+**Phase 1 — Pause the project.**
+Set `project.status = PAUSED` via `db.update_project` to prevent the scheduler from
+assigning new tasks to this project.
+
+**Phase 2 — Wait for active tasks.**
+Poll `db.list_active_tasks` (excluding `COMPLETED`, `FAILED`, `BLOCKED`) every 10 seconds,
+filtering out the sync task itself.  Wait up to 3 600 seconds (1 hour).  If the timeout
+expires, transition the sync task to `FAILED` with `context="sync_timeout_waiting_for_tasks"`
+and return.  Progress is reported to the notification channel every 60 seconds.
+
+**Early-out: workspaces already synced.**
+After active tasks have drained, re-check whether any workspace actually needs merging.
+For each workspace, inspect `git.aget_current_branch` and `git.alist_branches`.  If
+every workspace is already on the default branch with no feature branches:
+
+- Transition the sync task to `COMPLETED` (`context="sync_already_synced"`).
+- Notify the channel that no merge was needed.
+- Return early — the `finally` block still handles project resume.
+
+If a workspace directory is missing, it is skipped.  If a git check raises an exception,
+the workflow assumes a merge is needed (errs on the side of proceeding).
+
+**Phase 3 — Merge feature branches.**
+Acquire a workspace via `_prepare_workspace`.  If that fails, fall back to the first
+workspace's path; if no workspaces exist, fail the task.  Build a detailed merge
+description instructing the Claude Code agent to merge all feature branches into the
+default branch one workspace at a time.  Launch an adapter, stream output to a Discord
+thread, and record token usage.
+
+**Phase 4 — Cleanup & resume.**
+Executed in a `finally` block so it runs regardless of success or failure:
+
+- Release all project workspace locks via `db.release_workspace`.
+- Resume the project via `db.update_project(status=ACTIVE)`.
+- If the task is still `IN_PROGRESS`, transition to `COMPLETED` — either with
+  `context="sync_completed"` (merge succeeded) or `context="sync_completed_with_warnings"`
+  (merge agent did not return `COMPLETED`).
+- Notify the channel with a summary.
+- Free the agent: set to `IDLE` (or preserve `PAUSED` if the agent was already paused).
+- Remove from `_adapters`.
+
 ---
 
 ## 10. Workspace Preparation
@@ -523,7 +583,7 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See `specs/git/git.md` §10 for the full design principles reference.
+See [[git/git]] §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -531,13 +591,13 @@ See `specs/git/git.md` §10 for the full design principles reference.
 | **Branch-per-task** | Every task gets a unique `<task-id>/<slug>` branch. Subtasks accumulate on the parent's branch. |
 | **Fresh starting point** | `prepare_for_task` always fetches from origin before creating a task branch, so agents start from recent code. |
 | **Atomic commit** | `commit_all` stages everything then checks the staging area, avoiding race conditions. Agent work is never silently lost. |
-| **Graceful degradation** | Git errors during workspace setup are caught and logged; a valid workspace path is always returned so the agent can start work. |
+| **Hard failure on git errors** | Git errors during workspace setup cause the workspace lock to be released and `None` to be returned; the task is paused with backoff rather than proceeding without branch management. |
 | **Retry resilience** | Existing branches are reused on task retry rather than causing errors. |
 
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-`specs/git/git.md` §11 for the full gap catalogue.
+[[git/git]] §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|
@@ -598,11 +658,10 @@ workspace for the project.  If no workspace is available (all locked or none exi
 - If not a git repo: use the directory as-is (no git operations).
 
 *INIT repos:*
-- If `validate_checkout(workspace)` fails: call `git.init_repo(workspace)` to initialise
-  a new repository.
-- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=rebase_on_switch)`.
-- Otherwise: call `git.create_branch(workspace, branch_name)` — runs `git checkout -b`,
-  switching to the branch instead if it already exists.
+
+> **Not yet implemented:** The code currently has no INIT source type handling branch —
+> INIT workspaces silently fall through with no git operations. The CLONE and LINK paths
+> above are the only active code paths.
 
 **Database updates.**  After the git operations:
 `db.update_task(task.id, branch_name=branch_name)`
@@ -625,9 +684,9 @@ during the commit are caught and logged as warnings — they never prevent the w
 from being returned.
 
 **Error handling.**  All git operations in `_prepare_workspace` are wrapped in a
-try/except.  If any git operation fails, a warning notification is sent but the method
-still returns the correct workspace path — the agent can work in the directory without
-branch management.
+try/except.  If any git operation fails, the workspace lock is released, the sentinel
+file is removed, and the method returns `None` — the caller transitions the task to
+PAUSED with a backoff rather than allowing the agent to proceed without branch management.
 
 ---
 
@@ -683,10 +742,13 @@ Optionally rebases the shared subtask branch onto latest main between subtask co
 Called after an intermediate subtask commits its work (not the final subtask).
 
 **Preconditions (skip if not met):**
-- `config.auto_task.mid_chain_rebase` must be `True` (default).
+- `config.auto_task.rebase_between_subtasks` must be `True`.
 - `config.auto_task.chain_dependencies` must be `True` — without chained dependencies
   the subtasks may run in parallel on different branches, so mid-chain rebase is not
   applicable.
+
+> **Note:** The `mid_chain_rebase` config field exists in `src/config.py` but is NOT
+> referenced in `orchestrator.py`. The actual gate is `rebase_between_subtasks`.
 
 **Execution:**
 - Calls `git.mid_chain_rebase(workspace, branch_name, default_branch, push=config.auto_task.mid_chain_rebase_push)`.
@@ -776,7 +838,7 @@ After a task completes, the orchestrator delegates plan discovery to the Supervi
 via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
 parse, and store plan files, then returns whether a plan was found. If found, the
 task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
-human approves the plan via the `approve_plan` command (see `command-handler.md`).
+human approves the plan via the `approve_plan` command (see [[command-handler]]).
 
 ### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
 
@@ -924,7 +986,8 @@ Compute `updated_at = db.get_task_updated_at(task.id)` and
 ### `_check_pr_status(task)`
 
 Resolves a checkout path by checking `db.get_agent_workspace(agent_id, project_id)`,
-then falling back to `task.repo_id -> repo.source_path`.  If no path is found, return.
+then falling back to any workspace for the task's project via `db.list_workspaces(project_id=...)`.
+If no path is found, return.
 
 Call `git.check_pr_merged(checkout_path, task.pr_url)`:
 - Returns `True` if merged.
@@ -1014,8 +1077,10 @@ Allowed state: IN_PROGRESS only.  Any other state returns an error string.
 1. `await wait_for_running_tasks(timeout=10)` — waits up to 10 seconds for all background
    task-execution coroutines to finish.  Tasks still running after the timeout are
    abandoned (the process is exiting).
-2. If `hooks` is set: `await hooks.shutdown()`.
-3. `await db.close()`.
+2. Stop `ConfigWatcher` if running.
+3. If `hooks` is set: `await hooks.shutdown()`.
+4. Close `memory_manager` if initialized.
+5. `await db.close()`.
 
 `wait_for_running_tasks(timeout)` collects the values of `_running_tasks` into a list and
 calls either `asyncio.wait(tasks, timeout=timeout)` (if a timeout is provided) or
@@ -1026,9 +1091,9 @@ if `_running_tasks` is empty.
 
 ## 17. Callbacks
 
-The orchestrator is wired to Discord by injecting two callbacks after construction but
-before the scheduling loop starts.  Neither callback is required — the orchestrator runs
-without them (notifications are silently dropped).
+The orchestrator is wired to Discord by injecting callbacks after construction but
+before the scheduling loop starts.  No callback is required — the orchestrator runs
+without them (notifications are silently dropped). Five callback setters exist:
 
 ### `set_notify_callback(callback: NotifyCallback)`
 
@@ -1064,6 +1129,18 @@ Returns `(send_to_thread, notify_main)` or `None` if thread creation fails.
   without having to open the thread.
 
 When `_create_thread` is not set, all output falls back to `_notify_channel`.
+
+### `set_get_thread_url_callback(callback)`
+
+Returns the URL for a task's Discord thread. Used for linking from notifications.
+
+### `set_edit_thread_root_callback(callback)`
+
+Edits the root message of a task's Discord thread. Used to update status after completion.
+
+### `set_command_handler(handler)`
+
+Sets the CommandHandler reference for interactive Discord views (e.g., plan approval buttons).
 
 ---
 
@@ -1114,8 +1191,10 @@ where `sync_and_merge()` applies its rebase-before-merge fallback.
 
 During `initialize()`, after hook engine setup:
 1. Create `RuleManager` with the data directory, database, and hook engine
-2. Run `reconcile()` to verify all active rules have valid hooks
-3. Run `install_defaults()` to create default global rules if not present
+2. Run `install_defaults()` to create default global rules if not present
+
+> **Note:** `reconcile()` is NOT called during `initialize()`. It runs later in `on_ready`,
+> after the Supervisor is available (the supervisor is needed for rule prompt expansion).
 
 The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
-for rule CRUD operations. See `specs/rule-system.md` for the full Rule System spec.
+for rule CRUD operations. See [[rule-system]] for the full Rule System spec.

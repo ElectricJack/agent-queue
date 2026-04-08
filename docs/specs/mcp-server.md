@@ -1,6 +1,6 @@
 # MCP Server Specification
 
-The MCP server exposes all `CommandHandler` commands as MCP tools via the
+The MCP server exposes all [[command-handler|CommandHandler]] commands as MCP tools via the
 [Model Context Protocol](https://modelcontextprotocol.io). Claude agents
 (or any MCP-compatible client) connect over stdio and get the same
 capabilities as the Discord bot and Supervisor LLM tool-use loop.
@@ -330,4 +330,6 @@ agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 | `packages/mcp_server/mcp_interfaces.py` | Serialization helpers, URI schemes |
 | `packages/mcp_server/test/test_mcp_server.py` | Tests -- registration, delegation, drift detection |
 | `src/tool_registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
-| `src/command_handler.py` | `CommandHandler.execute()` -- the single execution layer |
+| `src/command_handler.py` | [[command-handler|CommandHandler]].execute() -- the single execution layer |
+
+> **Future evolution:** MCP tools expand to include [[design/vault-and-memory|memory tools]] (memory_search, memory_recall, memory_save, memory_store, memory_get).

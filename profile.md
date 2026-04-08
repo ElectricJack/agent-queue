@@ -93,8 +93,8 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/telegram/` | Telegram bot integration |
 | `src/plugins/` | Plugin system for extensibility |
 | `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
-| `specs/` | Behavioral specifications (source of truth) |
-| `docs/` | Generated documentation (mkdocs) |
+| `docs/specs/` | Behavioral specifications (source of truth) |
+| `docs/` | Documentation and specs |
 
 ## Design Decisions
 
@@ -114,7 +114,7 @@ Users manage from their phone. Natural language via Supervisor backed by LLM too
 `AgentAdapter` interface allows pluggable agent types. Currently Claude Code; designed for extensibility.
 
 ### Why spec-driven development?
-Specs in `specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
+Specs in `docs/specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
 
 ### Smart-Forge Memory System
 Per-project `profile.md` (stored in `~/.agent-queue/memory/{project_id}/`) captures synthesized knowledge. After each task, an LLM call revises the profile. Notes flow bidirectionally. Old task memories get compacted into weekly digests. Context is delivered in tiers: profile → project docs → notes → recent tasks → semantic search.
@@ -146,7 +146,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - **Docker:** Not currently containerized — runs as a background daemon via `run.sh`
 - **Discord bot:** Primary interface, requires bot token + guild ID + channel config
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
-- **MCP server:** `packages/mcp_server/` auto-exposes all CommandHandler commands (~100 tools) via Model Context Protocol, with configurable exclusions (see `specs/mcp-server.md`)
+- **MCP server:** `packages/mcp_server/` auto-exposes all CommandHandler commands (~100 tools) via Model Context Protocol, with configurable exclusions (see `docs/specs/mcp-server.md`)
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI for LLM calls
 
 ## Known Architectural Notes

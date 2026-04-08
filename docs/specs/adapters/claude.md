@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The adapter subsystem provides a pluggable interface between the orchestrator and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`AgentAdapter`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
+The adapter subsystem provides a pluggable interface between the [[orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`AgentAdapter`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
 
 Currently one concrete implementation exists: `ClaudeAdapter`, which runs Claude Code via the `claude_agent_sdk` Python package. The `AdapterFactory` class handles instantiation by agent-type string.
 
@@ -250,3 +250,5 @@ MCP servers are passed through from `TaskContext.mcp_servers` (a `dict` mapping 
 - All other entries remain in `options.mcp_servers` and are passed to `SubprocessCLITransport` for the CLI subprocess to handle.
 
 If `TaskContext.mcp_servers` is empty (the default), no MCP configuration is applied to the session.
+
+> **Future evolution:** See [[design/agent-coordination]] for how coordination playbooks manage agent assignment and affinity.

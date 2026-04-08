@@ -2,6 +2,8 @@
 
 ## Overview
 
+> **Future evolution:** Profiles move to markdown in the vault. See [[design/vault-and-memory]] Section 7 for the hybrid profile format.
+
 Agent Profiles are capability bundles that configure agents with specific tools, MCP servers, model overrides, and system prompt additions at task execution time. They allow task-level specialization (e.g., a code reviewer vs. a web developer) without changing the scheduler or agent pool.
 
 **Key invariant:** The scheduler is completely profile-unaware. Profile resolution happens downstream in `_execute_task()`, after the scheduler has already assigned a task to an agent. Zero LLM calls for orchestration are added.

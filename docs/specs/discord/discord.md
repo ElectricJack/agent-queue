@@ -5,7 +5,7 @@
 Discord is the exclusive control plane for Agent Queue. There are no other user-facing interfaces — all commands, status queries, and notifications flow through Discord. The integration has three distinct layers:
 
 - **Bot Core** (`src/discord/bot.py`) — `AgentQueueBot`, a `discord.ext.commands.Bot` subclass. Owns channel routing, message history, authorization, and thread management.
-- **Slash Commands** (`src/discord/commands.py`) — All interactive commands registered on the application command tree. Thin wrappers that delegate business logic to the shared `CommandHandler`.
+- **Slash Commands** (`src/discord/commands.py`) — All interactive commands registered on the application command tree. Thin wrappers that delegate business logic to the shared [[command-handler|CommandHandler]].
 - **Notification Formatters** (`src/discord/notifications.py`) — Pure functions that produce structured Discord message text for task lifecycle events.
 
 The bot uses `discord.Intents.default()` plus `message_content`. The command prefix `!` is registered but unused; all interaction happens through slash commands and @-mentions.
@@ -21,7 +21,7 @@ The bot uses `discord.Intents.default()` plus `message_content`. The command pre
 
 ### 2.1 Initialization
 
-`AgentQueueBot.__init__` receives `AppConfig` and `Orchestrator`. It constructs a `ChatAgent` (the LLM interface) and wires the `_on_project_deleted` callback from the command handler to `self.clear_project_channels`, so that any caller that deletes a project (not just Discord commands) automatically clears the bot's in-memory channel caches.
+`AgentQueueBot.__init__` receives `AppConfig` and [[orchestrator|Orchestrator]]. It constructs a `ChatAgent` (the LLM interface) and wires the `_on_project_deleted` callback from the command handler to `self.clear_project_channels`, so that any caller that deletes a project (not just Discord commands) automatically clears the bot's in-memory channel caches.
 
 Key instance state initialized at construction:
 
@@ -221,7 +221,7 @@ The orchestrator receives two callbacks wired in `on_ready`:
 
 ## 3. Slash Commands
 
-All slash commands are registered in `setup_commands(bot)` inside `src/discord/commands.py`. Every command delegates its business logic to `bot.agent.handler` (the shared `CommandHandler`). Commands are thin formatting wrappers; they handle Discord-specific concerns (embeds, file uploads, deferral, ephemeral responses) but contain no business logic themselves.
+All slash commands are registered in `setup_commands(bot)` inside `src/discord/commands.py`. Every command delegates its business logic to `bot.agent.handler` (the shared [[command-handler|CommandHandler]]). Commands are thin formatting wrappers; they handle Discord-specific concerns (embeds, file uploads, deferral, ephemeral responses) but contain no business logic themselves.
 
 ### Channel-to-project resolution
 
