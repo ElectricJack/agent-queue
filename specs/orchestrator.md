@@ -23,6 +23,8 @@ scheduling or coordination.  All promotion, assignment, and retry decisions are 
 and derive purely from database state.  LLM calls occur only inside agent adapters (doing
 real work) and, optionally, inside the plan parser when `use_llm_parser` is enabled.
 
+> **Future evolution:** See [[design/playbooks]] and [[design/agent-coordination]] for planned evolution of the orchestration model.
+
 **Concurrency model.**  Everything runs inside a single asyncio event loop.  Each executing
 task is launched as an `asyncio.Task` background coroutine.  The orchestrator keeps a
 `_running_tasks` dict mapping `task_id -> asyncio.Task` so it can detect completion and
@@ -452,7 +454,7 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+Task execution context is assembled using `PromptBuilder` (see [[prompt-builder]]).
 The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
 to compose system metadata, execution rules, upstream dependency summaries, agent role
 instructions, and the task description into a single prompt string.
@@ -581,7 +583,7 @@ Executed in a `finally` block so it runs regardless of success or failure:
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See `specs/git/git.md` §10 for the full design principles reference.
+See [[git/git]] §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -595,7 +597,7 @@ See `specs/git/git.md` §10 for the full design principles reference.
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-`specs/git/git.md` §11 for the full gap catalogue.
+[[git/git]] §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|
@@ -836,7 +838,7 @@ After a task completes, the orchestrator delegates plan discovery to the Supervi
 via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
 parse, and store plan files, then returns whether a plan was found. If found, the
 task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
-human approves the plan via the `approve_plan` command (see `command-handler.md`).
+human approves the plan via the `approve_plan` command (see [[command-handler]]).
 
 ### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
 
@@ -1195,4 +1197,4 @@ During `initialize()`, after hook engine setup:
 > after the Supervisor is available (the supervisor is needed for rule prompt expansion).
 
 The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
-for rule CRUD operations. See `specs/rule-system.md` for the full Rule System spec.
+for rule CRUD operations. See [[rule-system]] for the full Rule System spec.

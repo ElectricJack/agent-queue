@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by the [[supervisor]] (`src/supervisor.py`) to drive the Discord-facing conversational interface.
+The `src/chat_providers/` package provides a thin, uniform abstraction over LLM providers used for chat interactions. It is consumed exclusively by the [[supervisor]] (`src/supervisor.py`) to drive the conversational interface.
 
 The abstraction serves two purposes:
 

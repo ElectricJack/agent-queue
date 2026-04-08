@@ -4,6 +4,8 @@
 
 This document specifies the core domain models and task state machine for Agent Queue. Together they define every entity the system tracks (tasks, agents, projects, repos, hooks) and the rules governing how a task moves through its lifecycle from initial definition to completion or permanent failure.
 
+> **Future evolution:** See [[design/agent-coordination]] for workflow-level coordination on top of the task state machine.
+
 ---
 
 ## Source Files

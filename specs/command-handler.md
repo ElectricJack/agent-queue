@@ -4,7 +4,9 @@
 
 `CommandHandler` is the unified execution layer for all operational commands in AgentQueue. It is the single code path through which every operation must pass — both Discord slash commands and the LLM chat agent tools delegate their business logic here. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
 
-The handler holds a reference to an `Orchestrator` instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+The handler holds a reference to an [[orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+
+> **Future evolution:** See [[design/playbooks]] Section 15 for new playbook management commands.
 
 The `db` property is a convenience accessor that returns `self.orchestrator.db`.
 
@@ -36,6 +38,7 @@ Commands are registered implicitly: any instance method named `_cmd_<command_nam
 ```python
 CommandHandler(orchestrator: Orchestrator, config: AppConfig)
 ```
+See [[models-and-state-machine]] for the domain models referenced throughout these commands.
 
 After construction, callers may set `handler._on_project_deleted = callback` to register a post-deletion hook (signature: `callback(project_id: str) -> None`).
 
@@ -739,7 +742,7 @@ Approve a plan and create subtasks from it.
 **Parameters:**
 - `task_id` (required)
 
-**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Reads stored plan data from `task_context` entries (saved by `_discover_and_store_plan` as `plan_raw`). Creates subtasks directly with dependency chains, delegating to the Supervisor for LLM-based plan splitting when needed. Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Reads stored plan data from `task_context` entries (saved by `_discover_and_store_plan` as `plan_raw`). Creates subtasks directly with dependency chains, delegating to the [[supervisor|Supervisor]] for LLM-based plan splitting when needed. Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
 
 **Returns on success:**
 ```python
@@ -2273,7 +2276,7 @@ available or the channel cannot be found.
 - `save_rule` — Create or update a rule (markdown with YAML frontmatter)
 - `delete_rule` — Delete a rule and its associated hook
 
-See `specs/rule-system.md` for full details.
+See [[rule-system]] for full details.
 
 ---
 
@@ -2291,7 +2294,7 @@ See `specs/rule-system.md` for full details.
 ### Task Lifecycle Extensions
 - `reopen_with_feedback` — reopen a completed/failed task with appended feedback
 - `provide_input` — answer an agent's question (WAITING_INPUT → READY)
-- `process_task_completion` — post-completion plan discovery (called by Supervisor)
+- `process_task_completion` — post-completion plan discovery (called by [[supervisor|Supervisor]])
 - `process_plan` — manually trigger plan file scanning
 - `list_active_tasks_all_projects` — cross-project active task listing
 
