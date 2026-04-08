@@ -354,3 +354,224 @@ class TestEventBusBackwardCompatibility:
         assert len(unfiltered_1) == 2
         assert len(unfiltered_2) == 2
         assert len(filtered) == 1
+
+
+class TestEventBusFilterEdgeCases:
+    """Edge-case tests for EventBus filter matching behaviour.
+
+    Covers: missing payload fields, extra payload fields (subset matching),
+    empty payloads, type mismatches, and rapid mixed-event ordering.
+    """
+
+    # --- (a) payload missing a field required by the filter → NOT delivered ---
+
+    async def test_missing_single_filter_field_not_delivered(self):
+        """Event whose payload is missing the single field required by the filter is skipped."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("deploy", lambda d: received.append(d), filter={"env": "prod"})
+
+        await bus.emit("deploy", {"version": "1.0.0"})  # no 'env' key at all
+        assert received == []
+
+    async def test_missing_one_of_multiple_filter_fields_not_delivered(self):
+        """When the filter requires two fields and the payload has only one, no delivery."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "deploy",
+            lambda d: received.append(d),
+            filter={"env": "prod", "region": "us-east-1"},
+        )
+
+        # Has 'env' but not 'region'
+        await bus.emit("deploy", {"env": "prod", "version": "2.0"})
+        assert received == []
+
+        # Has 'region' but not 'env'
+        await bus.emit("deploy", {"region": "us-east-1", "version": "2.0"})
+        assert received == []
+
+    # --- (b) extra fields beyond filter still matches (subset check) ---
+
+    async def test_extra_fields_still_match(self):
+        """Payload with extra fields beyond those in the filter still matches."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("build", lambda d: received.append(d), filter={"status": "success"})
+
+        await bus.emit("build", {
+            "status": "success",
+            "duration_ms": 12345,
+            "commit": "abc123",
+            "artifacts": ["dist.tar.gz"],
+        })
+        assert len(received) == 1
+        assert received[0]["commit"] == "abc123"
+
+    async def test_extra_fields_with_multi_key_filter(self):
+        """Subset matching works when filter has multiple keys and payload has many more."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "pipeline",
+            lambda d: received.append(d),
+            filter={"stage": "test", "passed": True},
+        )
+
+        await bus.emit("pipeline", {
+            "stage": "test",
+            "passed": True,
+            "duration": 42,
+            "runner": "ci-node-3",
+            "coverage": 0.87,
+        })
+        assert len(received) == 1
+
+    # --- (c) empty payload {} does not match any filter with required fields ---
+
+    async def test_empty_payload_no_match_single_field_filter(self):
+        """An empty payload {} cannot satisfy a filter that requires any field."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"key": "value"})
+
+        await bus.emit("evt", {})
+        assert received == []
+
+    async def test_empty_payload_no_match_multi_field_filter(self):
+        """An empty payload {} cannot satisfy a filter with multiple required fields."""
+        bus = EventBus()
+        received = []
+        bus.subscribe(
+            "evt",
+            lambda d: received.append(d),
+            filter={"a": 1, "b": 2, "c": 3},
+        )
+
+        await bus.emit("evt", {})
+        assert received == []
+
+    async def test_none_payload_no_match_filter(self):
+        """Emitting with data=None (coerced to {}) does not match a non-empty filter."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"required": True})
+
+        await bus.emit("evt")  # data defaults to {}
+        assert received == []
+
+    # --- (d) filter on field with wrong type → no match ---
+
+    async def test_type_mismatch_string_vs_int(self):
+        """Filter expects a string but payload has an int → no match."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"port": "8080"})
+
+        await bus.emit("evt", {"port": 8080})  # int, not str
+        assert received == []
+
+    async def test_type_mismatch_int_vs_string(self):
+        """Filter expects an int but payload has a string → no match."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"count": 5})
+
+        await bus.emit("evt", {"count": "5"})  # str, not int
+        assert received == []
+
+    async def test_type_mismatch_bool_vs_string(self):
+        """Filter expects a bool but payload has a string → no match."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"enabled": True})
+
+        await bus.emit("evt", {"enabled": "true"})
+        assert received == []
+
+    async def test_type_mismatch_none_vs_value(self):
+        """Filter expects a concrete value but payload has None → no match."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"status": "active"})
+
+        await bus.emit("evt", {"status": None})
+        assert received == []
+
+    async def test_type_match_confirms_equality_semantics(self):
+        """Same type and value → match (sanity check alongside mismatch tests)."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("evt", lambda d: received.append(d), filter={"port": 8080})
+
+        await bus.emit("evt", {"port": 8080})
+        assert len(received) == 1
+
+    # --- (e) rapid mixed matching/non-matching events: correct subset, in order ---
+
+    async def test_rapid_mixed_events_correct_subset_in_order(self):
+        """Rapidly emitting mixed matching/non-matching events delivers only the matching
+        ones, and in the exact emission order."""
+        bus = EventBus()
+        received = []
+        bus.subscribe("tick", lambda d: received.append(d), filter={"match": True})
+
+        # Emit 20 events — even-indexed match, odd-indexed don't
+        for i in range(20):
+            await bus.emit("tick", {"match": i % 2 == 0, "seq": i})
+
+        # Should receive exactly the 10 matching events
+        assert len(received) == 10
+        # Verify they arrive in emission order
+        expected_seqs = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+        actual_seqs = [d["seq"] for d in received]
+        assert actual_seqs == expected_seqs
+
+    async def test_rapid_mixed_events_multiple_filters_correct_subsets(self):
+        """Two filtered subscribers on the same event each receive their correct subset
+        in order during rapid emission."""
+        bus = EventBus()
+        team_a = []
+        team_b = []
+        all_events = []
+
+        bus.subscribe("result", lambda d: team_a.append(d), filter={"team": "alpha"})
+        bus.subscribe("result", lambda d: team_b.append(d), filter={"team": "beta"})
+        bus.subscribe("result", lambda d: all_events.append(d))  # unfiltered
+
+        # Rapid interleaved emissions
+        sequence = [
+            {"team": "alpha", "seq": 0},
+            {"team": "beta", "seq": 1},
+            {"team": "gamma", "seq": 2},
+            {"team": "alpha", "seq": 3},
+            {"team": "beta", "seq": 4},
+            {"team": "alpha", "seq": 5},
+            {"team": "gamma", "seq": 6},
+            {"team": "beta", "seq": 7},
+        ]
+        for payload in sequence:
+            await bus.emit("result", dict(payload))
+
+        assert len(all_events) == 8
+        assert [d["seq"] for d in team_a] == [0, 3, 5]
+        assert [d["seq"] for d in team_b] == [1, 4, 7]
+
+    async def test_rapid_emission_with_async_handlers_preserves_order(self):
+        """Async handlers under rapid mixed emission still receive events in order."""
+        bus = EventBus()
+        received = []
+
+        async def handler(data):
+            await asyncio.sleep(0)  # yield to event loop
+            received.append(data)
+
+        bus.subscribe("evt", handler, filter={"keep": True})
+
+        for i in range(15):
+            await bus.emit("evt", {"keep": i % 3 == 0, "seq": i})
+
+        expected_seqs = [0, 3, 6, 9, 12]
+        actual_seqs = [d["seq"] for d in received]
+        assert actual_seqs == expected_seqs
