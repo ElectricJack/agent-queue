@@ -1,3 +1,7 @@
+---
+tags: [spec, setup, cli]
+---
+
 # Setup Wizard Specification
 
 ## 1. Overview

@@ -1,3 +1,7 @@
+---
+tags: [spec, command-handler, core]
+---
+
 # CommandHandler Specification
 
 ## 1. Overview

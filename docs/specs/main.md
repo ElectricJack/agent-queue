@@ -1,3 +1,7 @@
+---
+tags: [spec, main, entry-point]
+---
+
 # Specification: src/main.py
 
 ## 1. Overview

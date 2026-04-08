@@ -1,3 +1,7 @@
+---
+tags: [spec, logging, llm, observability]
+---
+
 # LLM Logging Spec
 
 ## Source Files

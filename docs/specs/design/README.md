@@ -1,3 +1,7 @@
+---
+tags: [design, overview, index]
+---
+
 # Next-Generation Design Specs
 
 These specs describe the planned evolution of Agent Queue's automation and knowledge

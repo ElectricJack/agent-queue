@@ -1,3 +1,7 @@
+---
+tags: [spec, tools, context-management]
+---
+
 # Tiered Tool System
 
 ## Purpose

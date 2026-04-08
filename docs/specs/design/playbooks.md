@@ -1,3 +1,7 @@
+---
+tags: [design, playbooks, automation, workflows]
+---
+
 # Playbooks — Agent Workflow Graphs
 
 **Status:** Draft

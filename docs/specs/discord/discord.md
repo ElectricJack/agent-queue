@@ -1,3 +1,7 @@
+---
+tags: [spec, discord, bot, interface]
+---
+
 # Discord Integration Specification
 
 ## 1. Overview

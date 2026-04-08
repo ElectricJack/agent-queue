@@ -1,3 +1,7 @@
+---
+tags: [spec, agents, profiles]
+---
+
 # Agent Profiles Specification
 
 ## Overview

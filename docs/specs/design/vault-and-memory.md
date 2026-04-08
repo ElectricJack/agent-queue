@@ -1,3 +1,7 @@
+---
+tags: [design, vault, memory, obsidian, plugins]
+---
+
 # Vault & Memory Architecture
 
 **Status:** Draft

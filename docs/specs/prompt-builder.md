@@ -1,3 +1,7 @@
+---
+tags: [spec, prompts, context]
+---
+
 # Prompt Builder
 
 ## Purpose

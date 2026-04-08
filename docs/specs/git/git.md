@@ -1,3 +1,7 @@
+---
+tags: [spec, git, workspace]
+---
+
 # Git Manager Specification
 
 **Source:** `src/git/manager.py`

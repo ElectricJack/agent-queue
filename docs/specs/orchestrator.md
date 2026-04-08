@@ -1,3 +1,7 @@
+---
+tags: [spec, orchestrator, core]
+---
+
 # Orchestrator Specification
 
 This document describes the design and behaviour of the orchestrator subsystem in sufficient

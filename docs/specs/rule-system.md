@@ -1,3 +1,7 @@
+---
+tags: [spec, rules, automation, deprecated]
+---
+
 # Rule System — Primary Automation Specification
 
 ## Purpose

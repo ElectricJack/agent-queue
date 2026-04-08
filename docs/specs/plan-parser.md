@@ -1,3 +1,7 @@
+---
+tags: [spec, plans, tasks]
+---
+
 # Specification: Plan Parser
 
 ## 1. Overview

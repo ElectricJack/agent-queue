@@ -1,3 +1,7 @@
+---
+tags: [spec, database]
+---
+
 # Database Specification
 
 ## 1. Overview

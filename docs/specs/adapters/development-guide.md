@@ -1,3 +1,7 @@
+---
+tags: [spec, adapters, development-guide]
+---
+
 # Adapter Development Guide
 
 How to add a new agent adapter to agent-queue so that a third-party AI coding

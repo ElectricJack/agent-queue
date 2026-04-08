@@ -1,3 +1,7 @@
+---
+tags: [spec, event-bus, core]
+---
+
 # Event Bus Spec
 
 ## 1. Overview

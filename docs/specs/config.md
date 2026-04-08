@@ -1,3 +1,7 @@
+---
+tags: [spec, config]
+---
+
 # Config Module Specification
 
 ## 1. Overview

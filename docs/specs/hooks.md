@@ -1,3 +1,7 @@
+---
+tags: [spec, hooks, automation, deprecated]
+---
+
 # Hook Engine Specification
 
 **Source files:** `src/hooks.py`, `src/file_watcher.py`

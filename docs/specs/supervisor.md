@@ -1,3 +1,7 @@
+---
+tags: [spec, supervisor, llm, core]
+---
+
 # Supervisor Specification
 
 The Supervisor is the single intelligent entity in the agent-queue system.

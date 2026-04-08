@@ -1,3 +1,7 @@
+---
+tags: [spec, scheduler, budget, tokens]
+---
+
 # Scheduler and Budget Specification
 
 ## 1. Overview

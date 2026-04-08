@@ -1,3 +1,7 @@
+---
+tags: [design, principles]
+---
+
 # Guiding Design Principles
 
 These are the core principles behind Agent Queue. When making design decisions,

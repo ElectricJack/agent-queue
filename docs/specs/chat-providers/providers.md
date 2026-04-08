@@ -1,3 +1,7 @@
+---
+tags: [spec, chat-providers, llm]
+---
+
 # Chat Providers — Specification
 
 ## 1. Overview

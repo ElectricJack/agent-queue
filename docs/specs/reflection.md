@@ -1,3 +1,7 @@
+---
+tags: [spec, reflection, self-improvement]
+---
+
 # Reflection Engine Specification
 
 The ReflectionEngine manages the [[supervisor|Supervisor]]'s action-reflect cycle.

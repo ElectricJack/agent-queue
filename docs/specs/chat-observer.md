@@ -1,3 +1,7 @@
+---
+tags: [spec, chat, observer, discord]
+---
+
 # Chat Observer Specification
 
 The ChatObserver replaces the ChatAnalyzer with integrated observation

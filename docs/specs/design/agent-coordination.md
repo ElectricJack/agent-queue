@@ -1,3 +1,7 @@
+---
+tags: [design, coordination, multi-agent, workflows]
+---
+
 # Agent Coordination — Playbook-Driven Multi-Agent Workflows
 
 **Status:** Draft

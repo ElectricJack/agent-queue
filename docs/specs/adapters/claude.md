@@ -1,3 +1,7 @@
+---
+tags: [spec, adapters, claude-code]
+---
+
 # Agent Adapter System — Claude Code Adapter
 
 ## 1. Overview

@@ -1,3 +1,7 @@
+---
+tags: [spec, mcp, api]
+---
+
 # MCP Server Specification
 
 The MCP server exposes all [[command-handler|CommandHandler]] commands as MCP tools via the

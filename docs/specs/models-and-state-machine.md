@@ -1,3 +1,7 @@
+---
+tags: [spec, models, state-machine, core]
+---
+
 # Models and State Machine Specification
 
 ## 1. Overview

@@ -1,3 +1,7 @@
+---
+tags: [spec, memory, consolidation]
+---
+
 # Memory Consolidation System
 
 > **Status:** Implemented
