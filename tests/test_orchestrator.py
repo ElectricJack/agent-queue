@@ -968,6 +968,61 @@ class TestPhaseVerifyNormalTask:
             default_branch="main",
         )
 
+    async def test_nonzero_exit_code_auto_remediates(self, pipeline_orch):
+        """Non-zero exit code skips verification but still auto-remediates dirty workspace."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-exit",
+            project_id="p-1",
+            title="Test exit",
+            description="test",
+            branch_name="feature-exit",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left uncommitted changes and exited with error
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+        ctx.output.exit_code = 1  # Non-zero exit code
+
+        result = await orch._phase_verify(ctx)
+        # Should still CONTINUE (skip verification) but auto-remediate
+        assert result == PhaseResult.CONTINUE
+        # Should have attempted to commit the uncommitted changes
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_nonzero_exit_code_skips_when_clean(self, pipeline_orch):
+        """Non-zero exit code with clean workspace skips without remediation."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-exit2",
+            project_id="p-1",
+            title="Test exit clean",
+            description="test",
+            branch_name="feature-exit2",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Workspace is clean
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+        ctx.output.exit_code = 1  # Non-zero exit code
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        # No commit attempt because workspace is clean
+        orch.git.acommit_all.assert_not_awaited()
+
     async def test_passes_on_default_branch_clean_synced(self, pipeline_orch):
         """Normal task passes when on default branch, no uncommitted, synced."""
         orch = pipeline_orch
