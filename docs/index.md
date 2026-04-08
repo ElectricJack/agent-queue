@@ -89,13 +89,19 @@ Bot:  Created task `task-1` — "Add rate limiting to API"
 
 ## Next steps
 
-- **[[getting-started|Getting Started]]** — Detailed installation and setup guide
-- **[[discord-commands|Discord Commands]]** — Complete guide to slash commands and chat interactions
-- **[[architecture|Architecture]]** — How the system is designed
-- **[[cli|CLI]]** — Terminal interface reference
-- **[[specs/design/README|Design Specs]]** — Design philosophy and guiding principles
-- **[[specs/models-and-state-machine|Specifications]]** — Detailed specs for each module
-- **[API Reference](api/index.md)** — Auto-generated API documentation from source code
+**Guides:**
+- [[guides/getting-started|Getting Started]] — Installation and setup
+- [[guides/discord-commands|Discord Commands]] — Slash commands and chat interactions
+- [[guides/architecture|Architecture]] — How the system is designed
+- [[guides/cli|CLI]] — Terminal interface reference
+- [[guides/agent-tools|Agent Tools]] — Internal tool reference for AI agents
+- [[guides/adapter-development|Adapter Development]] — Adding new agent backends
+
+**Specifications:**
+- [[specs/design/README|Design Specs]] — Next-generation architecture and guiding principles
+- [[specs/orchestrator|Orchestrator]] — Core task and agent lifecycle
+- [[specs/supervisor|Supervisor]] — LLM conversation loop
+- [[specs/models-and-state-machine|Models & State Machine]] — Task lifecycle states
 
 ## License
 

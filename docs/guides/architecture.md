@@ -91,4 +91,4 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/git/` | Git operations (branch management, worktrees, sync-merge) |
 | `src/tokens/` | Token budget tracking |
 
-For detailed API documentation, see the [API Reference](api/index.md).
+For detailed module documentation, see the [[specs/design/README|specifications]].
