@@ -267,3 +267,11 @@ async def search_by_tag(
 
 This is the mechanism for cross-cutting discovery. The Obsidian graph view renders
 the same connections visually.
+
+---
+
+## 8. Open Questions
+
+1. **Embedding model consistency.** If the embedding model changes (e.g., upgrade from
+   one provider to another), all collections need re-indexing. How do we handle this
+   gracefully — background re-index? Version tracking per collection?

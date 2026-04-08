@@ -13,8 +13,7 @@ systems. They are **design documents under active development** — not yet impl
 |---|---|---|
 | [[guiding-design-principles]] | Draft | The 10 core principles behind all design decisions |
 | [[playbooks]] | Draft | Agent workflow graphs — directed graphs of LLM decision points replacing rules + hooks |
-| [[vault-and-memory]] | Draft | Hub document — overview, migration path, and open questions for the vault & memory system |
-| [[vault]] | Draft | Vault directory structure, what lives where, reference stubs, Obsidian integration |
+| [[vault]] | Draft | Vault directory structure, what lives where, reference stubs, Obsidian integration, migration path |
 | [[memory-plugin]] | Draft | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
 | [[memory-scoping]] | Draft | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
 | [[profiles]] | Draft | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
@@ -28,29 +27,29 @@ guiding-design-principles
     ├── Referenced by all specs as the decision framework
     │
     ▼
-vault-and-memory                       playbooks
-    defines the vault structure  ◄──►  defines where playbooks live in the vault
-    defines memory scoping       ◄──►  defines how playbooks read/write memory
-    defines agent profiles       ◄──►  defines agent-type scoped playbooks
-    defines self-improvement     ◄──►  reflection playbooks drive the loop
-    defines memory health        ◄──►  playbooks generate the tracked insights
-         │                                  │
-         │                                  │
-         └────────────┬────────────────────┘
-                      │
-                      ▼
-              agent-coordination
-              uses playbook execution model
-              reads profiles from the vault
-              agent affinity + vault memory reduce context loss
+vault + memory-plugin + memory-scoping          playbooks
+    vault structure & Obsidian        ◄──►  playbooks live in the vault
+    memory plugin & Milvus backend    ◄──►  playbooks read/write memory
+    profiles (markdown)               ◄──►  agent-type scoped playbooks
+    self-improvement loop             ◄──►  reflection playbooks drive the loop
+              │                                    │
+              │                                    │
+              └──────────────┬─────────────────────┘
+                             │
+                             ▼
+                     agent-coordination
+                     uses playbook execution model
+                     reads profiles from the vault
+                     agent affinity + memory reduce context loss
 ```
 
-All four specs share the same [[guiding-design-principles|design principles]].
-The [[vault-and-memory|vault]] is the prerequisite for [[playbooks|playbook]]
-storage. [[playbooks|Playbooks]] are the mechanism for the
+All specs share the same [[guiding-design-principles|design principles]].
+The [[vault]] is the prerequisite for [[playbooks|playbook]] storage.
+[[playbooks|Playbooks]] are the mechanism for the
 [[self-improvement|self-improvement loop]].
 [[agent-coordination|Coordination playbooks]] extend the playbook model to
-multi-agent workflows.
+multi-agent workflows. [[memory-plugin]] and [[memory-scoping]] define how
+all memory operations work.
 
 ### Prerequisite Refactors (in [[playbooks]] Section 17)
 
@@ -64,7 +63,7 @@ Several existing subsystems need changes before playbooks can be implemented:
 
 ## End-to-End Trace
 
-A concrete walkthrough showing [[playbooks]], [[vault-and-memory]], and
+A concrete walkthrough showing [[playbooks]], [[memory-scoping]], and
 [[agent-coordination]] working together:
 
 **Scenario:** A coding agent commits code, vibecop finds issues, the system creates
@@ -132,6 +131,6 @@ fix tasks, and the experience is remembered for next time.
 ## Supersedes
 
 Once implemented, these specs will replace:
-- `specs/rule-system.md` — rules become [[playbooks]] or [[vault-and-memory|vault memory]]
+- `specs/rule-system.md` — rules become [[playbooks]] or [[vault|vault memory]]
 - `specs/hooks.md` — hook engine replaced by [[playbooks|playbook executor]]
-- Parts of `specs/agent-profiles.md` — profiles move to [[vault-and-memory|vault markdown]]
+- Parts of `specs/agent-profiles.md` — profiles move to [[vault|vault markdown]]

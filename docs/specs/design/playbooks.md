@@ -8,7 +8,7 @@ tags: [design, playbooks, automation, workflows]
 **Supersedes:** `rule-system.md`, `hooks.md` (planned migration)
 **Source files:** TBD
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[vault-and-memory]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
+**Related:** [[vault]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
 
 ---
 
@@ -811,7 +811,7 @@ for the initial implementation.
 
 ## 11. Memory Integration
 
-Playbooks interact with the [[vault-and-memory|vault memory system]] in two
+Playbooks interact with the [[memory-scoping|vault memory system]] in two
 directions: reading memories for context, and writing insights as output.
 
 ### Reading: Memory via Tools
@@ -991,7 +991,7 @@ inspector reads them before creating duplicate tasks).
 ## 13. Migration Path
 
 The transition from rules + hooks to playbooks is incremental, not a big bang. This
-migration runs in parallel with the vault migration described in `vault-and-memory.md`.
+migration runs in parallel with the vault migration described in [[vault]].
 
 ### Phase 1: Vault Structure + Playbook Runtime
 

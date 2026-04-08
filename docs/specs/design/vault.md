@@ -208,3 +208,63 @@ and tags. The vault structure produces a natural graph:
 
 These conventions are guidelines, not enforced structure. The LLM and human authors
 use them naturally; the system doesn't parse wikilinks programmatically.
+
+---
+
+## 6. Migration Path
+
+The vault and memory system migration is phased to allow incremental adoption.
+
+### Phase 1: Vault Structure + Task Migration
+
+- Create `~/.agent-queue/vault/` with the directory structure above
+- Move existing `.obsidian/` config from `memory/` to `vault/`
+- **Move task records** from `memory/*/tasks/` to `tasks/*/` (outside vault)
+- Move existing rule files from `memory/*/rules/` to vault playbook locations
+- Move existing notes from `notes/` to `vault/projects/*/notes/`
+- Symlink or copy existing project memory files during transition
+- Implement the [[playbooks#17. Prerequisite Refactors|unified vault file watcher]]
+
+### Phase 2: memsearch Fork + Plugin v2
+
+- Fork memsearch, add KV storage (scalar-only entries in Milvus collections)
+- Add multi-collection query with weighted merging
+- Add scope-aware collection naming and routing
+- Build [[memory-plugin|MemoryPlugin v2]] as internal plugin using the fork
+- Plugin exposes unified tool set (`memory_search`, `memory_recall`, `memory_save`,
+  `memory_store`, `memory_get`, `memory_list`, `memory_list_facts`)
+- v2 plugin coexists with v1 during transition; both register via plugin system
+- Migrate existing per-project collections to scoped collections
+
+### Phase 3: Memory Scoping + KV
+
+- Create per-agent-type and system-level collections
+- Implement [[memory-scoping|scope resolution]] (project → agent-type → system)
+- Create fact files (`facts.md`) per scope in the vault
+- Implement fact file → Milvus KV sync via file watcher
+- Remove v1 memory plugin and `src/memory.py` MemoryManager
+
+### Phase 4: Profile Migration
+
+- Convert DB-stored profiles to [[profiles|markdown files]] in the vault
+- Implement file watcher → DB sync for hybrid profile format
+- Update chat/dashboard profile commands to write markdown
+- Validate JSON block parsing and DB sync
+
+### Phase 5: Self-Improvement Loop
+
+- Implement [[self-improvement|reflection playbook]] for agent-type insight extraction
+- Implement log analysis playbook for operational insights
+- Implement reference stub indexer for workspace specs
+- Implement memory consolidation (dedup, merge, archive)
+- Implement [[self-improvement|memory health metrics]] and audit trail
+
+---
+
+## 7. Open Questions
+
+1. **Obsidian plugin opportunities.** Custom Obsidian plugins could surface live system
+   state (running tasks, playbook instances) in the vault. How far do we take it?
+
+2. **Reference stub freshness.** Detection mechanism for stale reference stubs —
+   file watcher on workspace? Git hook? Flagging stubs with stale `source_hash`?

@@ -153,3 +153,22 @@ retrieval_count: 7
 
 `retrieval_count` and `last_retrieved` are updated by the MemoryManager when search
 results are returned. This powers the staleness and hit-rate metrics.
+
+---
+
+## 7. Open Questions
+
+1. **Memory capacity management.** Retention/archival policy as collections grow.
+   Age-based? Relevance decay? Human curation only? The reflection playbook handles
+   some consolidation, but long-term growth needs a strategy.
+
+2. **Memory conflicts between agents.** Two agents might write contradictory insights.
+   The deduplication merge handles similarity, but outright contradictions need a
+   resolution strategy. Timestamp-wins? Tag as `#contested`? Surface for human review?
+
+3. **Memory quality signal.** Measuring whether the self-improvement loop is actually
+   helping. Track task success rates before/after memories are introduced? A/B test
+   with and without memory retrieval?
+
+4. **Privacy and multi-user.** If multiple users share an agent-queue instance, should
+   memory be user-scoped or shared across all operators?

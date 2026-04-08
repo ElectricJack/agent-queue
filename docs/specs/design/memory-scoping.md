@@ -30,12 +30,12 @@ knowledge found through deep semantic search.
 Not everything should require a search query. Memory is organized into four tiers
 based on how and when it's loaded into agent context:
 
-| Tier | Name | Token Budget | When Loaded | What It Contains |
-|---|---|---|---|---|
-| **L0** | Identity | ~50 tokens | Always | Agent type role description from [[profiles]] `## Role` section |
-| **L1** | Critical Facts | ~200 tokens | Always at task start | Project `facts.md` KV entries + agent-type `facts.md` entries. Eagerly loaded, no search needed. |
-| **L2** | Topic Context | ~500 tokens | On-demand by topic | Memories filtered by `topic` field matching the current work area. Loaded when the agent enters a topic or the playbook specifies one. |
-| **L3** | Deep Search | Variable | Explicit query | Full semantic search across all scopes. Agent calls `memory_search` when it needs to find something not covered by L0–L2. |
+| Tier   | Name           | Token Budget | When Loaded          | What It Contains                                                                                                                       |
+| ------ | -------------- | ------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **L0** | Identity       | ~50 tokens   | Always               | Agent type role description from [[profiles]] `## Role` section                                                                        |
+| **L1** | Critical Facts | ~200 tokens  | Always at task start | Project `facts.md` KV entries + agent-type `facts.md` entries. Eagerly loaded, no search needed.                                       |
+| **L2** | Topic Context  | ~500 tokens  | On-demand by topic   | Memories filtered by `topic` field matching the current work area. Loaded when the agent enters a topic or the playbook specifies one. |
+| **L3** | Deep Search    | Variable     | Explicit query       | Full semantic search across all scopes. Agent calls `memory_search` when it needs to find something not covered by L0–L2.              |
 
 ### How Tiers Compose at Task Start
 
@@ -228,28 +228,28 @@ proper indexing, deduplication, and file placement.
 
 **Semantic (unstructured knowledge):**
 
-| Tool | Description |
-|---|---|
-| `memory_search` | Semantic search across relevant scopes (vector similarity) |
-| `memory_save` | Save an insight/learning as a memory file (with dedup) |
-| `memory_list` | Browse memories in a scope |
+| Tool                 | Description                                                |
+| -------------------- | ---------------------------------------------------------- |
+| `memory_idea_recall` | Semantic search across relevant scopes (vector similarity) |
+| `memory_idea_save`   | Save an insight/learning as a memory file (with dedup)     |
+| `memory_idea_list`   | Browse memories in a scope                                 |
 
 **Key-value (structured facts):**
 
-| Tool | Description |
-|---|---|
-| `memory_recall` | Exact KV lookup by key, with scope resolution (most specific wins) |
-| `memory_store` | Store a key-value pair in the appropriate scope |
-| `memory_list_facts` | List all KV entries in a scope/namespace |
+| Tool                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `memory_fact_recall` | Exact KV lookup by key, with scope resolution (most specific wins) |
+| `memory_fact_store`  | Store a key-value pair in the appropriate scope                    |
+| `memory_fact_list`   | List all KV entries in a scope/namespace                           |
 
 **Unified (auto-routing):**
 
-| Tool | Description |
-|---|---|
-| `memory_get` | Smart retrieval: tries KV exact match first, falls back to semantic search. Agents use this when they're not sure which retrieval strategy is appropriate |
+| Tool            | Description                                                                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `memory_recall` | Smart retrieval: tries KV exact match first, falls back to semantic search. Agents use this when they're not sure which retrieval strategy is appropriate |
 
 The `memory_` prefix keeps all tools grouped and discoverable. Agents can use the
-specific tools when they know what they want, or `memory_get` when they don't.
+specific tools when they know what they want, or `memory_recall` when they don't.
 
 ---
 
