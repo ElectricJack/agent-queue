@@ -536,8 +536,14 @@ class TestPluginMemorySave:
         assert result["similarity_score"] == 0.88
         assert result["merged_with"] == "existing_hash"
 
-        # LLM should have been called for merge
-        wired_plugin._ctx.invoke_llm.assert_called_once()
+        # LLM should have been called for merge (+ possibly topic inference)
+        assert wired_plugin._ctx.invoke_llm.call_count >= 1
+        merge_calls = [
+            c
+            for c in wired_plugin._ctx.invoke_llm.call_args_list
+            if "merging two related" in c[0][0].lower()
+        ]
+        assert len(merge_calls) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -556,8 +562,11 @@ class TestPluginMemorySave:
         assert result["action"] == "created"
         assert result["has_summary"] is True
 
-        # LLM should have been called for summary
-        wired_plugin._ctx.invoke_llm.assert_called_once()
+        # LLM should have been called for summary (+ possibly topic inference)
+        summary_calls = [
+            c for c in wired_plugin._ctx.invoke_llm.call_args_list if "summarize" in c[0][0].lower()
+        ]
+        assert len(summary_calls) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -575,8 +584,11 @@ class TestPluginMemorySave:
         assert result["action"] == "created"
         assert result["has_summary"] is False
 
-        # LLM should NOT have been called
-        wired_plugin._ctx.invoke_llm.assert_not_called()
+        # No summary LLM call (topic inference may still be called)
+        summary_calls = [
+            c for c in wired_plugin._ctx.invoke_llm.call_args_list if "summarize" in c[0][0].lower()
+        ]
+        assert len(summary_calls) == 0
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")

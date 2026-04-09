@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from src.plugins.base import InternalPlugin, PluginContext
@@ -1018,6 +1019,328 @@ class MemoryV2Plugin(InternalPlugin):
             return []
 
     # -----------------------------------------------------------------
+    # Topic auto-detection (spec §3)
+    # -----------------------------------------------------------------
+
+    # Controlled vocabulary for consistent topic assignment.
+    # The LLM chooses from this list when possible; it may suggest a new
+    # single-word topic if none fit.  Keyword fallback also uses this list.
+    CONTROLLED_TOPICS: list[str] = [
+        "architecture",
+        "authentication",
+        "build",
+        "ci-cd",
+        "cli",
+        "configuration",
+        "database",
+        "debugging",
+        "dependencies",
+        "deployment",
+        "documentation",
+        "error-handling",
+        "git",
+        "hooks",
+        "logging",
+        "memory",
+        "messaging",
+        "monitoring",
+        "networking",
+        "performance",
+        "plugins",
+        "refactoring",
+        "scheduling",
+        "security",
+        "tasks",
+        "testing",
+        "ui",
+        "workflow",
+    ]
+
+    # Keyword → topic mapping for the fallback classifier.
+    # Each keyword is checked as a case-insensitive substring of the content.
+    _KEYWORD_TOPIC_MAP: dict[str, str] = {
+        # architecture
+        "architecture": "architecture",
+        "design pattern": "architecture",
+        "module structure": "architecture",
+        "component": "architecture",
+        # authentication
+        "auth": "authentication",
+        "oauth": "authentication",
+        "login": "authentication",
+        "token refresh": "authentication",
+        "credential": "authentication",
+        "jwt": "authentication",
+        "saml": "authentication",
+        "sso": "authentication",
+        # build
+        "build": "build",
+        "compile": "build",
+        "setuptools": "build",
+        "pyproject": "build",
+        "webpack": "build",
+        # ci-cd
+        "ci/cd": "ci-cd",
+        "pipeline": "ci-cd",
+        "github actions": "ci-cd",
+        "ci ": "ci-cd",
+        "continuous integration": "ci-cd",
+        "continuous delivery": "ci-cd",
+        # cli
+        "command line": "cli",
+        "argparse": "cli",
+        "click": "cli",
+        "cli ": "cli",
+        # configuration
+        "config": "configuration",
+        "yaml": "configuration",
+        "env var": "configuration",
+        "settings": "configuration",
+        "environment variable": "configuration",
+        # database
+        "database": "database",
+        "sql": "database",
+        "sqlite": "database",
+        "postgres": "database",
+        "migration": "database",
+        "alembic": "database",
+        "milvus": "database",
+        "query": "database",
+        "schema": "database",
+        # debugging
+        "debug": "debugging",
+        "breakpoint": "debugging",
+        "traceback": "debugging",
+        "stack trace": "debugging",
+        # deployment
+        "deploy": "deployment",
+        "docker": "deployment",
+        "container": "deployment",
+        "kubernetes": "deployment",
+        "k8s": "deployment",
+        # dependencies
+        "dependency": "dependencies",
+        "dependencies": "dependencies",
+        "package": "dependencies",
+        "pip install": "dependencies",
+        "requirements": "dependencies",
+        # documentation
+        "documentation": "documentation",
+        "docstring": "documentation",
+        "readme": "documentation",
+        "mkdocs": "documentation",
+        "sphinx": "documentation",
+        # error-handling
+        "error handling": "error-handling",
+        "exception": "error-handling",
+        "try/except": "error-handling",
+        "raise ": "error-handling",
+        # git
+        "git ": "git",
+        "branch": "git",
+        "merge conflict": "git",
+        "commit": "git",
+        "rebase": "git",
+        "pull request": "git",
+        # hooks
+        "hook": "hooks",
+        "pre-commit": "hooks",
+        "post-commit": "hooks",
+        "webhook": "hooks",
+        # logging
+        "logging": "logging",
+        "logger": "logging",
+        "structlog": "logging",
+        "log level": "logging",
+        # memory
+        "memory": "memory",
+        "vault": "memory",
+        "embedding": "memory",
+        "vector search": "memory",
+        "memsearch": "memory",
+        "semantic search": "memory",
+        # messaging
+        "discord": "messaging",
+        "telegram": "messaging",
+        "slack": "messaging",
+        "notification": "messaging",
+        "message": "messaging",
+        # monitoring
+        "monitoring": "monitoring",
+        "metrics": "monitoring",
+        "health check": "monitoring",
+        "observability": "monitoring",
+        # networking
+        "network": "networking",
+        "http": "networking",
+        "api endpoint": "networking",
+        "rest api": "networking",
+        "websocket": "networking",
+        # performance
+        "performance": "performance",
+        "optimization": "performance",
+        "latency": "performance",
+        "throughput": "performance",
+        "cache": "performance",
+        "slow": "performance",
+        # plugins
+        "plugin": "plugins",
+        "extension": "plugins",
+        "addon": "plugins",
+        # refactoring
+        "refactor": "refactoring",
+        "clean up": "refactoring",
+        "rename": "refactoring",
+        "extract": "refactoring",
+        # scheduling
+        "schedule": "scheduling",
+        "cron": "scheduling",
+        "timer": "scheduling",
+        "rate limit": "scheduling",
+        "throttle": "scheduling",
+        "queue": "scheduling",
+        # security
+        "security": "security",
+        "vulnerability": "security",
+        "cve": "security",
+        "encryption": "security",
+        "secret": "security",
+        "permission": "security",
+        # tasks
+        "task ": "tasks",
+        "orchestrat": "tasks",
+        "supervisor": "tasks",
+        "agent ": "tasks",
+        "work queue": "tasks",
+        # testing
+        "test": "testing",
+        "pytest": "testing",
+        "fixture": "testing",
+        "mock": "testing",
+        "assertion": "testing",
+        "coverage": "testing",
+        # ui
+        "ui ": "ui",
+        "frontend": "ui",
+        "css": "ui",
+        "html": "ui",
+        "react": "ui",
+        "template": "ui",
+        # workflow
+        "workflow": "workflow",
+        "playbook": "workflow",
+        "process": "workflow",
+        "automation": "workflow",
+    }
+
+    async def _infer_topic(
+        self,
+        content: str,
+        *,
+        source_task: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str | None:
+        """Infer the topic from content and task context.
+
+        Uses an LLM call (Haiku) to classify the content into one of the
+        :attr:`CONTROLLED_TOPICS`.  Falls back to keyword-based matching
+        if the LLM is unavailable.
+
+        Parameters
+        ----------
+        content:
+            The memory content to classify.
+        source_task:
+            Optional source task ID for additional context.
+        tags:
+            Optional tags that may hint at the topic.
+
+        Returns
+        -------
+        str or None
+            The inferred topic, or ``None`` if no confident match.
+        """
+        # Build context snippet from tags and source task
+        context_parts: list[str] = []
+        if tags:
+            context_parts.append(f"Tags: {', '.join(tags)}")
+        if source_task:
+            context_parts.append(f"Source task: {source_task}")
+        context_str = "\n".join(context_parts)
+
+        # Try LLM classification first
+        topic = await self._infer_topic_via_llm(content, context_str)
+        if topic:
+            return topic
+
+        # Fallback to keyword matching
+        return self._infer_topic_via_keywords(content)
+
+    async def _infer_topic_via_llm(
+        self,
+        content: str,
+        context: str,
+    ) -> str | None:
+        """Classify content into a controlled topic via LLM.
+
+        Returns the topic string or ``None`` if classification fails.
+        """
+        topics_list = ", ".join(self.CONTROLLED_TOPICS)
+        prompt = (
+            "You are a topic classifier for a developer knowledge base.\n\n"
+            "CONTENT:\n"
+            f"{content[:1000]}\n\n"
+        )
+        if context:
+            prompt += f"CONTEXT:\n{context}\n\n"
+        prompt += (
+            f"CONTROLLED TOPICS: {topics_list}\n\n"
+            "INSTRUCTIONS:\n"
+            "- Choose the single best topic from the CONTROLLED TOPICS list.\n"
+            "- If none fit well, output a new single lowercase hyphenated topic "
+            "(e.g. 'data-migration', 'api-design').\n"
+            "- Output ONLY the topic string, nothing else. No quotes, no explanation.\n"
+        )
+        try:
+            raw = await self._ctx.invoke_llm(
+                prompt,
+                model="claude-haiku-4-20250514",
+            )
+            topic = raw.strip().lower().strip("\"'")
+            # Normalize: replace spaces/underscores with hyphens, remove
+            # non-alphanumeric chars except hyphens
+            topic = topic.replace(" ", "-").replace("_", "-")
+            topic = re.sub(r"[^a-z0-9-]", "", topic)
+            topic = re.sub(r"-{2,}", "-", topic).strip("-")
+            if not topic:
+                return None
+            return topic
+        except Exception:
+            self._log.debug("LLM topic inference unavailable, using keyword fallback")
+            return None
+
+    def _infer_topic_via_keywords(self, content: str) -> str | None:
+        """Classify content into a topic using keyword matching.
+
+        Scans the content for keywords from :attr:`_KEYWORD_TOPIC_MAP`
+        and returns the topic with the most keyword hits.
+
+        Returns ``None`` if no keywords match.
+        """
+        content_lower = content.lower()
+        # Count hits per topic
+        topic_scores: dict[str, int] = {}
+        for keyword, topic in self._KEYWORD_TOPIC_MAP.items():
+            if keyword in content_lower:
+                topic_scores[topic] = topic_scores.get(topic, 0) + 1
+
+        if not topic_scores:
+            return None
+
+        # Return topic with highest score
+        return max(topic_scores, key=topic_scores.get)  # type: ignore[arg-type]
+
+    # -----------------------------------------------------------------
     # Command handlers — Save (spec §8)
     # -----------------------------------------------------------------
 
@@ -1085,6 +1408,19 @@ class MemoryV2Plugin(InternalPlugin):
         """
         assert self._service is not None  # guarded by caller
 
+        # ----- Step 0: Infer topic if not provided (spec §3) -----
+        topic_auto_detected = False
+        if topic is None:
+            inferred = await self._infer_topic(
+                content,
+                source_task=source_task,
+                tags=tags,
+            )
+            if inferred:
+                topic = inferred
+                topic_auto_detected = True
+                self._log.info("Auto-detected topic %r for memory_save", topic)
+
         # ----- Step 1: Dedup check via semantic search -----
         dedup_results = await self._service.search(
             project_id,
@@ -1108,17 +1444,16 @@ class MemoryV2Plugin(InternalPlugin):
 
         if best_match and best_score > self._DEDUP_NEAR_IDENTICAL:
             # Near-identical: just update timestamp
-            return await self._handle_dedup_identical(
+            result = await self._handle_dedup_identical(
                 project_id=project_id,
                 existing=best_match,
                 similarity=best_score,
                 source_task=source_task,
                 scope=scope,
             )
-
-        if best_match and best_score > self._DEDUP_RELATED:
+        elif best_match and best_score > self._DEDUP_RELATED:
             # Related: merge via LLM
-            return await self._handle_dedup_merge(
+            result = await self._handle_dedup_merge(
                 project_id=project_id,
                 content=content,
                 existing=best_match,
@@ -1128,16 +1463,21 @@ class MemoryV2Plugin(InternalPlugin):
                 source_task=source_task,
                 scope=scope,
             )
+        else:
+            # ----- Step 3: Distinct — create new entry -----
+            result = await self._handle_create_new(
+                project_id=project_id,
+                content=content,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                scope=scope,
+            )
 
-        # ----- Step 3: Distinct — create new entry -----
-        return await self._handle_create_new(
-            project_id=project_id,
-            content=content,
-            tags=tags,
-            topic=topic,
-            source_task=source_task,
-            scope=scope,
-        )
+        # Annotate with auto-detection info
+        if topic_auto_detected:
+            result["topic_auto_detected"] = True
+        return result
 
     async def _handle_dedup_identical(
         self,
