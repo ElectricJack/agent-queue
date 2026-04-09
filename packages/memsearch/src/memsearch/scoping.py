@@ -546,6 +546,28 @@ class CollectionRouter:
         logger.info("Ensured aq_system collection exists")
         return store
 
+    def ensure_orchestrator_collection(self) -> MilvusStore:
+        """Ensure the ``aq_orchestrator`` collection exists, creating it if needed.
+
+        This is called during startup to eagerly create the orchestrator-level
+        collection so it's available for writes and searches from the very
+        first operation.  The orchestrator collection stores operational
+        knowledge about the orchestrator itself — scheduling patterns,
+        cross-project insights, and self-improvement notes.
+
+        Per roadmap 3.1.4: "Create orchestrator collection on startup".
+
+        Returns
+        -------
+        MilvusStore
+            The (possibly cached) store for the orchestrator scope.
+        """
+        store = self.get_store(
+            MemoryScope.ORCHESTRATOR, description="orchestrator-level memories"
+        )
+        logger.info("Ensured aq_orchestrator collection exists")
+        return store
+
     # ------------------------------------------------------------------
     # Collection listing
     # ------------------------------------------------------------------

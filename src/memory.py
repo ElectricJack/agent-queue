@@ -382,6 +382,45 @@ class MemoryManager:
             logger.warning("Failed to ensure system collection: %s", e)
             return False
 
+    async def ensure_orchestrator_collection(self) -> bool:
+        """Ensure the ``aq_orchestrator`` collection exists in Milvus.
+
+        Called during orchestrator startup (roadmap 3.1.4) so the
+        orchestrator-level memory collection is ready before any tasks
+        run.  The orchestrator collection stores operational knowledge —
+        scheduling patterns, cross-project insights, and self-improvement
+        notes.
+
+        Returns
+        -------
+        bool
+            ``True`` if the collection was successfully ensured (created or
+            already existed), ``False`` if memsearch is unavailable or
+            initialization failed.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            logger.debug(
+                "Memory disabled or memsearch unavailable — skipping orchestrator collection"
+            )
+            return False
+
+        router = await self._get_router()
+        if router is None:
+            logger.warning(
+                "Could not initialize CollectionRouter — orchestrator collection not created"
+            )
+            return False
+
+        try:
+            await asyncio.to_thread(router.ensure_orchestrator_collection)
+            logger.info(
+                "Orchestrator-level memory collection (aq_orchestrator) ensured on startup"
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to ensure orchestrator collection: %s", e)
+            return False
+
     # ------------------------------------------------------------------
     # Instance management
     # ------------------------------------------------------------------

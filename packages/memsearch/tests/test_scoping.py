@@ -966,6 +966,122 @@ class TestEnsureSystemCollection:
 
 
 @pytestmark_milvus
+class TestEnsureOrchestratorCollection:
+    """Tests for CollectionRouter.ensure_orchestrator_collection (roadmap 3.1.4)."""
+
+    def test_creates_orchestrator_collection(self, router: CollectionRouter):
+        """ensure_orchestrator_collection creates the aq_orchestrator collection."""
+        assert not router.has_store(MemoryScope.ORCHESTRATOR)
+        store = router.ensure_orchestrator_collection()
+        assert store is not None
+        assert store._collection == "aq_orchestrator"
+        assert router.has_store(MemoryScope.ORCHESTRATOR)
+
+    def test_idempotent(self, router: CollectionRouter):
+        """Calling ensure_orchestrator_collection twice returns the same store."""
+        store1 = router.ensure_orchestrator_collection()
+        store2 = router.ensure_orchestrator_collection()
+        assert store1 is store2
+
+    def test_collection_appears_in_list(self, router: CollectionRouter):
+        """After ensure, aq_orchestrator appears in list_collections."""
+        router.ensure_orchestrator_collection()
+        names = {name for _, _, name in router.list_collections()}
+        assert "aq_orchestrator" in names
+
+    def test_collection_is_writable(self, router: CollectionRouter):
+        """The ensured orchestrator collection accepts upserts."""
+        store = router.ensure_orchestrator_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "orch_ensure_test_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Orchestrator operational insight",
+                    "source": "orchestrator.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        results = store.query(filter_expr='chunk_hash == "orch_ensure_test_1"')
+        assert len(results) == 1
+        assert results[0]["content"] == "Orchestrator operational insight"
+
+    def test_collection_is_searchable_after_ensure(self, router: CollectionRouter):
+        """After ensure, the orchestrator collection is available in multi-scope search."""
+        store = router.ensure_orchestrator_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "orch_ensure_search_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Scheduling pattern for rate limits",
+                    "source": "orchestrator.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        # Verify it's discoverable via _get_store_if_exists (used by search)
+        found = router._get_store_if_exists(MemoryScope.ORCHESTRATOR)
+        assert found is not None
+        assert found is store
+
+    def test_fresh_router_finds_ensured_collection(self, tmp_path: Path):
+        """A fresh router can discover the orchestrator collection created by ensure."""
+        db = tmp_path / "orch_ensure_persist.db"
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        store = r1.ensure_orchestrator_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "orch_persist_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Persistent orchestrator data",
+                    "source": "orch.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        r1.close()
+
+        # Fresh router — no cached stores
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0
+        found = r2._get_store_if_exists(MemoryScope.ORCHESTRATOR)
+        assert found is not None
+        results = found.query(filter_expr='chunk_hash == "orch_persist_1"')
+        assert len(results) == 1
+        r2.close()
+
+    def test_does_not_affect_other_scopes(self, router: CollectionRouter):
+        """ensure_orchestrator_collection only creates the orchestrator collection."""
+        router.ensure_orchestrator_collection()
+        assert router.has_store(MemoryScope.ORCHESTRATOR)
+        assert not router.has_store(MemoryScope.SYSTEM)
+        assert not router.has_store(MemoryScope.AGENT_TYPE, "coding")
+        assert not router.has_store(MemoryScope.PROJECT, "myapp")
+
+    def test_coexists_with_system_collection(self, router: CollectionRouter):
+        """Both system and orchestrator collections can be ensured independently."""
+        router.ensure_system_collection()
+        router.ensure_orchestrator_collection()
+        assert router.has_store(MemoryScope.SYSTEM)
+        assert router.has_store(MemoryScope.ORCHESTRATOR)
+        names = {name for _, _, name in router.list_collections()}
+        assert "aq_system" in names
+        assert "aq_orchestrator" in names
+
+
+@pytestmark_milvus
 class TestCollectionRouterContextManager:
     def test_context_manager(self, tmp_path: Path):
         db = tmp_path / "ctx_test.db"

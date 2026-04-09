@@ -2349,3 +2349,78 @@ class TestEnsureSystemCollection:
             assert result1 is True
             assert result2 is True
             assert mock_router.ensure_system_collection.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# EnsureOrchestratorCollection tests (roadmap 3.1.4)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureOrchestratorCollection:
+    """Tests for MemoryManager.ensure_orchestrator_collection startup method."""
+
+    def _make_manager(self, storage_root: str = "/tmp/aq-test", **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    async def test_returns_false_when_disabled(self):
+        """ensure_orchestrator_collection returns False when memory is disabled."""
+        mgr = MemoryManager(MemoryConfig(enabled=False))
+        result = await mgr.ensure_orchestrator_collection()
+        assert result is False
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", False)
+    async def test_returns_false_when_memsearch_unavailable(self):
+        """ensure_orchestrator_collection returns False when memsearch not installed."""
+        mgr = self._make_manager()
+        result = await mgr.ensure_orchestrator_collection()
+        assert result is False
+
+    async def test_returns_false_when_router_fails(self):
+        """ensure_orchestrator_collection returns False when router can't be created."""
+        mgr = self._make_manager()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=None):
+            result = await mgr.ensure_orchestrator_collection()
+            assert result is False
+
+    async def test_returns_true_on_success(self):
+        """ensure_orchestrator_collection returns True when collection is ensured."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_orchestrator_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_orchestrator_collection()
+            assert result is True
+            mock_router.ensure_orchestrator_collection.assert_called_once()
+
+    async def test_calls_ensure_on_router(self):
+        """ensure_orchestrator_collection delegates to router.ensure_orchestrator_collection."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_orchestrator_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            await mgr.ensure_orchestrator_collection()
+            mock_router.ensure_orchestrator_collection.assert_called_once()
+
+    async def test_handles_exception_gracefully(self):
+        """ensure_orchestrator_collection catches exceptions and returns False."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_orchestrator_collection = MagicMock(
+            side_effect=RuntimeError("Milvus down")
+        )
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_orchestrator_collection()
+            assert result is False
+
+    async def test_idempotent(self):
+        """Calling ensure_orchestrator_collection twice succeeds both times."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_orchestrator_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result1 = await mgr.ensure_orchestrator_collection()
+            result2 = await mgr.ensure_orchestrator_collection()
+            assert result1 is True
+            assert result2 is True
+            assert mock_router.ensure_orchestrator_collection.call_count == 2
