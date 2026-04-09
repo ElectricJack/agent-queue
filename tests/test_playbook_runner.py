@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -3438,6 +3439,73 @@ class TestExpressionEvaluation:
         }
         assert not runner._evaluate_structured_condition(cond, "any")
 
+    # -- Log verification for error cases (5.2.15c, 5.2.15d) -------------
+
+    def test_invalid_syntax_logs_warning(self, runner, caplog):
+        """5.2.15c: invalid expression syntax produces clear warning log."""
+        cond = {"expression": "this is not valid at all"}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Invalid expression syntax" in caplog.text
+        assert "this is not valid at all" in caplog.text
+
+    def test_missing_operator_logs_warning(self, runner, caplog):
+        """5.2.15c: expression without operator produces clear warning."""
+        cond = {"expression": 'task.status "completed"'}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Invalid expression syntax" in caplog.text
+
+    def test_empty_expression_logs_warning(self, runner, caplog):
+        """5.2.15c: empty expression produces clear warning."""
+        cond = {"expression": ""}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Invalid expression syntax" in caplog.text
+
+    def test_undefined_variable_logs_warning(self, runner, caplog):
+        """5.2.15d: undefined variable produces descriptive warning with variable name."""
+        cond = {"expression": 'unknown_ns.field == "x"'}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Undefined variable" in caplog.text
+        assert "unknown_ns.field" in caplog.text
+
+    def test_undefined_nested_variable_logs_warning(self, runner, caplog):
+        """5.2.15d: undefined nested path produces descriptive warning."""
+        cond = {"expression": 'task.nonexistent.deep == "x"'}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Undefined variable" in caplog.text
+        assert "task.nonexistent.deep" in caplog.text
+
+    def test_compare_missing_keys_logs_warning(self, runner, caplog):
+        """5.2.15c: compare condition with missing keys produces clear warning."""
+        cond = {"function": "compare", "operator": "==", "value": "x"}
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Incomplete compare condition" in caplog.text
+
+    def test_compare_invalid_operator_logs_warning(self, runner, caplog):
+        """5.2.15c: compare with unsupported operator produces clear warning."""
+        cond = {
+            "function": "compare",
+            "variable": "task.status",
+            "operator": "~=",
+            "value": "x",
+        }
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = runner._evaluate_structured_condition(cond, "any")
+        assert result is False
+        assert "Unsupported operator" in caplog.text
+        assert "~=" in caplog.text
+
     # -- Operator coverage -----------------------------------------------
 
     def test_expression_lte(self, runner):
@@ -3772,6 +3840,135 @@ class TestExpressionTransitions:
         assert result.node_trace[1]["transition_method"] == "structured"
         # With mocked supervisor, entire run should be very fast
         assert elapsed < 1.0, f"Expression transitions took too long: {elapsed:.3f}s"
+
+    async def test_invalid_syntax_falls_through_with_warning(self, mock_supervisor, caplog):
+        """5.2.15c: invalid expression in playbook produces clear error, falls to otherwise."""
+        event = {"type": "test", "project_id": "proj"}
+        graph = {
+            "id": "invalid-syntax",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"expression": "not a valid expression!!!"},
+                            "goto": "never",
+                        },
+                        {"otherwise": True, "goto": "fallback"},
+                    ],
+                },
+                "never": {"prompt": "Should not reach.", "goto": "done"},
+                "fallback": {"prompt": "Fallback.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Checked.", "Fallback done."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = await runner.run()
+
+        assert result.status == "completed"
+        # Invalid expression falls through to otherwise
+        assert result.node_trace[0]["transition_to"] == "fallback"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+        # Warning was logged — not silent failure
+        assert "Invalid expression syntax" in caplog.text
+        # Only 2 chat calls: start node + fallback node (no LLM transition)
+        assert mock_supervisor.chat.call_count == 2
+
+    async def test_undefined_variable_falls_through_with_warning(
+        self, mock_supervisor, caplog
+    ):
+        """5.2.15d: undefined variable in playbook falls gracefully with descriptive error."""
+        event = {"type": "test", "project_id": "proj"}
+        graph = {
+            "id": "undef-var",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'missing_namespace.field == "x"'},
+                            "goto": "never",
+                        },
+                        {"otherwise": True, "goto": "fallback"},
+                    ],
+                },
+                "never": {"prompt": "Should not reach.", "goto": "done"},
+                "fallback": {"prompt": "Fallback.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Checked.", "Fallback done."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = await runner.run()
+
+        assert result.status == "completed"
+        # Undefined variable expression falls through to otherwise
+        assert result.node_trace[0]["transition_to"] == "fallback"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+        # Descriptive warning was logged with the variable name
+        assert "Undefined variable" in caplog.text
+        assert "missing_namespace.field" in caplog.text
+        # Only 2 chat calls: start node + fallback node (no LLM transition)
+        assert mock_supervisor.chat.call_count == 2
+
+    async def test_undefined_task_field_falls_through_with_warning(
+        self, mock_supervisor, caplog
+    ):
+        """5.2.15d: referencing undefined task field falls gracefully with descriptive error."""
+        event = {"type": "test", "project_id": "proj"}
+        graph = {
+            "id": "undef-field",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'task.nonexistent == "value"'},
+                            "goto": "never",
+                        },
+                        {
+                            "when": {"expression": 'task.type == "test"'},
+                            "goto": "matched",
+                        },
+                    ],
+                },
+                "never": {"prompt": "Should not reach.", "goto": "done"},
+                "matched": {"prompt": "Matched.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Checked.", "Matched."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            result = await runner.run()
+
+        assert result.status == "completed"
+        # First expression fails (undefined field), second matches
+        assert result.node_trace[0]["transition_to"] == "matched"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        # Warning logged for the undefined field — not silent
+        assert "Undefined variable" in caplog.text
+        assert "task.nonexistent" in caplog.text
+        # Only 2 chat calls: start + matched (no LLM transition)
+        assert mock_supervisor.chat.call_count == 2
 
 
 class TestResolveVariable:
