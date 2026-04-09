@@ -592,7 +592,14 @@ class MilvusStore:
             "output_fields": output_fields,
             "filter": filter_expr if filter_expr else 'chunk_hash != ""',
         }
-        return self._client.query(**kwargs)
+        results = self._client.query(**kwargs)
+
+        # Update retrieval tracking (spec §6): increment retrieval_count
+        # and set last_retrieved for all returned results.
+        hit_hashes = [r["chunk_hash"] for r in results if "chunk_hash" in r]
+        self._update_retrieval_stats(hit_hashes)
+
+        return results
 
     def get(self, chunk_hash: str) -> dict[str, Any] | None:
         """Retrieve a single entry by its ``chunk_hash``, including original content.
