@@ -16,13 +16,16 @@ Covers:
 from __future__ import annotations
 
 from src.profile_parser import (
+    CONFIG_KNOWN_KEYS,
     KNOWN_SECTIONS,
     PROMPT_SECTIONS,
     STRUCTURED_SECTIONS,
+    VALID_PERMISSION_MODES,
     _extract_json_block,
     _extract_prompt_text,
     _parse_section,
     _split_sections,
+    _validate_config,
     _validate_mcp_servers,
     parse_frontmatter,
     parse_profile,
@@ -451,10 +454,7 @@ class TestParseProfile:
         assert result.config == {}
 
     def test_multiple_invalid_sections(self):
-        text = (
-            '## Config\n```json\n{bad}\n```\n\n'
-            '## Tools\n```json\n{also bad}\n```\n'
-        )
+        text = "## Config\n```json\n{bad}\n```\n\n## Tools\n```json\n{also bad}\n```\n"
         result = parse_profile(text)
         assert not result.is_valid
         assert len(result.errors) == 2
@@ -505,7 +505,7 @@ class TestParseProfile:
         result = parse_profile(text)
         section = result.sections["config"]
         assert "Some notes" in section.raw
-        assert '```json' in section.raw
+        assert "```json" in section.raw
         assert "More notes" in section.raw
 
     def test_structured_section_text_without_json_block(self):
@@ -956,7 +956,7 @@ class TestEdgeCases:
         assert result.role == "A role."
 
     def test_empty_json_object(self):
-        text = '## Config\n```json\n{}\n```\n'
+        text = "## Config\n```json\n{}\n```\n"
         result = parse_profile(text)
         assert result.is_valid
         # Empty dict means config stays empty (no keys to map)
@@ -970,11 +970,7 @@ class TestEdgeCases:
 
     def test_multiple_json_blocks_takes_first(self):
         """If a section has multiple JSON blocks, only the first is parsed."""
-        text = (
-            "## Config\n"
-            '```json\n{"model": "first"}\n```\n'
-            '```json\n{"model": "second"}\n```\n'
-        )
+        text = '## Config\n```json\n{"model": "first"}\n```\n```json\n{"model": "second"}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
         assert result.config["model"] == "first"
@@ -982,7 +978,7 @@ class TestEdgeCases:
     def test_deeply_nested_json(self):
         """Deeply nested env values are parsed but flagged as validation errors."""
         text = (
-            '## MCP Servers\n```json\n'
+            "## MCP Servers\n```json\n"
             '{"server": {"command": "npx", "args": ["-y", "pkg"], '
             '"env": {"KEY": "val", "NESTED": {"a": 1}}}}\n```\n'
         )
@@ -1009,7 +1005,7 @@ class TestEdgeCases:
     def test_env_variable_placeholder_preserved(self):
         """Environment variable placeholders like ${VAR} should be preserved as-is."""
         text = (
-            '## MCP Servers\n```json\n'
+            "## MCP Servers\n```json\n"
             '{"gh": {"command": "npx", "env": {"TOKEN": "${GITHUB_TOKEN}"}}}\n```\n'
         )
         result = parse_profile(text)
@@ -1362,7 +1358,7 @@ class TestValidateMcpServers:
     def test_integration_valid_mcp_servers(self):
         """Valid MCP servers pass parse_profile without errors."""
         text = (
-            '## MCP Servers\n```json\n'
+            "## MCP Servers\n```json\n"
             '{"gh": {"command": "npx", "args": ["-y", "server-github"], '
             '"env": {"TOKEN": "${GITHUB_TOKEN}"}}}\n```\n'
         )
@@ -1388,10 +1384,7 @@ class TestValidateMcpServers:
 
     def test_integration_bad_env_value(self):
         """parse_profile reports non-string env values in MCP server."""
-        text = (
-            '## MCP Servers\n```json\n'
-            '{"s": {"command": "x", "env": {"PORT": 8080}}}\n```\n'
-        )
+        text = '## MCP Servers\n```json\n{"s": {"command": "x", "env": {"PORT": 8080}}}\n```\n'
         result = parse_profile(text)
         assert not result.is_valid
         assert any("env['PORT']" in e for e in result.errors)
@@ -1415,3 +1408,364 @@ class TestValidateMcpServers:
         result = parse_profile(SPEC_EXAMPLE)
         assert result.is_valid, f"Unexpected errors: {result.errors}"
         assert result.mcp_servers["github"]["command"] == "npx"
+
+
+# ---------------------------------------------------------------------------
+# Config validation (_validate_config)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfig:
+    """Test structural validation of the ## Config block fields.
+
+    Per the spec (docs/specs/design/profiles.md §2): Config block contains
+    model, permission_mode, and max_tokens_per_task. Each field has type
+    constraints and (for permission_mode) value constraints.
+    """
+
+    # -- Constants --
+
+    def test_config_known_keys(self):
+        """CONFIG_KNOWN_KEYS contains the three spec-defined fields."""
+        assert CONFIG_KNOWN_KEYS == {"model", "permission_mode", "max_tokens_per_task"}
+
+    def test_valid_permission_modes_set(self):
+        """VALID_PERMISSION_MODES contains all expected modes."""
+        assert "default" in VALID_PERMISSION_MODES
+        assert "plan" in VALID_PERMISSION_MODES
+        assert "full" in VALID_PERMISSION_MODES
+        assert "bypassPermissions" in VALID_PERMISSION_MODES
+        assert "acceptEdits" in VALID_PERMISSION_MODES
+        assert "auto" in VALID_PERMISSION_MODES
+        # Empty string is NOT in the set (handled separately)
+        assert "" not in VALID_PERMISSION_MODES
+
+    # -- Valid configurations (no errors) --
+
+    def test_valid_full_config(self):
+        """A complete config with all three fields passes."""
+        config = {
+            "model": "claude-sonnet-4-6",
+            "permission_mode": "auto",
+            "max_tokens_per_task": 100000,
+        }
+        errors = _validate_config(config)
+        assert errors == []
+
+    def test_valid_model_only(self):
+        """A config with only model passes."""
+        config = {"model": "claude-sonnet-4-6"}
+        errors = _validate_config(config)
+        assert errors == []
+
+    def test_valid_permission_mode_only(self):
+        """A config with only permission_mode passes."""
+        config = {"permission_mode": "plan"}
+        errors = _validate_config(config)
+        assert errors == []
+
+    def test_valid_max_tokens_only(self):
+        """A config with only max_tokens_per_task passes."""
+        config = {"max_tokens_per_task": 50000}
+        errors = _validate_config(config)
+        assert errors == []
+
+    def test_valid_empty_config(self):
+        """An empty config dict is valid (all fields optional)."""
+        errors = _validate_config({})
+        assert errors == []
+
+    def test_valid_all_permission_modes(self):
+        """Every known permission mode value is accepted."""
+        for mode in VALID_PERMISSION_MODES:
+            errors = _validate_config({"permission_mode": mode})
+            assert errors == [], f"Mode '{mode}' should be valid, got: {errors}"
+
+    def test_valid_unknown_keys_allowed(self):
+        """Unknown config keys are silently accepted for forward-compatibility."""
+        config = {
+            "model": "claude-sonnet-4-6",
+            "custom_setting": "value",
+            "future_field": 42,
+        }
+        errors = _validate_config(config)
+        assert errors == []
+
+    def test_valid_max_tokens_one(self):
+        """max_tokens_per_task = 1 (smallest valid positive int) passes."""
+        errors = _validate_config({"max_tokens_per_task": 1})
+        assert errors == []
+
+    def test_valid_max_tokens_large(self):
+        """Very large max_tokens_per_task passes."""
+        errors = _validate_config({"max_tokens_per_task": 10_000_000})
+        assert errors == []
+
+    def test_valid_model_various_formats(self):
+        """Various model string formats pass."""
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-20250514",
+            "gpt-4o",
+            "my-custom-model",
+        ]:
+            errors = _validate_config({"model": model})
+            assert errors == [], f"Model '{model}' should be valid, got: {errors}"
+
+    # -- Invalid: model --
+
+    def test_model_is_number(self):
+        """Model must be a string, not a number."""
+        errors = _validate_config({"model": 42})
+        assert len(errors) == 1
+        assert "'model' must be a string" in errors[0]
+        assert "int" in errors[0]
+
+    def test_model_is_bool(self):
+        """Model must be a string, not a boolean."""
+        errors = _validate_config({"model": True})
+        assert len(errors) == 1
+        assert "'model' must be a string" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_model_is_list(self):
+        """Model must be a string, not a list."""
+        errors = _validate_config({"model": ["claude-sonnet-4-6"]})
+        assert len(errors) == 1
+        assert "'model' must be a string" in errors[0]
+        assert "list" in errors[0]
+
+    def test_model_is_null(self):
+        """Model must be a string, not null."""
+        errors = _validate_config({"model": None})
+        assert len(errors) == 1
+        assert "'model' must be a string" in errors[0]
+
+    def test_model_is_dict(self):
+        """Model must be a string, not a dict."""
+        errors = _validate_config({"model": {"name": "opus"}})
+        assert len(errors) == 1
+        assert "'model' must be a string" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_model_empty_string(self):
+        """Model must not be empty when explicitly provided."""
+        errors = _validate_config({"model": ""})
+        assert len(errors) == 1
+        assert "'model' must not be empty" in errors[0]
+
+    def test_model_whitespace_only(self):
+        """Model must not be whitespace-only."""
+        errors = _validate_config({"model": "   "})
+        assert len(errors) == 1
+        assert "'model' must not be empty" in errors[0]
+
+    # -- Invalid: permission_mode --
+
+    def test_permission_mode_is_number(self):
+        """Permission mode must be a string, not a number."""
+        errors = _validate_config({"permission_mode": 42})
+        assert len(errors) == 1
+        assert "'permission_mode' must be a string" in errors[0]
+        assert "int" in errors[0]
+
+    def test_permission_mode_is_bool(self):
+        """Permission mode must be a string, not a boolean."""
+        errors = _validate_config({"permission_mode": True})
+        assert len(errors) == 1
+        assert "'permission_mode' must be a string" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_permission_mode_is_list(self):
+        """Permission mode must be a string, not a list."""
+        errors = _validate_config({"permission_mode": ["plan"]})
+        assert len(errors) == 1
+        assert "'permission_mode' must be a string" in errors[0]
+        assert "list" in errors[0]
+
+    def test_permission_mode_is_null(self):
+        """Permission mode must be a string, not null."""
+        errors = _validate_config({"permission_mode": None})
+        assert len(errors) == 1
+        assert "'permission_mode' must be a string" in errors[0]
+
+    def test_permission_mode_unknown_value(self):
+        """Unknown permission mode string is an error."""
+        errors = _validate_config({"permission_mode": "turbo"})
+        assert len(errors) == 1
+        assert "must be one of" in errors[0]
+        assert "'turbo'" in errors[0]
+
+    def test_permission_mode_empty_string(self):
+        """Empty string permission_mode is an error (not in VALID_PERMISSION_MODES)."""
+        errors = _validate_config({"permission_mode": ""})
+        assert len(errors) == 1
+        assert "must be one of" in errors[0]
+
+    def test_permission_mode_case_sensitive(self):
+        """Permission mode matching is case-sensitive."""
+        errors = _validate_config({"permission_mode": "Plan"})
+        assert len(errors) == 1
+        assert "must be one of" in errors[0]
+        assert "'Plan'" in errors[0]
+
+    def test_permission_mode_bypasspermissions_case(self):
+        """bypassPermissions is camelCase — wrong case is an error."""
+        errors = _validate_config({"permission_mode": "bypass_permissions"})
+        assert len(errors) == 1
+        assert "must be one of" in errors[0]
+
+    # -- Invalid: max_tokens_per_task --
+
+    def test_max_tokens_is_string(self):
+        """max_tokens_per_task must be an integer, not a string."""
+        errors = _validate_config({"max_tokens_per_task": "100000"})
+        assert len(errors) == 1
+        assert "'max_tokens_per_task' must be a positive integer" in errors[0]
+        assert "str" in errors[0]
+
+    def test_max_tokens_is_float(self):
+        """max_tokens_per_task must be an integer, not a float."""
+        errors = _validate_config({"max_tokens_per_task": 100.5})
+        assert len(errors) == 1
+        assert "'max_tokens_per_task' must be a positive integer" in errors[0]
+        assert "float" in errors[0]
+
+    def test_max_tokens_is_bool(self):
+        """max_tokens_per_task must be an integer, not a boolean (bool subclasses int)."""
+        errors = _validate_config({"max_tokens_per_task": True})
+        assert len(errors) == 1
+        assert "'max_tokens_per_task' must be a positive integer" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_max_tokens_is_null(self):
+        """max_tokens_per_task must be an integer, not null."""
+        errors = _validate_config({"max_tokens_per_task": None})
+        assert len(errors) == 1
+        assert "'max_tokens_per_task' must be a positive integer" in errors[0]
+
+    def test_max_tokens_is_list(self):
+        """max_tokens_per_task must be an integer, not a list."""
+        errors = _validate_config({"max_tokens_per_task": [100000]})
+        assert len(errors) == 1
+        assert "'max_tokens_per_task' must be a positive integer" in errors[0]
+        assert "list" in errors[0]
+
+    def test_max_tokens_zero(self):
+        """max_tokens_per_task must be positive — zero is not allowed."""
+        errors = _validate_config({"max_tokens_per_task": 0})
+        assert len(errors) == 1
+        assert "must be positive" in errors[0]
+        assert "got 0" in errors[0]
+
+    def test_max_tokens_negative(self):
+        """max_tokens_per_task must be positive — negative is not allowed."""
+        errors = _validate_config({"max_tokens_per_task": -1000})
+        assert len(errors) == 1
+        assert "must be positive" in errors[0]
+        assert "got -1000" in errors[0]
+
+    # -- Multiple errors --
+
+    def test_all_fields_invalid(self):
+        """Multiple invalid fields produce multiple errors."""
+        config = {
+            "model": 42,
+            "permission_mode": 99,
+            "max_tokens_per_task": "many",
+        }
+        errors = _validate_config(config)
+        assert len(errors) == 3
+        assert any("'model'" in e for e in errors)
+        assert any("'permission_mode'" in e for e in errors)
+        assert any("'max_tokens_per_task'" in e for e in errors)
+
+    def test_two_fields_invalid(self):
+        """Only invalid fields produce errors; valid fields pass."""
+        config = {
+            "model": "claude-sonnet-4-6",
+            "permission_mode": "not-valid",
+            "max_tokens_per_task": -1,
+        }
+        errors = _validate_config(config)
+        assert len(errors) == 2
+        assert any("'permission_mode'" in e for e in errors)
+        assert any("'max_tokens_per_task'" in e for e in errors)
+
+    # -- Integration via parse_profile --
+
+    def test_integration_valid_config(self):
+        """Valid config block passes parse_profile without errors."""
+        text = (
+            "## Config\n```json\n"
+            '{"model": "claude-sonnet-4-6", "permission_mode": "auto", '
+            '"max_tokens_per_task": 100000}\n```\n'
+        )
+        result = parse_profile(text)
+        assert result.is_valid, f"Unexpected errors: {result.errors}"
+        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["permission_mode"] == "auto"
+        assert result.config["max_tokens_per_task"] == 100000
+
+    def test_integration_invalid_model_type(self):
+        """parse_profile reports non-string model."""
+        text = '## Config\n```json\n{"model": 42}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("'model' must be a string" in e for e in result.errors)
+        # Data is still stored (parse first, validate second)
+        assert result.config == {"model": 42}
+
+    def test_integration_invalid_permission_mode(self):
+        """parse_profile reports unknown permission mode."""
+        text = '## Config\n```json\n{"permission_mode": "turbo"}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("must be one of" in e for e in result.errors)
+
+    def test_integration_invalid_max_tokens(self):
+        """parse_profile reports non-integer max_tokens_per_task."""
+        text = '## Config\n```json\n{"max_tokens_per_task": "many"}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("'max_tokens_per_task' must be a positive integer" in e for e in result.errors)
+
+    def test_integration_negative_max_tokens(self):
+        """parse_profile reports negative max_tokens_per_task."""
+        text = '## Config\n```json\n{"max_tokens_per_task": -500}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("must be positive" in e for e in result.errors)
+
+    def test_integration_spec_example_valid(self):
+        """The spec example config block passes validation."""
+        result = parse_profile(SPEC_EXAMPLE)
+        assert result.is_valid, f"Unexpected errors: {result.errors}"
+        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["permission_mode"] == "auto"
+        assert result.config["max_tokens_per_task"] == 100000
+
+    def test_integration_empty_config(self):
+        """An empty config JSON object passes validation."""
+        text = "## Config\n```json\n{}\n```\n"
+        result = parse_profile(text)
+        assert result.is_valid
+
+    def test_integration_config_with_extras(self):
+        """Unknown config keys don't trigger errors."""
+        text = '## Config\n```json\n{"model": "opus", "custom_field": true}\n```\n'
+        result = parse_profile(text)
+        assert result.is_valid
+
+    def test_integration_multiple_config_errors(self):
+        """Multiple config validation errors are all reported."""
+        text = (
+            "## Config\n```json\n"
+            '{"model": 123, "permission_mode": "turbo", "max_tokens_per_task": -1}\n```\n'
+        )
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert len(result.errors) == 3
+        assert any("'model'" in e for e in result.errors)
+        assert any("'permission_mode'" in e for e in result.errors)
+        assert any("'max_tokens_per_task'" in e for e in result.errors)

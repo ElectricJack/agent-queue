@@ -43,6 +43,22 @@ PROMPT_SECTIONS = frozenset({"role", "rules", "reflection"})
 # All recognized section names (lowercase).
 KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 
+# Known Config-block keys with deterministic validation.
+CONFIG_KNOWN_KEYS = frozenset({"model", "permission_mode", "max_tokens_per_task"})
+
+# Valid permission_mode values (passed to the Claude Code SDK).
+# Empty string is handled separately (means "use adapter default").
+VALID_PERMISSION_MODES = frozenset(
+    {
+        "default",
+        "plan",
+        "full",
+        "bypassPermissions",
+        "acceptEdits",
+        "auto",
+    }
+)
+
 # Regex to find fenced code blocks: ```json ... ``` (with optional language tag)
 _JSON_BLOCK_RE = re.compile(
     r"```json\s*\n(.*?)```",
@@ -304,8 +320,7 @@ def _parse_section(heading: str, body: str) -> tuple[ProfileSection, list[str]]:
                 section.json_data = json.loads(json_str)
             except json.JSONDecodeError as exc:
                 errors.append(
-                    f"Invalid JSON in ## {heading}: {exc.msg} "
-                    f"(line {exc.lineno}, col {exc.colno})"
+                    f"Invalid JSON in ## {heading}: {exc.msg} (line {exc.lineno}, col {exc.colno})"
                 )
         # No JSON block in a structured section is not an error —
         # the section may be empty or contain only prose notes.
@@ -345,9 +360,7 @@ def _validate_mcp_servers(servers: dict) -> list[str]:
 
         # Each server entry must be a dict
         if not isinstance(config, dict):
-            errors.append(
-                f"{prefix}: expected an object, got {type(config).__name__}"
-            )
+            errors.append(f"{prefix}: expected an object, got {type(config).__name__}")
             continue
 
         # 'command' is required and must be a non-empty string
@@ -355,8 +368,7 @@ def _validate_mcp_servers(servers: dict) -> list[str]:
             errors.append(f"{prefix}: missing required field 'command'")
         elif not isinstance(config["command"], str):
             errors.append(
-                f"{prefix}: 'command' must be a string, "
-                f"got {type(config['command']).__name__}"
+                f"{prefix}: 'command' must be a string, got {type(config['command']).__name__}"
             )
         elif not config["command"].strip():
             errors.append(f"{prefix}: 'command' must not be empty")
@@ -365,33 +377,83 @@ def _validate_mcp_servers(servers: dict) -> list[str]:
         if "args" in config:
             args = config["args"]
             if not isinstance(args, list):
-                errors.append(
-                    f"{prefix}: 'args' must be an array, "
-                    f"got {type(args).__name__}"
-                )
+                errors.append(f"{prefix}: 'args' must be an array, got {type(args).__name__}")
             else:
                 for i, arg in enumerate(args):
                     if not isinstance(arg, str):
                         errors.append(
-                            f"{prefix}: args[{i}] must be a string, "
-                            f"got {type(arg).__name__}"
+                            f"{prefix}: args[{i}] must be a string, got {type(arg).__name__}"
                         )
 
         # 'env' is optional but must be a dict with string values if present
         if "env" in config:
             env = config["env"]
             if not isinstance(env, dict):
-                errors.append(
-                    f"{prefix}: 'env' must be an object, "
-                    f"got {type(env).__name__}"
-                )
+                errors.append(f"{prefix}: 'env' must be an object, got {type(env).__name__}")
             else:
                 for key, val in env.items():
                     if not isinstance(val, str):
                         errors.append(
-                            f"{prefix}: env['{key}'] must be a string, "
-                            f"got {type(val).__name__}"
+                            f"{prefix}: env['{key}'] must be a string, got {type(val).__name__}"
                         )
+
+    return errors
+
+
+def _validate_config(config: dict) -> list[str]:
+    """Validate the structure and values of the ``## Config`` block.
+
+    Validates:
+
+    - **model** — must be a string (non-empty when present).
+    - **permission_mode** — must be a string from :data:`VALID_PERMISSION_MODES`.
+    - **max_tokens_per_task** — must be a positive integer.
+
+    Unknown keys are silently allowed for forward-compatibility.
+
+    Parameters
+    ----------
+    config:
+        The parsed Config dict from the ``## Config`` JSON block.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.  Empty list means all fields are valid.
+    """
+    errors: list[str] = []
+
+    # --- model ---
+    if "model" in config:
+        model = config["model"]
+        if not isinstance(model, str):
+            errors.append(f"Config 'model' must be a string, got {type(model).__name__}")
+        elif not model.strip():
+            errors.append("Config 'model' must not be empty")
+
+    # --- permission_mode ---
+    if "permission_mode" in config:
+        pm = config["permission_mode"]
+        if not isinstance(pm, str):
+            errors.append(f"Config 'permission_mode' must be a string, got {type(pm).__name__}")
+        elif pm not in VALID_PERMISSION_MODES:
+            sorted_modes = sorted(VALID_PERMISSION_MODES)
+            errors.append(f"Config 'permission_mode' must be one of {sorted_modes}, got '{pm}'")
+
+    # --- max_tokens_per_task ---
+    if "max_tokens_per_task" in config:
+        mtt = config["max_tokens_per_task"]
+        if isinstance(mtt, bool):
+            # bool is a subclass of int in Python — reject explicitly.
+            errors.append(
+                f"Config 'max_tokens_per_task' must be a positive integer, got {type(mtt).__name__}"
+            )
+        elif not isinstance(mtt, int):
+            errors.append(
+                f"Config 'max_tokens_per_task' must be a positive integer, got {type(mtt).__name__}"
+            )
+        elif mtt <= 0:
+            errors.append(f"Config 'max_tokens_per_task' must be positive, got {mtt}")
 
     return errors
 
@@ -464,6 +526,8 @@ def parse_profile(text: str) -> ParsedProfile:
         if heading_lower == "config" and section.json_data is not None:
             if isinstance(section.json_data, dict):
                 result.config = section.json_data
+                # Validate individual config fields
+                result.errors.extend(_validate_config(section.json_data))
             else:
                 result.errors.append(
                     f"## Config JSON must be an object, got {type(section.json_data).__name__}"
@@ -482,8 +546,7 @@ def parse_profile(text: str) -> ParsedProfile:
                 result.errors.extend(_validate_mcp_servers(section.json_data))
             else:
                 result.errors.append(
-                    f"## MCP Servers JSON must be an object, "
-                    f"got {type(section.json_data).__name__}"
+                    f"## MCP Servers JSON must be an object, got {type(section.json_data).__name__}"
                 )
         elif heading_lower == "role":
             result.role = section.text

@@ -640,7 +640,15 @@ class AgentProfileConfig:
                     "agent_profiles", "id", f"profile with name '{self.name}' has an empty id"
                 )
             )
-        valid_permission_modes = {"default", "plan", "full", "bypassPermissions", ""}
+        valid_permission_modes = {
+            "default",
+            "plan",
+            "full",
+            "bypassPermissions",
+            "acceptEdits",
+            "auto",
+            "",
+        }
         if self.permission_mode and self.permission_mode not in valid_permission_modes:
             errors.append(
                 ConfigError(
