@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import logging
 import re
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -86,6 +87,145 @@ VAULT_PATHS: ClassVar[dict[MemoryScope, list[str]]] = {
         "vault/projects/{id}/facts.md",
     ],
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeEntry:
+    """A single entry in a resolved scope list.
+
+    Represents one collection to query during a multi-scope search,
+    with its associated weight for result ranking.
+
+    Attributes
+    ----------
+    scope:
+        The memory scope level.
+    scope_id:
+        The raw scope identifier (``None`` for SYSTEM and ORCHESTRATOR).
+    collection:
+        The canonical Milvus collection name.
+    weight:
+        The specificity weight for result ranking.  Higher weights mean
+        results from this scope are boosted more during merge-and-rank.
+    """
+
+    scope: MemoryScope
+    scope_id: str | None
+    collection: str
+    weight: float
+
+
+def resolve_scopes(
+    *,
+    agent_type: str | None = None,
+    project_id: str | None = None,
+    weights: dict[MemoryScope, float] | None = None,
+    include_orchestrator: bool = False,
+) -> list[ScopeEntry]:
+    """Resolve an ordered list of collections to query with their weights.
+
+    Given an agent context (agent type and/or project), returns the
+    collections that should participate in a multi-scope search, ordered
+    from most specific (highest weight) to broadest (lowest weight).
+
+    Per spec §4::
+
+        project (1.0) → agent-type (0.7) → system (0.4)
+
+    A moderately relevant project-specific memory outranks a highly
+    relevant system memory.
+
+    Parameters
+    ----------
+    agent_type:
+        Agent type identifier (e.g., ``"coding"``).  When provided,
+        includes the agent-type collection.
+    project_id:
+        Project identifier (e.g., ``"mech-fighters"``).  When provided,
+        includes the project collection.
+    weights:
+        Override the default :data:`SCOPE_WEIGHTS`.  Missing scopes
+        fall back to defaults.
+    include_orchestrator:
+        When ``True``, includes the orchestrator scope between
+        agent-type and system.  Defaults to ``False`` since most
+        queries don't need orchestrator-level memories.
+
+    Returns
+    -------
+    list[ScopeEntry]
+        Ordered list of scope entries, from most specific (highest
+        weight) to broadest (lowest weight).  Always includes at
+        least the system scope.
+
+    Examples
+    --------
+    >>> entries = resolve_scopes(agent_type="coding", project_id="mech-fighters")
+    >>> [(e.scope.value, e.weight) for e in entries]
+    [('project', 1.0), ('agent_type', 0.7), ('system', 0.4)]
+
+    >>> entries = resolve_scopes(agent_type="coding")
+    >>> [(e.scope.value, e.weight) for e in entries]
+    [('agent_type', 0.7), ('system', 0.4)]
+
+    >>> entries = resolve_scopes()  # bare minimum — system only
+    >>> [(e.scope.value, e.weight) for e in entries]
+    [('system', 0.4)]
+    """
+    effective = SCOPE_WEIGHTS.copy()
+    if weights:
+        effective.update(weights)
+
+    entries: list[ScopeEntry] = []
+
+    # Most specific first: project
+    if project_id:
+        w = effective.get(MemoryScope.PROJECT, SCOPE_WEIGHTS[MemoryScope.PROJECT])
+        entries.append(
+            ScopeEntry(
+                scope=MemoryScope.PROJECT,
+                scope_id=project_id,
+                collection=collection_name(MemoryScope.PROJECT, project_id),
+                weight=w,
+            )
+        )
+
+    # Then agent-type
+    if agent_type:
+        w = effective.get(MemoryScope.AGENT_TYPE, SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE])
+        entries.append(
+            ScopeEntry(
+                scope=MemoryScope.AGENT_TYPE,
+                scope_id=agent_type,
+                collection=collection_name(MemoryScope.AGENT_TYPE, agent_type),
+                weight=w,
+            )
+        )
+
+    # Optionally orchestrator
+    if include_orchestrator:
+        w = effective.get(MemoryScope.ORCHESTRATOR, SCOPE_WEIGHTS.get(MemoryScope.ORCHESTRATOR, 0.5))
+        entries.append(
+            ScopeEntry(
+                scope=MemoryScope.ORCHESTRATOR,
+                scope_id=None,
+                collection=collection_name(MemoryScope.ORCHESTRATOR),
+                weight=w,
+            )
+        )
+
+    # Always include system (broadest)
+    w = effective.get(MemoryScope.SYSTEM, SCOPE_WEIGHTS[MemoryScope.SYSTEM])
+    entries.append(
+        ScopeEntry(
+            scope=MemoryScope.SYSTEM,
+            scope_id=None,
+            collection=collection_name(MemoryScope.SYSTEM),
+            weight=w,
+        )
+    )
+
+    return entries
 
 
 def sanitize_id(raw_id: str) -> str:
@@ -740,18 +880,17 @@ class CollectionRouter:
             Each result is annotated with ``_collection``, ``_scope``,
             ``_scope_id``, ``_weight``, and ``weighted_score`` fields.
         """
-        effective_weights = weights if weights is not None else SCOPE_WEIGHTS
+        # Use the scope resolver to determine which collections to query
+        scope_entries = resolve_scopes(
+            agent_type=agent_type,
+            project_id=project_id,
+            weights=weights,
+        )
 
-        # Build list of (scope, scope_id, weight) for scopes to search.
-        scopes_to_search: list[tuple[MemoryScope, str | None, float]] = []
-        if project_id:
-            w = effective_weights.get(MemoryScope.PROJECT, SCOPE_WEIGHTS[MemoryScope.PROJECT])
-            scopes_to_search.append((MemoryScope.PROJECT, project_id, w))
-        if agent_type:
-            w = effective_weights.get(MemoryScope.AGENT_TYPE, SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE])
-            scopes_to_search.append((MemoryScope.AGENT_TYPE, agent_type, w))
-        w = effective_weights.get(MemoryScope.SYSTEM, SCOPE_WEIGHTS[MemoryScope.SYSTEM])
-        scopes_to_search.append((MemoryScope.SYSTEM, None, w))
+        # Convert ScopeEntry list to the internal (scope, scope_id, weight) format
+        scopes_to_search: list[tuple[MemoryScope, str | None, float]] = [
+            (entry.scope, entry.scope_id, entry.weight) for entry in scope_entries
+        ]
 
         if not scopes_to_search:
             return []

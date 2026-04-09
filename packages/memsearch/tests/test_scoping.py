@@ -11,9 +11,11 @@ from memsearch.scoping import (
     SCOPE_WEIGHTS,
     CollectionRouter,
     MemoryScope,
+    ScopeEntry,
     collection_name,
     merge_and_rank,
     parse_collection_name,
+    resolve_scopes,
     sanitize_id,
     vault_paths,
 )
@@ -1764,20 +1766,24 @@ class TestMultiCollectionWeightedMergeRoadmapPure:
         results = []
         for i in range(5):
             score = 0.9 - i * 0.1
-            results.append({
-                "chunk_hash": f"proj_{i}",
-                "score": score,
-                "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.PROJECT],
-                "_scope": "project",
-            })
+            results.append(
+                {
+                    "chunk_hash": f"proj_{i}",
+                    "score": score,
+                    "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                    "_scope": "project",
+                }
+            )
         for i in range(5):
             score = 0.9 - i * 0.1
-            results.append({
-                "chunk_hash": f"sys_{i}",
-                "score": score,
-                "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
-                "_scope": "system",
-            })
+            results.append(
+                {
+                    "chunk_hash": f"sys_{i}",
+                    "score": score,
+                    "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                    "_scope": "system",
+                }
+            )
         merged = merge_and_rank(results, top_k=3)
         assert len(merged) == 3
 
@@ -1893,15 +1899,11 @@ class TestMultiCollectionWeightedMergeRoadmap:
         r = CollectionRouter(milvus_uri=str(db), dimension=4)
 
         emb = [1.0, 0.0, 0.0, 0.0]
-        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
-            _make_chunks("eq_proj", [emb], ["Equal test content project"])
-        )
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(_make_chunks("eq_proj", [emb], ["Equal test content project"]))
         r.get_store(MemoryScope.AGENT_TYPE, "coding").upsert(
             _make_chunks("eq_at", [emb], ["Equal test content agent type"])
         )
-        r.get_store(MemoryScope.SYSTEM).upsert(
-            _make_chunks("eq_sys", [emb], ["Equal test content system"])
-        )
+        r.get_store(MemoryScope.SYSTEM).upsert(_make_chunks("eq_sys", [emb], ["Equal test content system"]))
 
         results = await r.search(
             emb,
@@ -1941,9 +1943,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         r.get_store(MemoryScope.AGENT_TYPE, "coding").upsert(
             _make_chunks("order_a", [emb], ["Ordering test content for agent type"])
         )
-        r.get_store(MemoryScope.SYSTEM).upsert(
-            _make_chunks("order_s", [emb], ["Ordering test content for system"])
-        )
+        r.get_store(MemoryScope.SYSTEM).upsert(_make_chunks("order_s", [emb], ["Ordering test content for system"]))
 
         results = await r.search(
             emb,
@@ -1962,12 +1962,8 @@ class TestMultiCollectionWeightedMergeRoadmap:
                 scope_scores[scope] = score
 
         if all(s in scope_scores for s in ("project", "agent_type", "system")):
-            assert scope_scores["project"] > scope_scores["agent_type"], (
-                "Project should rank above agent-type"
-            )
-            assert scope_scores["agent_type"] > scope_scores["system"], (
-                "Agent-type should rank above system"
-            )
+            assert scope_scores["project"] > scope_scores["agent_type"], "Project should rank above agent-type"
+            assert scope_scores["agent_type"] > scope_scores["system"], "Agent-type should rank above system"
         r.close()
 
     # -- (b) Weight adjustment not override ------------------------------------
@@ -1998,9 +1994,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         )
         # Project: orthogonal embedding, no text overlap
         r.get_store(MemoryScope.PROJECT, "myapp").upsert(
-            _make_chunks(
-                "b_proj", [[0.0, 0.0, 0.0, 1.0]], ["Database migration strategy notes"]
-            )
+            _make_chunks("b_proj", [[0.0, 0.0, 0.0, 1.0]], ["Database migration strategy notes"])
         )
 
         # Custom weights: boost system to overcome default project advantage
@@ -2114,8 +2108,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         for res in results:
             expected = res["score"] * res["_weight"]
             assert abs(res["weighted_score"] - expected) < 1e-6, (
-                f"weighted_score ({res['weighted_score']}) != "
-                f"score ({res['score']}) * weight ({res['_weight']})"
+                f"weighted_score ({res['weighted_score']}) != score ({res['score']}) * weight ({res['_weight']})"
             )
 
     # -- (c) Empty collection handling -----------------------------------------
@@ -2134,9 +2127,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         r.get_store(MemoryScope.PROJECT, "empty_project")
 
         # System has actual data
-        r.get_store(MemoryScope.SYSTEM).upsert(
-            _make_chunks("c_sys", [[1.0, 0.0, 0.0, 0.0]], ["System has data"])
-        )
+        r.get_store(MemoryScope.SYSTEM).upsert(_make_chunks("c_sys", [[1.0, 0.0, 0.0, 0.0]], ["System has data"]))
 
         results = await r.search(
             [1.0, 0.0, 0.0, 0.0],
@@ -2177,9 +2168,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         db = tmp_path / "missing_coll_test.db"
         r = CollectionRouter(milvus_uri=str(db), dimension=4)
 
-        r.get_store(MemoryScope.SYSTEM).upsert(
-            _make_chunks("c_sys2", [[1.0, 0.0, 0.0, 0.0]], ["System data only"])
-        )
+        r.get_store(MemoryScope.SYSTEM).upsert(_make_chunks("c_sys2", [[1.0, 0.0, 0.0, 0.0]], ["System data only"]))
 
         # Search references non-existent project and agent-type
         results = await r.search(
@@ -2226,14 +2215,10 @@ class TestMultiCollectionWeightedMergeRoadmap:
         )
 
         hashes = [res["chunk_hash"] for res in results]
-        assert hashes.count(shared_hash) == 1, (
-            f"Expected 1 occurrence of shared chunk, got {hashes.count(shared_hash)}"
-        )
+        assert hashes.count(shared_hash) == 1, f"Expected 1 occurrence of shared chunk, got {hashes.count(shared_hash)}"
 
         shared_result = next(res for res in results if res["chunk_hash"] == shared_hash)
-        assert shared_result["_scope"] == "project", (
-            "Dedup should keep the entry with highest weighted_score (project)"
-        )
+        assert shared_result["_scope"] == "project", "Dedup should keep the entry with highest weighted_score (project)"
         r.close()
 
     @pytest.mark.asyncio
@@ -2309,9 +2294,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
             agent_type="coding",
             top_k=2,
         )
-        assert len(results) <= 2, (
-            f"Expected at most 2 results (top_k=2), got {len(results)}"
-        )
+        assert len(results) <= 2, f"Expected at most 2 results (top_k=2), got {len(results)}"
 
     @pytest.mark.asyncio
     async def test_e_top_k_spans_multiple_scopes(self, weighted_router: CollectionRouter):
@@ -2362,9 +2345,7 @@ class TestMultiCollectionWeightedMergeRoadmap:
         query = [0.5, 0.5, 0.5, 0.0]
 
         # Warm up (first search may initialise lazy resources)
-        await weighted_router.search(
-            query, query_text="warmup", project_id="myapp", top_k=5
-        )
+        await weighted_router.search(query, query_text="warmup", project_id="myapp", top_k=5)
 
         # Time single-scope search (system only, no project_id/agent_type)
         single_times: list[float] = []
@@ -2991,3 +2972,211 @@ class TestCrossCollectionTagSearchRoadmapAsync:
             hashes = {h["chunk_hash"] for h in results}
             assert "special_async" in hashes, f"Async special char tag '{tag}' failed"
         r.close()
+
+
+# ---- Scope Resolver tests (pure, no Milvus needed) --------------------------
+
+
+class TestScopeEntry:
+    """Tests for the ScopeEntry dataclass."""
+
+    def test_frozen(self):
+        entry = ScopeEntry(
+            scope=MemoryScope.SYSTEM,
+            scope_id=None,
+            collection="aq_system",
+            weight=0.4,
+        )
+        with pytest.raises(AttributeError):
+            entry.weight = 1.0  # type: ignore[misc]
+
+    def test_equality(self):
+        a = ScopeEntry(MemoryScope.PROJECT, "myapp", "aq_project_myapp", 1.0)
+        b = ScopeEntry(MemoryScope.PROJECT, "myapp", "aq_project_myapp", 1.0)
+        assert a == b
+
+    def test_inequality_different_weight(self):
+        a = ScopeEntry(MemoryScope.SYSTEM, None, "aq_system", 0.4)
+        b = ScopeEntry(MemoryScope.SYSTEM, None, "aq_system", 0.5)
+        assert a != b
+
+    def test_repr_readable(self):
+        entry = ScopeEntry(MemoryScope.AGENT_TYPE, "coding", "aq_agenttype_coding", 0.7)
+        r = repr(entry)
+        assert "coding" in r
+        assert "0.7" in r
+
+
+class TestResolveScopes:
+    """Tests for resolve_scopes() — the scope resolver per spec §4."""
+
+    def test_full_context_agent_type_and_project(self):
+        """Given both agent_type and project_id, returns 3 scopes in order."""
+        entries = resolve_scopes(agent_type="coding", project_id="mech-fighters")
+        assert len(entries) == 3
+        assert entries[0].scope == MemoryScope.PROJECT
+        assert entries[1].scope == MemoryScope.AGENT_TYPE
+        assert entries[2].scope == MemoryScope.SYSTEM
+
+    def test_default_weights(self):
+        """Default weights match spec §4: project=1.0, agent-type=0.7, system=0.4."""
+        entries = resolve_scopes(agent_type="coding", project_id="mech-fighters")
+        assert entries[0].weight == 1.0
+        assert entries[1].weight == 0.7
+        assert entries[2].weight == 0.4
+
+    def test_collection_names_are_canonical(self):
+        """Collection names use the canonical naming convention."""
+        entries = resolve_scopes(agent_type="coding", project_id="mech-fighters")
+        assert entries[0].collection == "aq_project_mech_fighters"
+        assert entries[1].collection == "aq_agenttype_coding"
+        assert entries[2].collection == "aq_system"
+
+    def test_scope_ids_are_raw(self):
+        """scope_id stores the raw identifier, not the sanitized form."""
+        entries = resolve_scopes(agent_type="code-review", project_id="My App")
+        assert entries[0].scope_id == "My App"
+        assert entries[1].scope_id == "code-review"
+        assert entries[2].scope_id is None
+
+    def test_agent_type_only(self):
+        """With only agent_type, returns agent-type + system."""
+        entries = resolve_scopes(agent_type="coding")
+        assert len(entries) == 2
+        assert entries[0].scope == MemoryScope.AGENT_TYPE
+        assert entries[0].weight == 0.7
+        assert entries[1].scope == MemoryScope.SYSTEM
+        assert entries[1].weight == 0.4
+
+    def test_project_only(self):
+        """With only project_id, returns project + system."""
+        entries = resolve_scopes(project_id="myapp")
+        assert len(entries) == 2
+        assert entries[0].scope == MemoryScope.PROJECT
+        assert entries[0].weight == 1.0
+        assert entries[1].scope == MemoryScope.SYSTEM
+        assert entries[1].weight == 0.4
+
+    def test_no_context_system_only(self):
+        """With no agent_type or project_id, returns system only."""
+        entries = resolve_scopes()
+        assert len(entries) == 1
+        assert entries[0].scope == MemoryScope.SYSTEM
+        assert entries[0].collection == "aq_system"
+        assert entries[0].weight == 0.4
+
+    def test_system_always_included(self):
+        """System scope is always present regardless of other params."""
+        for kwargs in [
+            {},
+            {"agent_type": "coding"},
+            {"project_id": "app"},
+            {"agent_type": "coding", "project_id": "app"},
+        ]:
+            entries = resolve_scopes(**kwargs)
+            system_entries = [e for e in entries if e.scope == MemoryScope.SYSTEM]
+            assert len(system_entries) == 1, f"System scope missing for {kwargs}"
+
+    def test_ordering_most_specific_first(self):
+        """Results are ordered from most specific to broadest."""
+        entries = resolve_scopes(agent_type="coding", project_id="app")
+        weights = [e.weight for e in entries]
+        assert weights == sorted(weights, reverse=True)
+
+    def test_custom_weights_override(self):
+        """Custom weights override defaults."""
+        custom = {
+            MemoryScope.PROJECT: 0.9,
+            MemoryScope.AGENT_TYPE: 0.5,
+            MemoryScope.SYSTEM: 0.1,
+        }
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="app",
+            weights=custom,
+        )
+        assert entries[0].weight == 0.9  # project
+        assert entries[1].weight == 0.5  # agent-type
+        assert entries[2].weight == 0.1  # system
+
+    def test_partial_custom_weights(self):
+        """Partial custom weights — unspecified scopes keep defaults."""
+        custom = {MemoryScope.PROJECT: 0.8}
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="app",
+            weights=custom,
+        )
+        assert entries[0].weight == 0.8  # overridden
+        assert entries[1].weight == 0.7  # default
+        assert entries[2].weight == 0.4  # default
+
+    def test_include_orchestrator(self):
+        """include_orchestrator=True adds orchestrator between agent-type and system."""
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="app",
+            include_orchestrator=True,
+        )
+        assert len(entries) == 4
+        assert entries[0].scope == MemoryScope.PROJECT
+        assert entries[1].scope == MemoryScope.AGENT_TYPE
+        assert entries[2].scope == MemoryScope.ORCHESTRATOR
+        assert entries[3].scope == MemoryScope.SYSTEM
+        # Orchestrator default weight is 0.5
+        assert entries[2].weight == 0.5
+        assert entries[2].collection == "aq_orchestrator"
+
+    def test_include_orchestrator_no_agent_type(self):
+        """Orchestrator is placed between project and system when no agent_type."""
+        entries = resolve_scopes(project_id="app", include_orchestrator=True)
+        assert len(entries) == 3
+        assert entries[0].scope == MemoryScope.PROJECT
+        assert entries[1].scope == MemoryScope.ORCHESTRATOR
+        assert entries[2].scope == MemoryScope.SYSTEM
+
+    def test_include_orchestrator_no_project(self):
+        """Orchestrator is placed between agent-type and system when no project."""
+        entries = resolve_scopes(agent_type="coding", include_orchestrator=True)
+        assert len(entries) == 3
+        assert entries[0].scope == MemoryScope.AGENT_TYPE
+        assert entries[1].scope == MemoryScope.ORCHESTRATOR
+        assert entries[2].scope == MemoryScope.SYSTEM
+
+    def test_sanitized_collection_names(self):
+        """Collection names are properly sanitized."""
+        entries = resolve_scopes(
+            agent_type="code-review",
+            project_id="My Cool Project!!!",
+        )
+        assert entries[0].collection == "aq_project_my_cool_project"
+        assert entries[1].collection == "aq_agenttype_code_review"
+
+    def test_returns_list_of_scope_entries(self):
+        """All returned items are ScopeEntry instances."""
+        entries = resolve_scopes(agent_type="coding", project_id="app")
+        for entry in entries:
+            assert isinstance(entry, ScopeEntry)
+
+    def test_no_duplicate_scopes(self):
+        """Each scope appears at most once."""
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="app",
+            include_orchestrator=True,
+        )
+        scopes = [e.scope for e in entries]
+        assert len(scopes) == len(set(scopes))
+
+    def test_collection_names_valid_milvus(self):
+        """All generated collection names are valid Milvus names."""
+        import re
+
+        milvus_re = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,254}$")
+        entries = resolve_scopes(
+            agent_type="code-review",
+            project_id="mech-fighters",
+            include_orchestrator=True,
+        )
+        for entry in entries:
+            assert milvus_re.match(entry.collection), f"Invalid Milvus collection name: {entry.collection}"
