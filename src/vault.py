@@ -1,4 +1,4 @@
-"""Vault directory structure initialization.
+"""Vault directory structure initialization and migration.
 
 Creates the ``~/.agent-queue/vault/`` directory tree described in
 ``docs/specs/design/vault.md`` §2.  The vault is a structured, human-readable
@@ -11,6 +11,10 @@ created dynamically as profiles and projects are added.
 
 All directory creation is idempotent — calling any function when the directories
 already exist is a safe no-op.
+
+The consolidated migration entry point ``run_vault_migration()`` (spec §6)
+orchestrates all Phase 1 migrations in the correct order, supports dry-run
+mode, and returns a detailed report.
 """
 
 from __future__ import annotations
@@ -428,3 +432,404 @@ def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
         "overrides",
     ):
         os.makedirs(os.path.join(base, subdir), exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Consolidated vault migration (spec §6)
+# ---------------------------------------------------------------------------
+
+# Directories inside memory/ that are NOT project IDs
+_MEMORY_SPECIAL_DIRS = frozenset({"global", ".obsidian"})
+
+
+def _discover_project_ids(data_dir: str) -> list[str]:
+    """Discover project IDs from legacy filesystem locations.
+
+    Scans ``notes/`` and ``memory/`` directories for subdirectories that
+    represent projects.  Returns a sorted, deduplicated list.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Sorted list of project identifiers discovered on disk.
+    """
+    project_ids: set[str] = set()
+
+    # From notes/{project_id}/
+    notes_root = os.path.join(data_dir, "notes")
+    if os.path.isdir(notes_root):
+        for entry in os.listdir(notes_root):
+            if os.path.isdir(os.path.join(notes_root, entry)):
+                project_ids.add(entry)
+
+    # From memory/{project_id}/ (excluding special dirs)
+    memory_root = os.path.join(data_dir, "memory")
+    if os.path.isdir(memory_root):
+        for entry in os.listdir(memory_root):
+            if entry in _MEMORY_SPECIAL_DIRS or entry.startswith("."):
+                continue
+            if os.path.isdir(os.path.join(memory_root, entry)):
+                project_ids.add(entry)
+
+    return sorted(project_ids)
+
+
+def _scan_obsidian_migration(data_dir: str) -> dict:
+    """Preview what ``migrate_obsidian_config`` would do.
+
+    Returns a dict with ``action`` ("move" or "skip") and ``reason``.
+    """
+    source = os.path.join(data_dir, "memory", ".obsidian")
+    dest = os.path.join(data_dir, "vault", ".obsidian")
+
+    if not os.path.isdir(source):
+        return {"action": "skip", "reason": "source does not exist"}
+    if os.path.exists(dest):
+        return {"action": "skip", "reason": "destination already exists"}
+    return {"action": "move", "source": source, "dest": dest}
+
+
+def _scan_notes_migration(data_dir: str, project_id: str) -> dict:
+    """Preview what ``migrate_notes_to_vault`` would do for one project.
+
+    Returns a dict with counts: ``would_move`` and ``would_skip``.
+    """
+    source = os.path.join(data_dir, "notes", project_id)
+    dest = os.path.join(data_dir, "vault", "projects", project_id, "notes")
+    result: dict = {"would_move": 0, "would_skip": 0, "files": []}
+
+    if not os.path.isdir(source):
+        return result
+
+    for dirpath, _dirnames, filenames in os.walk(source):
+        rel_dir = os.path.relpath(dirpath, source)
+        dest_dir = os.path.join(dest, rel_dir) if rel_dir != "." else dest
+
+        for fname in filenames:
+            dst_file = os.path.join(dest_dir, fname)
+            rel_path = os.path.join(rel_dir, fname) if rel_dir != "." else fname
+            if os.path.exists(dst_file):
+                result["would_skip"] += 1
+                result["files"].append(f"SKIP {rel_path}: already at destination")
+            else:
+                result["would_move"] += 1
+                result["files"].append(f"MOVE {rel_path}")
+
+    return result
+
+
+def _scan_memory_copy(data_dir: str, project_id: str) -> dict:
+    """Preview what ``copy_project_memory_to_vault`` would do for one project.
+
+    Returns a dict with counts: ``would_copy``, ``would_update``, ``would_skip``.
+    """
+    source = os.path.join(data_dir, "memory", project_id)
+    dest = os.path.join(data_dir, "vault", "projects", project_id, "memory")
+    result: dict = {"would_copy": 0, "would_update": 0, "would_skip": 0, "files": []}
+
+    if not os.path.isdir(source):
+        return result
+
+    def _check_file(src_file: str, dst_file: str, label: str) -> None:
+        if not os.path.isfile(src_file):
+            return
+        if os.path.exists(dst_file):
+            src_mtime = os.path.getmtime(src_file)
+            dst_mtime = os.path.getmtime(dst_file)
+            if src_mtime <= dst_mtime:
+                result["would_skip"] += 1
+                result["files"].append(f"SKIP {label}: up to date")
+            else:
+                result["would_update"] += 1
+                result["files"].append(f"UPDATE {label}: source is newer")
+        else:
+            result["would_copy"] += 1
+            result["files"].append(f"COPY {label}")
+
+    # Top-level files
+    for filename in ("profile.md", "factsheet.md"):
+        _check_file(
+            os.path.join(source, filename),
+            os.path.join(dest, filename),
+            filename,
+        )
+
+    # knowledge/ tree
+    knowledge_src = os.path.join(source, "knowledge")
+    knowledge_dst = os.path.join(dest, "knowledge")
+    if os.path.isdir(knowledge_src):
+        for dirpath, _dirnames, filenames in os.walk(knowledge_src):
+            rel_dir = os.path.relpath(dirpath, knowledge_src)
+            dst_dir = os.path.join(knowledge_dst, rel_dir) if rel_dir != "." else knowledge_dst
+            for fname in filenames:
+                src_file = os.path.join(dirpath, fname)
+                dst_file = os.path.join(dst_dir, fname)
+                label = (
+                    os.path.join("knowledge", rel_dir, fname)
+                    if rel_dir != "."
+                    else os.path.join("knowledge", fname)
+                )
+                _check_file(src_file, dst_file, label)
+
+    return result
+
+
+def _scan_rule_migration(data_dir: str) -> dict:
+    """Preview what ``migrate_rule_files`` would do.
+
+    Returns a dict matching the shape of ``migrate_rule_files`` output plus
+    ``would_move`` / ``would_skip`` for dry-run clarity.
+    """
+    result: dict = {"would_move": 0, "would_skip": 0, "details": []}
+    memory_root = os.path.join(data_dir, "memory")
+
+    if not os.path.isdir(memory_root):
+        return result
+
+    for scope_dir in sorted(os.listdir(memory_root)):
+        rules_dir = os.path.join(memory_root, scope_dir, "rules")
+        if not os.path.isdir(rules_dir):
+            continue
+
+        if scope_dir == "global":
+            dest_dir = os.path.join(data_dir, "vault", "system", "playbooks")
+        else:
+            dest_dir = os.path.join(data_dir, "vault", "projects", scope_dir, "playbooks")
+
+        for filename in sorted(os.listdir(rules_dir)):
+            if not filename.endswith(".md"):
+                continue
+            dest_path = os.path.join(dest_dir, filename)
+            if os.path.exists(dest_path):
+                result["would_skip"] += 1
+                result["details"].append(f"SKIP {scope_dir}/{filename}: already at destination")
+            else:
+                result["would_move"] += 1
+                result["details"].append(f"MOVE {scope_dir}/{filename}")
+
+    return result
+
+
+def run_vault_migration(
+    data_dir: str,
+    project_ids: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Run all vault migrations in the correct order (spec §6, Phase 1).
+
+    Consolidates the four individual migration operations into a single
+    idempotent entry point that can be called from the CLI
+    (``aq vault migrate``) or programmatically.
+
+    **Migration order:**
+
+    1. ``migrate_obsidian_config`` — move ``.obsidian/`` from ``memory/`` to
+       ``vault/``
+    2. ``ensure_vault_layout`` — create the static vault directory tree
+    3. ``ensure_vault_project_dirs`` — per-project vault directories
+    4. ``migrate_notes_to_vault`` — per-project notes migration
+    5. ``copy_project_memory_to_vault`` — per-project memory file copy
+    6. ``migrate_rule_files`` — global and per-project rule migration
+
+    The function is **idempotent** — safe to run multiple times.  It never
+    duplicates or overwrites data that is already at the destination.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+        project_ids: Explicit list of project IDs to migrate.  If ``None``,
+            projects are auto-discovered from ``notes/`` and ``memory/``
+            directories.
+        dry_run: If ``True``, scan and report what *would* happen without
+            making any changes.
+
+    Returns:
+        A dict with the migration report::
+
+            {
+                "dry_run": bool,
+                "data_dir": str,
+                "projects_discovered": [str, ...],
+                "obsidian": {"action": "move"/"skip", ...},
+                "notes": {"project_id": {"moved": N, "skipped": N}, ...},
+                "memory": {"project_id": {"copied": N, "updated": N, "skipped": N}, ...},
+                "rules": {"moved": N, "skipped": N, "errors": N, "details": [...]},
+                "summary": {
+                    "total_moved": int,
+                    "total_copied": int,
+                    "total_skipped": int,
+                    "total_errors": int,
+                },
+                "details": [str, ...],  # human-readable log lines
+            }
+    """
+    if project_ids is None:
+        project_ids = _discover_project_ids(data_dir)
+
+    report: dict = {
+        "dry_run": dry_run,
+        "data_dir": data_dir,
+        "projects_discovered": list(project_ids),
+        "obsidian": {},
+        "notes": {},
+        "memory": {},
+        "rules": {},
+        "summary": {
+            "total_moved": 0,
+            "total_copied": 0,
+            "total_skipped": 0,
+            "total_errors": 0,
+        },
+        "details": [],
+    }
+
+    mode = "DRY RUN" if dry_run else "LIVE"
+    logger.info("Starting vault migration (%s) for data_dir=%s", mode, data_dir)
+    report["details"].append(f"Vault migration ({mode}) — data_dir: {data_dir}")
+    report["details"].append(f"Projects: {', '.join(project_ids) or '(none discovered)'}")
+
+    # ------------------------------------------------------------------
+    # Step 1: Obsidian config
+    # ------------------------------------------------------------------
+    if dry_run:
+        obs_scan = _scan_obsidian_migration(data_dir)
+        report["obsidian"] = obs_scan
+        if obs_scan["action"] == "move":
+            report["summary"]["total_moved"] += 1
+            report["details"].append("  .obsidian: WOULD MOVE → vault/.obsidian/")
+        else:
+            report["summary"]["total_skipped"] += 1
+            report["details"].append(f"  .obsidian: SKIP ({obs_scan['reason']})")
+    else:
+        moved = migrate_obsidian_config(data_dir)
+        report["obsidian"] = {
+            "action": "moved" if moved else "skipped",
+        }
+        if moved:
+            report["summary"]["total_moved"] += 1
+            report["details"].append("  .obsidian: MOVED → vault/.obsidian/")
+        else:
+            report["summary"]["total_skipped"] += 1
+            report["details"].append("  .obsidian: SKIPPED (already migrated or no source)")
+
+    # ------------------------------------------------------------------
+    # Step 2: Ensure vault layout (always needed, even for dry-run reports)
+    # ------------------------------------------------------------------
+    if not dry_run:
+        ensure_vault_layout(data_dir)
+        report["details"].append("  Vault layout: ensured")
+
+        # Per-project directories
+        for pid in project_ids:
+            ensure_vault_project_dirs(data_dir, pid)
+    else:
+        report["details"].append("  Vault layout: WOULD ensure")
+
+    # ------------------------------------------------------------------
+    # Step 3: Notes migration (per-project)
+    # ------------------------------------------------------------------
+    report["details"].append("  --- Notes migration ---")
+    for pid in project_ids:
+        if dry_run:
+            scan = _scan_notes_migration(data_dir, pid)
+            report["notes"][pid] = {
+                "would_move": scan["would_move"],
+                "would_skip": scan["would_skip"],
+            }
+            report["summary"]["total_moved"] += scan["would_move"]
+            report["summary"]["total_skipped"] += scan["would_skip"]
+            if scan["would_move"] or scan["would_skip"]:
+                report["details"].append(
+                    f"  notes/{pid}: {scan['would_move']} to move, {scan['would_skip']} to skip"
+                )
+                for f in scan["files"]:
+                    report["details"].append(f"    {f}")
+        else:
+            moved = migrate_notes_to_vault(data_dir, pid)
+            report["notes"][pid] = {"moved": moved}
+            if moved:
+                report["summary"]["total_moved"] += 1
+                report["details"].append(f"  notes/{pid}: migrated")
+            else:
+                report["details"].append(f"  notes/{pid}: skipped (no source or already done)")
+
+    # ------------------------------------------------------------------
+    # Step 4: Memory copy (per-project)
+    # ------------------------------------------------------------------
+    report["details"].append("  --- Memory copy ---")
+    for pid in project_ids:
+        if dry_run:
+            scan = _scan_memory_copy(data_dir, pid)
+            report["memory"][pid] = {
+                "would_copy": scan["would_copy"],
+                "would_update": scan["would_update"],
+                "would_skip": scan["would_skip"],
+            }
+            report["summary"]["total_copied"] += scan["would_copy"] + scan["would_update"]
+            report["summary"]["total_skipped"] += scan["would_skip"]
+            total = scan["would_copy"] + scan["would_update"] + scan["would_skip"]
+            if total:
+                report["details"].append(
+                    f"  memory/{pid}: {scan['would_copy']} to copy, "
+                    f"{scan['would_update']} to update, "
+                    f"{scan['would_skip']} up to date"
+                )
+                for f in scan["files"]:
+                    report["details"].append(f"    {f}")
+        else:
+            copied = copy_project_memory_to_vault(data_dir, pid)
+            report["memory"][pid] = {"copied": copied}
+            if copied:
+                report["summary"]["total_copied"] += 1
+                report["details"].append(f"  memory/{pid}: copied")
+            else:
+                report["details"].append(f"  memory/{pid}: skipped (no source or up to date)")
+
+    # ------------------------------------------------------------------
+    # Step 5: Rule file migration
+    # ------------------------------------------------------------------
+    report["details"].append("  --- Rule migration ---")
+    if dry_run:
+        scan = _scan_rule_migration(data_dir)
+        report["rules"] = {
+            "would_move": scan["would_move"],
+            "would_skip": scan["would_skip"],
+            "details": scan["details"],
+        }
+        report["summary"]["total_moved"] += scan["would_move"]
+        report["summary"]["total_skipped"] += scan["would_skip"]
+        if scan["would_move"] or scan["would_skip"]:
+            report["details"].append(
+                f"  rules: {scan['would_move']} to move, {scan['would_skip']} to skip"
+            )
+            for d in scan["details"]:
+                report["details"].append(f"    {d}")
+        else:
+            report["details"].append("  rules: nothing to migrate")
+    else:
+        rule_result = migrate_rule_files(data_dir)
+        report["rules"] = rule_result
+        report["summary"]["total_moved"] += rule_result["moved"]
+        report["summary"]["total_skipped"] += rule_result["skipped"]
+        report["summary"]["total_errors"] += rule_result["errors"]
+        report["details"].append(
+            f"  rules: {rule_result['moved']} moved, "
+            f"{rule_result['skipped']} skipped, "
+            f"{rule_result['errors']} errors"
+        )
+        for d in rule_result.get("details", []):
+            report["details"].append(f"    {d}")
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    s = report["summary"]
+    summary_line = (
+        f"Migration {'preview' if dry_run else 'complete'}: "
+        f"{s['total_moved']} moved, {s['total_copied']} copied, "
+        f"{s['total_skipped']} skipped, {s['total_errors']} errors"
+    )
+    report["details"].append(summary_line)
+    logger.info(summary_line)
+
+    return report

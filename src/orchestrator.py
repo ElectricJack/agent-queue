@@ -996,55 +996,44 @@ class Orchestrator:
 
         See ``docs/specs/design/vault.md`` §2 for the full layout.
 
-        1. Create the static top-level structure (system, orchestrator,
-           agent-types, projects, templates).
+        1. Run the consolidated vault migration (spec §6, Phase 1) which
+           handles obsidian config, notes, memory files, and rules in the
+           correct order.
         2. Create per-profile subdirectories under ``vault/agent-types/``.
-        3. Create per-project subdirectories under ``vault/projects/``.
 
         All operations are idempotent — safe to call on every startup.
         Called during ``initialize()`` after the database is ready and
         ``self.vault_manager`` has been created.
         """
-        from src.vault import (
-            copy_project_memory_to_vault,
-            migrate_notes_to_vault,
-            migrate_obsidian_config,
-            migrate_rule_files,
-        )
+        from src.vault import run_vault_migration
 
-        # Migrate legacy .obsidian config before ensure_layout creates
-        # an empty vault/.obsidian/ directory (spec §6, Phase 1).
-        migrate_obsidian_config(self.config.data_dir)
+        # Per-profile directories need DB access (not discoverable from FS),
+        # so we handle them here.  Per-project dirs and all migrations are
+        # handled by run_vault_migration using filesystem discovery.
+        all_profiles = await self.db.list_profiles()
 
-        # Create the static vault tree (system, orchestrator, agent-types,
-        # projects, templates directories).
+        # Collect project IDs from the database so run_vault_migration covers
+        # projects that exist only in the DB (no legacy files on disk).
+        all_projects = await self.db.list_projects()
+        db_project_ids = [p.id for p in all_projects]
+
+        # Run the consolidated migration (obsidian, vault layout, notes,
+        # memory, rules) — spec §6, Phase 1.  Passing project_ids ensures
+        # DB-only projects also get their vault directories created.
+        run_vault_migration(self.config.data_dir, project_ids=db_project_ids)
+
+        # Ensure the vault manager layout is also called (handles any
+        # additional vault-manager-specific setup beyond run_vault_migration).
         self.vault_manager.ensure_layout()
 
         # Per-profile directories (vault/agent-types/{profile_id}/)
-        all_profiles = await self.db.list_profiles()
         for profile in all_profiles:
             self.vault_manager.register_agent_type(profile.id)
 
-        # Per-project directories (vault/projects/{project_id}/)
-        all_projects = await self.db.list_projects()
+        # Per-project directories via vault_manager (handles project
+        # registration beyond what ensure_vault_project_dirs does).
         for project in all_projects:
             self.vault_manager.register_project(project.id)
-
-        # Migrate legacy notes/{project_id}/ → vault/projects/{project_id}/notes/
-        # (spec §6, Phase 1).  Must run after register_project ensures dest dirs.
-        for project in all_projects:
-            migrate_notes_to_vault(self.config.data_dir, project.id)
-
-        # Copy project memory files (profile.md, factsheet.md, knowledge/)
-        # into vault/projects/{project_id}/memory/ (spec §6, Phase 1).
-        # Uses copy (not move) — old paths still used by v1 memory system.
-        for project in all_projects:
-            copy_project_memory_to_vault(self.config.data_dir, project.id)
-
-        # Migrate rule files from legacy memory/ locations to vault
-        # playbook directories (spec §6, Phase 1).  Must run after
-        # ensure_vault_layout and per-project dirs so destinations exist.
-        migrate_rule_files(self.config.data_dir)
 
         if all_profiles or all_projects:
             logger.info(
