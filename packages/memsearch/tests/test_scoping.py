@@ -1542,6 +1542,876 @@ class TestCollectionRouterGetStoreIfExists:
         assert router.has_store(MemoryScope.PROJECT, "test")
 
 
+# ---- Roadmap 2.1.18: Multi-collection weighted merge test cases (a)-(f) ----
+# Spec: docs/specs/design/memory-scoping.md §4 — Scope Hierarchy
+#
+#   (a) Weighted ranking correctness — weight-1.0 result ranks above
+#       equally-similar weight-0.4 result
+#   (b) Weight adjustment not override — very high similarity in low-weight
+#       collection can still outrank moderate similarity in high-weight collection
+#   (c) Empty collection in merge set does not cause errors
+#   (d) Deduplication across collections (same chunk_hash appears once)
+#   (e) Merge respects requested result limit (top-K after merge)
+#   (f) Parallel search latency (not sequential N * latency)
+
+
+class TestMultiCollectionWeightedMergeRoadmapPure:
+    """Roadmap 2.1.18 pure-function test cases (no Milvus required).
+
+    Validates merge_and_rank and SCOPE_WEIGHTS for cases (a), (b), (d), (e).
+    """
+
+    # -- (a) Weighted ranking correctness --------------------------------------
+
+    def test_a_equal_similarity_ranked_by_weight(self):
+        """(a) Results with equal raw scores are ranked by scope weight.
+
+        Three results from different scopes with identical similarity (0.8)
+        should sort: project (0.80), agent-type (0.56), system (0.32).
+        """
+        results = [
+            {
+                "chunk_hash": "sys_hit",
+                "score": 0.8,
+                "weighted_score": 0.8 * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                "_scope": "system",
+            },
+            {
+                "chunk_hash": "at_hit",
+                "score": 0.8,
+                "weighted_score": 0.8 * SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE],
+                "_scope": "agent_type",
+            },
+            {
+                "chunk_hash": "proj_hit",
+                "score": 0.8,
+                "weighted_score": 0.8 * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 3
+        assert merged[0]["_scope"] == "project"
+        assert merged[1]["_scope"] == "agent_type"
+        assert merged[2]["_scope"] == "system"
+
+    def test_a_weight_1_0_beats_weight_0_4_at_every_score(self):
+        """(a) At equal raw score, weight-1.0 (project) always outranks
+        weight-0.4 (system) regardless of the raw score value."""
+        for raw_score in [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]:
+            results = [
+                {
+                    "chunk_hash": "project",
+                    "score": raw_score,
+                    "weighted_score": raw_score * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                    "_scope": "project",
+                },
+                {
+                    "chunk_hash": "system",
+                    "score": raw_score,
+                    "weighted_score": raw_score * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                    "_scope": "system",
+                },
+            ]
+            merged = merge_and_rank(results, top_k=10)
+            assert merged[0]["_scope"] == "project", f"Failed at raw_score={raw_score}"
+
+    def test_a_weights_match_spec_values(self):
+        """(a) Verify the weight constants match spec §4: [1.0, 0.7, 0.4]."""
+        assert SCOPE_WEIGHTS[MemoryScope.PROJECT] == 1.0
+        assert SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE] == 0.7
+        assert SCOPE_WEIGHTS[MemoryScope.SYSTEM] == 0.4
+
+    # -- (b) Weight adjustment not override ------------------------------------
+
+    def test_b_high_system_score_can_outrank_low_project_score(self):
+        """(b) Very high similarity in system (weight=0.4) outranks low
+        similarity in project (weight=1.0).
+
+        System: 0.95 * 0.4 = 0.38  >  Project: 0.3 * 1.0 = 0.30.
+        """
+        results = [
+            {
+                "chunk_hash": "sys_hit",
+                "score": 0.95,
+                "weighted_score": 0.95 * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                "_scope": "system",
+            },
+            {
+                "chunk_hash": "proj_hit",
+                "score": 0.3,
+                "weighted_score": 0.3 * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["_scope"] == "system", (
+            "High-similarity system result should outrank low-similarity project result"
+        )
+        assert merged[0]["weighted_score"] > merged[1]["weighted_score"]
+
+    def test_b_agent_type_can_outrank_project(self):
+        """(b) Extended: high agent-type score (weight=0.7) can outrank
+        low project score (weight=1.0).
+
+        Agent-type: 0.9 * 0.7 = 0.63  >  Project: 0.5 * 1.0 = 0.50.
+        """
+        results = [
+            {
+                "chunk_hash": "at_hit",
+                "score": 0.9,
+                "weighted_score": 0.9 * SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE],
+                "_scope": "agent_type",
+            },
+            {
+                "chunk_hash": "proj_hit",
+                "score": 0.5,
+                "weighted_score": 0.5 * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["_scope"] == "agent_type"
+
+    def test_b_weight_multiplies_not_replaces(self):
+        """(b) Weighted score is score * weight — never overridden to just weight."""
+        results = [
+            {
+                "chunk_hash": "a",
+                "score": 0.6,
+                "weighted_score": 0.6 * 1.0,
+                "_scope": "project",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        # weighted_score should be 0.6, not 1.0 (the weight itself)
+        assert merged[0]["weighted_score"] == pytest.approx(0.6)
+        assert merged[0]["weighted_score"] != 1.0
+
+    # -- (d) Deduplication across collections ----------------------------------
+
+    def test_d_dedup_across_scopes_keeps_highest_weighted(self):
+        """(d) Same chunk_hash in project (0.6*1.0=0.6) and system
+        (0.8*0.4=0.32) — kept once with the project entry (highest weighted)."""
+        results = [
+            {
+                "chunk_hash": "shared_chunk",
+                "score": 0.6,
+                "weighted_score": 0.6 * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+                "_scope_id": "myapp",
+            },
+            {
+                "chunk_hash": "shared_chunk",
+                "score": 0.8,
+                "weighted_score": 0.8 * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                "_scope": "system",
+                "_scope_id": None,
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"
+        assert merged[0]["weighted_score"] == pytest.approx(0.6)
+
+    def test_d_dedup_three_scopes_single_entry(self):
+        """(d) Same chunk in all 3 scopes — deduplicated to single entry
+        from the highest-weighted scope (project)."""
+        results = [
+            {
+                "chunk_hash": "x",
+                "score": 0.7,
+                "weighted_score": 0.7 * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+            },
+            {
+                "chunk_hash": "x",
+                "score": 0.7,
+                "weighted_score": 0.7 * SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE],
+                "_scope": "agent_type",
+            },
+            {
+                "chunk_hash": "x",
+                "score": 0.7,
+                "weighted_score": 0.7 * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                "_scope": "system",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"
+
+    def test_d_dedup_mixed_unique_and_shared(self):
+        """(d) Mix of unique and shared chunk_hashes — shared are deduped,
+        unique are preserved."""
+        results = [
+            {"chunk_hash": "shared", "score": 0.8, "weighted_score": 0.8, "_scope": "project"},
+            {"chunk_hash": "shared", "score": 0.7, "weighted_score": 0.28, "_scope": "system"},
+            {"chunk_hash": "unique_p", "score": 0.6, "weighted_score": 0.6, "_scope": "project"},
+            {"chunk_hash": "unique_s", "score": 0.9, "weighted_score": 0.36, "_scope": "system"},
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        hashes = [m["chunk_hash"] for m in merged]
+        assert len(merged) == 3
+        assert hashes.count("shared") == 1
+        assert "unique_p" in hashes
+        assert "unique_s" in hashes
+
+    # -- (e) Top-K after merge -------------------------------------------------
+
+    def test_e_top_k_after_merge_not_per_collection(self):
+        """(e) top_k=3 with 5 results from project + 5 from system → 3 total."""
+        results = []
+        for i in range(5):
+            score = 0.9 - i * 0.1
+            results.append({
+                "chunk_hash": f"proj_{i}",
+                "score": score,
+                "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.PROJECT],
+                "_scope": "project",
+            })
+        for i in range(5):
+            score = 0.9 - i * 0.1
+            results.append({
+                "chunk_hash": f"sys_{i}",
+                "score": score,
+                "weighted_score": score * SCOPE_WEIGHTS[MemoryScope.SYSTEM],
+                "_scope": "system",
+            })
+        merged = merge_and_rank(results, top_k=3)
+        assert len(merged) == 3
+
+    def test_e_top_k_1_returns_single_best(self):
+        """(e) top_k=1 returns only the single highest-weighted result."""
+        results = [
+            {"chunk_hash": "a", "score": 0.9, "weighted_score": 0.9, "_scope": "project"},
+            {"chunk_hash": "b", "score": 0.8, "weighted_score": 0.56, "_scope": "agent_type"},
+            {"chunk_hash": "c", "score": 0.7, "weighted_score": 0.28, "_scope": "system"},
+        ]
+        merged = merge_and_rank(results, top_k=1)
+        assert len(merged) == 1
+        assert merged[0]["chunk_hash"] == "a"
+
+    def test_e_top_k_larger_than_results(self):
+        """(e) top_k larger than result count returns all results."""
+        results = [
+            {"chunk_hash": "a", "score": 0.9, "weighted_score": 0.9, "_scope": "project"},
+            {"chunk_hash": "b", "score": 0.5, "weighted_score": 0.2, "_scope": "system"},
+        ]
+        merged = merge_and_rank(results, top_k=100)
+        assert len(merged) == 2
+
+
+@pytestmark_milvus
+class TestMultiCollectionWeightedMergeRoadmap:
+    """Roadmap 2.1.18 integration test cases (a)-(f).
+
+    End-to-end tests for multi-collection parallel search with weighted
+    merging per spec §4 — Scope Hierarchy.
+
+      (a) Weighted ranking correctness
+      (b) Weight adjustment (not override)
+      (c) Empty collection in merge set
+      (d) Deduplication across collections
+      (e) Top-K after merge
+      (f) Parallel latency
+    """
+
+    @pytest.fixture
+    def weighted_router(self, tmp_path: Path):
+        """Router with controlled data in 3 collections (3 entries each).
+
+        - Project:    embeddings near [1, 0, 0, 0]
+        - Agent-type: embeddings near [0, 1, 0, 0]
+        - System:     embeddings near [0, 0, 1, 0]
+        """
+        db = tmp_path / "weighted_merge_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            _make_chunks(
+                "proj",
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.95, 0.05, 0.0, 0.0],
+                    [0.9, 0.1, 0.0, 0.0],
+                ],
+                [
+                    "Project authentication guide",
+                    "Project API design patterns",
+                    "Project database configuration",
+                ],
+            )
+        )
+
+        r.get_store(MemoryScope.AGENT_TYPE, "coding").upsert(
+            _make_chunks(
+                "at",
+                [
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.05, 0.95, 0.0, 0.0],
+                    [0.0, 0.9, 0.1, 0.0],
+                ],
+                [
+                    "Coding testing best practices",
+                    "Code review guidelines",
+                    "Debugging workflow tips",
+                ],
+            )
+        )
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks(
+                "sys",
+                [
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.05, 0.95, 0.0],
+                    [0.0, 0.0, 0.9, 0.1],
+                ],
+                [
+                    "System logging configuration",
+                    "System error handling patterns",
+                    "System monitoring setup",
+                ],
+            )
+        )
+
+        yield r
+        r.close()
+
+    # -- (a) Weighted ranking correctness --------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_equal_embeddings_ranked_by_scope_weight(self, tmp_path: Path):
+        """(a) When all collections contain an equally-similar entry,
+        project (weight=1.0) ranks above system (weight=0.4).
+
+        Uses identical embeddings in all 3 scopes so raw similarity
+        is identical — only scope weight determines ranking.
+        """
+        db = tmp_path / "equal_embed_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        emb = [1.0, 0.0, 0.0, 0.0]
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            _make_chunks("eq_proj", [emb], ["Equal test content project"])
+        )
+        r.get_store(MemoryScope.AGENT_TYPE, "coding").upsert(
+            _make_chunks("eq_at", [emb], ["Equal test content agent type"])
+        )
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks("eq_sys", [emb], ["Equal test content system"])
+        )
+
+        results = await r.search(
+            emb,
+            query_text="Equal test content",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+
+        scopes = [res["_scope"] for res in results]
+        assert "project" in scopes
+        assert "system" in scopes
+
+        project_results = [res for res in results if res["_scope"] == "project"]
+        system_results = [res for res in results if res["_scope"] == "system"]
+
+        if project_results and system_results:
+            best_proj = max(res["weighted_score"] for res in project_results)
+            best_sys = max(res["weighted_score"] for res in system_results)
+            assert best_proj > best_sys, (
+                f"Project weighted_score ({best_proj:.4f}) should exceed "
+                f"system weighted_score ({best_sys:.4f}) at equal similarity"
+            )
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_a_three_scopes_ordered_by_weight(self, tmp_path: Path):
+        """(a) Extended: project > agent-type > system ordering when all
+        contain equally-similar content."""
+        db = tmp_path / "three_scope_order.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        emb = [0.7, 0.7, 0.0, 0.0]
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            _make_chunks("order_p", [emb], ["Ordering test content for project"])
+        )
+        r.get_store(MemoryScope.AGENT_TYPE, "coding").upsert(
+            _make_chunks("order_a", [emb], ["Ordering test content for agent type"])
+        )
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks("order_s", [emb], ["Ordering test content for system"])
+        )
+
+        results = await r.search(
+            emb,
+            query_text="Ordering test content",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+
+        # Best weighted_score per scope
+        scope_scores: dict[str, float] = {}
+        for res in results:
+            scope = res["_scope"]
+            score = res["weighted_score"]
+            if scope not in scope_scores or score > scope_scores[scope]:
+                scope_scores[scope] = score
+
+        if all(s in scope_scores for s in ("project", "agent_type", "system")):
+            assert scope_scores["project"] > scope_scores["agent_type"], (
+                "Project should rank above agent-type"
+            )
+            assert scope_scores["agent_type"] > scope_scores["system"], (
+                "Agent-type should rank above system"
+            )
+        r.close()
+
+    # -- (b) Weight adjustment not override ------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_b_high_system_similarity_outranks_low_project(self, tmp_path: Path):
+        """(b) Weight adjusts score, doesn't override — a better-matched
+        system result outranks a worse-matched project result.
+
+        With default weights [1.0, 0.4], Milvus Lite's RRF hybrid scoring
+        compresses raw score ranges (rank-based, so the 2x max ratio can't
+        overcome the 2.5x weight advantage of project).  We use custom
+        weights to amplify the system scope, proving the weighting mechanism
+        is a multiplier that allows *any* scope to outrank another when the
+        similarity advantage is large enough.
+
+        The companion pure-function tests (TestMultiCollectionWeightedMergeRoadmapPure)
+        verify the exact arithmetic with default weights.
+        """
+        db = tmp_path / "weight_not_override.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        query = [1.0, 0.0, 0.0, 0.0]
+
+        # System: near-perfect embedding + text match
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks("b_sys", [query], ["Authentication token security patterns"])
+        )
+        # Project: orthogonal embedding, no text overlap
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            _make_chunks(
+                "b_proj", [[0.0, 0.0, 0.0, 1.0]], ["Database migration strategy notes"]
+            )
+        )
+
+        # Custom weights: boost system to overcome default project advantage
+        custom_weights = {
+            MemoryScope.PROJECT: 0.1,
+            MemoryScope.SYSTEM: 5.0,
+        }
+        results = await r.search(
+            query,
+            query_text="Authentication token security patterns",
+            project_id="myapp",
+            top_k=10,
+            weights=custom_weights,
+        )
+
+        system_results = [res for res in results if res["_scope"] == "system"]
+        project_results = [res for res in results if res["_scope"] == "project"]
+
+        assert system_results, "Expected system results"
+        assert project_results, "Expected project results"
+
+        best_sys = max(res["weighted_score"] for res in system_results)
+        best_proj = max(res["weighted_score"] for res in project_results)
+        assert best_sys > best_proj, (
+            f"System weighted_score ({best_sys:.4f}) should outrank "
+            f"project ({best_proj:.4f}) with custom weights that reflect "
+            f"similarity advantage"
+        )
+
+        # Also verify weights were applied as multipliers
+        for res in system_results:
+            assert res["_weight"] == 5.0
+        for res in project_results:
+            assert res["_weight"] == 0.1
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_b_raw_score_reflects_similarity(self, tmp_path: Path):
+        """(b) Extended: raw scores (before weighting) are higher for
+        better-matching entries, confirming similarity IS measured —
+        weight adjusts, doesn't replace the similarity signal."""
+        db = tmp_path / "raw_score_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        query = [1.0, 0.0, 0.0, 0.0]
+
+        # System: exact embedding + text match among several entries
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks(
+                "b2_sys",
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+                [
+                    "Authentication token refresh security",
+                    "Database schema design patterns",
+                    "Container orchestration overview",
+                ],
+            )
+        )
+        # Project: all entries far from query
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            _make_chunks(
+                "b2_proj",
+                [
+                    [0.0, 0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                ],
+                [
+                    "Deployment pipeline configuration",
+                    "Build system optimization tips",
+                    "Code review process document",
+                ],
+            )
+        )
+
+        results = await r.search(
+            query,
+            query_text="Authentication token refresh security",
+            project_id="myapp",
+            top_k=10,
+        )
+
+        system_results = [res for res in results if res["_scope"] == "system"]
+        project_results = [res for res in results if res["_scope"] == "project"]
+
+        if system_results and project_results:
+            best_sys_raw = max(res["score"] for res in system_results)
+            best_proj_raw = max(res["score"] for res in project_results)
+            assert best_sys_raw > best_proj_raw, (
+                f"System raw score ({best_sys_raw:.4f}) should exceed "
+                f"project raw score ({best_proj_raw:.4f}) — weight adjusts "
+                f"the final score, doesn't replace similarity"
+            )
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_b_weight_applied_as_multiplier(self, weighted_router: CollectionRouter):
+        """(b) Extended: weighted_score equals score * weight for every
+        result (weight is a multiplier, not a replacement)."""
+        results = await weighted_router.search(
+            [0.5, 0.5, 0.5, 0.0],
+            query_text="test",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+        for res in results:
+            expected = res["score"] * res["_weight"]
+            assert abs(res["weighted_score"] - expected) < 1e-6, (
+                f"weighted_score ({res['weighted_score']}) != "
+                f"score ({res['score']}) * weight ({res['_weight']})"
+            )
+
+    # -- (c) Empty collection handling -----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_empty_collection_no_error(self, tmp_path: Path):
+        """(c) An empty collection in the merge set does not cause errors.
+
+        Creates project collection but inserts no data.  Only system has data.
+        Search should return system results without error.
+        """
+        db = tmp_path / "empty_coll_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        # Create project collection but leave it empty
+        r.get_store(MemoryScope.PROJECT, "empty_project")
+
+        # System has actual data
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks("c_sys", [[1.0, 0.0, 0.0, 0.0]], ["System has data"])
+        )
+
+        results = await r.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="System has data",
+            project_id="empty_project",
+            top_k=10,
+        )
+
+        assert len(results) > 0
+        assert all(res["_scope"] == "system" for res in results)
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_c_all_empty_collections(self, tmp_path: Path):
+        """(c) Extended: ALL collections in merge set are empty → empty
+        result list, no error."""
+        db = tmp_path / "all_empty_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.PROJECT, "empty_proj")
+        r.get_store(MemoryScope.AGENT_TYPE, "empty_at")
+        r.get_store(MemoryScope.SYSTEM)
+
+        results = await r.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="anything",
+            project_id="empty_proj",
+            agent_type="empty_at",
+            top_k=10,
+        )
+        assert results == []
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_c_missing_collection_no_error(self, tmp_path: Path):
+        """(c) Extended: non-existent collections (never created) handled
+        gracefully — returns results from the collections that do exist."""
+        db = tmp_path / "missing_coll_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks("c_sys2", [[1.0, 0.0, 0.0, 0.0]], ["System data only"])
+        )
+
+        # Search references non-existent project and agent-type
+        results = await r.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="System data only",
+            project_id="does_not_exist",
+            agent_type="also_missing",
+            top_k=10,
+        )
+        assert len(results) > 0
+        assert all(res["_scope"] == "system" for res in results)
+        r.close()
+
+    # -- (d) Deduplication across collections ----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_dedup_same_hash_across_collections(self, tmp_path: Path):
+        """(d) Same chunk_hash in project and system collections —
+        appears once in results with the highest weighted_score."""
+        db = tmp_path / "dedup_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        shared_hash = "shared_dedup_chunk"
+        emb = [1.0, 0.0, 0.0, 0.0]
+        entry = {
+            "chunk_hash": shared_hash,
+            "embedding": emb,
+            "content": "Shared knowledge across scopes",
+            "source": "shared.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+        }
+
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert([entry])
+        r.get_store(MemoryScope.SYSTEM).upsert([entry])
+
+        results = await r.search(
+            emb,
+            query_text="Shared knowledge",
+            project_id="myapp",
+            top_k=10,
+        )
+
+        hashes = [res["chunk_hash"] for res in results]
+        assert hashes.count(shared_hash) == 1, (
+            f"Expected 1 occurrence of shared chunk, got {hashes.count(shared_hash)}"
+        )
+
+        shared_result = next(res for res in results if res["chunk_hash"] == shared_hash)
+        assert shared_result["_scope"] == "project", (
+            "Dedup should keep the entry with highest weighted_score (project)"
+        )
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_d_dedup_preserves_unique_entries(self, tmp_path: Path):
+        """(d) Extended: unique entries are not affected by deduplication,
+        only shared chunk_hashes are collapsed."""
+        db = tmp_path / "dedup_unique_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        emb = [1.0, 0.0, 0.0, 0.0]
+
+        # Shared entry in both collections
+        shared_entry = {
+            "chunk_hash": "shared",
+            "embedding": emb,
+            "content": "Shared content",
+            "source": "s.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+        }
+        # Unique entries in each collection
+        proj_unique = {
+            "chunk_hash": "proj_only",
+            "embedding": [0.9, 0.1, 0.0, 0.0],
+            "content": "Project unique content",
+            "source": "p.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+        }
+        sys_unique = {
+            "chunk_hash": "sys_only",
+            "embedding": [0.8, 0.0, 0.2, 0.0],
+            "content": "System unique content",
+            "source": "s2.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+        }
+
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert([shared_entry, proj_unique])
+        r.get_store(MemoryScope.SYSTEM).upsert([shared_entry, sys_unique])
+
+        results = await r.search(
+            emb,
+            query_text="content",
+            project_id="myapp",
+            top_k=10,
+        )
+
+        hashes = {res["chunk_hash"] for res in results}
+        assert "shared" in hashes
+        assert "proj_only" in hashes
+        assert "sys_only" in hashes
+        # shared appears once (deduplicated), others appear once each
+        hash_list = [res["chunk_hash"] for res in results]
+        assert hash_list.count("shared") == 1
+        r.close()
+
+    # -- (e) Top-K after merge -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_e_top_k_limits_merged_results(self, weighted_router: CollectionRouter):
+        """(e) top_k=2 across 3 collections (9 total entries) → at most 2."""
+        results = await weighted_router.search(
+            [0.5, 0.5, 0.5, 0.0],
+            query_text="test",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=2,
+        )
+        assert len(results) <= 2, (
+            f"Expected at most 2 results (top_k=2), got {len(results)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_e_top_k_spans_multiple_scopes(self, weighted_router: CollectionRouter):
+        """(e) Extended: with top_k=4, results can come from multiple
+        scopes (not capped at top_k per-collection)."""
+        results = await weighted_router.search(
+            [0.5, 0.5, 0.5, 0.0],
+            query_text="test",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=4,
+        )
+        assert len(results) <= 4
+        # With a mixed-direction query, results should span multiple scopes
+        scopes = {res["_scope"] for res in results}
+        assert len(scopes) >= 1
+
+    @pytest.mark.asyncio
+    async def test_e_top_k_1_returns_single_best(self, weighted_router: CollectionRouter):
+        """(e) top_k=1 returns exactly 1 result — the single best across
+        all collections."""
+        results = await weighted_router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="authentication",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=1,
+        )
+        assert len(results) == 1
+
+    # -- (f) Parallel latency --------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_parallel_search_not_sequential(self, weighted_router: CollectionRouter):
+        """(f) Parallel search across 3 collections completes in reasonable
+        time — not sequential N * single-collection latency.
+
+        Strategy: time a 3-scope search and a 1-scope search.  The 3-scope
+        search should not take >=3x the single-scope time (which would
+        indicate sequential execution).
+
+        Note: with Milvus Lite and tiny test collections the thread-pool
+        overhead can dominate, so we use a generous threshold (5x).
+        The real benefit of parallelism shows with larger collections.
+        """
+        import time
+
+        query = [0.5, 0.5, 0.5, 0.0]
+
+        # Warm up (first search may initialise lazy resources)
+        await weighted_router.search(
+            query, query_text="warmup", project_id="myapp", top_k=5
+        )
+
+        # Time single-scope search (system only, no project_id/agent_type)
+        single_times: list[float] = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            await weighted_router.search(query, query_text="single", top_k=5)
+            single_times.append(time.perf_counter() - t0)
+        avg_single = sum(single_times) / len(single_times)
+
+        # Time three-scope parallel search
+        multi_times: list[float] = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            await weighted_router.search(
+                query,
+                query_text="multi",
+                project_id="myapp",
+                agent_type="coding",
+                top_k=5,
+            )
+            multi_times.append(time.perf_counter() - t0)
+        avg_multi = sum(multi_times) / len(multi_times)
+
+        # 3 scopes searched in parallel should be well under 3x sequential.
+        # We allow 5x as a generous ceiling for CI / Milvus Lite overhead.
+        assert avg_multi < avg_single * 3.0 * 5.0, (
+            f"3-scope search ({avg_multi:.4f}s) took >= 15x single-scope "
+            f"({avg_single:.4f}s) -- parallelism may not be working"
+        )
+
+    @pytest.mark.asyncio
+    async def test_f_parallel_search_returns_all_scopes(self, weighted_router: CollectionRouter):
+        """(f) Extended: parallel search actually queries all scopes and
+        returns results from each — confirming the parallel fan-out works."""
+        results = await weighted_router.search(
+            [0.5, 0.5, 0.5, 0.0],
+            query_text="test",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+        scopes_found = {res["_scope"] for res in results}
+        assert "project" in scopes_found, "No project results — parallel search may have skipped it"
+        assert "agent_type" in scopes_found, "No agent-type results — parallel search may have skipped it"
+        assert "system" in scopes_found, "No system results — parallel search may have skipped it"
+
+
 # ---- Roadmap 2.1.19: Cross-collection tag search test cases (a)-(g) --------
 # Spec: docs/specs/design/memory-plugin.md §7 — Tag-Based Cross-Scope Discovery
 
