@@ -362,12 +362,22 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
+        llm_config: dict | None = None,
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
         Acquires ``_llm_lock`` so that only one LLM interaction runs at a
         time.  Internal callers that already hold the lock should use
         ``_chat_unlocked()`` instead.
+
+        Args:
+            llm_config: Optional dict to override LLM parameters for this
+                call.  Supported keys: ``model``, ``temperature``,
+                ``max_tokens``.  When *None* (the default), the
+                configured provider is used unchanged.  The actual
+                provider swap based on ``model`` is implemented in a
+                follow-up task (0.4.2); for now only ``max_tokens`` is
+                applied.
         """
         async with self._llm_lock:
             return await self._chat_unlocked(
@@ -376,6 +386,7 @@ class Supervisor:
                 history,
                 on_progress,
                 _reflection_trigger,
+                llm_config=llm_config,
             )
 
     async def _chat_unlocked(
@@ -385,6 +396,7 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
+        llm_config: dict | None = None,
     ) -> str:
         """Process a user message without acquiring ``_llm_lock``.
 
@@ -402,6 +414,8 @@ class Supervisor:
         and *detail* is an optional string (e.g. tool name).  This allows the
         caller to display intermediate status in a UI (Discord thinking
         indicator, etc.).
+
+        ``llm_config`` — see :meth:`chat` for details.
         """
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
@@ -422,6 +436,7 @@ class Supervisor:
                 on_progress,
                 _reflection_trigger,
                 cancel_event=cancel_event,
+                llm_config=llm_config,
             )
         finally:
             self._cancel_events.remove(cancel_event)
@@ -459,6 +474,7 @@ class Supervisor:
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
         cancel_event: asyncio.Event | None = None,
+        llm_config: dict | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
         the cancel event lifecycle in a try/finally.
@@ -466,6 +482,8 @@ class Supervisor:
         ``cancel_event`` is the per-call event created in ``chat()``.
         Using a stack-based list avoids races where concurrent or recursive
         ``chat()`` calls clobber each other's cancellation state.
+
+        ``llm_config`` — see :meth:`chat` for details.
         """
         registry = self._registry
 
@@ -525,11 +543,17 @@ class Supervisor:
                     await on_progress("thinking", f"round {round_num + 1}")
 
             active_provider = _hook_provider_override.get() or self._provider
+
+            # Apply llm_config overrides for this call.
+            # Currently only max_tokens is honoured; model/temperature
+            # support requires provider swap logic (task 0.4.2).
+            effective_max_tokens = llm_config.get("max_tokens", 1024) if llm_config else 1024
+
             resp = await active_provider.create_message(
                 messages=messages,
                 system=await self._build_system_prompt(),
                 tools=list(active_tools.values()),
-                max_tokens=1024,
+                max_tokens=effective_max_tokens,
             )
 
             if not resp.tool_uses:
@@ -678,6 +702,7 @@ class Supervisor:
                                 history=messages,
                                 on_progress=on_progress,
                                 _reflection_trigger=_reflection_trigger,
+                                llm_config=llm_config,
                             )
                         finally:
                             self._reflection_retry_active = False
