@@ -258,6 +258,7 @@ class Orchestrator:
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
+        self.vault_watcher = None
         # Semantic memory manager — optional integration with memsearch.
         # Initialized only when config.memory.enabled is True and the
         # memsearch package is installed.
@@ -823,6 +824,18 @@ class Orchestrator:
         # Static dirs first, then per-profile and per-project subdirs.
         await self._ensure_vault_structure()
 
+        # Start the unified vault file watcher (playbooks spec §17).
+        # One watcher for the entire vault tree — specific path handlers
+        # are registered by subsystems in subsequent initialization steps.
+        from src.vault_watcher import VaultWatcher
+
+        self.vault_watcher = VaultWatcher(
+            vault_root=self.config.vault_root,
+            poll_interval=5.0,
+            debounce_seconds=2.0,
+        )
+        await self.vault_watcher.start()
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
@@ -1125,6 +1138,11 @@ class Orchestrator:
         for them to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
+        if self.vault_watcher:
+            try:
+                await self.vault_watcher.stop()
+            except Exception as e:
+                logger.warning("Vault watcher shutdown error: %s", e)
         if self._config_watcher:
             await self._config_watcher.stop()
         if self.rule_manager:
