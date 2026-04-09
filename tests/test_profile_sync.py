@@ -14,6 +14,7 @@ Covers:
 - End-to-end dispatch through VaultWatcher with DB sync
 - Notification events: sync failures emit notify.profile_sync_failed
 - Roadmap 4.1.10 (a)-(g): Profile parser and DB sync integration tests
+- Roadmap 4.1.11 (a)-(g): Profile error handling tests
 """
 
 from __future__ import annotations
@@ -2164,3 +2165,736 @@ name: Broken Stable
         assert len(matching) == 1
         assert matching[0].name == "V3"
         assert matching[0].model == "m3"
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 4.1.11 — Profile error handling tests
+# ---------------------------------------------------------------------------
+#
+# Tests (a)-(g) per docs/specs/design/roadmap.md §4.1.11:
+#   (a) Malformed JSON in Config block triggers sync failure + notification
+#   (b) DB row retains previous valid values after failed sync (no partial update)
+#   (c) Invalid tool name in Tools produces warning but doesn't block sync
+#   (d) Malformed JSON in MCP Servers triggers failure notification
+#   (e) Completely empty profile.md does not crash parser (returns empty/default)
+#   (f) Profile.md with valid frontmatter but garbled body sections fails gracefully
+#   (g) Error notification includes file path and specific parse error
+# ---------------------------------------------------------------------------
+
+# --- Test fixtures for 4.1.11 ---
+
+MALFORMED_CONFIG_PROFILE = """\
+---
+id: bad-config
+name: Bad Config Agent
+---
+
+## Config
+```json
+{model: "claude-sonnet-4-6", trailing_comma: true,}
+```
+"""
+
+MALFORMED_MCP_PROFILE = """\
+---
+id: bad-mcp
+name: Bad MCP Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+
+## MCP Servers
+```json
+{not valid mcp json here!!!}
+```
+"""
+
+GARBLED_BODY_PROFILE = """\
+---
+id: garbled
+name: Garbled Body Agent
+---
+
+## Config
+```json
+@#$%^&*() this is not json at all
+```
+
+## Tools
+```json
+<xml>not json either</xml>
+```
+
+## MCP Servers
+```json
+[[[broken nesting
+```
+"""
+
+VALID_FRONTMATTER_GARBLED_BODY_MIXED = """\
+---
+id: mixed-garble
+name: Mixed Garbled Agent
+tags: [test]
+---
+
+# Some Title
+
+## Role
+This role section is perfectly fine English text.
+
+## Config
+```json
+{completely broken json :::}
+```
+
+## Rules
+- These rules are valid markdown
+- Nothing wrong here
+
+## Tools
+```json
+{"allowed": ["Read", "Write"]}
+```
+"""
+
+
+class TestRoadmap4111:
+    """Roadmap 4.1.11 — Profile error handling tests.
+
+    Validates graceful handling of malformed input per profiles spec §3
+    (Sync Model): bad JSON triggers failure + notification, DB retains
+    previous config, warnings don't block sync, empty/garbled input
+    doesn't crash.
+    """
+
+    @pytest.fixture
+    def event_bus(self):
+        from src.event_bus import EventBus
+
+        return EventBus(env="dev", validate_events=True)
+
+    @pytest.fixture
+    def event_collector(self, event_bus):
+        """Subscribe to profile sync failure events and collect them."""
+        events: list[dict] = []
+
+        def _handler(data: dict) -> None:
+            events.append(data)
+
+        event_bus.subscribe("notify.profile_sync_failed", _handler)
+        return events
+
+    # -------------------------------------------------------------------
+    # (a) Malformed JSON in Config block triggers sync failure + notification
+    # -------------------------------------------------------------------
+
+    def test_a_malformed_config_json_produces_parse_error(self):
+        """(a) Malformed JSON in ## Config produces a parse error."""
+        parsed = parse_profile(MALFORMED_CONFIG_PROFILE)
+        assert not parsed.is_valid
+        assert any("Invalid JSON" in e and "Config" in e for e in parsed.errors)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_config_json_fails_sync(self, db):
+        """(a) Malformed JSON in ## Config causes sync_profile_to_db to fail."""
+        parsed = parse_profile(MALFORMED_CONFIG_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+
+        assert not result.success
+        assert result.action == "none"
+        assert result.errors
+        assert any("Invalid JSON" in e for e in result.errors)
+
+        # Profile should NOT exist in DB
+        assert await db.get_profile("bad-config") is None
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_config_json_emits_notification(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(a) Malformed JSON in ## Config triggers notify.profile_sync_failed."""
+        profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_CONFIG_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-config/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        assert event["event_type"] == "notify.profile_sync_failed"
+        assert event["severity"] == "error"
+        assert any("Invalid JSON" in e for e in event["errors"])
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_config_does_not_create_db_row(self, db):
+        """(a) No DB row is created when Config JSON is malformed."""
+        result = await sync_profile_text_to_db(MALFORMED_CONFIG_PROFILE, db)
+        assert not result.success
+
+        # Verify no profile leaked into DB
+        profiles = await db.list_profiles()
+        assert not any(p.id == "bad-config" for p in profiles)
+
+    # -------------------------------------------------------------------
+    # (b) DB row retains previous valid values after failed sync
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_b_previous_config_retained_on_bad_config_json(self, db):
+        """(b) Existing DB profile is untouched when new Config JSON is malformed."""
+        # Seed a good profile
+        await db.create_profile(
+            AgentProfile(
+                id="bad-config",
+                name="Original Good Agent",
+                model="original-model",
+                permission_mode="plan",
+                allowed_tools=["Read", "Write"],
+                mcp_servers={"github": {"command": "npx"}},
+                system_prompt_suffix="Original prompt",
+            )
+        )
+
+        # Attempt sync with malformed Config JSON
+        parsed = parse_profile(MALFORMED_CONFIG_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+
+        # ALL previous fields must be retained — no partial update
+        profile = await db.get_profile("bad-config")
+        assert profile.name == "Original Good Agent"
+        assert profile.model == "original-model"
+        assert profile.permission_mode == "plan"
+        assert profile.allowed_tools == ["Read", "Write"]
+        assert profile.mcp_servers == {"github": {"command": "npx"}}
+        assert profile.system_prompt_suffix == "Original prompt"
+
+    @pytest.mark.asyncio
+    async def test_b_previous_config_retained_on_bad_mcp_json(self, db):
+        """(b) Existing DB profile is untouched when MCP Servers JSON is malformed."""
+        await db.create_profile(
+            AgentProfile(
+                id="bad-mcp",
+                name="Original MCP Agent",
+                model="good-model",
+            )
+        )
+
+        parsed = parse_profile(MALFORMED_MCP_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+
+        profile = await db.get_profile("bad-mcp")
+        assert profile.name == "Original MCP Agent"
+        assert profile.model == "good-model"
+
+    @pytest.mark.asyncio
+    async def test_b_retained_and_notified_via_watcher(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(b) Via watcher pipeline: DB retained AND notification sent on failure."""
+        # Seed good profile
+        await db.create_profile(
+            AgentProfile(id="bad-config", name="Stable Agent", model="stable-model")
+        )
+
+        profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_CONFIG_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-config/profile.md",
+            operation="modified",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        # DB preserved
+        profile = await db.get_profile("bad-config")
+        assert profile.name == "Stable Agent"
+        assert profile.model == "stable-model"
+
+        # Notification sent
+        assert len(event_collector) == 1
+        assert event_collector[0]["event_type"] == "notify.profile_sync_failed"
+
+    @pytest.mark.asyncio
+    async def test_b_no_partial_update_on_garbled_body(self, db):
+        """(b) Garbled body with multiple bad sections doesn't partially update DB."""
+        await db.create_profile(
+            AgentProfile(
+                id="garbled",
+                name="Clean Agent",
+                model="clean-model",
+                allowed_tools=["Bash"],
+            )
+        )
+
+        parsed = parse_profile(GARBLED_BODY_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+
+        # All original fields intact
+        profile = await db.get_profile("garbled")
+        assert profile.name == "Clean Agent"
+        assert profile.model == "clean-model"
+        assert profile.allowed_tools == ["Bash"]
+
+    # -------------------------------------------------------------------
+    # (c) Invalid tool name produces warning, does not block sync
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_invalid_tool_name_warning_sync_succeeds(self, db):
+        """(c) Invalid tool names in Tools produce warnings but sync still succeeds."""
+        text = """\
+---
+id: warn-tools
+name: Warning Tools Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+
+## Tools
+```json
+{
+  "allowed": ["Read", "Write", "totally_fake_tool", "another_bogus_tool"]
+}
+```
+
+## MCP Servers
+```json
+{"myserver": {"command": "my-server-cmd"}}
+```
+
+## Role
+You are a helpful agent.
+
+## Rules
+- Follow best practices
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid, f"Should be valid despite unknown tools: {parsed.errors}"
+
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+        assert result.warnings
+        assert any("totally_fake_tool" in w for w in result.warnings)
+        assert any("another_bogus_tool" in w for w in result.warnings)
+
+        # Other sections synced correctly despite tool warnings
+        profile = await db.get_profile("warn-tools")
+        assert profile is not None
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.mcp_servers["myserver"]["command"] == "my-server-cmd"
+        assert "helpful agent" in profile.system_prompt_suffix
+        assert "- Follow best practices" in profile.system_prompt_suffix
+        # Tools still stored (unknown names are allowed, just warned)
+        assert "totally_fake_tool" in profile.allowed_tools
+        assert "another_bogus_tool" in profile.allowed_tools
+        assert "Read" in profile.allowed_tools
+        assert "Write" in profile.allowed_tools
+
+    @pytest.mark.asyncio
+    async def test_c_tool_warning_does_not_emit_failure_notification(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(c) Tool name warnings do NOT trigger notify.profile_sync_failed."""
+        text = """\
+---
+id: warn-tools-notify
+name: Warning Tools Notify
+---
+
+## Tools
+```json
+{"allowed": ["Read", "nonexistent_tool_xyz"]}
+```
+"""
+        profile_path = tmp_path / "agent-types" / "warn-tools-notify" / "profile.md"
+        _create_file(str(profile_path), text)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/warn-tools-notify/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        # Sync succeeded — no failure notification
+        assert len(event_collector) == 0
+
+        # But profile was created with warnings
+        profile = await db.get_profile("warn-tools-notify")
+        assert profile is not None
+        assert "nonexistent_tool_xyz" in profile.allowed_tools
+
+    def test_c_parser_level_tool_warnings_with_known_set(self):
+        """(c) Parser-level tool validation with known_tools set produces warnings."""
+        text = """\
+---
+id: parse-warn
+name: Parse Warn
+---
+
+## Tools
+```json
+{"allowed": ["Read", "Write", "ghost_tool"], "denied": ["phantom_tool"]}
+```
+"""
+        known = {"Read", "Write", "Edit", "Bash"}
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid  # Warnings, not errors
+        assert any("ghost_tool" in w for w in result.warnings)
+        assert any("phantom_tool" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_c_all_unknown_tools_still_sync(self, db):
+        """(c) Even when ALL tool names are unknown, sync succeeds with warnings."""
+        text = """\
+---
+id: all-unknown-tools
+name: All Unknown
+---
+
+## Tools
+```json
+{"allowed": ["fake1", "fake2", "fake3"]}
+```
+"""
+        result = await sync_profile_text_to_db(text, db)
+        assert result.success
+        assert result.warnings
+        # All three fake tools produce warnings
+        tool_warnings = [w for w in result.warnings if "Unrecognized" in w or "tool" in w.lower()]
+        assert len(tool_warnings) >= 1
+
+        profile = await db.get_profile("all-unknown-tools")
+        assert profile.allowed_tools == ["fake1", "fake2", "fake3"]
+
+    # -------------------------------------------------------------------
+    # (d) Malformed JSON in MCP Servers triggers failure notification
+    # -------------------------------------------------------------------
+
+    def test_d_malformed_mcp_json_produces_parse_error(self):
+        """(d) Malformed JSON in ## MCP Servers produces a parse error."""
+        parsed = parse_profile(MALFORMED_MCP_PROFILE)
+        assert not parsed.is_valid
+        assert any("Invalid JSON" in e and "MCP" in e for e in parsed.errors)
+
+    @pytest.mark.asyncio
+    async def test_d_malformed_mcp_json_fails_sync(self, db):
+        """(d) Malformed JSON in ## MCP Servers causes sync failure."""
+        parsed = parse_profile(MALFORMED_MCP_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+
+        assert not result.success
+        assert result.action == "none"
+        assert await db.get_profile("bad-mcp") is None
+
+    @pytest.mark.asyncio
+    async def test_d_malformed_mcp_json_emits_notification(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(d) Malformed JSON in ## MCP Servers triggers notify.profile_sync_failed."""
+        profile_path = tmp_path / "agent-types" / "bad-mcp" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_MCP_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-mcp/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        assert event["event_type"] == "notify.profile_sync_failed"
+        assert event["severity"] == "error"
+        assert any("Invalid JSON" in e for e in event["errors"])
+
+    @pytest.mark.asyncio
+    async def test_d_valid_config_but_bad_mcp_still_fails(self, db):
+        """(d) Profile with valid Config but malformed MCP Servers fails entirely."""
+        parsed = parse_profile(MALFORMED_MCP_PROFILE)
+        # Config parses fine but MCP Servers block is broken
+        assert not parsed.is_valid
+
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+
+        # Neither config nor anything else is synced — atomic failure
+        assert await db.get_profile("bad-mcp") is None
+
+    # -------------------------------------------------------------------
+    # (e) Completely empty profile.md does not crash parser
+    # -------------------------------------------------------------------
+
+    def test_e_empty_string_does_not_crash(self):
+        """(e) Empty string input returns empty/default ParsedProfile."""
+        result = parse_profile("")
+        assert result.frontmatter.id == ""
+        assert result.frontmatter.name == ""
+        assert result.config == {}
+        assert result.tools == {}
+        assert result.mcp_servers == {}
+        assert result.role == ""
+        assert result.rules == ""
+        assert result.reflection == ""
+        assert result.errors == []
+        assert result.warnings == []
+        # is_valid is True because there are no parse errors (just empty)
+        assert result.is_valid
+
+    def test_e_whitespace_only_does_not_crash(self):
+        """(e) Whitespace-only input returns empty/default ParsedProfile."""
+        for ws in ["   ", "\n\n\n", "\t\t", "  \n  \t  \n  "]:
+            result = parse_profile(ws)
+            assert result.frontmatter.id == ""
+            assert result.config == {}
+            assert result.is_valid
+
+    def test_e_newlines_only_does_not_crash(self):
+        """(e) Newline-only input returns empty/default ParsedProfile."""
+        result = parse_profile("\n\n\n\n")
+        assert result.is_valid
+        assert result.frontmatter.id == ""
+
+    @pytest.mark.asyncio
+    async def test_e_empty_profile_sync_fails_gracefully(self, db):
+        """(e) Empty profile syncs fail (no ID) but don't crash."""
+        result = await sync_profile_text_to_db("", db)
+        assert not result.success
+        assert any("ID is required" in e for e in result.errors)
+
+    @pytest.mark.asyncio
+    async def test_e_empty_profile_with_fallback_id(self, db):
+        """(e) Empty profile with fallback_id syncs successfully (empty defaults)."""
+        result = await sync_profile_text_to_db("", db, fallback_id="empty-agent")
+        # Empty text produces an empty ParsedProfile with no errors
+        # so sync succeeds with the fallback ID
+        assert result.success
+        assert result.profile_id == "empty-agent"
+
+        profile = await db.get_profile("empty-agent")
+        assert profile is not None
+        assert profile.model == ""
+        assert profile.allowed_tools == []
+        assert profile.mcp_servers == {}
+
+    def test_e_frontmatter_delimiters_only(self):
+        """(e) Just frontmatter delimiters with nothing inside doesn't crash."""
+        result = parse_profile("---\n---\n")
+        assert result.is_valid
+        assert result.frontmatter.id == ""
+
+    # -------------------------------------------------------------------
+    # (f) Profile.md with valid frontmatter but garbled body sections
+    # -------------------------------------------------------------------
+
+    def test_f_garbled_all_sections_fails_gracefully(self):
+        """(f) Profile with valid frontmatter but all garbled JSON sections fails gracefully."""
+        parsed = parse_profile(GARBLED_BODY_PROFILE)
+        assert not parsed.is_valid
+        # Multiple errors — one per garbled JSON section
+        assert len(parsed.errors) >= 2
+        # Each garbled section produces an "Invalid JSON" error
+        config_errors = [e for e in parsed.errors if "Config" in e]
+        assert len(config_errors) >= 1
+
+    def test_f_garbled_body_preserves_frontmatter(self):
+        """(f) Frontmatter is still parsed correctly even when body is garbled."""
+        parsed = parse_profile(GARBLED_BODY_PROFILE)
+        assert parsed.frontmatter.id == "garbled"
+        assert parsed.frontmatter.name == "Garbled Body Agent"
+
+    def test_f_mixed_valid_and_garbled_sections(self):
+        """(f) Profile with mix of valid and garbled sections: valid sections parse,
+        garbled ones produce errors."""
+        parsed = parse_profile(VALID_FRONTMATTER_GARBLED_BODY_MIXED)
+        # Config is garbled → parse error
+        assert not parsed.is_valid
+        assert any("Config" in e for e in parsed.errors)
+
+        # But valid sections are still parsed:
+        # Role (English section) should be captured
+        assert "perfectly fine English text" in parsed.role
+        # Rules (English section) should be captured
+        assert "These rules are valid markdown" in parsed.rules
+        # Tools (valid JSON) should be parsed
+        assert parsed.tools.get("allowed") == ["Read", "Write"]
+
+    @pytest.mark.asyncio
+    async def test_f_garbled_body_does_not_sync(self, db):
+        """(f) Profile with garbled body sections does not sync to DB."""
+        parsed = parse_profile(GARBLED_BODY_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+        assert await db.get_profile("garbled") is None
+
+    @pytest.mark.asyncio
+    async def test_f_garbled_body_emits_notification(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(f) Profile with garbled body triggers notification via watcher."""
+        profile_path = tmp_path / "agent-types" / "garbled" / "profile.md"
+        _create_file(str(profile_path), GARBLED_BODY_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/garbled/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        assert event_collector[0]["event_type"] == "notify.profile_sync_failed"
+        assert len(event_collector[0]["errors"]) >= 1
+
+    def test_f_no_exception_raised_on_garbled_input(self):
+        """(f) Parser never raises an exception, even on severely garbled input."""
+        garbled_inputs = [
+            "---\nid: x\n---\n## Config\n```json\n\x00\x01\x02\n```\n",
+            "---\nid: x\n---\n## MCP Servers\n```json\n{{{{{{\n```\n",
+            "---\nid: x\n---\n" + "## Config\n" * 100,
+            "---\nid: x\n---\n## Tools\n```json\n" + "}" * 1000 + "\n```\n",
+        ]
+        for text in garbled_inputs:
+            # Should never raise — just populate errors
+            result = parse_profile(text)
+            assert isinstance(result, ParsedProfile)
+            assert result.frontmatter.id == "x"
+
+    # -------------------------------------------------------------------
+    # (g) Error notification includes file path and specific parse error
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_g_notification_includes_source_path(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(g) Error notification includes the source file path."""
+        profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_CONFIG_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-config/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        assert event["source_path"] == "agent-types/bad-config/profile.md"
+
+    @pytest.mark.asyncio
+    async def test_g_notification_includes_specific_parse_error(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(g) Error notification contains the specific JSON parse error message."""
+        profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_CONFIG_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-config/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        errors = event["errors"]
+        assert len(errors) >= 1
+        # Error should mention the section and include JSON parse details
+        error_text = errors[0]
+        assert "Invalid JSON" in error_text
+        assert "Config" in error_text
+        # Should include line/column info from json.JSONDecodeError
+        assert "line" in error_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_g_notification_includes_mcp_parse_error_details(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(g) MCP Servers parse error notification includes section-specific details."""
+        profile_path = tmp_path / "agent-types" / "bad-mcp" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_MCP_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-mcp/profile.md",
+            operation="modified",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        errors = event["errors"]
+        assert len(errors) >= 1
+        # Should reference MCP Servers section specifically
+        assert any("MCP" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_g_notification_from_garbled_body_has_multiple_errors(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(g) Garbled body with multiple bad sections includes all errors in notification."""
+        profile_path = tmp_path / "agent-types" / "garbled" / "profile.md"
+        _create_file(str(profile_path), GARBLED_BODY_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/garbled/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        errors = event["errors"]
+        # Multiple garbled sections should produce multiple error entries
+        assert len(errors) >= 2
+        # Should have errors for Config, Tools, and/or MCP Servers
+        error_text = " ".join(errors)
+        assert "Config" in error_text or "Tools" in error_text or "MCP" in error_text
+
+    @pytest.mark.asyncio
+    async def test_g_notification_event_fields_are_complete(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """(g) Notification event has all expected fields for debugging."""
+        profile_path = tmp_path / "agent-types" / "bad-config" / "profile.md"
+        _create_file(str(profile_path), MALFORMED_CONFIG_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad-config/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        # All required notification fields present
+        assert event["event_type"] == "notify.profile_sync_failed"
+        assert event["severity"] == "error"
+        assert event["category"] == "system"
+        assert isinstance(event["source_path"], str)
+        assert len(event["source_path"]) > 0
+        assert isinstance(event["errors"], list)
+        assert len(event["errors"]) > 0
+        assert isinstance(event["warnings"], list)
+        # profile_id may be empty if ID couldn't be resolved, but should exist
+        assert "profile_id" in event
