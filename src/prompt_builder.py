@@ -37,10 +37,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-# Approximate token budget for L0 Identity tier (spec: ~50 tokens).
-# 1 token ≈ 4 chars; 50 tokens ≈ 200 chars.  We warn if exceeded.
-_L0_TOKEN_BUDGET = 50
+# Approximate token budgets for memory tiers (see memory-scoping.md §2).
+# 1 token ≈ 4 chars.  We warn when a tier significantly exceeds its budget.
 _CHARS_PER_TOKEN = 4
+_L0_TOKEN_BUDGET = 50  # ~200 chars
+_L1_TOKEN_BUDGET = 200  # ~800 chars
 
 
 def extract_section(content: str, heading: str) -> str | None:
@@ -127,6 +128,7 @@ class PromptBuilder:
         # Layer state
         self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
         self._override_content: str = ""  # Project-specific override (after L0 role)
+        self._l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always at task start)
         self._identity: str = ""
         self._project_context: str = ""
         self._rules: str = ""
@@ -309,6 +311,27 @@ class PromptBuilder:
         if text:
             self._override_content = text
 
+    def set_l1_facts(self, facts_text: str) -> None:
+        """L1 Critical Facts tier: Set project/agent-type KV facts (~200 tokens).
+
+        Eagerly loaded at task start — no search needed.  The text should
+        be a compact rendering of key-value entries from the project and
+        agent-type ``facts.md`` files.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L1 tier).
+        """
+        text = facts_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L1_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L1 facts text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L1_TOKEN_BUDGET,
+            )
+        self._l1_facts = text
+
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
         """Layer 1: Set the identity from a prompt template."""
         rendered = self.render_template(name, variables)
@@ -408,8 +431,8 @@ class PromptBuilder:
         """Assemble all layers into a system prompt and tool list.
 
         Layer order:
-            L0 role → Override → Identity template → Project context →
-            Rules → Context blocks
+            L0 role → Override → L1 facts → Identity template
+            → Project context → Rules → Context blocks
 
         Returns:
             Tuple of ``(system_prompt, tools)`` where *system_prompt*
@@ -422,6 +445,8 @@ class PromptBuilder:
             sections.append(self._l0_role)
         if self._override_content:
             sections.append(self._override_content)
+        if self._l1_facts:
+            sections.append(self._l1_facts)
         if self._identity:
             sections.append(self._identity)
         if self._project_context:

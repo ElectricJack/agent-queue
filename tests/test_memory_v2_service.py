@@ -1075,6 +1075,137 @@ class TestRecall:
         assert call_kwargs.kwargs.get("topic") == "testing"
 
 
+class TestLoadL1Facts:
+    """Test load_l1_facts — L1 tier injection (spec §2)."""
+
+    @pytest.mark.asyncio
+    async def test_l1_empty_when_no_facts_files(self, service, tmp_path):
+        """Returns empty string when no vault facts.md files exist."""
+        service._data_dir = str(tmp_path)
+        result = await service.load_l1_facts(project_id="proj", agent_type="coding")
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_l1_loads_project_facts(self, service, tmp_path):
+        """Loads KV entries from the project's facts.md file."""
+        service._data_dir = str(tmp_path)
+        # Create the facts file at the vault path
+        from memsearch import MemoryScope, vault_paths
+
+        paths = vault_paths(MemoryScope.PROJECT, "proj")
+        facts_rel = next(p for p in paths if p.endswith("facts.md"))
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        facts_path.write_text(
+            "## project\ntech_stack: Python 3.12, SQLAlchemy\ntest_command: pytest tests/ -v\n"
+        )
+
+        result = await service.load_l1_facts(project_id="proj")
+        assert "## Critical Facts" in result
+        assert "tech_stack: Python 3.12, SQLAlchemy" in result
+        assert "test_command: pytest tests/ -v" in result
+
+    @pytest.mark.asyncio
+    async def test_l1_loads_agent_type_facts(self, service, tmp_path):
+        """Loads KV entries from the agent-type's facts.md file."""
+        service._data_dir = str(tmp_path)
+        from memsearch import MemoryScope, vault_paths
+
+        paths = vault_paths(MemoryScope.AGENT_TYPE, "coding")
+        facts_rel = next(p for p in paths if p.endswith("facts.md"))
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        facts_path.write_text("## conventions\norm_pattern: repository\nnaming: snake_case\n")
+
+        result = await service.load_l1_facts(agent_type="coding")
+        assert "## Critical Facts" in result
+        assert "orm_pattern: repository" in result
+        assert "naming: snake_case" in result
+
+    @pytest.mark.asyncio
+    async def test_l1_project_overrides_agent_type(self, service, tmp_path):
+        """Project entries override agent-type entries for same key."""
+        service._data_dir = str(tmp_path)
+        from memsearch import MemoryScope, vault_paths
+
+        # Agent-type facts
+        at_paths = vault_paths(MemoryScope.AGENT_TYPE, "coding")
+        at_rel = next(p for p in at_paths if p.endswith("facts.md"))
+        at_path = tmp_path / at_rel
+        at_path.parent.mkdir(parents=True, exist_ok=True)
+        at_path.write_text("## project\ntest_command: pytest\nlint_command: ruff check\n")
+
+        # Project facts (overrides test_command)
+        proj_paths = vault_paths(MemoryScope.PROJECT, "proj")
+        proj_rel = next(p for p in proj_paths if p.endswith("facts.md"))
+        proj_path = tmp_path / proj_rel
+        proj_path.parent.mkdir(parents=True, exist_ok=True)
+        proj_path.write_text("## project\ntest_command: pytest tests/ -v --cov\n")
+
+        result = await service.load_l1_facts(project_id="proj", agent_type="coding")
+        assert "test_command: pytest tests/ -v --cov" in result  # project wins
+        assert "lint_command: ruff check" in result  # agent-type entry survives
+        # The agent-type version should NOT be present
+        assert "test_command: pytest\n" not in result
+
+    @pytest.mark.asyncio
+    async def test_l1_merges_multiple_namespaces(self, service, tmp_path):
+        """Facts from multiple namespaces are all included."""
+        service._data_dir = str(tmp_path)
+        from memsearch import MemoryScope, vault_paths
+
+        proj_paths = vault_paths(MemoryScope.PROJECT, "proj")
+        proj_rel = next(p for p in proj_paths if p.endswith("facts.md"))
+        proj_path = tmp_path / proj_rel
+        proj_path.parent.mkdir(parents=True, exist_ok=True)
+        proj_path.write_text(
+            "## project\ntech_stack: Python\n\n## conventions\nnaming: snake_case\n"
+        )
+
+        result = await service.load_l1_facts(project_id="proj")
+        assert "tech_stack: Python" in result
+        assert "naming: snake_case" in result
+
+    @pytest.mark.asyncio
+    async def test_l1_unavailable_returns_empty(self, tmp_path):
+        """Returns empty string when service is not initialized and no files exist."""
+        svc = MemoryV2Service()
+        svc._data_dir = str(tmp_path)  # clean dir with no facts files
+        result = await svc.load_l1_facts(project_id="proj", agent_type="coding")
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_l1_no_project_no_agent_type(self, service, tmp_path):
+        """Returns empty when neither project_id nor agent_type is given."""
+        service._data_dir = str(tmp_path)
+        result = await service.load_l1_facts()
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_l1_handles_frontmatter(self, service, tmp_path):
+        """Facts.md files with YAML frontmatter are parsed correctly."""
+        service._data_dir = str(tmp_path)
+        from memsearch import MemoryScope, vault_paths
+
+        proj_paths = vault_paths(MemoryScope.PROJECT, "proj")
+        proj_rel = next(p for p in proj_paths if p.endswith("facts.md"))
+        proj_path = tmp_path / proj_rel
+        proj_path.parent.mkdir(parents=True, exist_ok=True)
+        proj_path.write_text(
+            "---\n"
+            "tags: [facts, auto-updated]\n"
+            "---\n"
+            "\n"
+            "# Project Facts\n"
+            "\n"
+            "## project\n"
+            "deploy_branch: main\n"
+        )
+
+        result = await service.load_l1_facts(project_id="proj")
+        assert "deploy_branch: main" in result
+
+
 class TestPluginRecallHandlers:
     """Test plugin command handlers for memory_fact_recall and memory_recall."""
 

@@ -717,3 +717,86 @@ def test_set_override_content_frontmatter_only(prompts_dir):
 
     prompt = builder.build_task_prompt()
     assert prompt.strip() == "No variables here."
+
+
+# ------------------------------------------------------------------
+# L1 Critical Facts tier — KV facts injection
+# ------------------------------------------------------------------
+
+
+def test_set_l1_facts(prompts_dir):
+    """set_l1_facts injects text after L0 role and before identity."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_l1_facts("## Critical Facts\n- tech_stack: Python\n- test_command: pytest")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    # All sections present
+    assert "You are a coding agent." in prompt
+    assert "Critical Facts" in prompt
+    assert "tech_stack: Python" in prompt
+    assert "test_command: pytest" in prompt
+    assert "No variables here." in prompt
+    assert "Fix a bug." in prompt
+
+    # L0 < L1 < identity < context
+    role_pos = prompt.index("You are a coding agent.")
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < facts_pos < identity_pos < task_pos
+
+
+def test_set_l1_facts_empty_noop(prompts_dir):
+    """set_l1_facts with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l1_facts("")
+    builder.set_l1_facts("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert "Critical Facts" not in prompt
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_l1_facts_without_l0(prompts_dir):
+    """L1 facts work even when L0 role is not set."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l1_facts("## Critical Facts\n- deploy_branch: main")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    assert facts_pos < identity_pos
+
+
+def test_l1_facts_ordering_in_full_assembly(prompts_dir):
+    """L1 facts appear after L0 role and override, before all other layers."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_l1_facts("## Critical Facts\n- lang: Python")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < facts_pos < identity_pos < sys_pos < task_pos

@@ -4292,6 +4292,21 @@ class Orchestrator:
             if override_text:
                 builder.set_override_content(override_text)
 
+        # L1 Critical Facts tier — project + agent-type KV entries (~200 tokens).
+        # Eagerly loaded at task start from vault facts.md files.  No search needed.
+        # The profile.id serves as the agent_type for memory scoping (e.g. "coding").
+        # See docs/specs/design/memory-scoping.md §2 (L1 tier).
+        if self._memory_v2_service:
+            try:
+                l1_text = await self._memory_v2_service.load_l1_facts(
+                    project_id=task.project_id,
+                    agent_type=profile.id if profile else None,
+                )
+                if l1_text:
+                    builder.set_l1_facts(l1_text)
+            except Exception as e:
+                logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
+
         # Task description
         builder.add_context("task", f"## Task\n{task.description}")
 

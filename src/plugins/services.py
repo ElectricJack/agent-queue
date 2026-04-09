@@ -197,6 +197,12 @@ class MemoryV2ServiceProtocol(Protocol):
         _from_vault: bool = False,
     ) -> dict: ...
     async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
+    async def load_l1_facts(
+        self,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+    ) -> str: ...
     async def kv_recall(
         self,
         key: str,

@@ -693,6 +693,83 @@ class MemoryV2Service:
 
         return None
 
+    async def load_l1_facts(
+        self,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+    ) -> str:
+        """Load KV entries from project + agent-type scopes for L1 injection.
+
+        Reads the vault ``facts.md`` files for the project and agent-type
+        scopes, merges them with first-match-wins (project entries override
+        agent-type entries for the same namespace/key), and renders a
+        compact text block suitable for prompt injection.
+
+        Per spec ``docs/specs/design/memory-scoping.md`` §2, the L1 tier
+        is ~200 tokens of critical facts eagerly loaded at task start.
+        No search is needed — just a file read.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.  When set, the project's ``facts.md``
+            is loaded first (highest priority).
+        agent_type:
+            Agent type name (e.g. ``"coding"``).  When set, the
+            agent-type's ``facts.md`` is loaded second (lower priority).
+
+        Returns
+        -------
+        str
+            Formatted markdown block (``## Critical Facts`` heading with
+            KV entries), or empty string if no facts are found.
+        """
+        from src.facts_parser import parse_facts_file
+
+        # Collect facts from each scope.  Project entries take priority
+        # over agent-type entries for the same namespace/key (first-match-wins).
+        merged: dict[str, dict[str, str]] = {}  # namespace -> {key -> value}
+
+        # Helper: read and parse a vault facts.md file
+        def _read_facts(facts_path: Path) -> dict[str, dict[str, str]]:
+            try:
+                if facts_path.is_file():
+                    text = facts_path.read_text(encoding="utf-8")
+                    return parse_facts_file(text)
+            except OSError:
+                logger.debug("Could not read facts file: %s", facts_path)
+            return {}
+
+        # Agent-type scope (loaded first so project entries override below)
+        if agent_type and MEMSEARCH_AVAILABLE:
+            at_path = self._vault_facts_path(MemoryScope.AGENT_TYPE, agent_type)
+            at_facts = await asyncio.to_thread(_read_facts, at_path)
+            for ns, entries in at_facts.items():
+                merged.setdefault(ns, {}).update(entries)
+
+        # Project scope (loaded second — overwrites agent-type entries)
+        if project_id and MEMSEARCH_AVAILABLE:
+            proj_path = self._vault_facts_path(MemoryScope.PROJECT, project_id)
+            proj_facts = await asyncio.to_thread(_read_facts, proj_path)
+            for ns, entries in proj_facts.items():
+                merged.setdefault(ns, {}).update(entries)
+
+        if not merged:
+            return ""
+
+        # Render a compact markdown block.  Group entries by namespace
+        # for readability, but keep the format dense to respect the
+        # ~200 token budget.
+        lines: list[str] = ["## Critical Facts"]
+        for ns in sorted(merged.keys()):
+            entries = merged[ns]
+            if not entries:
+                continue
+            for key in sorted(entries.keys()):
+                lines.append(f"- {key}: {entries[key]}")
+        return "\n".join(lines)
+
     async def recall(
         self,
         query: str,
