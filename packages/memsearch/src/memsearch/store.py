@@ -459,6 +459,199 @@ class MilvusStore:
         }
         return self._client.query(**kwargs)
 
+    # ---- Temporal fact API (spec §6) --------------------------------------
+
+    def _zero_embedding(self) -> list[float]:
+        """Return a zero vector of the configured dimension.
+
+        Used for non-document entries (KV, temporal) that don't need
+        vector search but still require the ``embedding`` field.
+
+        Raises
+        ------
+        RuntimeError
+            If dimension is ``None`` (read-only mode).
+        """
+        if self._dimension is None:
+            raise RuntimeError("Cannot create entries in read-only mode (dimension=None)")
+        return [0.0] * self._dimension
+
+    def set_temporal(
+        self,
+        key: str,
+        value: Any,
+        *,
+        namespace: str = "",
+        source: str = "",
+        content: str = "",
+        tags: list[str] | None = None,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Insert or update a temporal fact with validity windowing.
+
+        Implements the temporal fact lifecycle from spec §6:
+
+        1. Closes any existing open entry for the same *key* / *namespace*
+           (sets its ``valid_to`` to the current timestamp).
+        2. Creates a new entry with ``valid_from`` = now, ``valid_to`` = 0
+           (open / current).
+
+        Both entries persist so the full history is preserved.
+
+        Parameters
+        ----------
+        key:
+            The fact key (stored in ``kv_key``).
+        value:
+            The fact value.  Will be JSON-encoded into ``kv_value``.
+        namespace:
+            Optional namespace for grouping related facts.
+        source:
+            Source identifier for provenance tracking.
+        content:
+            Human-readable description (indexed for BM25 keyword search).
+        tags:
+            Optional list of string tags.
+        timestamp:
+            Explicit Unix timestamp to use instead of ``time.time()``.
+            Primarily useful for deterministic tests and data imports.
+
+        Returns
+        -------
+        dict
+            The newly created entry (without the ``embedding`` field).
+        """
+        import hashlib
+        import time
+
+        now = timestamp if timestamp is not None else int(time.time())
+        json_value = json.dumps(value)
+        json_tags = json.dumps(tags or [])
+
+        # Query all temporal entries and filter by key + namespace in Python.
+        # Milvus Lite only evaluates the first clause of an AND chain
+        # reliably; subsequent clauses may be silently ignored.
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+        open_entries = [
+            e for e in all_temporal if e["kv_key"] == key and e["kv_namespace"] == namespace and e["valid_to"] == 0
+        ]
+
+        # Close each open entry by re-upserting with valid_to = now
+        for entry in open_entries:
+            self.upsert(
+                [
+                    {
+                        **entry,
+                        "embedding": self._zero_embedding(),
+                        "valid_to": now,
+                    }
+                ]
+            )
+
+        # Create new entry with a deterministic hash
+        chunk_hash = hashlib.sha256(f"temporal:{namespace}:{key}:{now}".encode()).hexdigest()[:32]
+
+        new_entry: dict[str, Any] = {
+            "chunk_hash": chunk_hash,
+            "entry_type": "temporal",
+            "embedding": self._zero_embedding(),
+            "content": content,
+            "original": "",
+            "source": source,
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 0,
+            "end_line": 0,
+            "kv_namespace": namespace,
+            "kv_key": key,
+            "kv_value": json_value,
+            "valid_from": now,
+            "valid_to": 0,
+            "topic": "",
+            "tags": json_tags,
+            "updated_at": now,
+        }
+        self.upsert([new_entry])
+
+        # Return without embedding (matches query output format)
+        return {k: v for k, v in new_entry.items() if k != "embedding"}
+
+    def get_temporal(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+        at: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query temporal facts at a point in time.
+
+        With the default ``at=None``, returns the *current* value (entries
+        whose validity window covers ``time.time()``).  When *at* is an
+        explicit Unix timestamp, performs a historical "as-of" query.
+
+        Parameters
+        ----------
+        key:
+            The fact key to look up (``kv_key``).
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+        at:
+            Unix timestamp for the query.  ``None`` means *now*.
+
+        Returns
+        -------
+        list[dict]
+            Matching entries.  Typically one entry for a given key at any
+            point in time, but multiple are possible if validity windows
+            were constructed with overlaps.
+        """
+        import time
+
+        ts = at if at is not None else int(time.time())
+
+        # Single-clause Milvus filter + Python post-filtering.
+        # Milvus Lite only evaluates the first AND clause reliably.
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+
+        return [
+            r
+            for r in all_temporal
+            if r["kv_key"] == key
+            and r["kv_namespace"] == namespace
+            and r["valid_from"] <= ts
+            and (r["valid_to"] == 0 or r["valid_to"] > ts)
+        ]
+
+    def get_temporal_history(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+    ) -> list[dict[str, Any]]:
+        """Get the full version history of a temporal fact.
+
+        Returns all entries (open and closed) for the given key, sorted
+        by ``valid_from`` ascending.  Useful for pattern detection:
+        *"this config was stable for 6 months then changed — investigate why."*
+
+        Parameters
+        ----------
+        key:
+            The fact key to look up (``kv_key``).
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+
+        Returns
+        -------
+        list[dict]
+            All entries for the key, ordered by ``valid_from`` ascending.
+        """
+        # Single-clause Milvus filter + Python post-filtering.
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+        results = [r for r in all_temporal if r["kv_key"] == key and r["kv_namespace"] == namespace]
+        results.sort(key=lambda r: r["valid_from"])
+        return results
+
     def hashes_by_source(self, source: str) -> set[str]:
         """Return all chunk_hash values for a given source file."""
         escaped = _escape_filter_value(source)
