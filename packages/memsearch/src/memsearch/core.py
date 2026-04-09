@@ -78,6 +78,8 @@ class MemSearch:
             collection=collection,
             dimension=self._embedder.dimension,
             description=description,
+            embedding_provider=embedding_provider,
+            embedding_model=self._embedder.model_name,
         )
         self._reranker_model = reranker_model
 

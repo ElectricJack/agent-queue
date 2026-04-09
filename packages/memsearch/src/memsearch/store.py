@@ -2,12 +2,58 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
+
+# ---- Embedding model version metadata helpers --------------------------------
+
+_MODEL_META_VERSION = 1
+
+
+def _build_collection_meta(
+    description: str,
+    provider: str,
+    model: str,
+    dimension: int,
+) -> str:
+    """Build a JSON description containing embedding model version metadata.
+
+    The metadata is stored in the Milvus collection ``description`` field so
+    it survives across restarts.  A ``_memsearch`` version key acts as a
+    sentinel when parsing back.
+    """
+    meta: dict[str, Any] = {
+        "_memsearch": _MODEL_META_VERSION,
+        "provider": provider,
+        "model": model,
+        "dimension": dimension,
+    }
+    if description:
+        meta["description"] = description
+    return json.dumps(meta, separators=(",", ":"))
+
+
+def _parse_collection_meta(description: str) -> dict[str, Any] | None:
+    """Parse model metadata from a collection description.
+
+    Returns the metadata dict if the description contains valid memsearch
+    metadata (has a ``_memsearch`` version key), or ``None`` for legacy /
+    non-memsearch collections.
+    """
+    if not description:
+        return None
+    try:
+        data = json.loads(description)
+        if isinstance(data, dict) and "_memsearch" in data:
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
 
 
 def _escape_filter_value(value: str) -> str:
@@ -32,6 +78,8 @@ class MilvusStore:
         collection: str = DEFAULT_COLLECTION,
         dimension: int | None = 1536,
         description: str = "",
+        embedding_provider: str = "",
+        embedding_model: str = "",
     ) -> None:
         from pymilvus import MilvusClient
 
@@ -57,11 +105,16 @@ class MilvusStore:
         self._collection = collection
         self._dimension = dimension
         self._description = description
+        self._embedding_provider = embedding_provider
+        self._embedding_model = embedding_model
+        self._needs_reindex = False
+        self._stored_model_info: dict[str, Any] | None = None
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
         if self._client.has_collection(self._collection):
             self._check_dimension()
+            self._check_model()
             return
 
         if self._dimension is None:
@@ -69,9 +122,27 @@ class MilvusStore:
 
         from pymilvus import DataType, Function, FunctionType
 
+        # Build description with model version metadata when provider info
+        # is available; otherwise use the plain user-supplied description.
+        if self._embedding_provider and self._embedding_model and self._dimension:
+            description = _build_collection_meta(
+                self._description,
+                self._embedding_provider,
+                self._embedding_model,
+                self._dimension,
+            )
+            # Populate model_info immediately for newly created collections
+            self._stored_model_info = {
+                "provider": self._embedding_provider,
+                "model": self._embedding_model,
+                "dimension": self._dimension,
+            }
+        else:
+            description = self._description
+
         schema = self._client.create_schema(
             enable_dynamic_field=True,
-            description=self._description,
+            description=description,
         )
         # --- Core identity ---
         schema.add_field(
@@ -206,6 +277,80 @@ class MilvusStore:
                         f"or use a different --milvus-uri / --collection."
                     )
                 break
+
+    def _check_model(self) -> None:
+        """Read stored embedding model metadata and detect model changes.
+
+        Always reads the collection description to populate
+        :pyattr:`model_info`.  When the current embedding provider /
+        model is known (i.e. not read-only mode), compares against the
+        stored values and sets :pyattr:`needs_reindex` on mismatch.
+        """
+        try:
+            info = self._client.describe_collection(self._collection)
+        except Exception:
+            return  # best-effort
+
+        description = info.get("description", "")
+        meta = _parse_collection_meta(description)
+
+        if meta is None:
+            # Legacy collection — no model metadata stored.
+            if self._embedding_provider and self._embedding_model:
+                logger.info(
+                    "Collection '%s' has no embedding model metadata (legacy). "
+                    "Model version tracking is unavailable for this collection.",
+                    self._collection,
+                )
+            return
+
+        self._stored_model_info = {
+            "provider": meta.get("provider", ""),
+            "model": meta.get("model", ""),
+            "dimension": meta.get("dimension", 0),
+        }
+
+        # Compare only when we know the current model (not read-only mode).
+        if not self._embedding_provider or not self._embedding_model:
+            return
+
+        stored_provider = meta.get("provider", "")
+        stored_model = meta.get("model", "")
+
+        if stored_provider != self._embedding_provider or stored_model != self._embedding_model:
+            self._needs_reindex = True
+            logger.warning(
+                "Embedding model changed for collection '%s': "
+                "stored=%s/%s, current=%s/%s. "
+                "Existing embeddings were generated with a different model. "
+                "Run 'memsearch index --force' to re-embed all documents.",
+                self._collection,
+                stored_provider,
+                stored_model,
+                self._embedding_provider,
+                self._embedding_model,
+            )
+
+    # ---- Model version properties ----------------------------------------
+
+    @property
+    def model_info(self) -> dict[str, Any] | None:
+        """Return the embedding model info stored in the collection metadata.
+
+        Returns a dict with ``provider``, ``model``, ``dimension`` keys,
+        or ``None`` for legacy collections without model tracking.
+        """
+        return self._stored_model_info
+
+    @property
+    def needs_reindex(self) -> bool:
+        """True when the current embedding model differs from the stored one.
+
+        When this is ``True``, existing embeddings were produced by a
+        different model than the one currently configured.  A full
+        re-index (``memsearch index --force``) is recommended.
+        """
+        return self._needs_reindex
 
     # Default values for unified schema fields.  Applied automatically by
     # ``upsert`` so callers only need to supply the fields they care about.

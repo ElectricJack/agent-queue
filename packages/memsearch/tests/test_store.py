@@ -1,10 +1,15 @@
 """Tests for the Milvus store."""
 
+import json
 from pathlib import Path
 
 import pytest
 
-from memsearch.store import MilvusStore
+from memsearch.store import (
+    MilvusStore,
+    _build_collection_meta,
+    _parse_collection_meta,
+)
 
 
 @pytest.fixture
@@ -1268,3 +1273,206 @@ async def test_fallback_results_marked_with_metadata(memsearch_mock):
         assert "topic_fallback" not in r, (
             f"Direct match should NOT have topic_fallback: chunk_hash={r.get('chunk_hash')}"
         )
+
+
+# ---- Embedding model version tracking tests ---------------------------------
+
+
+class TestCollectionMetaHelpers:
+    """Unit tests for _build_collection_meta / _parse_collection_meta."""
+
+    def test_build_meta_basic(self):
+        raw = _build_collection_meta("", "openai", "text-embedding-3-small", 1536)
+        data = json.loads(raw)
+        assert data["_memsearch"] == 1
+        assert data["provider"] == "openai"
+        assert data["model"] == "text-embedding-3-small"
+        assert data["dimension"] == 1536
+        assert "description" not in data
+
+    def test_build_meta_with_description(self):
+        raw = _build_collection_meta("my project", "onnx", "bge-m3", 1024)
+        data = json.loads(raw)
+        assert data["description"] == "my project"
+        assert data["provider"] == "onnx"
+        assert data["model"] == "bge-m3"
+
+    def test_parse_meta_valid(self):
+        raw = json.dumps({"_memsearch": 1, "provider": "openai", "model": "m", "dimension": 4})
+        result = _parse_collection_meta(raw)
+        assert result is not None
+        assert result["provider"] == "openai"
+
+    def test_parse_meta_empty(self):
+        assert _parse_collection_meta("") is None
+
+    def test_parse_meta_plain_text(self):
+        """Legacy plain-text descriptions return None."""
+        assert _parse_collection_meta("myproject | openai/text-embedding-3-small") is None
+
+    def test_parse_meta_invalid_json(self):
+        assert _parse_collection_meta("{broken") is None
+
+    def test_parse_meta_json_without_sentinel(self):
+        """Valid JSON but missing _memsearch key → not memsearch metadata."""
+        assert _parse_collection_meta('{"provider": "openai"}') is None
+
+
+def test_model_info_stored_on_creation(tmp_path: Path):
+    """New collections store embedding model metadata in the description."""
+    db = str(tmp_path / "model_create.db")
+    s = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    # model_info should be available immediately after creation
+    assert s.model_info is not None
+    assert s.model_info["provider"] == "openai"
+    assert s.model_info["model"] == "text-embedding-3-small"
+    assert s.model_info["dimension"] == 4
+    assert not s.needs_reindex
+
+    # Verify the description in Milvus is JSON with metadata
+    info = s._client.describe_collection(s._collection)
+    desc = info.get("description", "")
+    meta = _parse_collection_meta(desc)
+    assert meta is not None
+    assert meta["provider"] == "openai"
+    assert meta["model"] == "text-embedding-3-small"
+    s.close()
+
+
+def test_model_info_persists_across_reopen(tmp_path: Path):
+    """Model metadata survives closing and reopening the collection."""
+    db = str(tmp_path / "model_persist.db")
+    s1 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="onnx",
+        embedding_model="bge-m3-onnx-int8",
+    )
+    s1.close()
+
+    # Reopen with the same model
+    s2 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="onnx",
+        embedding_model="bge-m3-onnx-int8",
+    )
+    assert s2.model_info is not None
+    assert s2.model_info["provider"] == "onnx"
+    assert s2.model_info["model"] == "bge-m3-onnx-int8"
+    assert s2.model_info["dimension"] == 4
+    assert not s2.needs_reindex
+    s2.close()
+
+
+def test_model_mismatch_sets_needs_reindex(tmp_path: Path):
+    """Opening a collection with a different model sets needs_reindex."""
+    db = str(tmp_path / "model_mismatch.db")
+    s1 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    s1.close()
+
+    # Reopen with a different model (same dimension — not a dimension error)
+    s2 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-large",
+    )
+    assert s2.needs_reindex is True
+    # stored_model_info should reflect the original model
+    assert s2.model_info is not None
+    assert s2.model_info["model"] == "text-embedding-3-small"
+    s2.close()
+
+
+def test_provider_change_sets_needs_reindex(tmp_path: Path):
+    """Changing the embedding provider triggers needs_reindex."""
+    db = str(tmp_path / "provider_change.db")
+    s1 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    s1.close()
+
+    s2 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="voyage",
+        embedding_model="voyage-3-lite",
+    )
+    assert s2.needs_reindex is True
+    assert s2.model_info["provider"] == "openai"  # stored = original
+    s2.close()
+
+
+def test_legacy_collection_no_model_info(tmp_path: Path):
+    """Collections without model metadata (legacy) return model_info=None."""
+    db = str(tmp_path / "legacy.db")
+    # Create without model params (simulates legacy behavior)
+    s1 = MilvusStore(uri=db, dimension=4)
+    assert s1.model_info is None
+    assert not s1.needs_reindex
+    s1.close()
+
+    # Reopen with model params — should not error, model_info stays None
+    s2 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    assert s2.model_info is None  # legacy: no stored metadata
+    assert not s2.needs_reindex  # can't compare without stored info
+    s2.close()
+
+
+def test_read_only_mode_reads_model_info(tmp_path: Path):
+    """Read-only mode (dimension=None) still reads stored model metadata."""
+    db = str(tmp_path / "readonly_model.db")
+    s1 = MilvusStore(
+        uri=db,
+        dimension=4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    s1.close()
+
+    # Open in read-only mode (dimension=None, no model params)
+    s2 = MilvusStore(uri=db, dimension=None)
+    assert s2.model_info is not None
+    assert s2.model_info["provider"] == "openai"
+    assert s2.model_info["model"] == "text-embedding-3-small"
+    assert s2.model_info["dimension"] == 4
+    assert not s2.needs_reindex  # no current model to compare
+    s2.close()
+
+
+def test_model_metadata_with_user_description(tmp_path: Path):
+    """User-supplied description is preserved alongside model metadata."""
+    db = str(tmp_path / "desc_model.db")
+    s = MilvusStore(
+        uri=db,
+        dimension=4,
+        description="my project notes",
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+    )
+    info = s._client.describe_collection(s._collection)
+    meta = _parse_collection_meta(info.get("description", ""))
+    assert meta is not None
+    assert meta["description"] == "my project notes"
+    assert meta["provider"] == "openai"
+    assert meta["model"] == "text-embedding-3-small"
+    s.close()
