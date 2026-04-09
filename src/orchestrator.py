@@ -259,6 +259,7 @@ class Orchestrator:
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
         self.vault_watcher = None
+        self.timer_service = None  # TimerService | None — initialized in initialize()
         # Semantic memory manager — optional integration with memsearch.
         # Initialized only when config.memory.enabled is True and the
         # memsearch package is installed.
@@ -900,6 +901,18 @@ class Orchestrator:
             playbook_manager=self.playbook_manager,
         )
 
+        # Timer service (playbooks spec §7, roadmap 5.3.7) — emits synthetic
+        # ``timer.*`` events for playbooks with periodic triggers.  Scans the
+        # playbook manager for ``timer.{interval}`` triggers and only tracks
+        # intervals that have at least one active subscriber.
+        from src.timer_service import TimerService
+
+        self.timer_service = TimerService(
+            event_bus=self.bus,
+            playbook_manager=self.playbook_manager,
+        )
+        self.timer_service.start()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -1370,6 +1383,8 @@ class Orchestrator:
                 await self.rule_manager.stop_file_watcher()
             except Exception as e:
                 logger.warning("Rule file watcher shutdown error: %s", e)
+        if self.timer_service:
+            self.timer_service.stop()
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:
@@ -1496,6 +1511,14 @@ class Orchestrator:
             # 7. Run hook engine tick (periodic hooks; event hooks fire async).
             if self.hooks:
                 await self.hooks.tick()
+
+            # 7a. Run timer service tick — emit synthetic timer.* events for
+            # playbooks with periodic triggers (playbooks spec §7).
+            if self.timer_service:
+                try:
+                    await self.timer_service.tick()
+                except Exception as e:
+                    logger.warning("Timer service tick failed: %s", e)
 
             # 7b. Run plugin cron jobs (plain async functions, not LLM prompts).
             if hasattr(self, "plugin_registry") and self.plugin_registry:
