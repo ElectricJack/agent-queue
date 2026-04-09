@@ -3562,6 +3562,152 @@ class MemoryManager:
         return ctx
 
     # ------------------------------------------------------------------
+    # On-demand L2 topic context (spec §2, roadmap 3.3.6)
+    # ------------------------------------------------------------------
+
+    async def load_topic_context_on_demand(
+        self,
+        project_id: str,
+        text: str,
+        *,
+        topics: list[str] | None = None,
+        exclude_topics: list[str] | None = None,
+    ) -> dict:
+        """Load L2 topic context on-demand when a topic emerges mid-task.
+
+        Unlike ``build_context()`` which loads L2 at task start based on the
+        task description, this method is designed to be called mid-task when
+        the agent encounters a new topic in its work.  It detects topics from
+        the provided ``text`` (or uses an explicit ``topics`` list), loads
+        matching knowledge files and memories, and returns a formatted context
+        block suitable for direct injection into the agent's context.
+
+        This implements the "on-demand when topic emerges" requirement from
+        roadmap 3.3.6 and spec §2 (L2 tier: loaded when the agent enters a
+        topic or the context implies one).
+
+        Parameters
+        ----------
+        project_id:
+            Project whose knowledge/memory to search.
+        text:
+            Context text to detect topics from (e.g. current conversation
+            excerpt, code snippet, or task context).  Ignored when explicit
+            ``topics`` are provided.
+        topics:
+            Optional explicit list of topic names to load.  When provided,
+            topic detection is skipped and these topics are loaded directly.
+        exclude_topics:
+            Topic names already loaded (e.g. from initial task context).
+            These are filtered out to avoid returning duplicate content.
+
+        Returns
+        -------
+        dict
+            ``{"success": True, "topics": [...], "context": "..."}`` on
+            success, or ``{"success": False, "error": "..."}`` on failure.
+            The ``context`` field contains formatted markdown ready for
+            injection into the agent's prompt.
+        """
+        if not self.config.topic_detection_enabled:
+            return {
+                "success": True,
+                "topics": [],
+                "context": "",
+                "message": "Topic detection is disabled.",
+            }
+
+        try:
+            # Determine topics to load
+            if topics:
+                detected = [t.lower() for t in topics]
+            else:
+                detected = await self.detect_topics(project_id, text)
+
+            if not detected:
+                return {
+                    "success": True,
+                    "topics": [],
+                    "context": "",
+                    "message": "No topics detected from the provided text.",
+                }
+
+            # Filter out already-loaded topics
+            if exclude_topics:
+                exclude_set = {t.lower() for t in exclude_topics}
+                detected = [t for t in detected if t not in exclude_set]
+
+            if not detected:
+                return {
+                    "success": True,
+                    "topics": [],
+                    "context": "",
+                    "message": "All detected topics were already loaded.",
+                }
+
+            # Load L2a: Knowledge base files
+            topic_context = ""
+            if self.config.index_knowledge:
+                topic_context = await self._load_topic_context(project_id, detected)
+
+            # Load L2b: Memories filtered by topic frontmatter
+            topic_memories = ""
+            if self.config.topic_memory_enabled:
+                topic_memories = await self._load_topic_memories(project_id, detected)
+
+            if not topic_context and not topic_memories:
+                return {
+                    "success": True,
+                    "topics": detected,
+                    "context": "",
+                    "message": (
+                        f"Topics detected ({', '.join(detected)}) but no matching "
+                        "knowledge files or memories found."
+                    ),
+                }
+
+            # Format as a context block matching MemoryContext.to_context_block()
+            topic_label = ", ".join(detected)
+            parts: list[str] = [
+                f"## Topic Context ({topic_label})\n"
+                "The following knowledge was loaded on-demand based on topics "
+                "detected in the current context."
+            ]
+            if topic_context:
+                parts.append(topic_context)
+            if topic_memories:
+                parts.append(
+                    "### Related Memories\n"
+                    "These past insights matched the detected topics:\n\n" + topic_memories
+                )
+            context_block = "\n\n".join(parts)
+
+            logger.debug(
+                "On-demand L2 topic context loaded: project=%s topics=%s "
+                "knowledge=%s memories=%s",
+                project_id,
+                detected,
+                bool(topic_context),
+                bool(topic_memories),
+            )
+
+            return {
+                "success": True,
+                "topics": detected,
+                "context": context_block,
+                "has_knowledge": bool(topic_context),
+                "has_memories": bool(topic_memories),
+            }
+
+        except Exception as e:
+            logger.warning(
+                "On-demand L2 topic context failed for project %s: %s",
+                project_id,
+                e,
+            )
+            return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
     # Original Public API (preserved for compatibility)
     # ------------------------------------------------------------------
 

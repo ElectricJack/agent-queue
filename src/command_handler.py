@@ -5268,6 +5268,40 @@ feature work stuck on feature branches across multiple workspaces.
     # _cmd_regenerate_profile → moved to src/plugins/internal/memory.py (aq-memory plugin)
     # _cmd_compact_memory → moved to src/plugins/internal/memory.py (aq-memory plugin)
 
+    async def _cmd_recall_topic_context(self, args: dict) -> dict:
+        """Load L2 topic context on-demand when a topic emerges mid-task.
+
+        Detects topics from the provided text (or uses explicit topic names),
+        then loads matching knowledge files and memories.  Returns formatted
+        context ready for injection into the agent's working memory.
+
+        This implements roadmap 3.3.6 — agents call this tool when they
+        encounter a new topic during execution rather than relying solely on
+        the initial topic context loaded at task start.
+        """
+        memory_mgr = getattr(self.orchestrator, "memory_manager", None)
+        if not memory_mgr:
+            return {"error": "Memory system is not available."}
+
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required."}
+
+        text = args.get("text", "")
+        topics = args.get("topics")
+        exclude_topics = args.get("exclude_topics")
+
+        if not text and not topics:
+            return {"error": "Either 'text' or 'topics' must be provided."}
+
+        result = await memory_mgr.load_topic_context_on_demand(
+            project_id,
+            text,
+            topics=topics,
+            exclude_topics=exclude_topics,
+        )
+        return result
+
     # -----------------------------------------------------------------------
     # Prompt template commands -- read-only browsing of prompt templates
     # stored in <workspace>/prompts/.  Templates use YAML frontmatter for
