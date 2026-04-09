@@ -611,13 +611,46 @@ class HookRun:
 
 
 class PlaybookRunStatus(Enum):
-    """Valid statuses for a playbook execution run."""
+    """Valid statuses for a playbook execution run.
+
+    These map directly to the state machine defined in VALID_PLAYBOOK_RUN_TRANSITIONS
+    (see src/playbook_state_machine.py).  The PlaybookRunner drives runs through
+    these states based on events like terminal node reached, node failure, token
+    budget exhaustion, and human-in-the-loop pause/resume.
+
+    See docs/specs/design/playbooks.md §6 (Run Persistence).
+    """
 
     RUNNING = "running"
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+
+
+class PlaybookRunEvent(Enum):
+    """Events that trigger transitions between PlaybookRunStatus states.
+
+    Each (PlaybookRunStatus, PlaybookRunEvent) pair maps to exactly one target
+    PlaybookRunStatus in the transitions table.  See src/playbook_state_machine.py.
+
+    Event groups:
+
+    - **Completion:** TERMINAL_REACHED — graph walk reached a terminal node.
+    - **Failure:** NODE_FAILED (node execution error), TRANSITION_FAILED
+      (transition evaluation error), GRAPH_ERROR (missing entry/node).
+    - **Budget:** BUDGET_EXCEEDED — token budget exhausted mid-run.
+    - **Human-in-the-loop:** HUMAN_WAIT (node has ``wait_for_human``),
+      HUMAN_RESUMED (human provided input to resume).
+    """
+
+    TERMINAL_REACHED = "TERMINAL_REACHED"
+    NODE_FAILED = "NODE_FAILED"
+    TRANSITION_FAILED = "TRANSITION_FAILED"
+    GRAPH_ERROR = "GRAPH_ERROR"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    HUMAN_WAIT = "HUMAN_WAIT"
+    HUMAN_RESUMED = "HUMAN_RESUMED"
 
 
 @dataclass

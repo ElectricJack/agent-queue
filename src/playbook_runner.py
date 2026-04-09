@@ -36,7 +36,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.models import PlaybookRun
+from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
+from src.playbook_state_machine import (
+    InvalidPlaybookRunTransition,
+    validate_transition,
+)
 
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
@@ -133,9 +137,7 @@ def _parse_literal(raw: str) -> str | int | float | bool | None:
     Handles double-quoted strings, single-quoted strings, integers,
     floats, booleans (``true``/``false``), and ``null``.
     """
-    if (raw.startswith('"') and raw.endswith('"')) or (
-        raw.startswith("'") and raw.endswith("'")
-    ):
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
         inner = raw[1:-1]
         return inner.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
 
@@ -184,6 +186,31 @@ def _compare(left: Any, op: str, right: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Event → fallback status (used when the state machine rejects a transition)
+# ---------------------------------------------------------------------------
+
+_EVENT_FALLBACK_STATUS: dict[PlaybookRunEvent, PlaybookRunStatus] = {
+    PlaybookRunEvent.TERMINAL_REACHED: PlaybookRunStatus.COMPLETED,
+    PlaybookRunEvent.NODE_FAILED: PlaybookRunStatus.FAILED,
+    PlaybookRunEvent.TRANSITION_FAILED: PlaybookRunStatus.FAILED,
+    PlaybookRunEvent.GRAPH_ERROR: PlaybookRunStatus.FAILED,
+    PlaybookRunEvent.BUDGET_EXCEEDED: PlaybookRunStatus.TIMED_OUT,
+    PlaybookRunEvent.HUMAN_WAIT: PlaybookRunStatus.PAUSED,
+    PlaybookRunEvent.HUMAN_RESUMED: PlaybookRunStatus.RUNNING,
+}
+
+
+def _event_to_fallback_status(event: PlaybookRunEvent) -> PlaybookRunStatus:
+    """Derive a reasonable target status from an event, bypassing the state machine.
+
+    This is only used when the state machine rejects a transition (i.e., a
+    bug in transition ordering).  The fallback ensures the runner can still
+    complete without crashing.
+    """
+    return _EVENT_FALLBACK_STATUS[event]
+
+
+# ---------------------------------------------------------------------------
 # PlaybookRunner
 # ---------------------------------------------------------------------------
 
@@ -228,12 +255,47 @@ class PlaybookRunner:
         self.tokens_used: int = 0
         self.node_trace: list[NodeTraceEntry] = []
 
+        # Current run status — tracked via the state machine
+        # (see src/playbook_state_machine.py).
+        self._status: PlaybookRunStatus = PlaybookRunStatus.RUNNING
+
         # Resolved from graph
         self._playbook_id: str = graph.get("id", "unknown")
         self._playbook_version: int = graph.get("version", 0)
         self._max_tokens: int | None = graph.get("max_tokens")
         self._llm_config: dict | None = graph.get("llm_config")
         self._transition_llm_config: dict | None = graph.get("transition_llm_config")
+
+    # ------------------------------------------------------------------
+    # State machine integration
+    # ------------------------------------------------------------------
+
+    def _transition(self, event: PlaybookRunEvent) -> PlaybookRunStatus:
+        """Validate and apply a state transition.
+
+        Uses the formal state machine (:mod:`src.playbook_state_machine`) to
+        check whether the transition is legal.  On success, updates
+        ``self._status`` and returns the new status.  On invalid transitions,
+        logs a warning but still applies the transition to avoid breaking
+        running playbooks — the state machine is currently advisory (matching
+        the task state machine approach in :mod:`src.state_machine`).
+        """
+        try:
+            target = validate_transition(self._status, event, self.run_id)
+        except InvalidPlaybookRunTransition:
+            # Log but don't raise — the runner should not crash on an
+            # unexpected transition.  This lets us detect bugs in the
+            # transition logic without blocking execution.
+            logger.warning(
+                "Playbook run %s: applying transition anyway (%s -[%s]-> ???)",
+                self.run_id,
+                self._status.value,
+                event.value,
+            )
+            # Derive the intended status from the event
+            target = _event_to_fallback_status(event)
+        self._status = target
+        return target
 
     # ------------------------------------------------------------------
     # Public API
@@ -274,7 +336,12 @@ class PlaybookRunner:
         # Find entry node
         entry_node_id = self._find_entry_node()
         if entry_node_id is None:
-            return await self._fail(db_run, "No entry node found in playbook graph", started_at)
+            return await self._fail(
+                db_run,
+                "No entry node found in playbook graph",
+                started_at,
+                event=PlaybookRunEvent.GRAPH_ERROR,
+            )
 
         if self.on_progress:
             await self.on_progress("playbook_started", self._playbook_id)
@@ -290,6 +357,7 @@ class PlaybookRunner:
                     db_run,
                     f"Node '{current_node_id}' not found in graph",
                     started_at,
+                    event=PlaybookRunEvent.GRAPH_ERROR,
                 )
 
             # Terminal node — we're done
@@ -304,7 +372,7 @@ class PlaybookRunner:
                     db_run,
                     f"Token budget exceeded ({self.tokens_used}/{self._max_tokens})",
                     started_at,
-                    status="timed_out",
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
             # Execute the node
@@ -318,6 +386,7 @@ class PlaybookRunner:
                     f"Node '{current_node_id}' failed: {exc}",
                     started_at,
                     current_node=current_node_id,
+                    event=PlaybookRunEvent.NODE_FAILED,
                 )
 
             # Human-in-the-loop pause
@@ -336,6 +405,7 @@ class PlaybookRunner:
                     f"Transition from '{current_node_id}' failed: {exc}",
                     started_at,
                     current_node=current_node_id,
+                    event=PlaybookRunEvent.TRANSITION_FAILED,
                 )
 
             # Record transition info on the trace entry for this node
@@ -353,14 +423,15 @@ class PlaybookRunner:
 
             current_node_id = next_node_id
 
-        # Completed successfully
+        # Completed successfully — validate via state machine
+        self._transition(PlaybookRunEvent.TERMINAL_REACHED)
         completed_at = time.time()
         trace_dicts = [self._trace_to_dict(t) for t in self.node_trace]
 
         if self.db:
             await self.db.update_playbook_run(
                 self.run_id,
-                status="completed",
+                status=self._status.value,
                 conversation_history=json.dumps(self.messages),
                 node_trace=json.dumps(trace_dicts),
                 tokens_used=self.tokens_used,
@@ -372,7 +443,7 @@ class PlaybookRunner:
 
         return RunResult(
             run_id=self.run_id,
-            status="completed",
+            status=self._status.value,
             node_trace=trace_dicts,
             tokens_used=self.tokens_used,
             final_response=final_response,
@@ -447,6 +518,10 @@ class PlaybookRunner:
         runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
         runner.tokens_used = db_run.tokens_used
 
+        # Reconstruct status from persisted state and transition to running
+        runner._status = PlaybookRunStatus.PAUSED
+        runner._transition(PlaybookRunEvent.HUMAN_RESUMED)
+
         # Inject human input into conversation
         runner.messages.append(
             {
@@ -457,27 +532,25 @@ class PlaybookRunner:
 
         # Update DB status to running
         if db:
-            await db.update_playbook_run(db_run.run_id, status="running")
+            await db.update_playbook_run(db_run.run_id, status=runner._status.value)
 
         # Find the next node after the paused one
         paused_node_id = db_run.current_node
         if not paused_node_id:
-            return RunResult(
-                run_id=db_run.run_id,
-                status="failed",
-                node_trace=[runner._trace_to_dict(t) for t in runner.node_trace],
-                tokens_used=runner.tokens_used,
-                error="Cannot resume: no current_node recorded",
+            return await runner._fail(
+                db_run,
+                "Cannot resume: no current_node recorded",
+                db_run.started_at,
+                event=PlaybookRunEvent.GRAPH_ERROR,
             )
 
         paused_node = effective_graph["nodes"].get(paused_node_id)
         if not paused_node:
-            return RunResult(
-                run_id=db_run.run_id,
-                status="failed",
-                node_trace=[runner._trace_to_dict(t) for t in runner.node_trace],
-                tokens_used=runner.tokens_used,
-                error=f"Cannot resume: node '{paused_node_id}' not found in graph",
+            return await runner._fail(
+                db_run,
+                f"Cannot resume: node '{paused_node_id}' not found in graph",
+                db_run.started_at,
+                event=PlaybookRunEvent.GRAPH_ERROR,
             )
 
         # Get the last response from conversation to evaluate transitions
@@ -495,22 +568,22 @@ class PlaybookRunner:
                 paused_node_id, paused_node, last_response
             )
         except Exception as exc:
-            return RunResult(
-                run_id=db_run.run_id,
-                status="failed",
-                node_trace=[runner._trace_to_dict(t) for t in runner.node_trace],
-                tokens_used=runner.tokens_used,
-                error=f"Transition from paused node failed: {exc}",
+            return await runner._fail(
+                db_run,
+                f"Transition from paused node failed: {exc}",
+                db_run.started_at,
+                event=PlaybookRunEvent.TRANSITION_FAILED,
             )
 
         if next_node_id is None:
             # No transition — completed
+            runner._transition(PlaybookRunEvent.TERMINAL_REACHED)
             completed_at = time.time()
             trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
             if db:
                 await db.update_playbook_run(
                     db_run.run_id,
-                    status="completed",
+                    status=runner._status.value,
                     conversation_history=json.dumps(runner.messages),
                     node_trace=json.dumps(trace_dicts),
                     tokens_used=runner.tokens_used,
@@ -518,7 +591,7 @@ class PlaybookRunner:
                 )
             return RunResult(
                 run_id=db_run.run_id,
-                status="completed",
+                status=runner._status.value,
                 node_trace=trace_dicts,
                 tokens_used=runner.tokens_used,
             )
@@ -535,6 +608,7 @@ class PlaybookRunner:
                     db_run,
                     f"Node '{current_node_id}' not found in graph",
                     started_at,
+                    event=PlaybookRunEvent.GRAPH_ERROR,
                 )
 
             if node.get("terminal"):
@@ -545,7 +619,7 @@ class PlaybookRunner:
                     db_run,
                     f"Token budget exceeded ({runner.tokens_used}/{runner._max_tokens})",
                     started_at,
-                    status="timed_out",
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
             try:
@@ -557,6 +631,7 @@ class PlaybookRunner:
                     f"Node '{current_node_id}' failed: {exc}",
                     started_at,
                     current_node=current_node_id,
+                    event=PlaybookRunEvent.NODE_FAILED,
                 )
 
             if node.get("wait_for_human"):
@@ -572,6 +647,7 @@ class PlaybookRunner:
                     f"Transition from '{current_node_id}' failed: {exc}",
                     started_at,
                     current_node=current_node_id,
+                    event=PlaybookRunEvent.TRANSITION_FAILED,
                 )
 
             # Record transition info on the trace entry for this node
@@ -584,13 +660,15 @@ class PlaybookRunner:
 
             current_node_id = next_node_id
 
+        # Completed successfully — validate via state machine
+        runner._transition(PlaybookRunEvent.TERMINAL_REACHED)
         completed_at = time.time()
         trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
 
         if db:
             await db.update_playbook_run(
                 db_run.run_id,
-                status="completed",
+                status=runner._status.value,
                 conversation_history=json.dumps(runner.messages),
                 node_trace=json.dumps(trace_dicts),
                 tokens_used=runner.tokens_used,
@@ -599,7 +677,7 @@ class PlaybookRunner:
 
         return RunResult(
             run_id=db_run.run_id,
-            status="completed",
+            status=runner._status.value,
             node_trace=trace_dicts,
             tokens_used=runner.tokens_used,
             final_response=final_response,
@@ -1098,16 +1176,14 @@ class PlaybookRunner:
                 data = json.loads(response)
             except (json.JSONDecodeError, TypeError):
                 logger.debug(
-                    "Cannot resolve output.* — response is not valid JSON "
-                    "(var_path=%s)",
+                    "Cannot resolve output.* — response is not valid JSON (var_path=%s)",
                     var_path,
                 )
                 return None, False
 
             if not isinstance(data, dict):
                 logger.debug(
-                    "Cannot resolve output.* — JSON response is not a dict "
-                    "(var_path=%s, type=%s)",
+                    "Cannot resolve output.* — JSON response is not a dict (var_path=%s, type=%s)",
                     var_path,
                     type(data).__name__,
                 )
@@ -1403,9 +1479,18 @@ class PlaybookRunner:
         error: str,
         started_at: float,
         current_node: str | None = None,
-        status: str = "failed",
+        event: PlaybookRunEvent = PlaybookRunEvent.NODE_FAILED,
     ) -> RunResult:
-        """Mark the run as failed and persist."""
+        """Mark the run as failed/timed_out and persist.
+
+        The target status is determined by the state machine based on the
+        *event*.  For example, ``BUDGET_EXCEEDED`` produces ``timed_out``
+        while ``NODE_FAILED`` produces ``failed``.
+        """
+        # Validate transition via state machine
+        self._transition(event)
+        status = self._status.value
+
         logger.error(
             "Playbook '%s' run %s %s: %s",
             self._playbook_id,
@@ -1452,6 +1537,9 @@ class PlaybookRunner:
         started_at: float,
     ) -> RunResult:
         """Mark the run as paused for human review."""
+        # Validate transition via state machine
+        self._transition(PlaybookRunEvent.HUMAN_WAIT)
+
         logger.info(
             "Playbook '%s' run %s paused at node '%s' for human review",
             self._playbook_id,
@@ -1464,7 +1552,7 @@ class PlaybookRunner:
         if self.db:
             await self.db.update_playbook_run(
                 self.run_id,
-                status="paused",
+                status=self._status.value,
                 current_node=node_id,
                 conversation_history=json.dumps(self.messages),
                 node_trace=json.dumps(trace_dicts),
@@ -1476,7 +1564,7 @@ class PlaybookRunner:
 
         return RunResult(
             run_id=self.run_id,
-            status="paused",
+            status=self._status.value,
             node_trace=trace_dicts,
             tokens_used=self.tokens_used,
         )
