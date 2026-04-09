@@ -385,39 +385,219 @@ class MemoryV2Service:
         namespace: str,
         key: str,
         value: str,
+        *,
+        scope: str | None = None,
     ) -> dict[str, Any]:
-        """Write a KV entry to the scoped collection.
+        """Write a KV entry to the scoped collection and vault facts file.
 
-        Creates or updates the entry.  The value is stored as-is in
-        ``kv_value`` (caller should JSON-encode complex values).
+        Creates or updates the entry in the Milvus collection for the
+        resolved scope.  Also syncs the key-value pair to the vault
+        ``facts.md`` file for human-readable access and L1 tier injection.
+
+        Per spec §7, writes go to the most specific scope by default
+        (project when *project_id* is set).  An explicit *scope* overrides.
 
         Parameters
         ----------
         project_id:
-            Project identifier (determines scope collection).
+            Project identifier (determines default scope collection).
         namespace:
             KV namespace (e.g. ``"project"``, ``"conventions"``).
         key:
             The key to set.
         value:
             The value to store.
+        scope:
+            Explicit scope override.  One of ``"system"``,
+            ``"orchestrator"``, ``"agenttype_{type}"``, or
+            ``"project_{id}"``.  Defaults to the project scope.
 
         Returns
         -------
         dict
-            The stored entry.
+            The stored entry with ``vault_path`` indicating the synced
+            facts file.
         """
         if not self.available:
             raise RuntimeError("MemoryV2Service not available")
 
-        store = self._get_store(project_id)
-        return await asyncio.to_thread(
+        store = self._get_store(project_id, scope)
+        entry = await asyncio.to_thread(
             store.set_kv,
             key,
             value,
             namespace=namespace,
             content=f"{namespace}/{key}: {value}",
         )
+
+        # Sync to vault facts.md file
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        facts_path = self._vault_facts_path(mem_scope, scope_id)
+        await asyncio.to_thread(self._sync_facts_file, facts_path, namespace, key, value)
+        entry["_vault_path"] = str(facts_path)
+        entry["_scope"] = mem_scope.value
+        entry["_scope_id"] = scope_id
+
+        return entry
+
+    # ------------------------------------------------------------------
+    # Vault facts.md sync helpers
+    # ------------------------------------------------------------------
+
+    def _vault_facts_path(
+        self,
+        mem_scope: Any,
+        scope_id: str | None,
+    ) -> Path:
+        """Return the absolute path to the ``facts.md`` file for a scope.
+
+        Uses :data:`VAULT_PATHS` to locate the facts file.  The last
+        entry in each scope's path list is the ``facts.md`` file.
+
+        Parameters
+        ----------
+        mem_scope:
+            The :class:`MemoryScope` enum value.
+        scope_id:
+            Scope-specific identifier (project id, agent-type name, etc.).
+        """
+        paths = vault_paths(mem_scope, scope_id)
+        # The last entry in VAULT_PATHS for each scope is the facts.md file
+        facts_rel = None
+        for p in paths:
+            if p.endswith("facts.md"):
+                facts_rel = p
+                break
+        if not facts_rel:
+            # Fallback: construct from scope
+            facts_rel = f"vault/projects/{scope_id or 'unknown'}/facts.md"
+
+        base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+        return base / facts_rel
+
+    @staticmethod
+    def _parse_facts_file(text: str) -> dict[str, dict[str, str]]:
+        """Parse a ``facts.md`` file into ``{namespace: {key: value}}``.
+
+        The facts.md format uses markdown headings as namespaces and
+        ``key: value`` lines under each heading::
+
+            ## project
+            tech_stack: [Python, SQLAlchemy, Pygame]
+            test_command: pytest tests/ -v
+
+            ## conventions
+            commit_style: conventional
+
+        Parameters
+        ----------
+        text:
+            The raw content of the facts.md file.
+
+        Returns
+        -------
+        dict[str, dict[str, str]]
+            Mapping of namespace → {key → value}.
+        """
+        result: dict[str, dict[str, str]] = {}
+        current_ns: str | None = None
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            # Detect namespace heading (## namespace)
+            if stripped.startswith("## "):
+                current_ns = stripped[3:].strip()
+                if current_ns and current_ns not in result:
+                    result[current_ns] = {}
+            elif current_ns and ":" in stripped and stripped and not stripped.startswith("#"):
+                # key: value line
+                colon_idx = stripped.index(":")
+                k = stripped[:colon_idx].strip()
+                v = stripped[colon_idx + 1 :].strip()
+                if k:
+                    result[current_ns][k] = v
+
+        return result
+
+    @staticmethod
+    def _render_facts_file(data: dict[str, dict[str, str]]) -> str:
+        """Render a ``{namespace: {key: value}}`` dict to facts.md format.
+
+        Parameters
+        ----------
+        data:
+            Mapping of namespace → {key → value}.
+
+        Returns
+        -------
+        str
+            Formatted markdown content for the facts.md file.
+        """
+        sections: list[str] = []
+        for ns in sorted(data.keys()):
+            entries = data[ns]
+            lines = [f"## {ns}"]
+            for k in sorted(entries.keys()):
+                lines.append(f"{k}: {entries[k]}")
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections) + "\n" if sections else ""
+
+    def _sync_facts_file(
+        self,
+        facts_path: Path,
+        namespace: str,
+        key: str,
+        value: str,
+    ) -> None:
+        """Update or create the vault ``facts.md`` file with a KV entry.
+
+        Reads the existing facts file (if any), merges the new key-value
+        pair under the specified namespace heading, and writes the result
+        back.  Creates parent directories as needed.
+
+        Parameters
+        ----------
+        facts_path:
+            Absolute path to the ``facts.md`` file.
+        namespace:
+            The namespace heading (e.g. ``"project"``).
+        key:
+            The key to set.
+        value:
+            The value to store.
+        """
+        # Read existing content
+        existing = ""
+        if facts_path.exists():
+            try:
+                existing = facts_path.read_text(encoding="utf-8")
+            except OSError:
+                logger.warning("Could not read facts file %s", facts_path)
+
+        # Parse, merge, render
+        data = self._parse_facts_file(existing)
+        if namespace not in data:
+            data[namespace] = {}
+        data[namespace][key] = value
+
+        rendered = self._render_facts_file(data)
+
+        # Write back
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            facts_path.write_text(rendered, encoding="utf-8")
+            logger.debug(
+                "Synced KV %s/%s to vault facts: %s",
+                namespace,
+                key,
+                facts_path,
+            )
+        except OSError:
+            logger.error(
+                "Failed to write facts file %s",
+                facts_path,
+                exc_info=True,
+            )
 
     async def kv_list(
         self,

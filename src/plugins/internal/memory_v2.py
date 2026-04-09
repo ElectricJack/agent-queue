@@ -245,17 +245,18 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "memory_kv_set",
         "description": (
-            "Write a key-value entry to the scoped Milvus collection.  "
-            "Creates or updates an entry in the given namespace.  The value "
-            "is JSON-encoded and also synced to the vault facts file for "
-            "human-readable access."
+            "Store a key-value pair in the appropriate scope's Milvus "
+            "collection and vault facts file.  Creates or updates an entry "
+            "in the given namespace.  The value is also synced to the vault "
+            "facts.md file for human-readable access and L1 tier injection "
+            "at task start."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID (determines scope collection).",
+                    "description": "Project ID (determines default scope collection).",
                 },
                 "namespace": {
                     "type": "string",
@@ -270,6 +271,15 @@ TOOL_DEFINITIONS: list[dict] = [
                     "description": (
                         "The value to store.  Stored as JSON-encoded string.  "
                         "For simple values pass the string directly."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "'agenttype_{type}', or 'project_{id}'.  Defaults to "
+                        "the project scope derived from project_id.  Use this "
+                        "to write cross-project or system-wide facts."
                     ),
                 },
             },
@@ -1426,7 +1436,7 @@ class MemoryV2Plugin(InternalPlugin):
             return {"error": f"KV get failed: {e}"}
 
     async def cmd_memory_kv_set(self, args: dict) -> dict:
-        """Write a KV entry to the scoped collection and vault."""
+        """Write a KV entry to the scoped collection and vault facts file."""
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
@@ -1440,16 +1450,26 @@ class MemoryV2Plugin(InternalPlugin):
         if value is None:
             return {"error": "value is required"}
 
+        scope = args.get("scope")  # optional explicit scope override
+
         if not self._service or not self._service.available:
             return self._unavailable("memory_kv_set")
 
         try:
-            entry = await self._service.kv_set(project_id, namespace, key, value)
-            return {
+            entry = await self._service.kv_set(project_id, namespace, key, value, scope=scope)
+            result: dict[str, Any] = {
                 "success": True,
                 "project_id": project_id,
                 **self._format_kv_entry(entry),
             }
+            # Include vault sync info in response
+            if "_vault_path" in entry:
+                result["vault_path"] = entry["_vault_path"]
+            if "_scope" in entry:
+                result["scope"] = entry["_scope"]
+            if "_scope_id" in entry:
+                result["scope_id"] = entry["_scope_id"]
+            return result
         except Exception as e:
             self._log.error("memory_kv_set failed: %s", e, exc_info=True)
             return {"error": f"KV set failed: {e}"}

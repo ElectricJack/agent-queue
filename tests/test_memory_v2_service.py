@@ -3,7 +3,8 @@
 Tests cover:
 - Service initialization and lifecycle
 - Scope resolution
-- KV operations (get, set, list)
+- KV operations (get, set, list) with scope routing
+- Vault facts.md parsing, rendering, and sync
 - Temporal facts (get, set, history)
 - Search operations (single, batch, by tag)
 - Stats retrieval
@@ -13,6 +14,7 @@ Tests cover:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -328,6 +330,23 @@ class TestKVOperations:
             namespace="project",
             content="project/new_key: new_value",
         )
+        # Should include vault sync metadata
+        assert "_vault_path" in result
+        assert "_scope" in result
+        assert "_scope_id" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_explicit_scope(self, service, mock_store, mock_router):
+        """kv_set with explicit scope routes to the correct collection."""
+        result = await service.kv_set("test-project", "project", "new_key", "val", scope="system")
+        assert result is not None
+        assert result["_scope"] == "system"
+        assert result["_scope_id"] is None
+        # The router should have been asked for the system scope's store
+        from memsearch import MemoryScope
+
+        mock_router.get_store.assert_called_with(MemoryScope.SYSTEM, None)
 
     @pytest.mark.asyncio
     async def test_kv_list(self, service, mock_store):
@@ -355,6 +374,276 @@ class TestKVOperations:
         svc = MemoryV2Service()
         result = await svc.kv_list("proj", "ns")
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Vault facts.md Parsing, Rendering, and Sync
+# ---------------------------------------------------------------------------
+
+
+class TestFactsFileParsing:
+    """Test facts.md file parsing and rendering."""
+
+    def test_parse_empty(self):
+        assert MemoryV2Service._parse_facts_file("") == {}
+
+    def test_parse_single_namespace(self):
+        text = "## project\ntech_stack: [Python, SQLAlchemy]\ntest_command: pytest tests/ -v\n"
+        result = MemoryV2Service._parse_facts_file(text)
+        assert result == {
+            "project": {
+                "tech_stack": "[Python, SQLAlchemy]",
+                "test_command": "pytest tests/ -v",
+            }
+        }
+
+    def test_parse_multiple_namespaces(self):
+        text = (
+            "## project\n"
+            "tech_stack: Python\n"
+            "\n"
+            "## conventions\n"
+            "commit_style: conventional\n"
+            "line_length: 100\n"
+        )
+        result = MemoryV2Service._parse_facts_file(text)
+        assert "project" in result
+        assert "conventions" in result
+        assert result["project"]["tech_stack"] == "Python"
+        assert result["conventions"]["commit_style"] == "conventional"
+        assert result["conventions"]["line_length"] == "100"
+
+    def test_parse_ignores_non_kv_lines(self):
+        text = "## project\ntech_stack: Python\nThis is a comment without colon\n"
+        result = MemoryV2Service._parse_facts_file(text)
+        assert result == {"project": {"tech_stack": "Python"}}
+
+    def test_parse_ignores_lines_before_heading(self):
+        text = "orphan_key: orphan_value\n## project\nkey: val\n"
+        result = MemoryV2Service._parse_facts_file(text)
+        assert result == {"project": {"key": "val"}}
+
+    def test_parse_value_with_colons(self):
+        """Values containing colons should be preserved after the first colon."""
+        text = "## urls\napi: http://localhost:8080/api\n"
+        result = MemoryV2Service._parse_facts_file(text)
+        assert result["urls"]["api"] == "http://localhost:8080/api"
+
+    def test_render_empty(self):
+        assert MemoryV2Service._render_facts_file({}) == ""
+
+    def test_render_single_namespace(self):
+        data = {"project": {"tech_stack": "Python", "test_cmd": "pytest"}}
+        rendered = MemoryV2Service._render_facts_file(data)
+        assert "## project" in rendered
+        assert "tech_stack: Python" in rendered
+        assert "test_cmd: pytest" in rendered
+
+    def test_render_multiple_namespaces(self):
+        data = {
+            "project": {"a": "1"},
+            "conventions": {"b": "2"},
+        }
+        rendered = MemoryV2Service._render_facts_file(data)
+        assert "## conventions" in rendered
+        assert "## project" in rendered
+        # Namespaces should be sorted
+        conv_idx = rendered.index("## conventions")
+        proj_idx = rendered.index("## project")
+        assert conv_idx < proj_idx
+
+    def test_roundtrip(self):
+        """Parse → render → parse should be stable."""
+        original = (
+            "## conventions\n"
+            "commit_style: conventional\n"
+            "line_length: 100\n"
+            "\n"
+            "## project\n"
+            "tech_stack: Python\n"
+        )
+        data = MemoryV2Service._parse_facts_file(original)
+        rendered = MemoryV2Service._render_facts_file(data)
+        data2 = MemoryV2Service._parse_facts_file(rendered)
+        assert data == data2
+
+
+class TestFactsFileSync:
+    """Test vault facts.md file synchronization on KV write."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_creates_facts_file(self, service, mock_store, tmp_path):
+        """kv_set creates a new facts.md file if it doesn't exist."""
+        service._data_dir = str(tmp_path)
+
+        result = await service.kv_set("test-project", "project", "tech_stack", "Python")
+
+        # Find the created facts file
+        vault_path = result["_vault_path"]
+        facts = Path(vault_path)
+        assert facts.exists(), f"Expected facts file at {vault_path}"
+        content = facts.read_text(encoding="utf-8")
+        assert "## project" in content
+        assert "tech_stack: Python" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_updates_existing_facts_file(self, service, mock_store, tmp_path):
+        """kv_set merges into an existing facts.md file."""
+        service._data_dir = str(tmp_path)
+
+        # Create an existing facts file
+        from memsearch import MemoryScope, vault_paths as vp
+
+        paths = vp(MemoryScope.PROJECT, "test_project")
+        facts_rel = [p for p in paths if p.endswith("facts.md")][0]
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        facts_path.write_text(
+            "## project\nexisting_key: existing_value\n",
+            encoding="utf-8",
+        )
+
+        await service.kv_set("test-project", "project", "new_key", "new_value")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "existing_key: existing_value" in content
+        assert "new_key: new_value" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_overwrites_existing_key(self, service, mock_store, tmp_path):
+        """kv_set updates the value of an existing key."""
+        service._data_dir = str(tmp_path)
+
+        from memsearch import MemoryScope, vault_paths as vp
+
+        paths = vp(MemoryScope.PROJECT, "test_project")
+        facts_rel = [p for p in paths if p.endswith("facts.md")][0]
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        facts_path.write_text(
+            "## project\nmy_key: old_value\n",
+            encoding="utf-8",
+        )
+
+        await service.kv_set("test-project", "project", "my_key", "new_value")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "my_key: new_value" in content
+        assert "old_value" not in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_creates_new_namespace(self, service, mock_store, tmp_path):
+        """kv_set adds a new namespace heading when the namespace doesn't exist."""
+        service._data_dir = str(tmp_path)
+
+        from memsearch import MemoryScope, vault_paths as vp
+
+        paths = vp(MemoryScope.PROJECT, "test_project")
+        facts_rel = [p for p in paths if p.endswith("facts.md")][0]
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        facts_path.write_text("## project\nkey1: val1\n", encoding="utf-8")
+
+        await service.kv_set("test-project", "conventions", "commit_style", "conventional")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "## project" in content
+        assert "## conventions" in content
+        assert "commit_style: conventional" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_kv_set_with_system_scope_syncs_to_system_facts(
+        self, service, mock_store, tmp_path
+    ):
+        """kv_set with scope='system' writes to vault/system/facts.md."""
+        service._data_dir = str(tmp_path)
+
+        result = await service.kv_set(
+            "test-project",
+            "global",
+            "version",
+            "2.0",
+            scope="system",
+        )
+
+        vault_path = result["_vault_path"]
+        assert "system" in vault_path
+        facts = Path(vault_path)
+        assert facts.exists()
+        content = facts.read_text(encoding="utf-8")
+        assert "version: 2.0" in content
+
+    def test_sync_facts_file_creates_directories(self, tmp_path):
+        """_sync_facts_file creates parent dirs if they don't exist."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "vault" / "projects" / "new_proj" / "facts.md"
+        svc._sync_facts_file(facts_path, "project", "key", "value")
+        assert facts_path.exists()
+        content = facts_path.read_text(encoding="utf-8")
+        assert "## project" in content
+        assert "key: value" in content
+
+
+class TestPluginKVSetWithScope:
+    """Test the plugin command handler for memory_kv_set with scope."""
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        """Plugin with a wired-up service."""
+        plugin._service = service
+        plugin._log = MagicMock()
+        return plugin
+
+    @pytest.mark.asyncio
+    async def test_kv_set_handler_with_scope(self, wired_plugin, mock_store):
+        """Handler passes scope to the service."""
+        result = await wired_plugin.cmd_memory_kv_set(
+            {
+                "project_id": "proj",
+                "namespace": "project",
+                "key": "k",
+                "value": "v",
+                "scope": "system",
+            }
+        )
+        assert result["success"] is True
+        # Response should include scope info from the service
+        assert "vault_path" in result
+        assert "scope" in result
+
+    @pytest.mark.asyncio
+    async def test_kv_set_handler_without_scope(self, wired_plugin, mock_store):
+        """Handler defaults scope to None (project scope)."""
+        result = await wired_plugin.cmd_memory_kv_set(
+            {
+                "project_id": "proj",
+                "namespace": "project",
+                "key": "k",
+                "value": "v",
+            }
+        )
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_kv_set_tool_schema_has_scope(self):
+        """The tool schema for memory_kv_set includes the scope property."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        kv_set_tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_kv_set")
+        props = kv_set_tool["input_schema"]["properties"]
+        assert "scope" in props
+        assert "scope" not in kv_set_tool["input_schema"]["required"]
 
 
 # ---------------------------------------------------------------------------

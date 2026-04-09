@@ -186,7 +186,15 @@ class MemoryV2ServiceProtocol(Protocol):
 
     # KV operations
     async def kv_get(self, project_id: str, namespace: str, key: str) -> dict | None: ...
-    async def kv_set(self, project_id: str, namespace: str, key: str, value: str) -> dict: ...
+    async def kv_set(
+        self,
+        project_id: str,
+        namespace: str,
+        key: str,
+        value: str,
+        *,
+        scope: str | None = None,
+    ) -> dict: ...
     async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
 
     # Temporal facts
