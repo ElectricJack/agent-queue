@@ -95,7 +95,13 @@ async def run_mcp_server(
     )
 
     exclusions = get_effective_exclusions(config=config)
-    register_command_tools(mcp, excluded=exclusions)
+
+    # Collect plugin-contributed tool definitions so MCP exposes them
+    plugin_tools: list[dict] = []
+    if hasattr(orchestrator, "plugin_registry") and orchestrator.plugin_registry:
+        plugin_tools = orchestrator.plugin_registry.get_all_tool_definitions()
+
+    register_command_tools(mcp, excluded=exclusions, plugin_tools=plugin_tools)
     register_resources(mcp)
     register_prompts(mcp)
 

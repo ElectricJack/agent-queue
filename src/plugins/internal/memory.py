@@ -512,7 +512,8 @@ class MemoryPlugin(InternalPlugin):
         self._db = ctx.get_service("db")
         self._mem = ctx.get_service("memory")
 
-        ctx.register_command("memory_search", self.cmd_memory_search)
+        # memory_search is now owned by MemoryV2Plugin (scope-aware, topic
+        # filter, weighted merge across collections).  See memory_v2.py.
         ctx.register_command("memory_stats", self.cmd_memory_stats)
         ctx.register_command("memory_reindex", self.cmd_memory_reindex)
         ctx.register_command("write_memory", self.cmd_write_memory)
@@ -526,7 +527,10 @@ class MemoryPlugin(InternalPlugin):
         ctx.register_command("project_knowledge", self.cmd_project_knowledge)
         ctx.register_command("search_all_projects", self.cmd_search_all_projects)
 
+        # memory_search is now owned by MemoryV2Plugin — skip it here
         for tool_def in TOOL_DEFINITIONS:
+            if tool_def["name"] == "memory_search":
+                continue  # owned by v2 plugin
             ctx.register_tool(dict(tool_def), category="memory")
 
     async def shutdown(self, ctx: PluginContext) -> None:

@@ -60,6 +60,7 @@ TOOL_CATEGORY = "memory"
 V2_ONLY_TOOLS: frozenset[str] = frozenset(
     {
         "memory_save",
+        "memory_search",
         "memory_search_by_tag",
         "memory_kv_get",
         "memory_kv_set",

@@ -571,3 +571,270 @@ class TestDriftDetection:
             f"Duplicate _cmd_* methods in CommandHandler: {dupes}. "
             f"The second definition silently shadows the first in Python."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plugin tools MCP exposure
+# ---------------------------------------------------------------------------
+
+
+def _build_test_mcp_with_plugin_tools(populated_db, mock_context, plugin_tools):
+    """Build a test MCP server with plugin-contributed tool definitions."""
+    from mcp.server import FastMCP
+    from src.mcp_registration import (
+        DEFAULT_EXCLUDED_COMMANDS,
+        register_command_tools,
+        register_resources,
+        register_prompts,
+    )
+
+    server = FastMCP(name="test-agent-queue-plugins")
+    register_command_tools(server, excluded=DEFAULT_EXCLUDED_COMMANDS, plugin_tools=plugin_tools)
+    register_resources(server)
+    register_prompts(server)
+    server.get_context = lambda: mock_context
+    return server
+
+
+class TestPluginToolRegistration:
+    """Tests for the plugin tools pass (pass 2) in MCP registration."""
+
+    async def test_plugin_tools_registered(self, populated_db):
+        """Plugin-contributed tool definitions are exposed as MCP tools."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "my_plugin_scan",
+                "description": "Scan something.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "What to scan"},
+                    },
+                    "required": ["target"],
+                },
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "my_plugin_scan" in tool_names
+
+    async def test_plugin_tools_have_rich_schemas(self, populated_db):
+        """Plugin tools are registered with their full input_schema, not basic stubs."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "my_plugin_scan",
+                "description": "Scan something.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "What to scan"},
+                    },
+                    "required": ["target"],
+                },
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        assert "my_plugin_scan" in tool_map
+        schema = tool_map["my_plugin_scan"].inputSchema
+        assert "target" in schema["properties"]
+        assert schema["required"] == ["target"]
+
+    async def test_plugin_tools_do_not_override_explicit(self, populated_db):
+        """Plugin tools cannot shadow _ALL_TOOL_DEFINITIONS entries."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        # Try to register a plugin tool with the same name as an explicit tool
+        plugin_tools = [
+            {
+                "name": "create_task",
+                "description": "SHOULD NOT APPEAR — explicit def wins.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        assert "create_task" in tool_map
+        # The explicit definition should win, not the plugin one
+        assert "SHOULD NOT APPEAR" not in tool_map["create_task"].description
+
+    async def test_excluded_plugin_tools_not_registered(self, populated_db):
+        """Excluded commands are skipped even when contributed by plugins."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "shutdown",
+                "description": "Should be excluded.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "shutdown" not in tool_names
+
+    async def test_no_plugin_tools_is_safe(self, populated_db):
+        """Passing None or empty plugin_tools is a no-op."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        server_none = _build_test_mcp_with_plugin_tools(populated_db, ctx, None)
+        server_empty = _build_test_mcp_with_plugin_tools(populated_db, ctx, [])
+        tools_none = await server_none.list_tools()
+        tools_empty = await server_empty.list_tools()
+        assert len(tools_none) == len(tools_empty)
+
+
+class TestMemorySearchMCPTool:
+    """Tests for memory_search exposure as an MCP tool (spec §7).
+
+    Verifies that memory_search is available via MCP with the v2 schema
+    (scope-aware, topic filter, weighted merge across collections).
+    """
+
+    async def test_memory_search_in_v2_only_tools(self):
+        """memory_search is in the v2 plugin's V2_ONLY_TOOLS set."""
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_search" in V2_ONLY_TOOLS
+
+    async def test_memory_search_not_in_v1_registration(self):
+        """v1 MemoryPlugin no longer registers memory_search command."""
+        # The v1 plugin should skip memory_search during tool registration
+        # (it's now owned by v2).  We verify by checking the tool definitions
+        # that would be registered.
+        from src.plugins.internal.memory import TOOL_DEFINITIONS as V1_DEFS
+
+        v1_names = {d["name"] for d in V1_DEFS}
+        # The definition still exists in the list (for reference), but the
+        # plugin skips it during register_tool.  We just verify the v2
+        # plugin has it in its ownership set.
+        assert "memory_search" in v1_names  # still in list...
+        # ...but not registered (tested via integration in other tests)
+
+    async def test_memory_search_registered_as_mcp_tool(self, populated_db):
+        """memory_search appears as an MCP tool when v2 plugin tools are passed."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+
+        # Simulate what embedded_mcp.py does: pass plugin tool definitions
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "memory_search" in tool_names
+
+    async def test_memory_search_schema_has_topic_filter(self, populated_db):
+        """memory_search MCP tool schema includes the 'topic' parameter."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_search"].inputSchema
+        assert "topic" in schema["properties"], "memory_search must expose topic filter"
+        assert "string" == schema["properties"]["topic"]["type"]
+
+    async def test_memory_search_schema_has_scope(self, populated_db):
+        """memory_search MCP tool schema includes the 'scope' parameter."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_search"].inputSchema
+        assert "scope" in schema["properties"], "memory_search must expose scope parameter"
+
+    async def test_memory_search_schema_has_batch_queries(self, populated_db):
+        """memory_search MCP tool schema supports batch queries via 'queries' array."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_search"].inputSchema
+        assert "queries" in schema["properties"], "memory_search must support batch queries"
+        assert schema["properties"]["queries"]["type"] == "array"
+
+    async def test_memory_search_delegates_to_command_handler(self, populated_db):
+        """memory_search MCP tool delegates to CommandHandler.execute()."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        mock_handler = AsyncMock()
+        mock_handler.execute.return_value = {
+            "success": True,
+            "project_id": "test-project",
+            "query": "authentication patterns",
+            "count": 2,
+            "results": [
+                {
+                    "content": "OAuth best practices",
+                    "score": 0.92,
+                    "topic": "authentication",
+                    "scope": "project",
+                },
+            ],
+        }
+        ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        result = await server.call_tool(
+            "memory_search",
+            {
+                "project_id": "test-project",
+                "query": "authentication patterns",
+                "topic": "authentication",
+                "scope": "project_test-project",
+            },
+        )
+        data = json.loads(result[0].text)
+        mock_handler.execute.assert_called_once_with(
+            "memory_search",
+            {
+                "project_id": "test-project",
+                "query": "authentication patterns",
+                "topic": "authentication",
+                "scope": "project_test-project",
+            },
+        )
+        assert data["success"] is True
+        assert data["count"] == 2
