@@ -5,11 +5,12 @@ Covers:
 - Section splitting at ## boundaries
 - JSON extraction from Config, Tools, MCP Servers sections
 - Text extraction from Role, Rules, Reflection sections
+- English section extractor (raw markdown preservation)
 - Error handling for invalid JSON
 - Type validation (JSON must be objects, not arrays)
 - Edge cases: empty files, missing sections, multiple JSON blocks
 - Full round-trip with the spec example from docs/specs/design/profiles.md §2
-- Conversion to AgentProfile-compatible dict
+- Conversion to AgentProfile-compatible dict (section labels, individual fields)
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from src.profile_parser import (
     PROMPT_SECTIONS,
     STRUCTURED_SECTIONS,
     _extract_json_block,
+    _extract_prompt_text,
     _parse_section,
     _split_sections,
     parse_frontmatter,
@@ -584,6 +586,353 @@ class TestParsedProfileToAgentProfile:
         result = parse_profile(text)
         d = parsed_profile_to_agent_profile(result)
         assert "model" not in d
+
+    def test_individual_role_field(self):
+        """Role text should be exposed as a separate 'role' field."""
+        result = parse_profile(SPEC_EXAMPLE)
+        d = parsed_profile_to_agent_profile(result)
+        assert "role" in d
+        assert "software engineering agent" in d["role"]
+
+    def test_individual_rules_field(self):
+        """Rules text should be exposed as a separate 'rules' field."""
+        result = parse_profile(SPEC_EXAMPLE)
+        d = parsed_profile_to_agent_profile(result)
+        assert "rules" in d
+        assert "Always run existing tests" in d["rules"]
+
+    def test_individual_reflection_field(self):
+        """Reflection text should be exposed as a separate 'reflection' field."""
+        result = parse_profile(SPEC_EXAMPLE)
+        d = parsed_profile_to_agent_profile(result)
+        assert "reflection" in d
+        assert "surprising behavior" in d["reflection"]
+
+    def test_system_prompt_has_section_labels(self):
+        """system_prompt_suffix should contain ## labels for each section."""
+        result = parse_profile(SPEC_EXAMPLE)
+        d = parsed_profile_to_agent_profile(result)
+        suffix = d["system_prompt_suffix"]
+        assert "## Role\n" in suffix
+        assert "## Rules\n" in suffix
+        assert "## Reflection\n" in suffix
+
+    def test_section_labels_order(self):
+        """Section labels should appear in Role → Rules → Reflection order."""
+        result = parse_profile(SPEC_EXAMPLE)
+        d = parsed_profile_to_agent_profile(result)
+        suffix = d["system_prompt_suffix"]
+        role_idx = suffix.index("## Role")
+        rules_idx = suffix.index("## Rules")
+        reflection_idx = suffix.index("## Reflection")
+        assert role_idx < rules_idx < reflection_idx
+
+    def test_single_prompt_section_no_extra_labels(self):
+        """A profile with only Role should have just the Role label."""
+        text = "## Role\nYou are a reviewer.\n"
+        result = parse_profile(text)
+        d = parsed_profile_to_agent_profile(result)
+        assert d["system_prompt_suffix"] == "## Role\nYou are a reviewer."
+        assert "## Rules" not in d["system_prompt_suffix"]
+        assert "## Reflection" not in d["system_prompt_suffix"]
+
+    def test_no_prompt_sections_no_suffix(self):
+        """Profile without any prompt sections should not have system_prompt_suffix."""
+        text = '## Config\n```json\n{"model": "opus"}\n```\n'
+        result = parse_profile(text)
+        d = parsed_profile_to_agent_profile(result)
+        assert "system_prompt_suffix" not in d
+        assert "role" not in d
+        assert "rules" not in d
+        assert "reflection" not in d
+
+
+# ---------------------------------------------------------------------------
+# English section extraction (_extract_prompt_text)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPromptText:
+    """Test the _extract_prompt_text function for raw markdown preservation."""
+
+    def test_plain_text(self):
+        text = "You are a coding agent.\n"
+        assert _extract_prompt_text(text) == "You are a coding agent."
+
+    def test_strips_whitespace_boundaries(self):
+        text = "\n\n  You are a reviewer.  \n\n"
+        assert _extract_prompt_text(text) == "You are a reviewer."
+
+    def test_empty_body(self):
+        assert _extract_prompt_text("") == ""
+
+    def test_whitespace_only(self):
+        assert _extract_prompt_text("   \n\n   \n") == ""
+
+    def test_preserves_markdown_lists(self):
+        text = "- First rule\n- Second rule\n- Third rule\n"
+        result = _extract_prompt_text(text)
+        assert "- First rule" in result
+        assert "- Second rule" in result
+        assert "- Third rule" in result
+
+    def test_preserves_ordered_lists(self):
+        text = "1. Step one\n2. Step two\n3. Step three\n"
+        result = _extract_prompt_text(text)
+        assert "1. Step one" in result
+        assert "2. Step two" in result
+        assert "3. Step three" in result
+
+    def test_preserves_sub_headings(self):
+        text = "Main content.\n### Details\nDetailed instructions.\n"
+        result = _extract_prompt_text(text)
+        assert "Main content." in result
+        assert "### Details" in result
+        assert "Detailed instructions." in result
+
+    def test_preserves_code_blocks(self):
+        text = "Run this:\n```bash\npython -m pytest\n```\n"
+        result = _extract_prompt_text(text)
+        assert "```bash" in result
+        assert "python -m pytest" in result
+        assert result.count("```") == 2
+
+    def test_preserves_emphasis(self):
+        text = "This is **important** and *emphasised*.\n"
+        result = _extract_prompt_text(text)
+        assert "**important**" in result
+        assert "*emphasised*" in result
+
+    def test_preserves_links(self):
+        text = "See [the docs](https://example.com) for details.\n"
+        result = _extract_prompt_text(text)
+        assert "[the docs](https://example.com)" in result
+
+    def test_preserves_multiline_paragraphs(self):
+        text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.\n"
+        result = _extract_prompt_text(text)
+        assert "First paragraph.\n\nSecond paragraph.\n\nThird paragraph." == result
+
+    def test_preserves_blockquotes(self):
+        text = "> This is a quote.\n> It spans lines.\n"
+        result = _extract_prompt_text(text)
+        assert "> This is a quote." in result
+        assert "> It spans lines." in result
+
+    def test_preserves_inline_code(self):
+        text = "Use `git commit` to save changes.\n"
+        result = _extract_prompt_text(text)
+        assert "`git commit`" in result
+
+    def test_preserves_nested_lists(self):
+        text = "- Top level\n  - Nested item\n  - Another nested\n- Back to top\n"
+        result = _extract_prompt_text(text)
+        assert "  - Nested item" in result
+        assert "  - Another nested" in result
+
+    def test_preserves_horizontal_rules(self):
+        text = "Before rule.\n\n---\n\nAfter rule.\n"
+        result = _extract_prompt_text(text)
+        assert "---" in result
+
+    def test_preserves_tables(self):
+        text = "| Col A | Col B |\n|-------|-------|\n| val1  | val2  |\n"
+        result = _extract_prompt_text(text)
+        assert "| Col A | Col B |" in result
+        assert "| val1  | val2  |" in result
+
+
+# ---------------------------------------------------------------------------
+# English section extraction (integration via parse_profile)
+# ---------------------------------------------------------------------------
+
+
+class TestEnglishSectionExtraction:
+    """Integration tests for English section extraction through the full parser.
+
+    These tests verify that Role, Rules, and Reflection sections are stored
+    as raw markdown strings per the profiles spec §2.
+    """
+
+    def test_role_stored_as_raw_markdown(self):
+        """Role section text is stored as a raw markdown string."""
+        text = "## Role\nYou are a **software engineering** agent.\n"
+        result = parse_profile(text)
+        assert result.role == "You are a **software engineering** agent."
+        assert result.sections["role"].text == result.role
+        assert result.sections["role"].json_data is None
+
+    def test_rules_stored_as_raw_markdown(self):
+        """Rules section text is stored as a raw markdown string."""
+        text = "## Rules\n- Always run tests\n- Never commit secrets\n"
+        result = parse_profile(text)
+        assert result.rules == "- Always run tests\n- Never commit secrets"
+        assert result.sections["rules"].text == result.rules
+
+    def test_reflection_stored_as_raw_markdown(self):
+        """Reflection section text is stored as a raw markdown string."""
+        text = "## Reflection\nAfter completing a task, consider:\n- What went well?\n"
+        result = parse_profile(text)
+        assert result.reflection == "After completing a task, consider:\n- What went well?"
+        assert result.sections["reflection"].text == result.reflection
+
+    def test_role_with_sub_headings(self):
+        """Role section can contain ### sub-headings."""
+        text = (
+            "## Role\n"
+            "You are a coding agent.\n\n"
+            "### Primary Responsibilities\n"
+            "- Write clean code\n"
+            "- Review pull requests\n\n"
+            "### Secondary\n"
+            "- Documentation\n"
+        )
+        result = parse_profile(text)
+        assert "### Primary Responsibilities" in result.role
+        assert "### Secondary" in result.role
+        assert "Write clean code" in result.role
+        assert "Documentation" in result.role
+
+    def test_rules_with_code_examples(self):
+        """Rules section can contain fenced code blocks as examples."""
+        text = (
+            "## Rules\n"
+            "Format imports like this:\n\n"
+            "```python\n"
+            "import os\n"
+            "import sys\n"
+            "```\n\n"
+            "Always follow PEP 8.\n"
+        )
+        result = parse_profile(text)
+        assert "```python" in result.rules
+        assert "import os" in result.rules
+        assert "Always follow PEP 8." in result.rules
+
+    def test_reflection_with_rich_markdown(self):
+        """Reflection section can contain full rich markdown."""
+        text = (
+            "## Reflection\n"
+            "After completing a task:\n\n"
+            "1. **Review** your changes\n"
+            "2. Check for [common pitfalls](./pitfalls.md)\n"
+            "3. Use `git diff` to verify\n\n"
+            "> Remember: quality over speed\n"
+        )
+        result = parse_profile(text)
+        assert "**Review**" in result.reflection
+        assert "[common pitfalls](./pitfalls.md)" in result.reflection
+        assert "`git diff`" in result.reflection
+        assert "> Remember: quality over speed" in result.reflection
+
+    def test_empty_role_section(self):
+        """Empty Role section results in empty string."""
+        text = "## Role\n\n## Config\n```json\n{}\n```\n"
+        result = parse_profile(text)
+        assert result.role == ""
+
+    def test_whitespace_only_role_section(self):
+        """Whitespace-only Role section results in empty string."""
+        text = "## Role\n   \n\n## Rules\n- A rule\n"
+        result = parse_profile(text)
+        assert result.role == ""
+        assert result.rules == "- A rule"
+
+    def test_multiline_role_with_blank_lines(self):
+        """Role with multiple paragraphs separated by blank lines."""
+        text = (
+            "## Role\n"
+            "You are a reviewer.\n\n"
+            "Your primary focus is code quality.\n\n"
+            "You value correctness above all.\n"
+        )
+        result = parse_profile(text)
+        assert "You are a reviewer." in result.role
+        assert "Your primary focus is code quality." in result.role
+        assert "You value correctness above all." in result.role
+        # Blank lines between paragraphs should be preserved
+        assert "\n\n" in result.role
+
+    def test_rules_with_nested_lists(self):
+        """Rules section with nested list items."""
+        text = (
+            "## Rules\n"
+            "- Git conventions:\n"
+            "  - Use conventional commits\n"
+            "  - Keep commits small\n"
+            "- Testing:\n"
+            "  - Write unit tests\n"
+            "  - Run tests before committing\n"
+        )
+        result = parse_profile(text)
+        assert "  - Use conventional commits" in result.rules
+        assert "  - Keep commits small" in result.rules
+        assert "  - Write unit tests" in result.rules
+
+    def test_section_raw_field_preserved(self):
+        """The raw field contains the untouched section body."""
+        text = "## Role\n  Some text with leading spaces.  \n\n"
+        result = parse_profile(text)
+        section = result.sections["role"]
+        # raw is untouched
+        assert "  Some text with leading spaces.  " in section.raw
+        # text is stripped
+        assert section.text == "Some text with leading spaces."
+
+    def test_all_prompt_sections_in_spec_example(self):
+        """Verify all three prompt sections from the spec example."""
+        result = parse_profile(SPEC_EXAMPLE)
+
+        # Role
+        assert "software engineering agent" in result.role
+        assert "project conventions" in result.role
+        assert "commit clean, working code" in result.role
+
+        # Rules — each rule is a markdown list item
+        assert "- Always run existing tests before committing" in result.rules
+        assert "- Never commit secrets, .env files, or credentials" in result.rules
+        assert "- Prefer small, focused commits over large ones" in result.rules
+        assert "- If tests fail after your changes" in result.rules
+        assert "- Check for and respect any project-specific overrides" in result.rules
+
+        # Reflection
+        assert "After completing a task, consider:" in result.reflection
+        assert "- Did I encounter any surprising behavior" in result.reflection
+        assert "- Did I resolve an error that might recur" in result.reflection
+        assert "- Is there a convention in this project" in result.reflection
+
+    def test_prompt_sections_only_profile(self):
+        """A profile with only prompt sections (no structured sections)."""
+        text = (
+            "---\nid: reviewer\nname: Code Reviewer\n---\n\n"
+            "## Role\nYou review code for quality.\n\n"
+            "## Rules\n- Be constructive\n- Focus on correctness\n\n"
+            "## Reflection\n- Was my review helpful?\n"
+        )
+        result = parse_profile(text)
+        assert result.is_valid
+        assert result.frontmatter.id == "reviewer"
+        assert "review code for quality" in result.role
+        assert "- Be constructive" in result.rules
+        assert "- Was my review helpful?" in result.reflection
+        # Structured sections should be defaults
+        assert result.config == {}
+        assert result.tools == {}
+        assert result.mcp_servers == {}
+
+    def test_unicode_in_prompt_sections(self):
+        """Unicode content in prompt sections is preserved."""
+        text = "## Role\nYou speak 日本語 and handle émojis: 🎉\n"
+        result = parse_profile(text)
+        assert "日本語" in result.role
+        assert "🎉" in result.role
+
+    def test_windows_line_endings_in_prompt_sections(self):
+        """Windows \\r\\n line endings in prompt sections are handled."""
+        text = "## Role\r\nA Windows role.\r\n\r\n## Rules\r\n- A rule\r\n"
+        result = parse_profile(text)
+        assert "A Windows role." in result.role
+        assert "- A rule" in result.rules
 
 
 # ---------------------------------------------------------------------------

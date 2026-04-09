@@ -251,6 +251,30 @@ def _extract_json_block(text: str) -> tuple[str | None, str]:
     return json_str, remaining
 
 
+def _extract_prompt_text(body: str) -> str:
+    """Extract raw markdown text from an English prompt section.
+
+    Analogous to :func:`_extract_json_block` for structured sections, this
+    function processes the raw body of a prompt section (Role, Rules,
+    Reflection).  It preserves all markdown formatting — sub-headings, lists,
+    code blocks, emphasis, links — while normalising whitespace boundaries.
+
+    Parameters
+    ----------
+    body:
+        Raw section body (everything between ``## Heading`` and the next
+        ``## Heading`` or end of file).
+
+    Returns
+    -------
+    str
+        The cleaned markdown text, or an empty string if the section body
+        contains only whitespace.
+    """
+    text = body.strip()
+    return text
+
+
 def _parse_section(heading: str, body: str) -> tuple[ProfileSection, list[str]]:
     """Parse a single profile section.
 
@@ -287,8 +311,8 @@ def _parse_section(heading: str, body: str) -> tuple[ProfileSection, list[str]]:
         # the section may be empty or contain only prose notes.
 
     elif heading_lower in PROMPT_SECTIONS:
-        # For prompt sections, capture all text (no JSON extraction)
-        section.text = body.strip()
+        # For prompt sections, capture raw markdown (no JSON extraction).
+        section.text = _extract_prompt_text(body)
 
     else:
         # Unrecognized section — preserve raw text
@@ -434,15 +458,27 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.mcp_servers:
         result["mcp_servers"] = parsed.mcp_servers
 
-    # Prompt sections → system_prompt_suffix
-    # Combine Role, Rules, and Reflection into system prompt
+    # Prompt sections → individual fields + combined system_prompt_suffix
+    # Expose each section as a separate field for downstream consumers that
+    # need them individually (e.g. Role for system prompt prefix, Reflection
+    # for post-task processing).
+    if parsed.role:
+        result["role"] = parsed.role
+    if parsed.rules:
+        result["rules"] = parsed.rules
+    if parsed.reflection:
+        result["reflection"] = parsed.reflection
+
+    # Build system_prompt_suffix with section labels so the receiving LLM
+    # can distinguish Role (identity) from Rules (constraints) from
+    # Reflection (post-task guidance).
     prompt_parts: list[str] = []
     if parsed.role:
-        prompt_parts.append(parsed.role)
+        prompt_parts.append(f"## Role\n{parsed.role}")
     if parsed.rules:
-        prompt_parts.append(parsed.rules)
+        prompt_parts.append(f"## Rules\n{parsed.rules}")
     if parsed.reflection:
-        prompt_parts.append(parsed.reflection)
+        prompt_parts.append(f"## Reflection\n{parsed.reflection}")
     if prompt_parts:
         result["system_prompt_suffix"] = "\n\n".join(prompt_parts)
 
