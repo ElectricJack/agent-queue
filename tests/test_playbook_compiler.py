@@ -178,7 +178,7 @@ class TestValidateFrontmatter:
     def test_triggers_empty_strings(self):
         fm = {"id": "test", "triggers": ["", "git.commit"], "scope": "system"}
         errors = PlaybookCompiler._validate_frontmatter(fm)
-        assert any("non-empty strings" in e for e in errors)
+        assert any("non-empty" in e for e in errors)
 
     def test_missing_scope(self):
         fm = {"id": "test", "triggers": ["git.commit"]}

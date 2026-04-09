@@ -19,6 +19,17 @@ The manager is the integration layer between:
     O(1) lookup when an event arrives, instead of scanning all active
     playbooks.
 
+**EventBus subscription** (roadmap 5.3.2):
+
+    The manager subscribes to the :class:`~src.event_bus.EventBus` for all
+    trigger event types.  Triggers with payload filters (see spec §10
+    Composability) pass their filter dicts to the EventBus ``subscribe()``
+    call, so the EventBus handles filtering before the handler fires.
+    When a trigger event matches, the manager checks cooldown and
+    concurrency limits, then dispatches to an ``on_trigger`` callback.
+    Subscriptions are automatically refreshed when playbooks are
+    added, removed, or recompiled.
+
 **Cooldown tracking** (roadmap 5.3.4):
 
     Per-playbook, per-scope cooldown prevents rapid re-triggering.  Each
@@ -54,15 +65,19 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from src.playbook_compiler import CompilationResult, PlaybookCompiler
-from src.playbook_models import CompiledPlaybook
+from src.playbook_models import CompiledPlaybook, PlaybookTrigger
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
     from src.event_bus import EventBus
     from src.playbook_store import CompiledPlaybookStore
+
+# Type alias for the trigger callback:
+#   async callback(playbook: CompiledPlaybook, event_data: dict) -> None
+TriggerCallback = Callable[[CompiledPlaybook, dict[str, Any]], Any]
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +101,22 @@ class PlaybookManager:
     operation.  This enables efficient O(1) lookup via
     :meth:`get_playbooks_by_trigger` when events arrive, instead of
     scanning all active playbooks.
+
+    **EventBus subscription** (roadmap 5.3.2):
+
+        When an :class:`~src.event_bus.EventBus` is provided, the manager
+        subscribes to all trigger event types from active playbooks.
+        Triggers with payload filters (spec §10) pass their filter dicts
+        to the EventBus ``subscribe()`` method.  When a trigger fires:
+
+        1. The EventBus delivers the event (type + filter already matched).
+        2. The manager verifies the playbook is still active.
+        3. The manager checks cooldown and concurrency limits.
+        4. If all checks pass, the ``on_trigger`` callback is invoked.
+
+        Subscriptions are refreshed automatically when playbooks change.
+        Call :meth:`subscribe_to_events` after initial loading to activate
+        subscriptions, and :meth:`unsubscribe_from_events` before shutdown.
 
     **Cooldown tracking** (roadmap 5.3.4):
 
@@ -127,6 +158,11 @@ class PlaybookManager:
         Maximum number of playbook runs that can execute simultaneously.
         Defaults to ``2``.  Set to ``0`` for unlimited.  Mirrors the
         hook engine's ``max_concurrent_hooks`` setting.
+    on_trigger:
+        Optional async callback invoked when a trigger event fires and all
+        checks pass (playbook active, not on cooldown, concurrency cap not
+        reached).  Signature: ``async (playbook, event_data) -> None``.
+        This is the integration point for the playbook executor.
     """
 
     def __init__(
@@ -137,6 +173,7 @@ class PlaybookManager:
         data_dir: str | None = None,
         store: CompiledPlaybookStore | None = None,
         max_concurrent_runs: int = 2,
+        on_trigger: TriggerCallback | None = None,
     ) -> None:
         self._chat_provider = chat_provider
         self._event_bus = event_bus
@@ -171,6 +208,18 @@ class PlaybookManager:
 
         # Global concurrency cap.  0 = unlimited.
         self._max_concurrent_runs: int = max_concurrent_runs
+
+        # -- EventBus subscription (roadmap 5.3.2) --
+        # Callback invoked when a trigger fires and passes all checks.
+        self._on_trigger: TriggerCallback | None = on_trigger
+        # Unsubscribe callables from EventBus.subscribe() — one per
+        # (playbook, trigger) pair.  Cleared and rebuilt on each
+        # subscribe_to_events() call.
+        self._event_subscriptions: list[Callable[[], None]] = []
+        # Whether subscriptions have been activated via subscribe_to_events().
+        # Used by _refresh_subscriptions() to decide whether to auto-resubscribe
+        # after playbook mutations.
+        self._subscribed: bool = False
 
         # Compiler instance (created lazily when provider is available)
         self._compiler: PlaybookCompiler | None = None
@@ -550,9 +599,14 @@ class PlaybookManager:
     async def shutdown_runs(self) -> None:
         """Cancel all running playbook tasks and wait for them to finish.
 
+        Also removes all EventBus subscriptions to prevent stale handler
+        references.
+
         Uses ``asyncio.gather(..., return_exceptions=True)`` to ensure
         CancelledError does not propagate.  Clears all tracking state.
         """
+        self.unsubscribe_from_events()
+        self._subscribed = False
         for rid, task in self._running.items():
             if not task.done():
                 logger.info("Cancelling playbook run '%s'", rid)
@@ -561,6 +615,197 @@ class PlaybookManager:
             await asyncio.gather(*self._running.values(), return_exceptions=True)
         self._running.clear()
         self._running_playbook_ids.clear()
+
+    # -- EventBus subscription (roadmap 5.3.2) --------------------------------
+
+    def subscribe_to_events(self) -> int:
+        """Subscribe to the EventBus for all trigger event types.
+
+        Creates one EventBus subscription per ``(playbook, trigger)`` pair.
+        For triggers with a :attr:`~PlaybookTrigger.filter`, the filter dict
+        is passed to :meth:`EventBus.subscribe` so the EventBus only
+        dispatches events whose payload matches.
+
+        Previous subscriptions are removed before creating new ones (safe to
+        call repeatedly, e.g. after adding or removing playbooks).
+
+        Returns
+        -------
+        int
+            Number of subscriptions created.
+
+        Raises
+        ------
+        RuntimeError
+            If no EventBus was provided to the constructor.
+        """
+        self.unsubscribe_from_events()
+        self._subscribed = True
+
+        if self._event_bus is None:
+            logger.debug("No EventBus configured — event subscriptions skipped")
+            return 0
+
+        count = 0
+        for playbook in self._active.values():
+            for trigger in playbook.triggers:
+                handler = self._make_trigger_handler(playbook.id, trigger)
+                unsub = self._event_bus.subscribe(
+                    trigger.event_type,
+                    handler,
+                    filter=trigger.filter,
+                )
+                self._event_subscriptions.append(unsub)
+                count += 1
+
+        if count:
+            logger.info(
+                "Subscribed to %d trigger event(s) across %d playbook(s)",
+                count,
+                len(self._active),
+            )
+        return count
+
+    def unsubscribe_from_events(self) -> None:
+        """Remove all EventBus subscriptions.
+
+        Safe to call even when no subscriptions exist.  Called automatically
+        by :meth:`subscribe_to_events` before rebuilding, and should be
+        called during shutdown to prevent stale handler references.
+        """
+        for unsub in self._event_subscriptions:
+            unsub()
+        if self._event_subscriptions:
+            logger.debug("Removed %d event subscription(s)", len(self._event_subscriptions))
+        self._event_subscriptions.clear()
+
+    @property
+    def subscription_count(self) -> int:
+        """Number of active EventBus subscriptions."""
+        return len(self._event_subscriptions)
+
+    @property
+    def on_trigger(self) -> TriggerCallback | None:
+        """The current trigger callback, or ``None``."""
+        return self._on_trigger
+
+    @on_trigger.setter
+    def on_trigger(self, callback: TriggerCallback | None) -> None:
+        """Update the trigger callback at runtime."""
+        self._on_trigger = callback
+
+    def _make_trigger_handler(
+        self, playbook_id: str, trigger: PlaybookTrigger
+    ) -> Callable[[dict[str, Any]], Any]:
+        """Create a closure that handles a specific trigger for a specific playbook.
+
+        Each EventBus subscription gets its own handler bound to the
+        ``(playbook_id, trigger)`` pair.  The EventBus has already matched
+        the event type and applied the payload filter before this runs.
+
+        The handler:
+        1. Verifies the playbook is still active (it may have been removed
+           since the subscription was created).
+        2. Checks per-playbook cooldown.
+        3. Checks global concurrency cap.
+        4. Invokes the ``on_trigger`` callback if all checks pass.
+        """
+
+        async def handler(data: dict[str, Any]) -> None:
+            await self._handle_trigger_event(playbook_id, trigger, data)
+
+        return handler
+
+    async def _handle_trigger_event(
+        self,
+        playbook_id: str,
+        trigger: PlaybookTrigger,
+        data: dict[str, Any],
+    ) -> None:
+        """Handle a trigger event dispatched by the EventBus.
+
+        Called when an event matches a playbook's trigger (type + optional
+        payload filter already verified by the EventBus).  Performs
+        cooldown and concurrency checks, then dispatches to the
+        ``on_trigger`` callback.
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook this subscription belongs to.
+        trigger:
+            The :class:`PlaybookTrigger` that matched.
+        data:
+            The event payload dict from the EventBus.
+        """
+        playbook = self._active.get(playbook_id)
+        if playbook is None:
+            logger.debug(
+                "Trigger '%s' fired but playbook '%s' is no longer active — skipping",
+                trigger.event_type,
+                playbook_id,
+            )
+            return
+
+        # Check cooldown (roadmap 5.3.4)
+        scope = data.get("scope", "system")
+        if self.is_on_cooldown(playbook_id, scope):
+            remaining = self.get_cooldown_remaining(playbook_id, scope)
+            logger.debug(
+                "Trigger '%s' for playbook '%s' skipped — on cooldown (%.1fs remaining, scope=%s)",
+                trigger.event_type,
+                playbook_id,
+                remaining,
+                scope,
+            )
+            return
+
+        # Check concurrency (roadmap 5.3.5)
+        if not self.can_start_run():
+            logger.debug(
+                "Trigger '%s' for playbook '%s' skipped — concurrency cap reached (%d/%s running)",
+                trigger.event_type,
+                playbook_id,
+                self.running_count,
+                self._max_concurrent_runs if self._max_concurrent_runs > 0 else "∞",
+            )
+            return
+
+        # Dispatch to callback
+        if self._on_trigger is not None:
+            logger.debug(
+                "Trigger '%s' matched playbook '%s' (filter=%s) — dispatching",
+                trigger.event_type,
+                playbook_id,
+                trigger.filter,
+            )
+            try:
+                result = self._on_trigger(playbook, data)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.error(
+                    "on_trigger callback failed for playbook '%s' (trigger=%s)",
+                    playbook_id,
+                    trigger.event_type,
+                    exc_info=True,
+                )
+        else:
+            logger.debug(
+                "Trigger '%s' matched playbook '%s' but no on_trigger callback set",
+                trigger.event_type,
+                playbook_id,
+            )
+
+    def _refresh_subscriptions(self) -> None:
+        """Rebuild EventBus subscriptions if they were previously active.
+
+        Called automatically after playbook mutations (add, remove, compile)
+        to keep subscriptions in sync with the active playbook set.
+        Does nothing if :meth:`subscribe_to_events` has not been called.
+        """
+        if self._subscribed and self._event_bus is not None:
+            self.subscribe_to_events()
 
     async def load_from_disk(self) -> int:
         """Load previously compiled playbooks from the data directory.
@@ -610,6 +855,7 @@ class PlaybookManager:
 
         if loaded:
             logger.info("Loaded %d compiled playbook(s) from disk", loaded)
+            self._refresh_subscriptions()
         return loaded
 
     async def load_from_store(self) -> int:
@@ -658,6 +904,7 @@ class PlaybookManager:
 
         if loaded:
             logger.info("Loaded %d compiled playbook(s) from store across all scopes", loaded)
+            self._refresh_subscriptions()
         return loaded
 
     async def compile_playbook(
@@ -770,6 +1017,7 @@ class PlaybookManager:
                 source_path=source_path,
                 retries_used=result.retries_used,
             )
+            self._refresh_subscriptions()
         else:
             # Failure — previous version stays active
             previous_version = existing.version if existing else None
@@ -815,6 +1063,7 @@ class PlaybookManager:
             self._unindex_triggers(removed)
             self._remove_compiled(playbook_id)
             self.clear_cooldown(playbook_id)  # Clean up cooldown state
+            self._refresh_subscriptions()
             logger.info(
                 "Playbook '%s' removed from active registry (was v%d)",
                 playbook_id,
@@ -833,9 +1082,10 @@ class PlaybookManager:
         ID to the corresponding set in ``_trigger_map``.
         """
         for trigger in playbook.triggers:
-            if trigger not in self._trigger_map:
-                self._trigger_map[trigger] = set()
-            self._trigger_map[trigger].add(playbook.id)
+            event_type = trigger.event_type
+            if event_type not in self._trigger_map:
+                self._trigger_map[event_type] = set()
+            self._trigger_map[event_type].add(playbook.id)
 
     def _unindex_triggers(self, playbook: CompiledPlaybook) -> None:
         """Remove a playbook's triggers from the trigger mapping.
@@ -845,11 +1095,12 @@ class PlaybookManager:
         sets to keep the mapping tidy.
         """
         for trigger in playbook.triggers:
-            ids = self._trigger_map.get(trigger)
+            event_type = trigger.event_type
+            ids = self._trigger_map.get(event_type)
             if ids is not None:
                 ids.discard(playbook.id)
                 if not ids:
-                    del self._trigger_map[trigger]
+                    del self._trigger_map[event_type]
 
     def _rebuild_trigger_map(self) -> None:
         """Rebuild the trigger mapping from scratch.

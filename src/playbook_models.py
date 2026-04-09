@@ -69,6 +69,107 @@ class PlaybookRunStatus(Enum):
 
 
 # ---------------------------------------------------------------------------
+# Trigger (event type + optional payload filter)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PlaybookTrigger:
+    """An event trigger for a playbook — event type with optional payload filter.
+
+    Triggers can be defined in playbook frontmatter as either:
+
+    - **String shorthand**: ``"task.completed"`` — matches all events of that type.
+    - **Structured dict**: ``{"event_type": "playbook.run.completed", "filter":
+      {"playbook_id": "code-quality-gate"}}`` — matches only when all filter
+      key/value pairs match the event payload.
+
+    See ``docs/specs/design/playbooks.md`` Section 10 (Composability) for the
+    full specification of event payload filtering.
+
+    The filter uses AND semantics: every key/value pair must match the
+    corresponding field in the event payload.  This aligns with the
+    :class:`~src.event_bus.EventBus` ``filter`` parameter on ``subscribe()``.
+
+    Examples
+    --------
+    >>> t1 = PlaybookTrigger(event_type="task.completed")
+    >>> t2 = PlaybookTrigger(
+    ...     event_type="playbook.run.completed",
+    ...     filter={"playbook_id": "code-quality-gate"},
+    ... )
+    """
+
+    event_type: str
+    filter: dict[str, Any] | None = None
+
+    def __eq__(self, other: object) -> bool:
+        """Support equality with both PlaybookTrigger and plain strings.
+
+        String comparison returns ``True`` when the trigger has no filter and
+        the event types match.  This preserves backward compatibility with
+        code that compares triggers to strings (e.g. ``trigger == "git.commit"``).
+        """
+        if isinstance(other, str):
+            return self.event_type == other and self.filter is None
+        if isinstance(other, PlaybookTrigger):
+            return self.event_type == other.event_type and self.filter == other.filter
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        filter_key = tuple(sorted(self.filter.items())) if self.filter else None
+        return hash((self.event_type, filter_key))
+
+    def __str__(self) -> str:
+        return self.event_type
+
+    def __repr__(self) -> str:
+        if self.filter:
+            return f"PlaybookTrigger({self.event_type!r}, filter={self.filter!r})"
+        return f"PlaybookTrigger({self.event_type!r})"
+
+    def to_value(self) -> str | dict[str, Any]:
+        """Serialize to JSON-compatible value (string shorthand or dict).
+
+        Returns the string shorthand when no filter is present, or a dict
+        with ``event_type`` and ``filter`` keys when a filter is set.  This
+        matches the compiled JSON format defined in the spec.
+        """
+        if self.filter is None:
+            return self.event_type
+        return {"event_type": self.event_type, "filter": self.filter}
+
+    @classmethod
+    def from_value(cls, val: str | dict[str, Any] | PlaybookTrigger) -> PlaybookTrigger:
+        """Create from a string, dict, or existing PlaybookTrigger.
+
+        Accepts all three forms that can appear in compiled JSON or in-memory:
+
+        - ``"task.completed"`` → ``PlaybookTrigger(event_type="task.completed")``
+        - ``{"event_type": "...", "filter": {...}}`` → full structured trigger
+        - ``PlaybookTrigger(...)`` → returned as-is
+
+        Raises
+        ------
+        TypeError
+            If *val* is not a supported type.
+        ValueError
+            If a dict is missing the required ``event_type`` key.
+        """
+        if isinstance(val, PlaybookTrigger):
+            return val
+        if isinstance(val, str):
+            return cls(event_type=val)
+        if isinstance(val, dict):
+            if "event_type" not in val:
+                raise ValueError(
+                    f"Structured trigger dict must have 'event_type' key, got: {val!r}"
+                )
+            return cls(event_type=val["event_type"], filter=val.get("filter"))
+        raise TypeError(f"Cannot create PlaybookTrigger from {type(val).__name__}: {val!r}")
+
+
+# ---------------------------------------------------------------------------
 # LLM configuration override
 # ---------------------------------------------------------------------------
 
@@ -270,7 +371,7 @@ class CompiledPlaybook:
     id: str
     version: int
     source_hash: str
-    triggers: list[str]
+    triggers: list[str | PlaybookTrigger]
     scope: str  # "system", "project", or "agent-type:{type}"
     nodes: dict[str, PlaybookNode] = field(default_factory=dict)
     cooldown_seconds: int | None = None
@@ -278,6 +379,24 @@ class CompiledPlaybook:
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
     compiled_at: str | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize trigger entries to :class:`PlaybookTrigger` objects.
+
+        Accepts a mixed list of strings and dicts (both valid in compiled
+        JSON) and converts all entries to ``PlaybookTrigger`` instances.
+        Existing ``PlaybookTrigger`` instances are passed through unchanged.
+        """
+        self.triggers = [PlaybookTrigger.from_value(t) for t in self.triggers]
+
+    @property
+    def trigger_event_types(self) -> list[str]:
+        """Return a sorted list of unique event types across all triggers.
+
+        Convenience accessor for code that only needs the event type strings
+        (e.g. trigger map indexing) without filter details.
+        """
+        return sorted({t.event_type for t in self.triggers})
 
     # -- scope helpers -------------------------------------------------------
 
@@ -410,6 +529,10 @@ class CompiledPlaybook:
             errors.append("Missing required field: id")
         if not self.triggers:
             errors.append("Missing required field: triggers (must be non-empty list)")
+        else:
+            for i, trigger in enumerate(self.triggers):
+                if not trigger.event_type:
+                    errors.append(f"Trigger[{i}]: event_type must be non-empty")
         if not self.scope:
             errors.append("Missing required field: scope")
         if not self.source_hash:
@@ -515,7 +638,7 @@ class CompiledPlaybook:
             "id": self.id,
             "version": self.version,
             "source_hash": self.source_hash,
-            "triggers": self.triggers,
+            "triggers": [t.to_value() for t in self.triggers],
             "scope": self.scope,
             "nodes": {nid: node.to_dict() for nid, node in self.nodes.items()},
         }
@@ -752,8 +875,36 @@ def generate_json_schema() -> dict[str, Any]:
             },
             "triggers": {
                 "type": "array",
-                "description": "Event types that start this playbook.",
-                "items": {"type": "string", "minLength": 1},
+                "description": (
+                    "Event triggers that start this playbook. Each item is either "
+                    "a string (event type, matches all events of that type) or an "
+                    "object with 'event_type' and optional 'filter' for payload "
+                    "filtering (see spec §10 Composability)."
+                ),
+                "items": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "object",
+                            "required": ["event_type"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "event_type": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "The event type to trigger on.",
+                                },
+                                "filter": {
+                                    "type": "object",
+                                    "description": (
+                                        "Payload filter — all key/value pairs must "
+                                        "match fields in the event data."
+                                    ),
+                                },
+                            },
+                        },
+                    ]
+                },
                 "minItems": 1,
             },
             "scope": {

@@ -312,8 +312,29 @@ class PlaybookCompiler:
             errors.append("Frontmatter missing required field: 'triggers'")
         elif not isinstance(triggers, list):
             errors.append("Frontmatter 'triggers' must be a list")
-        elif not all(isinstance(t, str) and t for t in triggers):
-            errors.append("Frontmatter 'triggers' must be a list of non-empty strings")
+        else:
+            for i, t in enumerate(triggers):
+                if isinstance(t, str):
+                    if not t:
+                        errors.append(
+                            f"Frontmatter 'triggers[{i}]': string trigger must be non-empty"
+                        )
+                elif isinstance(t, dict):
+                    # Structured trigger: {"type": "...", "filter": {...}}
+                    # YAML uses "type" key, compiled JSON uses "event_type"
+                    event_type = t.get("type") or t.get("event_type")
+                    if not event_type or not isinstance(event_type, str):
+                        errors.append(
+                            f"Frontmatter 'triggers[{i}]': structured trigger must have "
+                            "a non-empty 'type' (or 'event_type') string"
+                        )
+                    if "filter" in t and not isinstance(t.get("filter"), dict):
+                        errors.append(f"Frontmatter 'triggers[{i}]': 'filter' must be a dict")
+                else:
+                    errors.append(
+                        f"Frontmatter 'triggers[{i}]': must be a string or dict, "
+                        f"got {type(t).__name__}"
+                    )
 
         if not frontmatter.get("scope"):
             errors.append("Frontmatter missing required field: 'scope'")
@@ -529,7 +550,21 @@ class PlaybookCompiler:
 
         # Authoritative fields from frontmatter
         result["id"] = frontmatter["id"]
-        result["triggers"] = frontmatter["triggers"]
+        # Normalize triggers: YAML uses "type" key, compiled JSON uses "event_type"
+        raw_triggers = frontmatter["triggers"]
+        normalized_triggers: list[str | dict] = []
+        for t in raw_triggers:
+            if isinstance(t, str):
+                normalized_triggers.append(t)
+            elif isinstance(t, dict):
+                event_type = t.get("type") or t.get("event_type", "")
+                trigger_dict: dict = {"event_type": event_type}
+                if "filter" in t:
+                    trigger_dict["filter"] = t["filter"]
+                normalized_triggers.append(trigger_dict)
+            else:
+                normalized_triggers.append(t)
+        result["triggers"] = normalized_triggers
         result["scope"] = frontmatter["scope"]
         result["source_hash"] = source_hash
         result["version"] = version

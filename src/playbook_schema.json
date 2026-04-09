@@ -31,10 +31,32 @@
     },
     "triggers": {
       "type": "array",
-      "description": "Event types that start this playbook.",
+      "description": "Event triggers that start this playbook. Each item is either a string (event type, matches all events of that type) or an object with 'event_type' and optional 'filter' for payload filtering (see spec \u00a710 Composability).",
       "items": {
-        "type": "string",
-        "minLength": 1
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "type": "object",
+            "required": [
+              "event_type"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "event_type": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The event type to trigger on."
+              },
+              "filter": {
+                "type": "object",
+                "description": "Payload filter \u2014 all key/value pairs must match fields in the event data."
+              }
+            }
+          }
+        ]
       },
       "minItems": 1
     },
