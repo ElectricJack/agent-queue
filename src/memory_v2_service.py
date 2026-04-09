@@ -44,7 +44,13 @@ from src.facts_parser import extract_preamble, parse_facts_file, render_facts_fi
 logger = logging.getLogger(__name__)
 
 try:
-    from memsearch import CollectionRouter, MemoryScope, collection_name, vault_paths
+    from memsearch import (
+        CollectionRouter,
+        MemoryScope,
+        collection_name,
+        resolve_scopes,
+        vault_paths,
+    )
     from memsearch.embeddings import EmbeddingProvider, get_provider
     from memsearch.store import MilvusStore
 
@@ -54,6 +60,7 @@ except ImportError:
     CollectionRouter = None  # type: ignore[assignment,misc]
     MemoryScope = None  # type: ignore[assignment,misc]
     collection_name = None  # type: ignore[assignment]
+    resolve_scopes = None  # type: ignore[assignment]
     vault_paths = None  # type: ignore[assignment]
     EmbeddingProvider = None  # type: ignore[assignment,misc]
     get_provider = None  # type: ignore[assignment]
@@ -666,27 +673,22 @@ class MemoryV2Service:
         if not self.available:
             return None
 
-        # Build scope search order: most specific first
-        scopes: list[str | None] = []
-        if project_id:
-            scopes.append(f"project_{project_id}")
-        if agent_type:
-            scopes.append(f"agenttype_{agent_type}")
-        scopes.append("system")
+        # Use the scope resolver to build the ordered scope list,
+        # consistent with CollectionRouter.recall() and .search().
+        scope_entries = resolve_scopes(
+            agent_type=agent_type,
+            project_id=project_id,
+        )
 
         ns = namespace or ""
 
-        for scope in scopes:
-            # Use project_id as fallback for _get_store (it's the default
-            # when scope is None, but here scope is always explicit).
-            store = self._get_store(project_id or "", scope)
+        for entry in scope_entries:
+            store = self._router.get_store(entry.scope, entry.scope_id)
             result = await asyncio.to_thread(store.get_kv, key, namespace=ns)
             if result is not None:
-                mem_scope, scope_id = self._resolve_scope(project_id or "", scope)
-                coll_name = collection_name(mem_scope, scope_id)
-                result["_collection"] = coll_name
-                result["_scope"] = mem_scope.value
-                result["_scope_id"] = scope_id
+                result["_collection"] = entry.collection
+                result["_scope"] = entry.scope.value
+                result["_scope_id"] = entry.scope_id
                 return result
 
         return None

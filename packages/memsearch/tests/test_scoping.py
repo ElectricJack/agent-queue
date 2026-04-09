@@ -3659,3 +3659,413 @@ class TestRoadmap318ScopeResolution:
         # But weight values reflect the custom config
         assert entries[0].weight == 0.1
         assert entries[2].weight == 0.9
+
+
+# ---- Roadmap 3.1.9: KV scope resolution with first-match-wins ---------------
+# Spec: docs/specs/design/memory-scoping.md §6 — Multi-Scope Query
+#
+#   (a) KV key exists in project scope — returns project value,
+#       does NOT query agent-type or system
+#   (b) KV key missing from project scope, exists in agent-type scope —
+#       returns agent-type value
+#   (c) KV key missing from project and agent-type, exists in system —
+#       returns system value
+#   (d) KV key missing from all scopes — returns None/empty
+#   (e) Same key exists in both project and system scope — project value
+#       wins (first-match)
+#   (f) Writing a KV entry writes to the most specific scope
+#       (project if project_id is set)
+#   (g) Deleting a project-scope KV entry causes fallthrough to
+#       agent-type/system value
+
+
+@pytestmark_milvus
+class TestRoadmap319KVScopeResolution:
+    """Roadmap 3.1.9 — KV scope resolution with first-match-wins per §6.
+
+    Each test method maps 1:1 to a roadmap case letter.  Uses real Milvus
+    Lite stores (via ``CollectionRouter``) with KV entries seeded in
+    different scopes to verify correct first-match-wins semantics.
+    """
+
+    @pytest.fixture
+    def kv_router(self, tmp_path: Path):
+        """Router with KV entries spread across project, agent-type, and system scopes.
+
+        Seed data:
+          - project "myapp":   tech_stack = "Python+SQLAlchemy" (ns=project)
+                               deploy_branch = "main"          (ns=project)
+          - agent-type "coding": test_command = "pytest -v"     (ns=conventions)
+                                 tech_stack = "Python"          (ns=project)
+          - system:            version = "1.0"                  (ns=system)
+                               tech_stack = "Generic"           (ns=project)
+        """
+        db = tmp_path / "roadmap_319.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        # -- Project scope ------------------------------------------------
+        proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.set_kv("tech_stack", "Python+SQLAlchemy", namespace="project")
+        proj_store.set_kv("deploy_branch", "main", namespace="project")
+
+        # -- Agent-type scope ---------------------------------------------
+        at_store = router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.set_kv("test_command", "pytest -v", namespace="conventions")
+        at_store.set_kv("tech_stack", "Python", namespace="project")
+
+        # -- System scope -------------------------------------------------
+        sys_store = router.get_store(MemoryScope.SYSTEM)
+        sys_store.set_kv("version", "1.0", namespace="system")
+        sys_store.set_kv("tech_stack", "Generic", namespace="project")
+
+        yield router
+        router.close()
+
+    # -- (a) Project scope wins — returns project value immediately --------
+
+    @pytest.mark.asyncio
+    async def test_a_project_scope_returns_project_value(
+        self, kv_router: CollectionRouter
+    ):
+        """(a) KV key exists in project scope — returns project value,
+        does NOT query agent-type or system.
+
+        tech_stack is set in all three scopes (project, agent-type, system).
+        With project_id="myapp", the project value must be returned.
+        """
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is not None
+        # Must be the project-scope value, not agent-type or system
+        assert json.loads(value) == "Python+SQLAlchemy"
+
+    @pytest.mark.asyncio
+    async def test_a_project_scope_does_not_query_lower_scopes(
+        self, kv_router: CollectionRouter
+    ):
+        """(a) Verify first-match-wins short-circuits — project hit means
+        the agent-type and system values are never consulted.
+
+        deploy_branch only exists in the project scope; confirms that
+        project scope is checked first and returns immediately.
+        """
+        value = await kv_router.recall(
+            "deploy_branch",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is not None
+        assert json.loads(value) == "main"
+
+    # -- (b) Fallthrough to agent-type scope --------------------------------
+
+    @pytest.mark.asyncio
+    async def test_b_falls_through_to_agent_type(
+        self, kv_router: CollectionRouter
+    ):
+        """(b) KV key missing from project scope, exists in agent-type scope
+        — returns agent-type value.
+
+        test_command only exists in agent-type "coding" scope (namespace
+        "conventions"), not in project "myapp".
+        """
+        value = await kv_router.recall(
+            "test_command",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="conventions",
+        )
+        assert value is not None
+        assert json.loads(value) == "pytest -v"
+
+    # -- (c) Fallthrough to system scope ------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_falls_through_to_system(
+        self, kv_router: CollectionRouter
+    ):
+        """(c) KV key missing from project and agent-type, exists in system
+        — returns system value.
+
+        version only exists in system scope (namespace "system").
+        """
+        value = await kv_router.recall(
+            "version",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="system",
+        )
+        assert value is not None
+        assert json.loads(value) == "1.0"
+
+    # -- (d) Missing from all scopes → None --------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_missing_key_returns_none(
+        self, kv_router: CollectionRouter
+    ):
+        """(d) KV key missing from all scopes — returns None."""
+        value = await kv_router.recall(
+            "nonexistent_key",
+            project_id="myapp",
+            agent_type="coding",
+        )
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_d_missing_namespace_returns_none(
+        self, kv_router: CollectionRouter
+    ):
+        """(d) Key exists but in a different namespace — returns None."""
+        # tech_stack exists in "project" namespace, not "system"
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="system",
+        )
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_d_missing_scopes_returns_none(
+        self, kv_router: CollectionRouter
+    ):
+        """(d) Non-existent project and agent-type, key not in system — None."""
+        value = await kv_router.recall(
+            "deploy_branch",
+            project_id="no_such_project",
+            agent_type="no_such_type",
+            namespace="project",
+        )
+        assert value is None
+
+    # -- (e) Same key in multiple scopes — project wins (first-match) ------
+
+    @pytest.mark.asyncio
+    async def test_e_project_wins_over_system(
+        self, kv_router: CollectionRouter
+    ):
+        """(e) Same key exists in both project and system scope — project
+        value wins (first-match).
+
+        tech_stack is set in project ("Python+SQLAlchemy"), agent-type
+        ("Python"), and system ("Generic").  Project must win.
+        """
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is not None
+        assert json.loads(value) == "Python+SQLAlchemy"
+
+    @pytest.mark.asyncio
+    async def test_e_agent_type_wins_over_system_when_no_project(
+        self, kv_router: CollectionRouter
+    ):
+        """(e) With no project_id, agent-type value wins over system.
+
+        tech_stack is in agent-type ("Python") and system ("Generic").
+        Without a project scope, agent-type is most specific.
+        """
+        value = await kv_router.recall(
+            "tech_stack",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is not None
+        assert json.loads(value) == "Python"
+
+    @pytest.mark.asyncio
+    async def test_e_system_wins_when_no_project_or_agent_type(
+        self, kv_router: CollectionRouter
+    ):
+        """(e) With no project_id or agent_type, system is the only scope.
+
+        tech_stack in system ("Generic") is returned as the only scope.
+        """
+        value = await kv_router.recall(
+            "tech_stack",
+            namespace="project",
+        )
+        assert value is not None
+        assert json.loads(value) == "Generic"
+
+    # -- (f) Writing goes to most specific scope ----------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_write_goes_to_project_scope(
+        self, kv_router: CollectionRouter
+    ):
+        """(f) Writing a KV entry writes to the most specific scope
+        (project if project_id is set).
+
+        Writes "new_key" to project scope, then verifies:
+        1. Recall with project_id returns the value.
+        2. The value is NOT in agent-type or system scope.
+        """
+        # Write to project scope
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.set_kv("new_key", "project_value", namespace="test")
+
+        # Recall should find it in project scope
+        value = await kv_router.recall(
+            "new_key",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="test",
+        )
+        assert value is not None
+        assert json.loads(value) == "project_value"
+
+        # Verify NOT in agent-type scope
+        at_store = kv_router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_result = at_store.get_kv("new_key", namespace="test")
+        assert at_result is None
+
+        # Verify NOT in system scope
+        sys_store = kv_router.get_store(MemoryScope.SYSTEM)
+        sys_result = sys_store.get_kv("new_key", namespace="test")
+        assert sys_result is None
+
+    @pytest.mark.asyncio
+    async def test_f_write_to_system_when_no_project(
+        self, kv_router: CollectionRouter
+    ):
+        """(f) Without project_id, writes to system scope (most specific
+        available scope when only system is targeted).
+        """
+        sys_store = kv_router.get_store(MemoryScope.SYSTEM)
+        sys_store.set_kv("sys_only_key", "sys_value", namespace="test")
+
+        # Recall without project_id or agent_type → system scope only
+        value = await kv_router.recall(
+            "sys_only_key",
+            namespace="test",
+        )
+        assert value is not None
+        assert json.loads(value) == "sys_value"
+
+    @pytest.mark.asyncio
+    async def test_f_write_to_agent_type_scope(
+        self, kv_router: CollectionRouter
+    ):
+        """(f) Writing directly to agent-type scope stores it there."""
+        at_store = kv_router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.set_kv("at_only_key", "at_value", namespace="test")
+
+        # Recall with agent_type but no project → agent-type scope first
+        value = await kv_router.recall(
+            "at_only_key",
+            agent_type="coding",
+            namespace="test",
+        )
+        assert value is not None
+        assert json.loads(value) == "at_value"
+
+        # Not visible in project scope
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_result = proj_store.get_kv("at_only_key", namespace="test")
+        assert proj_result is None
+
+    # -- (g) Deleting project entry → fallthrough to lower scope -----------
+
+    @pytest.mark.asyncio
+    async def test_g_delete_project_causes_fallthrough_to_agent_type(
+        self, kv_router: CollectionRouter
+    ):
+        """(g) Deleting a project-scope KV entry causes fallthrough to
+        agent-type value.
+
+        tech_stack exists in project ("Python+SQLAlchemy") and agent-type
+        ("Python").  After deleting from project, agent-type wins.
+        """
+        # Pre-condition: project value wins
+        before = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert json.loads(before) == "Python+SQLAlchemy"
+
+        # Delete from project scope
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        deleted = proj_store.delete_kv("tech_stack", namespace="project")
+        assert deleted is True
+
+        # After deletion: agent-type value should win via fallthrough
+        after = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert after is not None
+        assert json.loads(after) == "Python"
+
+    @pytest.mark.asyncio
+    async def test_g_delete_project_causes_fallthrough_to_system(
+        self, kv_router: CollectionRouter
+    ):
+        """(g) Deleting project AND agent-type entries causes fallthrough
+        to system value.
+
+        After deleting tech_stack from both project and agent-type scopes,
+        the system value ("Generic") should win.
+        """
+        # Delete from project scope
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.delete_kv("tech_stack", namespace="project")
+
+        # Delete from agent-type scope
+        at_store = kv_router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.delete_kv("tech_stack", namespace="project")
+
+        # Now system value should win
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is not None
+        assert json.loads(value) == "Generic"
+
+    @pytest.mark.asyncio
+    async def test_g_delete_all_scopes_returns_none(
+        self, kv_router: CollectionRouter
+    ):
+        """(g) Deleting from all scopes returns None — no fallthrough target."""
+        # Delete tech_stack from all three scopes
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.delete_kv("tech_stack", namespace="project")
+
+        at_store = kv_router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.delete_kv("tech_stack", namespace="project")
+
+        sys_store = kv_router.get_store(MemoryScope.SYSTEM)
+        sys_store.delete_kv("tech_stack", namespace="project")
+
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_g_delete_idempotent(
+        self, kv_router: CollectionRouter
+    ):
+        """(g) Deleting a non-existent key returns False (no error)."""
+        proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
+        result = proj_store.delete_kv("nonexistent_key", namespace="project")
+        assert result is False

@@ -1063,6 +1063,10 @@ class CollectionRouter:
         Per spec §6: searches project → agent-type → system in order,
         returning the value from the first scope that has a matching entry.
 
+        Uses :func:`resolve_scopes` to build the ordered scope list,
+        ensuring consistent scope resolution with :meth:`search` and
+        other multi-scope operations.
+
         Parameters
         ----------
         key:
@@ -1081,16 +1085,14 @@ class CollectionRouter:
             The ``kv_value`` from the most specific scope that has the
             key, or ``None`` if not found in any scope.
         """
-        scopes: list[tuple[MemoryScope, str | None]] = []
-        if project_id:
-            scopes.append((MemoryScope.PROJECT, project_id))
-        if agent_type:
-            scopes.append((MemoryScope.AGENT_TYPE, agent_type))
-        scopes.append((MemoryScope.SYSTEM, None))
+        scope_entries = resolve_scopes(
+            agent_type=agent_type,
+            project_id=project_id,
+        )
 
         escaped_key = _escape_filter_value(key)
-        for scope, scope_id in scopes:
-            store = self._get_store_if_exists(scope, scope_id)
+        for entry in scope_entries:
+            store = self._get_store_if_exists(entry.scope, entry.scope_id)
             if store is None:
                 continue
 
@@ -1108,8 +1110,8 @@ class CollectionRouter:
             except Exception:
                 logger.warning(
                     "KV recall failed for %s/%s",
-                    scope.value,
-                    scope_id,
+                    entry.scope.value,
+                    entry.scope_id,
                     exc_info=True,
                 )
                 continue
