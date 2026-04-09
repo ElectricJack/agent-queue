@@ -97,7 +97,19 @@ class MemoryManager:
         """
         return os.path.join(self._storage_root, "tasks", project_id)
 
-    def _migrate_legacy_tasks(self, project_id: str) -> None:
+    def _reindex_marker_path(self, project_id: str) -> str:
+        """Path to the post-migration reindex marker for a project.
+
+        When ``_migrate_legacy_tasks()`` moves files out of the memory tree,
+        it writes this marker so that the next ``get_instance()`` call triggers
+        an ``index()`` to purge stale vector-store entries.  The marker is
+        removed after reindex completes (or fails — it's best-effort).
+
+        Non-``.md`` extension ensures MemSearch won't try to index it.
+        """
+        return os.path.join(self._project_memory_dir(project_id), ".needs_reindex")
+
+    def _migrate_legacy_tasks(self, project_id: str) -> bool:
         """Move task records from legacy ``memory/*/tasks/`` to ``tasks/*/``.
 
         The old layout stored task markdown files inside the memory tree at
@@ -109,12 +121,19 @@ class MemoryManager:
         (``{data_dir}/tasks/{project_id}/``) and removes the legacy directory
         so future MemSearch scans no longer encounter them.
 
+        When files are actually migrated, a ``.needs_reindex`` marker is
+        written so that ``get_instance()`` triggers a vector-store cleanup
+        on the next startup.
+
+        Returns ``True`` when files were migrated (and a reindex marker was
+        written), ``False`` otherwise.
+
         Safe to call repeatedly — it's a no-op once the legacy directory is
         gone.  Per vault spec §6 (Migration Path, Phase 1).
         """
         legacy_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
         if not os.path.isdir(legacy_dir):
-            return
+            return False
 
         new_dir = self._tasks_dir(project_id)
         os.makedirs(new_dir, exist_ok=True)
@@ -142,6 +161,16 @@ class MemoryManager:
                 migrated,
                 project_id,
             )
+            # Write marker so get_instance() triggers a reindex to purge
+            # stale vector-store entries for the moved task files.
+            try:
+                marker = self._reindex_marker_path(project_id)
+                with open(marker, "w") as f:
+                    f.write("reindex-after-task-migration\n")
+            except OSError:
+                logger.debug("Could not write reindex marker for project %s", project_id)
+
+        return migrated > 0
 
     def _profile_path(self, project_id: str) -> str:
         """Path to the project profile file.
@@ -280,6 +309,33 @@ class MemoryManager:
                 overlap_lines=self.config.overlap_lines,
             )
             self._instances[project_id] = instance
+
+            # Purge stale vector-store entries after task file migration.
+            # _migrate_legacy_tasks() writes a .needs_reindex marker when
+            # it moves files out of the memory tree; a non-force index()
+            # scan detects those files as deleted and removes their chunks.
+            # The marker survives daemon restarts so cleanup is guaranteed.
+            marker = self._reindex_marker_path(project_id)
+            if os.path.isfile(marker):
+                try:
+                    result = await instance.index()
+                    count = result if isinstance(result, int) else 0
+                    logger.info(
+                        "Re-indexed project %s memory after task migration (%d chunks)",
+                        project_id,
+                        count,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Post-migration reindex failed for project %s: %s",
+                        project_id,
+                        e,
+                    )
+                finally:
+                    try:
+                        os.remove(marker)
+                    except OSError:
+                        pass
 
             # Index individual root-level doc files (CLAUDE.md, README.md)
             await self._index_project_doc_files(instance, workspace_path)

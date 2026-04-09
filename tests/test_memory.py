@@ -269,6 +269,94 @@ class TestMemoryManager:
 
         assert not legacy_dir.exists()
 
+    def test_migrate_legacy_tasks_writes_reindex_marker(self, tmp_path):
+        """Migration creates .needs_reindex marker when files are moved."""
+        legacy_dir = tmp_path / "memory" / "proj" / "tasks"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "task-001.md").write_text("# Task 001")
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        result = mgr._migrate_legacy_tasks("proj")
+
+        assert result is True
+        marker = tmp_path / "memory" / "proj" / ".needs_reindex"
+        assert marker.exists()
+
+    def test_migrate_legacy_tasks_no_marker_when_empty(self, tmp_path):
+        """Empty legacy dir doesn't create a reindex marker."""
+        legacy_dir = tmp_path / "memory" / "proj" / "tasks"
+        legacy_dir.mkdir(parents=True)
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        result = mgr._migrate_legacy_tasks("proj")
+
+        assert result is False
+        marker = tmp_path / "memory" / "proj" / ".needs_reindex"
+        assert not marker.exists()
+
+    def test_migrate_legacy_tasks_no_marker_when_absent(self, tmp_path):
+        """No legacy dir — returns False, no marker created."""
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        result = mgr._migrate_legacy_tasks("proj")
+
+        assert result is False
+
+    # -- Post-migration reindex --------------------------------------------
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_get_instance_reindexes_on_marker(self, MockMemSearch, tmp_path):
+        """get_instance() triggers index() and removes marker when .needs_reindex exists."""
+        mock_instance = MagicMock()
+        mock_instance.index = AsyncMock(return_value=42)
+        MockMemSearch.return_value = mock_instance
+
+        # Create marker
+        mem_dir = tmp_path / "memory" / "proj"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / ".needs_reindex").write_text("reindex-after-task-migration")
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        instance = await mgr.get_instance("proj", str(tmp_path))
+
+        assert instance is mock_instance
+        mock_instance.index.assert_called_once()
+        assert not (mem_dir / ".needs_reindex").exists()
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_get_instance_no_reindex_without_marker(self, MockMemSearch, tmp_path):
+        """get_instance() doesn't call index() when no marker exists."""
+        mock_instance = MagicMock()
+        mock_instance.index = AsyncMock()
+        MockMemSearch.return_value = mock_instance
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        instance = await mgr.get_instance("proj", str(tmp_path))
+
+        assert instance is mock_instance
+        mock_instance.index.assert_not_called()
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_get_instance_reindex_failure_removes_marker(self, MockMemSearch, tmp_path):
+        """Marker is removed even if reindex fails."""
+        mock_instance = MagicMock()
+        mock_instance.index = AsyncMock(side_effect=RuntimeError("index boom"))
+        MockMemSearch.return_value = mock_instance
+
+        mem_dir = tmp_path / "memory" / "proj"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / ".needs_reindex").write_text("reindex-after-task-migration")
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        instance = await mgr.get_instance("proj", str(tmp_path))
+
+        # Instance still returned despite reindex failure
+        assert instance is mock_instance
+        # Marker removed by finally clause
+        assert not (mem_dir / ".needs_reindex").exists()
+
     # -- Project doc file indexing -----------------------------------------
 
     @patch("src.memory.MEMSEARCH_AVAILABLE", True)
