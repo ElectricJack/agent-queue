@@ -798,12 +798,27 @@ class ClaudeAdapter(AgentAdapter):
         return None
 
     def _build_prompt(self) -> str:
-        """Build the final prompt from TaskContext using PromptBuilder."""
+        """Build the final prompt from TaskContext using PromptBuilder.
+
+        L0 (role) and L1 (facts) are injected as first-class PromptBuilder
+        layers from TaskContext, ensuring they are always present at the top
+        of the prompt in the correct tier order (L0 → L1 → description).
+        See docs/specs/design/memory-scoping.md §2 and Roadmap 3.3.5.
+        """
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
 
-        # Main description (already assembled by orchestrator)
+        # L0 Identity tier — agent role (~50 tokens, always present at task start)
+        if self._task.l0_role:
+            builder.set_l0_role(self._task.l0_role)
+
+        # L1 Critical Facts tier — project/agent-type KV entries (~200 tokens)
+        if self._task.l1_facts:
+            builder.set_l1_facts(self._task.l1_facts)
+
+        # Main description (assembled by orchestrator: system context,
+        # execution rules, override, upstream work, task description)
         if self._task.description:
             builder.add_context("description", self._task.description)
 

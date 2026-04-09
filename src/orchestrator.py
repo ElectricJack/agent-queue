@@ -4277,12 +4277,10 @@ class Orchestrator:
                     "and have already been completed:\n\n" + "\n\n".join(dep_sections),
                 )
 
-        # L0 Identity tier — agent role description (~50 tokens, always present).
-        # Sources: (1) vault profile.md ## Role section, (2) AgentProfile.system_prompt_suffix.
-        # See docs/specs/design/memory-scoping.md §2.
-        if profile and profile.system_prompt_suffix:
-            builder.set_l0_role(profile.system_prompt_suffix)
-
+        # L0 Identity tier and L1 Critical Facts tier are now injected via
+        # TaskContext fields (l0_role, l1_facts) and handled by the adapter's
+        # prompt builder.  See Roadmap 3.3.5.
+        #
         # Project-specific override — freeform English that supplements or tweaks
         # the base profile for this project.  Injected right after L0 role so the
         # LLM sees base profile + override together.
@@ -4291,21 +4289,6 @@ class Orchestrator:
             override_text = await self._load_project_override(task.project_id, profile.id)
             if override_text:
                 builder.set_override_content(override_text)
-
-        # L1 Critical Facts tier — project + agent-type KV entries (~200 tokens).
-        # Eagerly loaded at task start from vault facts.md files.  No search needed.
-        # The profile.id serves as the agent_type for memory scoping (e.g. "coding").
-        # See docs/specs/design/memory-scoping.md §2 (L1 tier).
-        if self._memory_v2_service:
-            try:
-                l1_text = await self._memory_v2_service.load_l1_facts(
-                    project_id=task.project_id,
-                    agent_type=profile.id if profile else None,
-                )
-                if l1_text:
-                    builder.set_l1_facts(l1_text)
-            except Exception as e:
-                logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
 
         # Task description
         builder.add_context("task", f"## Task\n{task.description}")
@@ -4954,6 +4937,30 @@ For EACH workspace listed above, perform these steps IN ORDER:
             task, workspace, project, profile
         )
 
+        # ------------------------------------------------------------------ #
+        # L0 Identity tier and L1 Critical Facts tier.
+        #
+        # These are computed here and passed as first-class TaskContext fields
+        # so the adapter can inject them at the correct position in its own
+        # PromptBuilder (L0 → L1 → description).  They are *always* present
+        # at task start — see docs/specs/design/memory-scoping.md §2.
+        # ------------------------------------------------------------------ #
+        l0_role = ""
+        if profile and profile.system_prompt_suffix:
+            l0_role = profile.system_prompt_suffix.strip()
+
+        l1_facts = ""
+        if self._memory_v2_service:
+            try:
+                l1_text = await self._memory_v2_service.load_l1_facts(
+                    project_id=task.project_id,
+                    agent_type=profile.id if profile else None,
+                )
+                if l1_text:
+                    l1_facts = l1_text
+            except Exception as e:
+                logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
+
         # Merge MCP servers: start with the daemon's own MCP server (if
         # inject_into_tasks is enabled), then layer profile-specific servers
         # on top.  Profile servers win on name collisions.
@@ -4964,6 +4971,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
+            l0_role=l0_role,
+            l1_facts=l1_facts,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
