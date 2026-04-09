@@ -6715,14 +6715,16 @@ feature work stuck on feature branches across multiple workspaces.
                     )
                 }
             # Timeout node transition succeeded — return the result
-            return {
+            resp = {
                 "resumed": run_id,
                 "playbook_id": db_run.playbook_id,
                 "status": result.status,
                 "tokens_used": result.tokens_used,
                 "timeout_transition": True,
-                "error": result.error,
             }
+            if result.error:
+                resp["error"] = result.error
+            return resp
 
         # Resolve the playbook graph — pinned_graph is preferred (version
         # pinning), but fall back to the current active version if needed.
@@ -6766,13 +6768,15 @@ feature work stuck on feature branches across multiple workspaces.
             logger.error("Playbook resume failed for run %s: %s", run_id, exc, exc_info=True)
             return {"error": f"Resume failed: {exc}"}
 
-        return {
+        resp = {
             "resumed": run_id,
             "playbook_id": db_run.playbook_id,
             "status": result.status,
             "tokens_used": result.tokens_used,
-            "error": result.error,
         }
+        if result.error:
+            resp["error"] = result.error
+        return resp
 
     @staticmethod
     def _get_paused_at(db_run) -> float | None:

@@ -1860,17 +1860,15 @@ class PlaybookResumeModal(discord.ui.Modal, title="Resume Playbook"):
             "resume_playbook",
             {"run_id": self.run_id, "human_input": self.human_input.value},
         )
-        if not result.get("success"):
-            error = result.get("error", "Unknown error")
-            await interaction.followup.send(f"Could not resume playbook: {error}", ephemeral=True)
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not resume playbook: {result['error']}", ephemeral=True
+            )
         else:
             await interaction.followup.send(
                 f"▶️ Playbook run `{self.run_id}` resumed with your input.",
                 ephemeral=True,
             )
-            # Disable buttons on the original message
-            for child in self.children if hasattr(self, "children") else []:
-                child.disabled = True
 
 
 class PlaybookResumeView(discord.ui.View):
@@ -1911,9 +1909,9 @@ class PlaybookResumeView(discord.ui.View):
         result = await self._handler.execute(
             "list_playbook_runs", {"status": "paused", "limit": 10}
         )
-        if not result.get("success"):
+        if "error" in result:
             await interaction.followup.send(
-                f"Could not list runs: {result.get('error', 'Unknown error')}",
+                f"Could not list runs: {result['error']}",
                 ephemeral=True,
             )
         else:

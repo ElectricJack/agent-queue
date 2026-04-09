@@ -32,6 +32,7 @@ from src.playbook_runner import (
     DailyTokenTracker,
     NodeTraceEntry,
     PlaybookRunner,
+    RunResult,
     _compare,
     _dot_get,
     _estimate_tokens,
@@ -6445,6 +6446,410 @@ class TestResumePlaybookCommand:
         assert "error" in result
         assert "completed" in result["error"]
         assert "not 'paused'" in result["error"]
+
+    async def test_resume_happy_path(self):
+        """resume_playbook successfully resumes a paused run via PlaybookRunner.resume."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "review": {"prompt": "Review code", "wait_for_human": True, "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        paused_run = PlaybookRun(
+            run_id="run-42",
+            playbook_id="test-pb",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 60,
+            paused_at=time.time() - 30,
+            pinned_graph=json.dumps(graph),
+            conversation_history=json.dumps([
+                {"role": "user", "content": "Review this code"},
+                {"role": "assistant", "content": "I found issues."},
+            ]),
+            node_trace=json.dumps([
+                {"node_id": "review", "started_at": time.time() - 60, "status": "paused"},
+            ]),
+            tokens_used=100,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        mock_result = RunResult(
+            run_id="run-42",
+            status="completed",
+            node_trace=[{"node_id": "review"}, {"node_id": "done"}],
+            tokens_used=250,
+            error=None,
+        )
+
+        with (
+            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+        ):
+            mock_sup = MockSupervisor.return_value
+            mock_sup.initialize.return_value = True
+            MockRunner.resume = AsyncMock(return_value=mock_result)
+            MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
+
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-42", "human_input": "Looks good, approved!"}
+            )
+
+        assert "error" not in result
+        assert result["resumed"] == "run-42"
+        assert result["playbook_id"] == "test-pb"
+        assert result["status"] == "completed"
+        assert result["tokens_used"] == 250
+
+        # Verify PlaybookRunner.resume was called with correct args
+        MockRunner.resume.assert_awaited_once()
+        call_kwargs = MockRunner.resume.call_args
+        assert call_kwargs.kwargs["db_run"] == paused_run
+        assert call_kwargs.kwargs["human_input"] == "Looks good, approved!"
+
+    async def test_resume_uses_pinned_graph(self):
+        """resume_playbook resolves the graph from pinned_graph when available."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        graph = {
+            "id": "my-pb",
+            "version": 2,
+            "nodes": {
+                "step1": {"prompt": "Do thing", "wait_for_human": True, "goto": "end"},
+                "end": {"terminal": True},
+            },
+        }
+        paused_run = PlaybookRun(
+            run_id="run-pinned",
+            playbook_id="my-pb",
+            playbook_version=2,
+            status="paused",
+            current_node="step1",
+            started_at=time.time() - 120,
+            paused_at=time.time() - 10,
+            pinned_graph=json.dumps(graph),
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        mock_result = RunResult(
+            run_id="run-pinned", status="completed",
+            node_trace=[], tokens_used=50, error=None,
+        )
+
+        with (
+            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+        ):
+            mock_sup = MockSupervisor.return_value
+            mock_sup.initialize.return_value = True
+            MockRunner.resume = AsyncMock(return_value=mock_result)
+            MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
+
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-pinned", "human_input": "go"}
+            )
+
+        assert "error" not in result
+        # The graph passed to resume should be the pinned graph
+        call_kwargs = MockRunner.resume.call_args.kwargs
+        assert call_kwargs["graph"] == graph
+
+    async def test_resume_fallback_to_playbook_manager(self):
+        """resume_playbook falls back to playbook_manager when no pinned_graph."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        active_graph = {
+            "id": "from-manager",
+            "version": 3,
+            "nodes": {
+                "review": {"prompt": "Review", "wait_for_human": True, "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Mock playbook_manager._active — to_dict is sync, use MagicMock
+        from unittest.mock import MagicMock
+
+        mock_pb = MagicMock()
+        mock_pb.to_dict.return_value = active_graph
+        handler.orchestrator.playbook_manager = MagicMock()
+        handler.orchestrator.playbook_manager._active = {"from-manager": mock_pb}
+
+        paused_run = PlaybookRun(
+            run_id="run-no-pin",
+            playbook_id="from-manager",
+            playbook_version=3,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 60,
+            paused_at=time.time() - 5,
+            pinned_graph=None,  # No pinned graph
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        mock_result = RunResult(
+            run_id="run-no-pin", status="completed",
+            node_trace=[], tokens_used=75, error=None,
+        )
+
+        with (
+            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+        ):
+            mock_sup = MockSupervisor.return_value
+            mock_sup.initialize.return_value = True
+            MockRunner.resume = AsyncMock(return_value=mock_result)
+            MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
+
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-no-pin", "human_input": "proceed"}
+            )
+
+        assert "error" not in result
+        assert result["resumed"] == "run-no-pin"
+        call_kwargs = MockRunner.resume.call_args.kwargs
+        assert call_kwargs["graph"] == active_graph
+
+    async def test_resume_no_graph_available(self):
+        """resume_playbook returns error when no graph can be resolved."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+
+        # playbook_manager has no active entry for this playbook
+        handler.orchestrator.playbook_manager = AsyncMock()
+        handler.orchestrator.playbook_manager._active = {}
+
+        paused_run = PlaybookRun(
+            run_id="run-orphan",
+            playbook_id="deleted-pb",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 60,
+            paused_at=time.time() - 5,
+            pinned_graph=None,
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        result = await handler._cmd_resume_playbook(
+            {"run_id": "run-orphan", "human_input": "approved"}
+        )
+        assert "error" in result
+        assert "Cannot resolve playbook graph" in result["error"]
+
+    async def test_resume_supervisor_init_failure(self):
+        """resume_playbook returns error when Supervisor fails to initialize."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {"prompt": "Review", "wait_for_human": True, "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        paused_run = PlaybookRun(
+            run_id="run-no-sup",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 60,
+            paused_at=time.time() - 5,
+            pinned_graph=json.dumps(graph),
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        with patch("src.supervisor.Supervisor") as MockSupervisor:
+            mock_sup = MockSupervisor.return_value
+            mock_sup.initialize.return_value = False  # Fails to init
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-no-sup", "human_input": "ok"}
+            )
+
+        assert "error" in result
+        assert "Failed to initialize" in result["error"]
+
+    async def test_resume_timeout_enforced(self):
+        """resume_playbook enforces pause timeout and marks run as timed_out."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 60,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        paused_run = PlaybookRun(
+            run_id="run-expired",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 200,
+            paused_at=time.time() - 120,  # Paused 120s ago, timeout is 60s
+            pinned_graph=json.dumps(graph),
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+        handler.db.update_playbook_run = AsyncMock()
+
+        timed_out_result = RunResult(
+            run_id="run-expired", status="timed_out",
+            node_trace=[], tokens_used=0, error="Pause timeout exceeded",
+        )
+
+        with patch("src.playbook_runner.PlaybookRunner") as MockRunner:
+            MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
+            MockRunner.handle_timeout = AsyncMock(return_value=timed_out_result)
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-expired", "human_input": "too late"}
+            )
+
+        assert "error" in result
+        assert "timeout" in result["error"].lower()
+
+    async def test_resume_runner_exception_handled(self):
+        """resume_playbook returns error when PlaybookRunner.resume raises."""
+        from unittest.mock import patch
+
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {"prompt": "Review", "wait_for_human": True, "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        paused_run = PlaybookRun(
+            run_id="run-err",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=time.time() - 60,
+            paused_at=time.time() - 5,
+            pinned_graph=json.dumps(graph),
+            conversation_history="[]",
+            node_trace="[]",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+
+        with (
+            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+        ):
+            mock_sup = MockSupervisor.return_value
+            mock_sup.initialize.return_value = True
+            MockRunner.resume = AsyncMock(side_effect=RuntimeError("LLM provider crashed"))
+            MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
+
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "run-err", "human_input": "go"}
+            )
+
+        assert "error" in result
+        assert "Resume failed" in result["error"]
+        assert "LLM provider crashed" in result["error"]
+
+    async def test_resume_whitespace_only_human_input_rejected(self):
+        """resume_playbook rejects human_input that is only whitespace."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+
+        result = await handler._cmd_resume_playbook({"run_id": "abc", "human_input": "   \n  "})
+        assert "error" in result
+        assert "human_input" in result["error"]
 
 
 class TestListPlaybookRunsCommand:
