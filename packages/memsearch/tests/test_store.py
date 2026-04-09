@@ -387,3 +387,118 @@ def test_topic_and_tags_filtering(store: MilvusStore):
     results = store.query(filter_expr='tags like "%pytest%"')
     assert len(results) == 1
     assert results[0]["chunk_hash"] == "topic_2"
+
+
+# ---- Topic-filtered hybrid search tests ------------------------------------
+
+
+def test_topic_filter_in_hybrid_search(store: MilvusStore):
+    """Hybrid search with topic filter returns only matching topic + untagged entries."""
+    chunks = [
+        {
+            "chunk_hash": "tf_auth",
+            "entry_type": "document",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "JWT token refresh requires scope re-request",
+            "source": "auth.md",
+            "heading": "Auth",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "tf_test",
+            "entry_type": "document",
+            "embedding": [0.0, 1.0, 0.0, 0.0],
+            "content": "Use pytest fixtures for test setup and teardown",
+            "source": "testing.md",
+            "heading": "Testing",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "testing",
+        },
+        {
+            "chunk_hash": "tf_general",
+            "entry_type": "document",
+            "embedding": [0.5, 0.5, 0.0, 0.0],
+            "content": "Follow project coding conventions for all modules",
+            "source": "general.md",
+            "heading": "General",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "",  # untagged — should be included in all topic searches
+        },
+    ]
+    store.upsert(chunks)
+
+    # Search with topic filter for "authentication"
+    filter_expr = '(topic == "authentication" or topic == "")'
+    results = store.search(
+        [1.0, 0.0, 0.0, 0.0],
+        query_text="JWT token",
+        top_k=10,
+        filter_expr=filter_expr,
+    )
+    result_hashes = {r["chunk_hash"] for r in results}
+    assert "tf_auth" in result_hashes, "Should include the matching-topic entry"
+    assert "tf_general" in result_hashes, "Should include untagged entries"
+    assert "tf_test" not in result_hashes, "Should exclude entries with a different topic"
+
+
+def test_topic_filter_with_source_prefix(store: MilvusStore):
+    """Topic filter combines correctly with source prefix filter."""
+    chunks = [
+        {
+            "chunk_hash": "combo_1",
+            "entry_type": "document",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Auth in project A",
+            "source": "/projects/a/auth.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "combo_2",
+            "entry_type": "document",
+            "embedding": [0.0, 1.0, 0.0, 0.0],
+            "content": "Auth in project B",
+            "source": "/projects/b/auth.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "combo_3",
+            "entry_type": "document",
+            "embedding": [0.0, 0.0, 1.0, 0.0],
+            "content": "Testing in project A",
+            "source": "/projects/a/testing.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 1,
+            "end_line": 1,
+            "topic": "testing",
+        },
+    ]
+    store.upsert(chunks)
+
+    # Combined filter: source prefix AND topic
+    filter_expr = 'source like "/projects/a/%" and (topic == "authentication" or topic == "")'
+    results = store.search(
+        [1.0, 0.0, 0.0, 0.0],
+        query_text="authentication",
+        top_k=10,
+        filter_expr=filter_expr,
+    )
+    result_hashes = {r["chunk_hash"] for r in results}
+    assert "combo_1" in result_hashes, "Should match: right source + right topic"
+    assert "combo_2" not in result_hashes, "Should exclude: wrong source prefix"
+    assert "combo_3" not in result_hashes, "Should exclude: wrong topic"

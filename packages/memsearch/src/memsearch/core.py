@@ -209,6 +209,7 @@ class MemSearch:
         *,
         top_k: int = 10,
         source_prefix: str | Path | None = None,
+        topic: str | None = None,
     ) -> list[dict[str, Any]]:
         """Semantic search across indexed chunks.
 
@@ -221,6 +222,13 @@ class MemSearch:
         source_prefix:
             Optional path prefix to scope results. Only chunks whose
             ``source`` starts with this prefix are returned.
+        topic:
+            Optional topic to pre-filter results before vector similarity
+            search.  When set, only chunks whose ``topic`` matches *or*
+            whose ``topic`` is empty (untagged) are returned.  If the
+            filtered search yields fewer than ``_TOPIC_FALLBACK_THRESHOLD``
+            results, an automatic fallback to unfiltered search is
+            performed to avoid missing relevant cross-topic knowledge.
 
         Returns
         -------
@@ -228,20 +236,42 @@ class MemSearch:
             Each dict contains ``content``, ``source``, ``heading``,
             ``score``, and other metadata.
         """
+        from .store import _escape_filter_value
+
         filter_expr = ""
         if source_prefix is not None:
             prefix = str(Path(source_prefix).expanduser().resolve())
-            escaped = prefix.replace("\\", "\\\\").replace('"', '\\"')
+            escaped = _escape_filter_value(prefix)
             filter_expr = f'source like "{escaped}%"'
+
+        topic_filter = ""
+        if topic is not None:
+            escaped_topic = _escape_filter_value(topic)
+            topic_filter = f'(topic == "{escaped_topic}" or topic == "")'
+            filter_expr = f"{filter_expr} and {topic_filter}" if filter_expr else topic_filter
 
         embeddings = await self._embedder.embed([query])
         fetch_k = top_k * 3 if self._reranker_model else top_k
         results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=filter_expr)
+
+        # Fallback: if topic filter returned too few results, retry without
+        # the topic constraint to avoid missing relevant cross-topic knowledge.
+        if topic is not None and len(results) < self._TOPIC_FALLBACK_THRESHOLD:
+            base_filter = ""
+            if source_prefix is not None:
+                prefix = str(Path(source_prefix).expanduser().resolve())
+                escaped = _escape_filter_value(prefix)
+                base_filter = f'source like "{escaped}%"'
+            results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=base_filter)
+
         if self._reranker_model and results:
             from .reranker import rerank
 
             results = rerank(query, results, model_name=self._reranker_model, top_k=top_k)
         return results
+
+    _TOPIC_FALLBACK_THRESHOLD = 3
+    """Minimum results from a topic-filtered search before falling back."""
 
     # ------------------------------------------------------------------
     # Compact (compress memories)

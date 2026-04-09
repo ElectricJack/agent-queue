@@ -169,6 +169,7 @@ def index(
     type=click.Path(),
     help="Only search chunks whose source path starts with this prefix.",
 )
+@click.option("--topic", "-t", default=None, help="Filter results by topic (pre-filter before vector search).")
 @_common_options
 @click.option("--reranker-model", default=None, help="Cross-encoder model for reranking (empty string disables).")
 @click.option("--json-output", "-j", is_flag=True, help="Output as JSON.")
@@ -176,6 +177,7 @@ def search(
     query: str,
     top_k: int | None,
     source_prefix: str | None,
+    topic: str | None,
     provider: str | None,
     model: str | None,
     batch_size: int | None,
@@ -205,7 +207,7 @@ def search(
     )
     ms = MemSearch(**_cfg_to_memsearch_kwargs(cfg))
     try:
-        results = _run(ms.search(query, top_k=top_k or 5, source_prefix=source_prefix))
+        results = _run(ms.search(query, top_k=top_k or 5, source_prefix=source_prefix, topic=topic))
         if json_output:
             click.echo(json.dumps(results, indent=2, ensure_ascii=False))
         else:
