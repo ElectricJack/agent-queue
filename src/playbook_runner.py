@@ -857,8 +857,14 @@ class PlaybookRunner:
             )
             return otherwise_target, "otherwise"
 
-        logger.warning("Node '%s': no transition matched and no otherwise defined", node_id)
-        return None, "none"
+        # Transitions were defined but nothing matched — this is a runtime
+        # error, not an implicit terminal.  Nodes with no transitions at all
+        # are handled earlier (Case 4) and treated as implicit terminals.
+        conditions = [t.get("when") for t in transitions if not t.get("otherwise")]
+        raise RuntimeError(
+            f"Node '{node_id}': no transition matched and no 'otherwise' "
+            f"fallback defined. Conditions: {conditions}"
+        )
 
     # ------------------------------------------------------------------
     # Internal: structured transition evaluation

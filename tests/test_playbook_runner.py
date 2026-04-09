@@ -2177,6 +2177,673 @@ class TestTransitionTraceInfo:
 
 
 # ---------------------------------------------------------------------------
+# 5.2.14: Branching transition evaluation (roadmap test cases a–g)
+# ---------------------------------------------------------------------------
+
+
+class TestBranchingTransitionEvaluation:
+    """5.2.14: Branching transition evaluation per playbooks §6.
+
+    Tests (a)-(g) from the roadmap verifying LLM-based transition
+    classification for branching playbook graphs.
+    """
+
+    async def test_two_conditional_transitions_correct_branch(
+        self, mock_supervisor, event_data
+    ):
+        """(a) Node with two conditional transitions — LLM picks correct branch."""
+        graph = {
+            "id": "two-branch-test",
+            "version": 1,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the codebase for issues.",
+                    "transitions": [
+                        {"when": "no issues found", "goto": "done"},
+                        {"when": "issues found that need fixing", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix the identified issues.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # analyse → outputs issues → LLM picks "2" (issues found → fix) → fix → done
+        responses = iter([
+            "Found 5 critical issues in the auth module",
+            "2",
+            "All issues fixed.",
+        ])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 2
+        assert result.node_trace[0]["node_id"] == "analyse"
+        assert result.node_trace[0]["transition_to"] == "fix"
+        assert result.node_trace[0]["transition_method"] == "llm"
+        assert result.node_trace[1]["node_id"] == "fix"
+
+    async def test_two_conditional_transitions_other_branch(
+        self, mock_supervisor, event_data
+    ):
+        """(a) extended — LLM picks the other branch when prior output differs."""
+        graph = {
+            "id": "two-branch-other",
+            "version": 1,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the codebase for issues.",
+                    "transitions": [
+                        {"when": "no issues found", "goto": "done"},
+                        {"when": "issues found that need fixing", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix the identified issues.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # analyse → clean output → LLM picks "1" (no issues → done)
+        responses = iter(["Codebase looks clean, no issues detected.", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 1  # Only analyse (→ done is terminal)
+        assert result.node_trace[0]["node_id"] == "analyse"
+        assert result.node_trace[0]["transition_to"] == "done"
+        assert result.node_trace[0]["transition_method"] == "llm"
+
+    async def test_three_branches_middle_selected(self, mock_supervisor, event_data):
+        """(b) Node with three branches — middle branch is selected."""
+        graph = {
+            "id": "three-branch-test",
+            "version": 1,
+            "nodes": {
+                "triage": {
+                    "entry": True,
+                    "prompt": "Assess the severity of findings.",
+                    "transitions": [
+                        {"when": "critical severity requiring immediate action", "goto": "hotfix"},
+                        {"when": "moderate severity that should be scheduled", "goto": "schedule"},
+                        {"when": "low severity informational only", "goto": "log"},
+                    ],
+                },
+                "hotfix": {"prompt": "Apply hotfix.", "goto": "done"},
+                "schedule": {"prompt": "Schedule the fix.", "goto": "done"},
+                "log": {"prompt": "Log for reference.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # triage → moderate finding → LLM picks "2" (schedule)
+        responses = iter([
+            "Found moderate memory leak in connection pooling.",
+            "2",
+            "Scheduled fix for next sprint.",
+        ])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 2
+        assert result.node_trace[0]["node_id"] == "triage"
+        assert result.node_trace[0]["transition_to"] == "schedule"
+        assert result.node_trace[0]["transition_method"] == "llm"
+        assert result.node_trace[1]["node_id"] == "schedule"
+
+    async def test_three_branches_first_and_last(self, mock_supervisor, event_data):
+        """(b) extended — verify first and last branches also selectable."""
+        graph = {
+            "id": "three-branch-ends",
+            "version": 1,
+            "nodes": {
+                "triage": {
+                    "entry": True,
+                    "prompt": "Assess severity.",
+                    "transitions": [
+                        {"when": "critical", "goto": "hotfix"},
+                        {"when": "moderate", "goto": "schedule"},
+                        {"when": "low", "goto": "log"},
+                    ],
+                },
+                "hotfix": {"prompt": "Hotfix.", "goto": "done"},
+                "schedule": {"prompt": "Schedule.", "goto": "done"},
+                "log": {"prompt": "Log.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Test first branch
+        responses = iter(["Critical vulnerability!", "1", "Hotfixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.node_trace[0]["transition_to"] == "hotfix"
+
+    async def test_three_branches_last_selected(self, mock_supervisor, event_data):
+        """(b) extended — last branch in a three-branch node."""
+        graph = {
+            "id": "three-branch-last",
+            "version": 1,
+            "nodes": {
+                "triage": {
+                    "entry": True,
+                    "prompt": "Assess severity.",
+                    "transitions": [
+                        {"when": "critical", "goto": "hotfix"},
+                        {"when": "moderate", "goto": "schedule"},
+                        {"when": "low", "goto": "log"},
+                    ],
+                },
+                "hotfix": {"prompt": "Hotfix.", "goto": "done"},
+                "schedule": {"prompt": "Schedule.", "goto": "done"},
+                "log": {"prompt": "Log.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Test last branch
+        responses = iter(["Minor style nit.", "3", "Logged."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.node_trace[0]["transition_to"] == "log"
+
+    async def test_default_condition_selected_when_no_match(self, mock_supervisor, event_data):
+        """(c) 'otherwise' transition selected when no other conditions match."""
+        graph = {
+            "id": "default-fallback",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check deployment health.",
+                    "transitions": [
+                        {"when": "all services healthy", "goto": "done"},
+                        {"when": "specific service degraded", "goto": "remediate"},
+                        {"otherwise": True, "goto": "escalate"},
+                    ],
+                },
+                "remediate": {"prompt": "Remediate the service.", "goto": "done"},
+                "escalate": {"prompt": "Escalate to on-call.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # check → ambiguous output → LLM returns "0" (no match) → otherwise → escalate
+        responses = iter([
+            "Deployment status unclear, possible network issue.",
+            "0",
+            "Escalated to on-call team.",
+        ])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 2
+        assert result.node_trace[0]["node_id"] == "check"
+        assert result.node_trace[0]["transition_to"] == "escalate"
+        # The LLM was the mechanism that selected the otherwise option
+        # (by returning "0"), so transition_method is "llm" when LLM actively
+        # selects it.  The "otherwise" method is used when the LLM fails to
+        # match anything and the code falls back to the otherwise branch.
+        assert result.node_trace[0]["transition_method"] in ("llm", "otherwise")
+        assert result.node_trace[1]["node_id"] == "escalate"
+
+    async def test_default_fallback_when_llm_returns_no_match(self, mock_supervisor, event_data):
+        """(c) extended — otherwise fallback when LLM returns unrecognised response."""
+        graph = {
+            "id": "otherwise-fallback-nomatch",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check status.",
+                    "transitions": [
+                        {"when": "status is green", "goto": "celebrate"},
+                        {"otherwise": True, "goto": "investigate"},
+                    ],
+                },
+                "celebrate": {"prompt": "Celebrate!", "goto": "done"},
+                "investigate": {"prompt": "Investigate!", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # LLM returns "0" → no condition matched → otherwise → investigate
+        responses = iter(["Status unclear", "0", "Looking into it"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 2
+        assert result.node_trace[1]["node_id"] == "investigate"
+
+    async def test_default_with_otherwise_in_llm_prompt(self, mock_supervisor, event_data):
+        """(c) extended — the LLM prompt includes a DEFAULT/OTHERWISE option."""
+        graph = {
+            "id": "otherwise-prompt-check",
+            "version": 1,
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan.",
+                    "transitions": [
+                        {"when": "clean", "goto": "done"},
+                        {"otherwise": True, "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Some result", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Transition classification prompt should include DEFAULT/OTHERWISE option
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        prompt_text = transition_call.kwargs["text"]
+        assert "DEFAULT" in prompt_text or "OTHERWISE" in prompt_text
+
+    async def test_transition_uses_cheaper_model(self, mock_supervisor, event_data):
+        """(d) Transition evaluation uses cheaper model from playbook transition_llm_config."""
+        graph = {
+            "id": "cheap-transition",
+            "version": 1,
+            "llm_config": {"model": "claude-sonnet-4-20250514", "provider": "anthropic"},
+            "transition_llm_config": {
+                "model": "claude-haiku-4-20250414",
+                "provider": "anthropic",
+            },
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan for issues.",
+                    "transitions": [
+                        {"when": "issues found", "goto": "fix"},
+                        {"when": "no issues", "goto": "done"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Found issues", "1", "Fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        calls = mock_supervisor.chat.call_args_list
+
+        # First call (node execution) — uses main llm_config (Sonnet)
+        node_call = calls[0]
+        assert node_call.kwargs["llm_config"] == {
+            "model": "claude-sonnet-4-20250514",
+            "provider": "anthropic",
+        }
+
+        # Second call (transition classification) — uses transition_llm_config (Haiku)
+        transition_call = calls[1]
+        assert transition_call.kwargs["llm_config"] == {
+            "model": "claude-haiku-4-20250414",
+            "provider": "anthropic",
+        }
+
+    async def test_transition_node_level_config_overrides_playbook(
+        self, mock_supervisor, event_data
+    ):
+        """(d) extended — node-level transition_llm_config overrides playbook-level."""
+        graph = {
+            "id": "node-transition-config",
+            "version": 1,
+            "transition_llm_config": {"model": "haiku-playbook"},
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan.",
+                    "transition_llm_config": {"model": "haiku-node-override"},
+                    "transitions": [
+                        {"when": "found", "goto": "fix"},
+                        {"when": "clean", "goto": "done"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Found stuff", "1", "Fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Transition call should use node-level override, not playbook-level
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["llm_config"] == {"model": "haiku-node-override"}
+
+    async def test_transition_prompt_includes_conditions_and_context(
+        self, mock_supervisor, event_data
+    ):
+        """(e) Transition prompt includes condition list and conversation context."""
+        graph = {
+            "id": "prompt-content-check",
+            "version": 1,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the auth module.",
+                    "transitions": [
+                        {"when": "SQL injection vulnerability detected", "goto": "critical"},
+                        {"when": "XSS vulnerability detected", "goto": "high"},
+                        {"when": "no vulnerabilities found", "goto": "done"},
+                    ],
+                },
+                "critical": {"prompt": "Fix critical.", "goto": "done"},
+                "high": {"prompt": "Fix high.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Found SQL injection in login handler", "1", "Fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Transition classification call (second call)
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        prompt_text = transition_call.kwargs["text"]
+        history = transition_call.kwargs["history"]
+
+        # Prompt should list all numbered conditions
+        assert "1." in prompt_text
+        assert "SQL injection vulnerability detected" in prompt_text
+        assert "2." in prompt_text
+        assert "XSS vulnerability detected" in prompt_text
+        assert "3." in prompt_text
+        assert "no vulnerabilities found" in prompt_text
+
+        # History should contain full conversation context
+        assert len(history) >= 3  # seed + prompt + response
+        # Node's response should be in the conversation history
+        assert any("SQL injection in login handler" in m["content"] for m in history)
+
+    async def test_transition_prompt_excludes_structured_conditions(
+        self, mock_supervisor, event_data
+    ):
+        """(e) extended — structured conditions are NOT included in the LLM prompt."""
+        graph = {
+            "id": "mixed-prompt-check",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "magic"},
+                            "goto": "special",
+                        },
+                        {"when": "needs attention", "goto": "fix"},
+                        {"when": "all good", "goto": "done"},
+                        {"otherwise": True, "goto": "fallback"},
+                    ],
+                },
+                "special": {"prompt": "Special.", "goto": "done"},
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "fallback": {"prompt": "Fallback.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Structured condition doesn't match (response has no "magic" substring)
+        responses = iter(["Some ordinary result here", "1", "Fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        prompt_text = transition_call.kwargs["text"]
+
+        # NL conditions should be in the prompt
+        assert "needs attention" in prompt_text
+        assert "all good" in prompt_text
+        # Structured condition should NOT appear in the LLM prompt
+        assert "response_contains" not in prompt_text
+        assert "magic" not in prompt_text
+
+    async def test_ambiguous_conditions_first_match_wins(self, mock_supervisor, event_data):
+        """(f) Ambiguous conditions — first matching transition wins (ordered evaluation)."""
+        graph = {
+            "id": "ambiguous-test",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check code quality.",
+                    "transitions": [
+                        {"when": "code needs changes", "goto": "refactor"},
+                        {"when": "code needs improvement", "goto": "improve"},
+                        {"when": "code is acceptable", "goto": "done"},
+                    ],
+                },
+                "refactor": {"prompt": "Refactor the code.", "goto": "done"},
+                "improve": {"prompt": "Improve the code.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # LLM picks "1" — first condition wins even though 1 and 2 overlap
+        responses = iter(["Code has several issues that need work.", "1", "Refactored."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "refactor"
+        assert result.node_trace[0]["transition_method"] == "llm"
+
+    async def test_ambiguous_structured_first_match_wins(self, mock_supervisor, event_data):
+        """(f) extended — structured conditions: first matching condition wins."""
+        graph = {
+            "id": "structured-order",
+            "version": 1,
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan for issues.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "issue"},
+                            "goto": "first",
+                        },
+                        {
+                            "when": {"function": "response_contains", "value": "issue found"},
+                            "goto": "second",
+                        },
+                    ],
+                },
+                "first": {"prompt": "First.", "goto": "done"},
+                "second": {"prompt": "Second.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Response matches BOTH structured conditions — first one should win
+        mock_supervisor.chat.side_effect = lambda **kw: (
+            "issue found in auth" if "Scan" in kw.get("text", "") else "Handled."
+        )
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "first"
+        assert result.node_trace[0]["transition_method"] == "structured"
+
+    async def test_ambiguous_fuzzy_text_first_match_wins(self, mock_supervisor, event_data):
+        """(f) extended — fuzzy text matching: first matching transition wins."""
+        transitions = [
+            {"when": "needs changes", "goto": "refactor"},
+            {"when": "needs improvement", "goto": "improve"},
+        ]
+        # Decision text contains both conditions — first should win
+        result = PlaybookRunner._match_transition_by_number(
+            "The code needs changes and needs improvement", transitions, None
+        )
+        assert result == "refactor"
+
+    async def test_no_match_no_default_fails_run(self, mock_supervisor, event_data):
+        """(g) No matching transition and no default — run fails with descriptive error."""
+        graph = {
+            "id": "no-fallback",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check system status.",
+                    "transitions": [
+                        {"when": "system is healthy", "goto": "done"},
+                        {"when": "system is degraded", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # check → unexpected output → LLM returns "0" (no match) → no otherwise → FAIL
+        responses = iter(["System is in an unexpected state.", "0"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "check" in result.error
+        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+
+    async def test_no_match_no_default_descriptive_error(self, mock_supervisor, event_data, mock_db):
+        """(g) extended — error message includes conditions and is persisted."""
+        graph = {
+            "id": "descriptive-error",
+            "version": 1,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse.",
+                    "transitions": [
+                        {"when": "option alpha", "goto": "a"},
+                        {"when": "option beta", "goto": "b"},
+                    ],
+                },
+                "a": {"prompt": "A.", "goto": "done"},
+                "b": {"prompt": "B.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # LLM returns "0" → no match, no otherwise
+        responses = iter(["Unclear result.", "0"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        # Error should mention the node and include condition info
+        assert "analyse" in result.error
+        assert "option alpha" in result.error or "otherwise" in result.error.lower()
+
+        # Failure should be persisted to DB
+        fail_call = None
+        for call in mock_db.update_playbook_run.call_args_list:
+            if call.kwargs.get("status") == "failed":
+                fail_call = call
+                break
+        assert fail_call is not None
+        assert "analyse" in fail_call.kwargs["error"]
+
+    async def test_no_match_structured_no_default_fails(self, mock_supervisor, event_data):
+        """(g) extended — structured transitions with no match and no otherwise also fails."""
+        graph = {
+            "id": "structured-no-fallback",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "success"},
+                            "goto": "done",
+                        },
+                        {
+                            "when": {"function": "response_contains", "value": "failure"},
+                            "goto": "fix",
+                        },
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Response doesn't match either structured condition, no otherwise
+        mock_supervisor.chat.return_value = "Something ambiguous happened."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "check" in result.error
+        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+
+    async def test_implicit_terminal_still_works(self, mock_supervisor, event_data):
+        """(g) guard — nodes with no transitions defined still complete (implicit terminal)."""
+        graph = {
+            "id": "implicit-end",
+            "version": 1,
+            "nodes": {
+                "only": {"entry": True, "prompt": "Do something."},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # No transitions defined → implicit terminal → NOT a failure
+        assert result.status == "completed"
+
+
+# ---------------------------------------------------------------------------
 # 5.2.4: Structured transition evaluation (no LLM call)
 # ---------------------------------------------------------------------------
 
@@ -3395,7 +4062,7 @@ class TestTransitionEdgeCases:
         assert result.node_trace[1]["node_id"] == "default"
 
     async def test_structured_only_no_otherwise_no_match(self, mock_supervisor, event_data):
-        """All structured conditions + no otherwise + no match → None (implicit end)."""
+        """All structured conditions + no otherwise + no match → run fails (5.2.14g)."""
         graph = {
             "id": "structured-no-match",
             "version": 1,
@@ -3419,10 +4086,9 @@ class TestTransitionEdgeCases:
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
         result = await runner.run()
 
-        assert result.status == "completed"
-        # transition_to is None → omitted from dict; transition_method is "none"
-        assert "transition_to" not in result.node_trace[0]
-        assert result.node_trace[0]["transition_method"] == "none"
+        # Transitions were defined but none matched and no otherwise → failure
+        assert result.status == "failed"
+        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
 
 
 # ---------------------------------------------------------------------------
