@@ -601,3 +601,193 @@ class TestCompressToolSchema:
         import json
 
         assert len(json.dumps(comp)) < len(json.dumps(full))
+
+
+# ------------------------------------------------------------------
+# Playbook category registration (Roadmap 5.5.7)
+# ------------------------------------------------------------------
+
+# Canonical list of playbook commands from spec §15.
+_PLAYBOOK_COMMANDS = [
+    "compile_playbook",
+    "dry_run_playbook",
+    "show_playbook_graph",
+    "list_playbooks",
+    "list_playbook_runs",
+    "inspect_playbook_run",
+    "resume_playbook",
+]
+
+
+class TestPlaybookToolRegistration:
+    """Verify all playbook commands from spec §15 are registered in the tool registry.
+
+    Roadmap 5.5.7 — Register all playbook commands in CommandHandler via tool
+    registry.  This test class validates the *complete* set as a cohesive unit,
+    complementing the per-command tests that live alongside each command's own
+    test file.
+    """
+
+    # -- Category mapping --------------------------------------------------
+
+    def test_all_playbook_commands_in_category_map(self):
+        """Every spec §15 command appears in _TOOL_CATEGORIES under 'playbook'."""
+        from src.tool_registry import _TOOL_CATEGORIES
+
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd in _TOOL_CATEGORIES, f"{cmd} missing from _TOOL_CATEGORIES"
+            assert _TOOL_CATEGORIES[cmd] == "playbook", (
+                f"{cmd} mapped to '{_TOOL_CATEGORIES[cmd]}' instead of 'playbook'"
+            )
+
+    def test_no_extra_playbook_commands(self):
+        """No unexpected tools are mapped to the 'playbook' category."""
+        from src.tool_registry import _TOOL_CATEGORIES
+
+        actual = {name for name, cat in _TOOL_CATEGORIES.items() if cat == "playbook"}
+        expected = set(_PLAYBOOK_COMMANDS)
+        extra = actual - expected
+        assert not extra, f"Unexpected playbook-category tools: {extra}"
+
+    # -- Tool definitions --------------------------------------------------
+
+    def test_all_playbook_commands_have_definitions(self):
+        """Every spec §15 command has a full tool definition."""
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        defined = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd in defined, f"{cmd} missing from _ALL_TOOL_DEFINITIONS"
+
+    def test_all_playbook_definitions_have_description(self):
+        """Every playbook tool has a non-trivial description."""
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                assert "description" in tool, f"{tool['name']} missing description"
+                assert len(tool["description"]) > 20, (
+                    f"{tool['name']} description too short: {tool['description']!r}"
+                )
+
+    def test_all_playbook_definitions_have_input_schema(self):
+        """Every playbook tool has an input_schema with type=object."""
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                assert "input_schema" in tool, f"{tool['name']} missing input_schema"
+                assert tool["input_schema"]["type"] == "object", (
+                    f"{tool['name']} input_schema.type is not 'object'"
+                )
+
+    def test_required_params_present_in_schema(self):
+        """Tools with required params have them defined in properties."""
+        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                schema = tool["input_schema"]
+                required = schema.get("required", [])
+                props = schema.get("properties", {})
+                for param in required:
+                    assert param in props, (
+                        f"{tool['name']}: required param '{param}' "
+                        f"not in properties"
+                    )
+
+    # -- ToolRegistry integration -----------------------------------------
+
+    def test_playbook_category_exists_in_registry(self):
+        """The 'playbook' category appears in registry.get_categories()."""
+        reg = _real_registry()
+        categories = reg.get_categories()
+        cat_names = {c["name"] for c in categories}
+        assert "playbook" in cat_names
+
+    def test_playbook_category_has_correct_count(self):
+        """The 'playbook' category reports exactly 7 tools."""
+        reg = _real_registry()
+        categories = reg.get_categories()
+        playbook_cat = next(c for c in categories if c["name"] == "playbook")
+        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS), (
+            f"Expected {len(_PLAYBOOK_COMMANDS)} playbook tools, "
+            f"got {playbook_cat['tool_count']}"
+        )
+
+    def test_playbook_category_tools_match_spec(self):
+        """get_category_tool_names('playbook') returns exactly the spec §15 set."""
+        reg = _real_registry()
+        names = reg.get_category_tool_names("playbook")
+        assert names is not None
+        assert set(names) == set(_PLAYBOOK_COMMANDS)
+
+    def test_playbook_tools_not_in_core(self):
+        """Playbook tools are on-demand, not in the core set."""
+        reg = _real_registry()
+        core_names = {t["name"] for t in reg.get_core_tools()}
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd not in core_names, (
+                f"{cmd} should not be in core tools — it's in the playbook category"
+            )
+
+    def test_playbook_category_description(self):
+        """The playbook CategoryMeta has a descriptive string."""
+        from src.tool_registry import CATEGORIES
+
+        assert "playbook" in CATEGORIES
+        meta = CATEGORIES["playbook"]
+        assert "playbook" in meta.description.lower() or "compilation" in meta.description.lower()
+
+    # -- Search integration ------------------------------------------------
+
+    def test_search_finds_playbook_category(self):
+        """A playbook-related query returns the 'playbook' category."""
+        reg = _real_registry()
+        cats = reg.search_relevant_categories("compile and run a playbook")
+        assert "playbook" in cats
+
+    def test_search_finds_playbook_for_resume_query(self):
+        """A human-in-the-loop query returns the playbook category."""
+        reg = _real_registry()
+        cats = reg.search_relevant_categories("resume the paused playbook run")
+        assert "playbook" in cats
+
+    # -- CommandHandler routing (execute() dispatch) -----------------------
+
+    def test_all_commands_have_handler_methods(self):
+        """Every spec §15 command has a _cmd_* method on CommandHandler."""
+        handler = _make_handler()
+        for cmd in _PLAYBOOK_COMMANDS:
+            method = getattr(handler, f"_cmd_{cmd}", None)
+            assert method is not None, (
+                f"CommandHandler missing _cmd_{cmd} method"
+            )
+            assert callable(method), f"_cmd_{cmd} is not callable"
+
+    def test_execute_routes_unknown_playbook_command(self):
+        """execute() returns error for a non-existent playbook command."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("nonexistent_playbook_cmd", {}))
+        assert "error" in result
+
+    def test_browse_tools_includes_playbook_category(self):
+        """browse_tools returns the playbook category with tool count."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("browse_tools", {}))
+        assert "categories" in result
+        cat_names = {c["name"] for c in result["categories"]}
+        assert "playbook" in cat_names
+        playbook_cat = next(c for c in result["categories"] if c["name"] == "playbook")
+        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS)
+
+    def test_load_tools_playbook_category(self):
+        """load_tools('playbook') returns all playbook tool definitions."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("load_tools", {"category": "playbook"}))
+        assert result.get("loaded") == "playbook"
+        assert "tools_added" in result
+        loaded_names = set(result["tools_added"])
+        assert loaded_names == set(_PLAYBOOK_COMMANDS), (
+            f"Expected {set(_PLAYBOOK_COMMANDS)}, got {loaded_names}"
+        )
