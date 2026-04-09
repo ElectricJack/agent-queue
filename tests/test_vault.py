@@ -964,8 +964,9 @@ def test_ensure_default_playbooks_partial_existing(tmp_path):
 
     assert "task-outcome.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
-    # codebase-inspector.md should still be created since it didn't exist
+    # Other playbooks should still be created since they didn't exist
     assert "codebase-inspector.md" in result["created"]
+    assert "dependency-audit.md" in result["created"]
 
 
 def test_task_outcome_playbook_has_valid_frontmatter():
@@ -1117,12 +1118,95 @@ def test_ensure_default_playbooks_idempotent_codebase_inspector(tmp_path):
     assert "codebase-inspector.md" in result["skipped"]
 
 
+def test_ensure_default_playbooks_creates_dependency_audit(tmp_path):
+    """ensure_default_playbooks installs dependency-audit.md to vault/system/playbooks/."""
+    result = ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md"
+    assert playbook_path.is_file()
+    assert "dependency-audit.md" in result["created"]
+
+
+def test_dependency_audit_playbook_has_valid_frontmatter():
+    """The bundled dependency-audit.md has valid YAML frontmatter with required fields."""
+    import os
+
+    import yaml
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "dependency-audit.md",
+    )
+    content = open(playbook_path).read()
+
+    # Must start with YAML frontmatter
+    assert content.startswith("---")
+    lines = content.strip().splitlines()
+    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+    fm_text = "\n".join(lines[1:end_idx])
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["id"] == "dependency-audit"
+    assert isinstance(fm["triggers"], list)
+    assert "timer.24h" in fm["triggers"]
+    assert fm["scope"] == "system"
+
+
+def test_dependency_audit_playbook_covers_key_concerns():
+    """The dependency-audit playbook body covers pip-audit, check-outdated-deps, and triage."""
+    import os
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "dependency-audit.md",
+    )
+    content = open(playbook_path).read()
+
+    # Extract body (after frontmatter)
+    parts = content.split("---", 2)
+    body = parts[2].strip().lower()
+
+    # Audit tooling
+    assert "pip-audit" in body
+    assert "check-outdated-deps" in body
+
+    # Triage: critical vs non-critical
+    assert "critical" in body
+    assert "high-priority" in body or "high priority" in body
+    assert "task" in body  # create task for critical
+    assert "note" in body  # summary note for non-critical
+
+    # Skip when nothing found
+    assert "skip" in body
+
+
+def test_ensure_default_playbooks_idempotent_dependency_audit(tmp_path):
+    """Calling ensure_default_playbooks twice does not overwrite dependency-audit.md."""
+    ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md"
+    custom_content = "---\nid: dependency-audit\ntriggers:\n  - timer.24h\nscope: system\n---\n"
+    playbook_path.write_text(custom_content)
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert playbook_path.read_text() == custom_content
+    assert "dependency-audit.md" in result["skipped"]
+
+
 def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     """ensure_vault_layout installs default playbooks as part of the layout."""
     ensure_vault_layout(str(tmp_path))
 
     assert (tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md").is_file()
     assert (tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md").is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md").is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
