@@ -964,6 +964,8 @@ def test_ensure_default_playbooks_partial_existing(tmp_path):
 
     assert "task-outcome.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
+    # codebase-inspector.md should still be created since it didn't exist
+    assert "codebase-inspector.md" in result["created"]
 
 
 def test_task_outcome_playbook_has_valid_frontmatter():
@@ -1024,11 +1026,103 @@ def test_task_outcome_playbook_consolidates_three_concerns():
     assert "fix task" in body.lower() or "create" in body.lower()
 
 
+def test_ensure_default_playbooks_creates_codebase_inspector(tmp_path):
+    """ensure_default_playbooks installs codebase-inspector.md to vault/system/playbooks/."""
+    result = ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md"
+    assert playbook_path.is_file()
+    assert "codebase-inspector.md" in result["created"]
+
+
+def test_codebase_inspector_playbook_has_valid_frontmatter():
+    """The bundled codebase-inspector.md has valid YAML frontmatter with required fields."""
+    import os
+
+    import yaml
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "codebase-inspector.md",
+    )
+    content = open(playbook_path).read()
+
+    # Must start with YAML frontmatter
+    assert content.startswith("---")
+    lines = content.strip().splitlines()
+    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+    fm_text = "\n".join(lines[1:end_idx])
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["id"] == "codebase-inspector"
+    assert isinstance(fm["triggers"], list)
+    assert "timer.4h" in fm["triggers"]
+    assert fm["scope"] == "system"
+
+
+def test_codebase_inspector_playbook_covers_key_concerns():
+    """The codebase-inspector playbook body covers weighted selection and dedup."""
+    import os
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "codebase-inspector.md",
+    )
+    content = open(playbook_path).read()
+
+    # Extract body (after frontmatter)
+    parts = content.split("---", 2)
+    body = parts[2].strip().lower()
+
+    # Weighted selection categories from spec
+    assert "source" in body
+    assert "spec" in body
+    assert "test" in body
+    assert "config" in body
+    assert "recent" in body
+
+    # Quality concerns
+    assert "quality" in body
+    assert "security" in body
+    assert "documentation" in body or "doc" in body
+
+    # Inspection history dedup
+    assert "inspection history" in body or "re-inspect" in body
+
+    # Actionable findings only
+    assert "actionable" in body
+
+    # Consolidation with health check
+    assert "health check" in body or "consolidate" in body
+    assert "duplicate" in body
+
+
+def test_ensure_default_playbooks_idempotent_codebase_inspector(tmp_path):
+    """Calling ensure_default_playbooks twice does not overwrite codebase-inspector.md."""
+    ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md"
+    custom_content = "---\nid: codebase-inspector\ntriggers:\n  - timer.4h\nscope: system\n---\n"
+    playbook_path.write_text(custom_content)
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert playbook_path.read_text() == custom_content
+    assert "codebase-inspector.md" in result["skipped"]
+
+
 def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     """ensure_vault_layout installs default playbooks as part of the layout."""
     ensure_vault_layout(str(tmp_path))
 
     assert (tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md").is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md").is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):

@@ -1062,6 +1062,9 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     - ``task-outcome.md`` — consolidates post-action reflection, spec-drift
       detection, and error-recovery monitoring into a single playbook triggered
       on ``task.completed`` and ``task.failed``.
+    - ``codebase-inspector.md`` — periodically inspects a random section of the
+      codebase for quality issues, security risks, and documentation gaps.
+      Triggered on ``timer.4h``.
 
     The operation is **idempotent**: existing files in the vault are never
     overwritten.  Users can customise or disable playbooks without losing
