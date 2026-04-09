@@ -303,6 +303,7 @@ async def on_profile_changed(
     *,
     db: Any | None = None,
     event_bus: EventBus | None = None,
+    data_dir: str | None = None,
 ) -> None:
     """Handle profile.md file changes detected by the VaultWatcher.
 
@@ -310,6 +311,10 @@ async def on_profile_changed(
     the changed profile files, parses them, and syncs the result to the
     ``agent_profiles`` table.  When no database is available, falls back
     to logging only.
+
+    For ``created`` operations on agent-type profiles, starter knowledge
+    packs are copied from ``vault/templates/knowledge/{type}/`` into the
+    profile's ``memory/`` folder (profiles spec §4, roadmap 4.3.4).
 
     For ``deleted`` operations, the handler logs the deletion but does
     **not** remove the profile from the database.  Per spec, the DB
@@ -328,6 +333,10 @@ async def on_profile_changed(
         provided, a ``notify.profile_sync_failed`` event is emitted
         on sync failure so that transport handlers (Discord, etc.)
         can alert the user.
+    data_dir:
+        Optional root data directory (e.g. ``~/.agent-queue``).  When
+        provided and a new profile is created, starter knowledge packs
+        are copied into the profile's memory folder.
     """
     for change in changes:
         path_id = derive_profile_id(change.rel_path)
@@ -376,6 +385,25 @@ async def on_profile_changed(
                 result.profile_id,
                 f" warnings: {result.warnings}" if result.warnings else "",
             )
+
+            # Copy starter knowledge for newly created agent-type profiles
+            # (profiles spec §4, roadmap 4.3.4).
+            if (
+                change.operation == "created"
+                and result.action == "created"
+                and data_dir
+                and path_id
+                and path_id != "orchestrator"
+            ):
+                from src.vault import copy_starter_knowledge
+
+                starter = copy_starter_knowledge(data_dir, path_id)
+                if starter["copied"]:
+                    logger.info(
+                        "Copied starter knowledge for new profile '%s' via watcher: %s",
+                        path_id,
+                        ", ".join(starter["copied"]),
+                    )
         else:
             # Sync failed — previous DB config remains active (per spec).
             # Emit a notification so transport handlers can alert the user.
@@ -392,6 +420,7 @@ def register_profile_handlers(
     *,
     db: Any | None = None,
     event_bus: EventBus | None = None,
+    data_dir: str | None = None,
 ) -> list[str]:
     """Register profile.md path handlers with the VaultWatcher.
 
@@ -413,6 +442,9 @@ def register_profile_handlers(
         Optional :class:`~src.event_bus.EventBus` instance.  When
         provided, a ``notify.profile_sync_failed`` event is emitted
         on sync failure.
+    data_dir:
+        Optional root data directory.  When provided, starter knowledge
+        packs are copied for newly created profiles (roadmap 4.3.4).
 
     Returns
     -------
@@ -421,7 +453,7 @@ def register_profile_handlers(
     """
 
     async def _handler(changes: list[VaultChange]) -> None:
-        await on_profile_changed(changes, db=db, event_bus=event_bus)
+        await on_profile_changed(changes, db=db, event_bus=event_bus, data_dir=data_dir)
 
     handler_ids: list[str] = []
     for pattern in PROFILE_PATTERNS:

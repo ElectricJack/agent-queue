@@ -12,6 +12,7 @@ from src.vault import (
     PROFILE_TEMPLATE,
     _STARTER_KNOWLEDGE,
     copy_project_memory_to_vault,
+    copy_starter_knowledge,
     ensure_default_templates,
     ensure_orchestrator_profile,
     ensure_vault_layout,
@@ -1070,3 +1071,186 @@ def test_orchestrator_profile_syncs_to_agent_profile():
     assert profile_dict["name"] == "Orchestrator"
     assert isinstance(profile_dict.get("system_prompt_suffix", ""), str)
     assert len(profile_dict.get("system_prompt_suffix", "")) > 0
+
+
+# ---------------------------------------------------------------------------
+# Starter knowledge pack copy tests (roadmap §4.3.4)
+# ---------------------------------------------------------------------------
+
+
+def test_copy_starter_knowledge_copies_matching_templates(tmp_path):
+    """copy_starter_knowledge copies templates from knowledge/{type}/ to memory/."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+
+    assert "common-pitfalls.md" in result["copied"]
+    assert "git-conventions.md" in result["copied"]
+    assert result["skipped"] == []
+
+    # Verify files exist in the memory directory
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    assert (memory_dir / "common-pitfalls.md").is_file()
+    assert (memory_dir / "git-conventions.md").is_file()
+
+
+def test_copy_starter_knowledge_file_contents_match(tmp_path):
+    """Copied files have the same content as the templates."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    copy_starter_knowledge(str(tmp_path), "coding")
+
+    templates_dir = tmp_path / "vault" / "templates" / "knowledge" / "coding"
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+
+    for filename in ("common-pitfalls.md", "git-conventions.md"):
+        src_content = (templates_dir / filename).read_text()
+        dst_content = (memory_dir / filename).read_text()
+        assert src_content == dst_content
+
+
+def test_copy_starter_knowledge_idempotent(tmp_path):
+    """Calling copy_starter_knowledge twice doesn't overwrite existing files."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    result1 = copy_starter_knowledge(str(tmp_path), "coding")
+    assert len(result1["copied"]) == 2
+
+    # Modify a file to verify it's preserved
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    (memory_dir / "common-pitfalls.md").write_text("custom content")
+
+    result2 = copy_starter_knowledge(str(tmp_path), "coding")
+    assert result2["copied"] == []
+    assert sorted(result2["skipped"]) == ["common-pitfalls.md", "git-conventions.md"]
+
+    # Verify custom content was preserved
+    assert (memory_dir / "common-pitfalls.md").read_text() == "custom content"
+
+
+def test_copy_starter_knowledge_no_matching_templates(tmp_path):
+    """No-op when no starter knowledge pack exists for the profile type."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "unknown-type")
+
+    result = copy_starter_knowledge(str(tmp_path), "unknown-type")
+
+    assert result["copied"] == []
+    assert result["skipped"] == []
+
+
+def test_copy_starter_knowledge_creates_memory_dir(tmp_path):
+    """Memory directory is created if it doesn't exist."""
+    ensure_default_templates(str(tmp_path))
+    # Don't call ensure_vault_profile_dirs — memory dir doesn't exist yet
+
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    assert not memory_dir.exists()
+
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+    assert len(result["copied"]) == 2
+    assert memory_dir.is_dir()
+
+
+def test_copy_starter_knowledge_code_review_type(tmp_path):
+    """Copies code-review starter knowledge (review-checklist.md)."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "code-review")
+
+    result = copy_starter_knowledge(str(tmp_path), "code-review")
+
+    assert "review-checklist.md" in result["copied"]
+    memory_dir = tmp_path / "vault" / "agent-types" / "code-review" / "memory"
+    assert (memory_dir / "review-checklist.md").is_file()
+
+
+def test_copy_starter_knowledge_qa_type(tmp_path):
+    """Copies qa starter knowledge (testing-patterns.md)."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "qa")
+
+    result = copy_starter_knowledge(str(tmp_path), "qa")
+
+    assert "testing-patterns.md" in result["copied"]
+    memory_dir = tmp_path / "vault" / "agent-types" / "qa" / "memory"
+    assert (memory_dir / "testing-patterns.md").is_file()
+
+
+def test_copy_starter_knowledge_preserves_starter_tag(tmp_path):
+    """Copied files retain the #starter tag in frontmatter."""
+    import yaml
+
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    copy_starter_knowledge(str(tmp_path), "coding")
+
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    for filename in ("common-pitfalls.md", "git-conventions.md"):
+        content = (memory_dir / filename).read_text()
+        assert content.startswith("---")
+        lines = content.strip().splitlines()
+        end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+        fm = yaml.safe_load("\n".join(lines[1:end_idx]))
+        assert "starter" in fm["tags"], f"{filename} missing 'starter' tag after copy"
+
+
+def test_copy_starter_knowledge_partial_existing(tmp_path):
+    """Only missing files are copied when some already exist."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    # Pre-create one of the files
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    (memory_dir / "common-pitfalls.md").write_text("already here")
+
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+
+    assert result["copied"] == ["git-conventions.md"]
+    assert result["skipped"] == ["common-pitfalls.md"]
+    # Pre-existing file untouched
+    assert (memory_dir / "common-pitfalls.md").read_text() == "already here"
+
+
+def test_copy_starter_knowledge_skips_subdirectories(tmp_path):
+    """Subdirectories inside templates/knowledge/{type}/ are not copied."""
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    # Create a subdirectory in the template dir
+    subdir = tmp_path / "vault" / "templates" / "knowledge" / "coding" / "nested"
+    subdir.mkdir()
+    (subdir / "deep-file.md").write_text("deep")
+
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+
+    # Only top-level files are copied
+    assert "deep-file.md" not in result["copied"]
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    assert not (memory_dir / "deep-file.md").exists()
+
+
+def test_copy_starter_knowledge_no_templates_dir(tmp_path):
+    """Returns empty result when templates dir doesn't exist at all."""
+    # Don't call ensure_default_templates — no templates dir at all
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+
+    assert result["copied"] == []
+    assert result["skipped"] == []
+
+
+def test_copy_starter_knowledge_all_types(tmp_path):
+    """All agent types in _STARTER_KNOWLEDGE can be copied successfully."""
+    ensure_default_templates(str(tmp_path))
+
+    for agent_type, files in _STARTER_KNOWLEDGE.items():
+        ensure_vault_profile_dirs(str(tmp_path), agent_type)
+        result = copy_starter_knowledge(str(tmp_path), agent_type)
+
+        assert sorted(result["copied"]) == sorted(files.keys()), (
+            f"Mismatch for {agent_type}: expected {sorted(files.keys())}, "
+            f"got {sorted(result['copied'])}"
+        )

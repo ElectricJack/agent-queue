@@ -910,6 +910,84 @@ def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
     os.makedirs(os.path.join(base, "memory"), exist_ok=True)
 
 
+def copy_starter_knowledge(data_dir: str, profile_id: str) -> dict:
+    """Copy starter knowledge pack templates into a new profile's memory folder.
+
+    When a new agent type is created (profile.md saved for the first time),
+    this function copies matching starter knowledge from
+    ``vault/templates/knowledge/{profile_id}/`` to
+    ``vault/agent-types/{profile_id}/memory/``.  These files are already
+    tagged ``#starter`` in their frontmatter (profiles spec §4), so agents
+    and users can identify and eventually replace them.
+
+    The operation is **idempotent**: existing files in the destination are
+    never overwritten.  This ensures that if a user has already customised
+    a starter file, re-running this function (e.g. on restart) does not
+    destroy their edits.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+        profile_id: The profile identifier (e.g. ``coding``).
+
+    Returns:
+        Dict with:
+        - ``copied`` (list[str]): Relative filenames that were copied.
+        - ``skipped`` (list[str]): Relative filenames already present.
+        - ``source`` (str): The source template directory path.
+    """
+    templates_dir = os.path.join(
+        data_dir, "vault", "templates", "knowledge", profile_id
+    )
+    memory_dir = os.path.join(
+        data_dir, "vault", "agent-types", profile_id, "memory"
+    )
+
+    result: dict = {"copied": [], "skipped": [], "source": templates_dir}
+
+    if not os.path.isdir(templates_dir):
+        logger.debug(
+            "No starter knowledge pack for profile '%s' (no directory at %s)",
+            profile_id,
+            templates_dir,
+        )
+        return result
+
+    os.makedirs(memory_dir, exist_ok=True)
+
+    for filename in sorted(os.listdir(templates_dir)):
+        src_path = os.path.join(templates_dir, filename)
+        if not os.path.isfile(src_path):
+            continue
+
+        dst_path = os.path.join(memory_dir, filename)
+        if os.path.exists(dst_path):
+            result["skipped"].append(filename)
+            logger.debug(
+                "Starter knowledge file already exists, skipping: %s → %s",
+                filename,
+                dst_path,
+            )
+            continue
+
+        shutil.copy2(src_path, dst_path)
+        result["copied"].append(filename)
+        logger.debug(
+            "Copied starter knowledge file: %s → %s",
+            src_path,
+            dst_path,
+        )
+
+    if result["copied"]:
+        logger.info(
+            "Copied %d starter knowledge file(s) for profile '%s': %s",
+            len(result["copied"]),
+            profile_id,
+            ", ".join(result["copied"]),
+        )
+
+    return result
+
+
 def copy_project_memory_to_vault(data_dir: str, project_id: str) -> bool:
     """Copy project memory files from ``memory/{project_id}/`` to the vault.
 

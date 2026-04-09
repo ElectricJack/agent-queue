@@ -5647,7 +5647,7 @@ feature work stuck on feature branches across multiple workspaces.
 
         from src.profile_parser import agent_profile_to_markdown
         from src.profile_sync import sync_profile_text_to_db
-        from src.vault import ensure_vault_profile_dirs
+        from src.vault import copy_starter_knowledge, ensure_vault_profile_dirs
 
         profile_id = args.get("id", "").strip()
         name = args.get("name", "").strip()
@@ -5666,6 +5666,10 @@ feature work stuck on feature branches across multiple workspaces.
 
         # Create vault subdirectories for the new profile (vault spec §2).
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+
+        # Copy starter knowledge pack if one exists for this profile type
+        # (profiles spec §4, roadmap 4.3.4).
+        starter_result = copy_starter_knowledge(self.config.data_dir, profile_id)
 
         # Render and write the markdown profile to the vault.
         markdown = agent_profile_to_markdown(
@@ -5705,6 +5709,8 @@ feature work stuck on feature branches across multiple workspaces.
                 )
 
         result: dict = {"created": profile_id, "name": name}
+        if starter_result["copied"]:
+            result["starter_knowledge"] = starter_result["copied"]
         if sync_result.warnings:
             result["warnings"] = sync_result.warnings
         return result

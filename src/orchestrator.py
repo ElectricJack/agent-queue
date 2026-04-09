@@ -853,7 +853,12 @@ class Orchestrator:
         # Pass self.bus so sync failures emit notify.profile_sync_failed.
         from src.profile_sync import register_profile_handlers
 
-        register_profile_handlers(self.vault_watcher, db=self.db, event_bus=self.bus)
+        register_profile_handlers(
+            self.vault_watcher,
+            db=self.db,
+            event_bus=self.bus,
+            data_dir=self.config.data_dir,
+        )
 
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
