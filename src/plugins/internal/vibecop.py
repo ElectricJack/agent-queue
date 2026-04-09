@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.plugins.base import InternalPlugin, PluginPermission, cron
+from src.plugins.base import InternalPlugin, PluginPermission
 
 if TYPE_CHECKING:
     from src.plugins.base import PluginContext
@@ -819,10 +819,13 @@ class VibeCopPlugin(InternalPlugin):
         "weekly_scan_schedule": {
             "type": "string",
             "description": (
-                "Cron expression for weekly full project scan. "
-                "Default: Monday 6 AM (0 6 * * 1)."
+                "DEPRECATED — weekly scanning is now handled by the "
+                "vibecop-weekly-scan playbook (timer.168h trigger). "
+                "This config key is ignored. Edit the playbook "
+                "markdown in vault/system/playbooks/ to change the schedule."
             ),
             "default": "0 6 * * 1",
+            "deprecated": True,
         },
     }
 
@@ -1111,11 +1114,22 @@ class VibeCopPlugin(InternalPlugin):
         except Exception:
             logger.exception("vibecop auto-scan failed for task %s", task_id)
 
-    # --- Cron jobs ---
+    # --- Legacy weekly scan (migrated to playbook) ---
+    # The @cron("0 6 * * 1") decorator has been removed.  Periodic scanning
+    # is now handled by the ``vibecop-weekly-scan`` playbook (timer.168h
+    # trigger).  See playbooks spec §16 — Plugin Integration.
+    #
+    # This method is retained for programmatic / manual invocation (e.g.
+    # ``aq vibecop weekly-scan``) but is no longer auto-scheduled.
 
-    @cron("0 6 * * 1", config_key="weekly_scan_schedule")
     async def weekly_project_scan(self, ctx: PluginContext) -> None:
-        """Weekly full scan of all active project workspaces."""
+        """Full scan of all active project workspaces.
+
+        .. deprecated::
+            No longer auto-scheduled via ``@cron``.  The
+            ``vibecop-weekly-scan`` playbook handles periodic scanning.
+            This method is kept for manual/programmatic invocation only.
+        """
         if self._runner is None:
             return
 

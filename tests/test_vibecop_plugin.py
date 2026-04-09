@@ -1377,12 +1377,18 @@ class TestCLIFormatters:
 
 
 # ---------------------------------------------------------------------------
-# Weekly project scan (cron)
+# Weekly project scan (legacy — migrated to vibecop-weekly-scan playbook)
 # ---------------------------------------------------------------------------
 
 
 class TestWeeklyProjectScan:
-    """Tests for the weekly_project_scan cron method."""
+    """Tests for the weekly_project_scan method (formerly @cron-scheduled).
+
+    The @cron decorator was removed in the playbook migration (roadmap 5.6.7).
+    The method is retained for manual/programmatic invocation.  These tests
+    validate the method's internal logic, which the playbook replaces with
+    LLM-driven tool calls.
+    """
 
     @pytest.fixture
     def plugin_with_runner(self, mock_ctx):

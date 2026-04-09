@@ -1,11 +1,11 @@
 """Validate default playbooks produce equivalent results to current rules.
 
-Roadmap 5.6.6 — Phase 1 migration gate.  These tests verify that the four
+Roadmap 5.6.6 — Phase 1 migration gate.  These tests verify that the
 default playbooks installed in ``vault/system/playbooks/`` cover the same
 trigger events, logic steps, and behavioral intent as the six default rules
 in ``src/prompts/default_rules/``.
 
-The mapping is:
+The rule→playbook mapping is:
 
   Rules (6)                                         Playbook (1)
   ─────────────────────────────────────────────────  ──────────────────────────
@@ -21,6 +21,10 @@ The mapping is:
 
   dependency-update-check (every 24 hours)       →  dependency-audit.md
                                                         (timer.24h)
+
+Additionally, the default_playbooks directory contains
+``vibecop-weekly-scan.md`` (timer.168h), which replaces the VibeCop
+plugin's ``@cron("0 6 * * 1")`` hook (roadmap 5.6.7, playbooks spec §16).
 
 Both systems ultimately send prompts to an LLM, so comparing literal outputs
 is non-deterministic.  Instead we validate:
@@ -575,7 +579,11 @@ class TestCoexistence:
         assert sorted(installed) == expected_ids
 
     def test_playbooks_install_defaults(self, tmp_path):
-        """ensure_default_playbooks() installs all 4 default playbooks."""
+        """ensure_default_playbooks() installs all default playbooks.
+
+        Includes the 4 rule-replacement playbooks plus vibecop-weekly-scan
+        (migrated from plugin @cron, roadmap 5.6.7).
+        """
         result = ensure_default_playbooks(str(tmp_path))
 
         expected_files = [
@@ -583,6 +591,7 @@ class TestCoexistence:
             "dependency-audit.md",
             "system-health-check.md",
             "task-outcome.md",
+            "vibecop-weekly-scan.md",
         ]
         assert sorted(result["created"]) == expected_files
 
@@ -595,7 +604,7 @@ class TestCoexistence:
         """
         # Install playbooks first (they go to vault/system/playbooks/)
         playbook_result = ensure_default_playbooks(str(tmp_path))
-        assert len(playbook_result["created"]) == 4
+        assert len(playbook_result["created"]) == 5  # 4 rule-replacements + vibecop-weekly-scan
 
         # Attempt to install rules — should be a no-op
         mgr = RuleManager(storage_root=str(tmp_path))
@@ -702,7 +711,12 @@ class TestCoexistence:
         assert "timer.24h" in trigger_map
         assert "dependency-audit" in trigger_map["timer.24h"]
 
-        assert mgr.playbook_count == 4
+        # 4 rule-replacement playbooks + vibecop-weekly-scan (from @cron migration)
+        assert mgr.playbook_count == 5
+
+        # Also verify the new vibecop-weekly-scan trigger is indexed
+        assert "timer.168h" in trigger_map
+        assert "vibecop-weekly-scan" in trigger_map["timer.168h"]
 
 
 # ===================================================================
@@ -765,10 +779,17 @@ class TestConsolidationMapping:
             )
 
     def test_six_rules_map_to_four_playbooks(self):
-        """6 default rules → 4 default playbooks (3:1 consolidation for task-outcome)."""
+        """6 default rules → 4 rule-replacement playbooks (3:1 consolidation for task-outcome).
+
+        Note: the default_playbooks directory now also contains
+        vibecop-weekly-scan.md (migrated from plugin @cron, roadmap 5.6.7),
+        which doesn't replace a rule. The rule→playbook count is still 6→4.
+        """
         assert len(os.listdir(_RULES_DIR)) >= 6
         playbook_files = set(f for f in os.listdir(_PLAYBOOKS_DIR) if f.endswith(".md"))
-        assert len(playbook_files) == 4
+        # 4 rule-replacement playbooks + 1 plugin-cron-replacement playbook
+        rule_replacement_playbooks = playbook_files - {"vibecop-weekly-scan.md"}
+        assert len(rule_replacement_playbooks) == 4
 
     def test_task_outcome_trigger_is_superset_of_component_rules(self):
         """task-outcome triggers include both task.completed (2 rules) and task.failed (1 rule)."""
