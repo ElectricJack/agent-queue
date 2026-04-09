@@ -15,6 +15,7 @@ Covers:
 - Notification events: sync failures emit notify.profile_sync_failed
 - Roadmap 4.1.10 (a)-(g): Profile parser and DB sync integration tests
 - Roadmap 4.1.11 (a)-(g): Profile error handling tests
+- Roadmap 4.1.12 (a)-(f): File watcher profile sync integration tests
 """
 
 from __future__ import annotations
@@ -3214,3 +3215,1068 @@ name: No ID Agent
         assert "github" in profile.mcp_servers
         assert "software engineering agent" in profile.system_prompt_suffix
         assert "Always run existing tests" in profile.system_prompt_suffix
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 4.1.12 — File watcher profile sync integration tests
+# ---------------------------------------------------------------------------
+#
+# Tests (a)-(f) per docs/specs/design/roadmap.md §4.1.12:
+#   (a) Edit profile.md Role section — DB updates with new Role text
+#       within one watcher cycle
+#   (b) Edit profile.md Config JSON (change model) — DB reflects new
+#       model value
+#   (c) Rapid edits to profile.md (3 edits in 500ms) trigger only one
+#       sync due to debounce
+#   (d) Creating a new profile.md in vault triggers initial sync and DB
+#       row creation
+#   (e) Deleting profile.md does NOT delete DB row (preserves last known
+#       config with warning)
+#   (f) Concurrent edits to two different agents' profile.md files sync
+#       independently and correctly
+# ---------------------------------------------------------------------------
+
+
+class TestRoadmap4112:
+    """Roadmap 4.1.12 — File watcher profile sync integration tests.
+
+    End-to-end tests that exercise the full pipeline: write/edit file on disk →
+    VaultWatcher detects change → handler dispatched → profile parsed → DB
+    upserted.  Uses real VaultWatcher, real parser, and real database.
+    """
+
+    # -------------------------------------------------------------------
+    # (a) Edit profile.md Role section — DB updates with new Role text
+    #     within one watcher cycle
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_edit_role_section_updates_db(self, db, tmp_path):
+        """(a) Editing the Role section in profile.md updates DB within one watcher cycle."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "coding" / "profile.md"
+
+        initial_text = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+You are a backend engineer.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        _create_file(str(profile_path), initial_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+
+        # Initial snapshot + creation sync
+        await watcher.check()  # snapshot
+        _touch(str(profile_path))
+        await watcher.check()  # detect + dispatch creation
+
+        profile = await db.get_profile("coding")
+        assert profile is not None
+        assert "backend engineer" in profile.system_prompt_suffix
+
+        # Now edit only the Role section
+        updated_text = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+You are a **full-stack engineer** specializing in React and Python.
+You build end-to-end features with thorough test coverage.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        with open(str(profile_path), "w") as f:
+            f.write(updated_text)
+        _touch(str(profile_path))
+
+        # Single watcher cycle should detect and sync
+        changes = await watcher.check()
+        assert len(changes) >= 1
+
+        # Verify DB has the new Role text
+        profile = await db.get_profile("coding")
+        assert profile is not None
+        assert "full-stack engineer" in profile.system_prompt_suffix
+        assert "React and Python" in profile.system_prompt_suffix
+        assert "backend engineer" not in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_a_role_edit_preserves_other_fields(self, db, tmp_path):
+        """(a) Editing Role preserves model, tools, and other DB fields."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "test" / "profile.md"
+
+        initial_text = """\
+---
+id: test
+name: Test Agent
+---
+
+## Role
+Original role text.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+```
+
+## Tools
+```json
+{"allowed": ["Read", "Write", "Edit"]}
+```
+"""
+        _create_file(str(profile_path), initial_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Now edit only the Role
+        updated_text = initial_text.replace("Original role text.", "New role text here.")
+        with open(str(profile_path), "w") as f:
+            f.write(updated_text)
+        _touch(str(profile_path))
+        await watcher.check()
+
+        profile = await db.get_profile("test")
+        assert "New role text" in profile.system_prompt_suffix
+        # Other fields preserved
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write", "Edit"]
+
+    # -------------------------------------------------------------------
+    # (b) Edit profile.md Config JSON (change model) — DB reflects new
+    #     model value
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_b_edit_config_model_updates_db(self, db, tmp_path):
+        """(b) Changing the model in Config JSON updates the DB model field."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "coding" / "profile.md"
+
+        initial_text = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+You are a software engineer.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        _create_file(str(profile_path), initial_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Verify initial model
+        profile = await db.get_profile("coding")
+        assert profile is not None
+        assert profile.model == "claude-sonnet-4-6"
+
+        # Change model to opus
+        updated_text = initial_text.replace("claude-sonnet-4-6", "claude-opus-4")
+        with open(str(profile_path), "w") as f:
+            f.write(updated_text)
+        _touch(str(profile_path))
+
+        changes = await watcher.check()
+        assert len(changes) >= 1
+
+        profile = await db.get_profile("coding")
+        assert profile.model == "claude-opus-4"
+
+    @pytest.mark.asyncio
+    async def test_b_edit_config_permission_mode_updates_db(self, db, tmp_path):
+        """(b) Changing permission_mode in Config JSON updates the DB."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "test" / "profile.md"
+
+        initial_text = """\
+---
+id: test
+name: Test Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6", "permission_mode": "plan"}
+```
+"""
+        _create_file(str(profile_path), initial_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        assert (await db.get_profile("test")).permission_mode == "plan"
+
+        # Change permission_mode
+        updated_text = initial_text.replace('"plan"', '"auto"')
+        with open(str(profile_path), "w") as f:
+            f.write(updated_text)
+        _touch(str(profile_path))
+        await watcher.check()
+
+        assert (await db.get_profile("test")).permission_mode == "auto"
+
+    @pytest.mark.asyncio
+    async def test_b_edit_config_preserves_role_text(self, db, tmp_path):
+        """(b) Changing Config preserves the existing Role section in DB."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "test" / "profile.md"
+
+        initial_text = """\
+---
+id: test
+name: Test Agent
+---
+
+## Role
+Specialist in database optimization.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        _create_file(str(profile_path), initial_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Change model
+        updated_text = initial_text.replace("claude-sonnet-4-6", "claude-opus-4")
+        with open(str(profile_path), "w") as f:
+            f.write(updated_text)
+        _touch(str(profile_path))
+        await watcher.check()
+
+        profile = await db.get_profile("test")
+        assert profile.model == "claude-opus-4"
+        assert "database optimization" in profile.system_prompt_suffix
+
+    # -------------------------------------------------------------------
+    # (c) Rapid edits to profile.md (3 edits in 500ms) trigger only one
+    #     sync due to debounce
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_rapid_edits_trigger_single_sync(self, db, tmp_path):
+        """(c) Three rapid edits within the debounce window trigger only one sync.
+
+        Uses a long debounce_seconds to hold changes, then force-flushes.
+        Only the final edit's content should be reflected in the DB.
+        """
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "rapid" / "profile.md"
+
+        _create_file(
+            str(profile_path),
+            """\
+---
+id: rapid
+name: Rapid Agent
+---
+
+## Config
+```json
+{"model": "model-v1"}
+```
+""",
+        )
+
+        # Long debounce — changes won't dispatch until force-flushed
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=999)
+        register_profile_handlers(watcher, db=db)
+
+        # Initial snapshot
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # Edit 1: create detected
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Edit 2: change model to v2
+        with open(str(profile_path), "w") as f:
+            f.write("""\
+---
+id: rapid
+name: Rapid Agent
+---
+
+## Config
+```json
+{"model": "model-v2"}
+```
+""")
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Edit 3: change model to v3 (the final value)
+        with open(str(profile_path), "w") as f:
+            f.write("""\
+---
+id: rapid
+name: Rapid Agent
+---
+
+## Config
+```json
+{"model": "model-v3"}
+```
+""")
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Nothing dispatched yet — still within debounce window
+        assert await db.get_profile("rapid") is None
+        assert watcher.get_pending_change_count() > 0
+
+        # Force flush — should dispatch exactly once
+        await watcher._flush_pending(force=True)
+
+        # DB should reflect the final state (model-v3)
+        profile = await db.get_profile("rapid")
+        assert profile is not None
+        assert profile.model == "model-v3"
+
+    @pytest.mark.asyncio
+    async def test_c_rapid_edits_deduplicated_to_single_change(self, db, tmp_path):
+        """(c) Three rapid edits are deduplicated to a single VaultChange."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "dedup" / "profile.md"
+
+        _create_file(str(profile_path), MINIMAL_PROFILE)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=999)
+        collector = ChangeCollector()
+        watcher.register_handler("agent-types/*/profile.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # Three rapid edits
+        for i in range(3):
+            with open(str(profile_path), "w") as f:
+                f.write(MINIMAL_PROFILE.replace("Test Agent", f"Agent v{i + 1}"))
+            _touch(str(profile_path))
+            await watcher.check()
+
+        # Not dispatched yet
+        assert collector.call_count == 0
+
+        # Force flush
+        await watcher._flush_pending(force=True)
+
+        # Handler called exactly once with one deduplicated change
+        assert collector.call_count == 1
+        assert len(collector.all_changes) == 1
+        # File existed at snapshot time, so all three edits are "modified" →
+        # deduplicated to a single "modified"
+        assert collector.all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_c_debounce_zero_dispatches_immediately(self, db, tmp_path):
+        """(c) With debounce_seconds=0, edits are dispatched on the same check cycle."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "instant" / "profile.md"
+
+        _create_file(
+            str(profile_path),
+            """\
+---
+id: instant
+name: Instant Agent
+---
+
+## Config
+```json
+{"model": "fast-model"}
+```
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()  # snapshot
+
+        # Edit
+        with open(str(profile_path), "w") as f:
+            f.write("""\
+---
+id: instant
+name: Instant Agent
+---
+
+## Config
+```json
+{"model": "updated-model"}
+```
+""")
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Should be dispatched immediately
+        profile = await db.get_profile("instant")
+        assert profile is not None
+        assert profile.model == "updated-model"
+
+    # -------------------------------------------------------------------
+    # (d) Creating a new profile.md in vault triggers initial sync and
+    #     DB row creation
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_new_profile_triggers_db_creation(self, db, tmp_path):
+        """(d) Creating a new profile.md triggers DB row creation."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()  # initial snapshot (empty vault)
+
+        # Verify no profile exists
+        assert await db.get_profile("new-agent") is None
+
+        # Create new profile file
+        _create_file(
+            str(vault / "agent-types" / "new-agent" / "profile.md"),
+            """\
+---
+id: new-agent
+name: New Agent
+---
+
+## Role
+A brand new agent for testing.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+```
+
+## Tools
+```json
+{"allowed": ["Read", "Write"]}
+```
+""",
+        )
+
+        changes = await watcher.check()
+        assert len(changes) == 1
+        assert changes[0].operation == "created"
+
+        # DB row should now exist with all fields
+        profile = await db.get_profile("new-agent")
+        assert profile is not None
+        assert profile.name == "New Agent"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write"]
+        assert "brand new agent" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_d_new_profile_uses_path_derived_id(self, db, tmp_path):
+        """(d) New profile without frontmatter id uses path-derived ID."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+
+        # Profile without explicit id in frontmatter
+        _create_file(
+            str(vault / "agent-types" / "inferred" / "profile.md"),
+            """\
+---
+name: Inferred Agent
+---
+
+## Role
+ID will be derived from path.
+""",
+        )
+
+        await watcher.check()
+
+        # ID derived from path: agent-types/inferred/profile.md → "inferred"
+        profile = await db.get_profile("inferred")
+        assert profile is not None
+        assert profile.name == "Inferred Agent"
+
+    @pytest.mark.asyncio
+    async def test_d_new_orchestrator_profile_creation(self, db, tmp_path):
+        """(d) Creating orchestrator/profile.md triggers DB row creation."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+
+        _create_file(
+            str(vault / "orchestrator" / "profile.md"),
+            """\
+---
+id: orchestrator
+name: Orchestrator
+---
+
+## Role
+You coordinate and supervise other agents.
+""",
+        )
+
+        changes = await watcher.check()
+        assert any(c.operation == "created" for c in changes)
+
+        profile = await db.get_profile("orchestrator")
+        assert profile is not None
+        assert profile.name == "Orchestrator"
+        assert "coordinate" in profile.system_prompt_suffix
+
+    # -------------------------------------------------------------------
+    # (e) Deleting profile.md does NOT delete DB row (preserves last
+    #     known config with warning)
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_e_delete_preserves_db_row(self, db, tmp_path):
+        """(e) Deleting profile.md does NOT delete the DB row."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "keeper" / "profile.md"
+
+        _create_file(
+            str(profile_path),
+            """\
+---
+id: keeper
+name: Keeper Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+
+## Role
+An agent whose config should persist after file deletion.
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()  # snapshot
+        _touch(str(profile_path))
+        await watcher.check()  # detect creation, sync to DB
+
+        # Verify profile exists in DB
+        profile = await db.get_profile("keeper")
+        assert profile is not None
+        assert profile.model == "claude-sonnet-4-6"
+        assert "persist after file deletion" in profile.system_prompt_suffix
+
+        # Delete the file
+        os.remove(str(profile_path))
+        changes = await watcher.check()
+        assert any(c.operation == "deleted" for c in changes)
+
+        # DB row must STILL exist with last known values (per spec)
+        profile = await db.get_profile("keeper")
+        assert profile is not None
+        assert profile.name == "Keeper Agent"
+        assert profile.model == "claude-sonnet-4-6"
+        assert "persist after file deletion" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_e_delete_preserves_all_fields(self, db, tmp_path):
+        """(e) All DB fields (tools, mcp_servers, etc.) survive file deletion."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "full-del" / "profile.md"
+
+        full_text = """\
+---
+id: full-del
+name: Full Delete Test
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6", "permission_mode": "auto"}
+```
+
+## Tools
+```json
+{"allowed": ["Read", "Write", "Edit"]}
+```
+
+## MCP Servers
+```json
+{
+  "github": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"]
+  }
+}
+```
+
+## Role
+You handle complex tasks.
+
+## Rules
+- Always test first.
+"""
+        _create_file(str(profile_path), full_text)
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        # Verify full profile in DB
+        profile = await db.get_profile("full-del")
+        assert profile is not None
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.allowed_tools == ["Read", "Write", "Edit"]
+        assert "github" in profile.mcp_servers
+
+        # Delete the file
+        os.remove(str(profile_path))
+        await watcher.check()
+
+        # All fields preserved
+        profile = await db.get_profile("full-del")
+        assert profile is not None
+        assert profile.name == "Full Delete Test"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write", "Edit"]
+        assert "github" in profile.mcp_servers
+        assert "complex tasks" in profile.system_prompt_suffix
+        assert "Always test first" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_e_delete_then_recreate(self, db, tmp_path):
+        """(e) After deletion, re-creating profile.md updates DB with new content."""
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "phoenix" / "profile.md"
+
+        _create_file(
+            str(profile_path),
+            """\
+---
+id: phoenix
+name: Phoenix Agent
+---
+
+## Config
+```json
+{"model": "old-model"}
+```
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(profile_path))
+        await watcher.check()
+
+        assert (await db.get_profile("phoenix")).model == "old-model"
+
+        # Delete
+        os.remove(str(profile_path))
+        await watcher.check()
+
+        # Still in DB
+        assert (await db.get_profile("phoenix")).model == "old-model"
+
+        # Re-create with new content
+        _create_file(
+            str(profile_path),
+            """\
+---
+id: phoenix
+name: Phoenix Agent Reborn
+---
+
+## Config
+```json
+{"model": "new-model"}
+```
+""",
+        )
+        await watcher.check()
+
+        profile = await db.get_profile("phoenix")
+        assert profile.name == "Phoenix Agent Reborn"
+        assert profile.model == "new-model"
+
+    # -------------------------------------------------------------------
+    # (f) Concurrent edits to two different agents' profile.md files sync
+    #     independently and correctly
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_concurrent_edits_two_agents(self, db, tmp_path):
+        """(f) Concurrent edits to two agents' profiles sync independently."""
+        vault = tmp_path / "vault"
+        path_a = vault / "agent-types" / "agent-a" / "profile.md"
+        path_b = vault / "agent-types" / "agent-b" / "profile.md"
+
+        _create_file(
+            str(path_a),
+            """\
+---
+id: agent-a
+name: Agent A
+---
+
+## Config
+```json
+{"model": "model-a-v1"}
+```
+
+## Role
+Agent A does task A.
+""",
+        )
+        _create_file(
+            str(path_b),
+            """\
+---
+id: agent-b
+name: Agent B
+---
+
+## Config
+```json
+{"model": "model-b-v1"}
+```
+
+## Role
+Agent B does task B.
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()  # snapshot with both files
+
+        # Touch both to trigger creation events
+        _touch(str(path_a))
+        _touch(str(path_b))
+        changes = await watcher.check()
+        assert len(changes) == 2
+
+        # Both should be in DB
+        profile_a = await db.get_profile("agent-a")
+        profile_b = await db.get_profile("agent-b")
+        assert profile_a is not None
+        assert profile_b is not None
+        assert profile_a.model == "model-a-v1"
+        assert profile_b.model == "model-b-v1"
+
+        # Now edit both concurrently (different changes)
+        with open(str(path_a), "w") as f:
+            f.write("""\
+---
+id: agent-a
+name: Agent A Updated
+---
+
+## Config
+```json
+{"model": "model-a-v2"}
+```
+
+## Role
+Agent A now does task A-prime.
+""")
+        _touch(str(path_a))
+
+        with open(str(path_b), "w") as f:
+            f.write("""\
+---
+id: agent-b
+name: Agent B Updated
+---
+
+## Config
+```json
+{"model": "model-b-v2"}
+```
+
+## Role
+Agent B now does task B-prime.
+""")
+        _touch(str(path_b))
+
+        changes = await watcher.check()
+        assert len(changes) == 2
+
+        # Both should reflect their independent updates
+        profile_a = await db.get_profile("agent-a")
+        profile_b = await db.get_profile("agent-b")
+        assert profile_a.name == "Agent A Updated"
+        assert profile_a.model == "model-a-v2"
+        assert "A-prime" in profile_a.system_prompt_suffix
+        assert profile_b.name == "Agent B Updated"
+        assert profile_b.model == "model-b-v2"
+        assert "B-prime" in profile_b.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_f_concurrent_edits_no_cross_contamination(self, db, tmp_path):
+        """(f) Editing one agent's profile does not affect the other."""
+        vault = tmp_path / "vault"
+        path_a = vault / "agent-types" / "alpha" / "profile.md"
+        path_b = vault / "agent-types" / "beta" / "profile.md"
+
+        _create_file(
+            str(path_a),
+            """\
+---
+id: alpha
+name: Alpha
+---
+
+## Config
+```json
+{"model": "alpha-model"}
+```
+""",
+        )
+        _create_file(
+            str(path_b),
+            """\
+---
+id: beta
+name: Beta
+---
+
+## Config
+```json
+{"model": "beta-model"}
+```
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(path_a))
+        _touch(str(path_b))
+        await watcher.check()
+
+        # Edit only alpha
+        with open(str(path_a), "w") as f:
+            f.write("""\
+---
+id: alpha
+name: Alpha Changed
+---
+
+## Config
+```json
+{"model": "alpha-model-v2"}
+```
+""")
+        _touch(str(path_a))
+        await watcher.check()
+
+        # Alpha changed
+        profile_a = await db.get_profile("alpha")
+        assert profile_a.name == "Alpha Changed"
+        assert profile_a.model == "alpha-model-v2"
+
+        # Beta unchanged
+        profile_b = await db.get_profile("beta")
+        assert profile_b.name == "Beta"
+        assert profile_b.model == "beta-model"
+
+    @pytest.mark.asyncio
+    async def test_f_concurrent_with_orchestrator_and_agent(self, db, tmp_path):
+        """(f) Agent-type and orchestrator profiles sync independently."""
+        vault = tmp_path / "vault"
+        agent_path = vault / "agent-types" / "coding" / "profile.md"
+        orch_path = vault / "orchestrator" / "profile.md"
+
+        _create_file(
+            str(agent_path),
+            """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Config
+```json
+{"model": "agent-model"}
+```
+""",
+        )
+        _create_file(
+            str(orch_path),
+            """\
+---
+id: orchestrator
+name: Orchestrator
+---
+
+## Config
+```json
+{"model": "orchestrator-model"}
+```
+""",
+        )
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db)
+        await watcher.check()
+        _touch(str(agent_path))
+        _touch(str(orch_path))
+        await watcher.check()
+
+        # Both synced independently
+        coding = await db.get_profile("coding")
+        orch = await db.get_profile("orchestrator")
+        assert coding is not None
+        assert orch is not None
+        assert coding.model == "agent-model"
+        assert orch.model == "orchestrator-model"
+
+        # Edit both simultaneously
+        with open(str(agent_path), "w") as f:
+            f.write("""\
+---
+id: coding
+name: Coding Agent v2
+---
+
+## Config
+```json
+{"model": "agent-model-v2"}
+```
+""")
+        _touch(str(agent_path))
+
+        with open(str(orch_path), "w") as f:
+            f.write("""\
+---
+id: orchestrator
+name: Orchestrator v2
+---
+
+## Config
+```json
+{"model": "orchestrator-model-v2"}
+```
+""")
+        _touch(str(orch_path))
+
+        await watcher.check()
+
+        coding = await db.get_profile("coding")
+        orch = await db.get_profile("orchestrator")
+        assert coding.name == "Coding Agent v2"
+        assert coding.model == "agent-model-v2"
+        assert orch.name == "Orchestrator v2"
+        assert orch.model == "orchestrator-model-v2"
+
+    @pytest.mark.asyncio
+    async def test_f_concurrent_debounced_edits(self, db, tmp_path):
+        """(f) Concurrent edits under debounce still sync both correctly."""
+        vault = tmp_path / "vault"
+        path_a = vault / "agent-types" / "da" / "profile.md"
+        path_b = vault / "agent-types" / "db" / "profile.md"
+
+        _create_file(
+            str(path_a),
+            """\
+---
+id: da
+name: DA
+---
+
+## Config
+```json
+{"model": "da-v1"}
+```
+""",
+        )
+        _create_file(
+            str(path_b),
+            """\
+---
+id: db
+name: DB
+---
+
+## Config
+```json
+{"model": "db-v1"}
+```
+""",
+        )
+
+        # Use large debounce — changes accumulate
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=999)
+        register_profile_handlers(watcher, db=db)
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # Edit both files
+        _touch(str(path_a))
+        await watcher.check()
+        _touch(str(path_b))
+        await watcher.check()
+
+        # Nothing dispatched yet
+        assert await db.get_profile("da") is None
+        assert await db.get_profile("db") is None
+
+        # Force flush — both should sync
+        await watcher._flush_pending(force=True)
+
+        profile_a = await db.get_profile("da")
+        profile_b = await db.get_profile("db")
+        assert profile_a is not None
+        assert profile_b is not None
+        assert profile_a.model == "da-v1"
+        assert profile_b.model == "db-v1"
