@@ -72,6 +72,7 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_fact_history",
         "memory_fact_recall",
         "memory_recall",
+        "memory_get",
         "memory_list",
     }
 )
@@ -398,6 +399,59 @@ TOOL_DEFINITIONS: list[dict] = [
                 "top_k": {
                     "type": "integer",
                     "description": "Max semantic search results (default 5).",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    # ---- Unified Auto-Routing (spec §7 — memory_get) ----
+    {
+        "name": "memory_get",
+        "description": (
+            "Get information from memory — the default retrieval tool.  "
+            "Automatically routes between KV exact match and semantic search: "
+            "first tries the query as a KV key (with scope resolution: "
+            "project → agent-type → system), and if no exact match is found, "
+            "falls back to multi-scope semantic search.  Use this when you "
+            "just want to retrieve something from memory without choosing "
+            "a retrieval strategy.  For explicit KV lookup use "
+            "memory_fact_recall; for explicit semantic search use "
+            "memory_search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "What to retrieve.  Used as the KV key for exact "
+                        "match and as the semantic search query for fallback.  "
+                        "Examples: 'deploy_branch' (KV hit), 'how does auth "
+                        "work?' (semantic search)."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID for scope resolution.  When set, the "
+                        "project scope is searched first (highest priority)."
+                    ),
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": ("Agent type name (e.g. 'coding') for scope resolution."),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Topic filter for the semantic search fallback "
+                        "(e.g. 'authentication', 'testing')."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max semantic search results if KV miss (default 5).",
                     "default": 5,
                 },
             },
@@ -843,6 +897,8 @@ class MemoryV2Plugin(InternalPlugin):
             # Scoped recall (spec §6–§7)
             "memory_fact_recall": self.cmd_memory_fact_recall,
             "memory_recall": self.cmd_memory_recall,
+            # Unified auto-routing (spec §7)
+            "memory_get": self.cmd_memory_get,
             # Temporal facts
             "memory_fact_get": self.cmd_memory_fact_get,
             "memory_fact_set": self.cmd_memory_fact_set,
@@ -2088,6 +2144,75 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_recall failed: %s", e, exc_info=True)
             return {"error": f"Recall failed: {e}"}
+
+    async def cmd_memory_get(self, args: dict) -> dict:
+        """Unified auto-routing retrieval: KV first, then semantic search.
+
+        Per spec ``docs/specs/design/memory-scoping.md`` §7.  This is the
+        default retrieval tool for agents — pass a query and let the system
+        decide the best retrieval strategy.
+
+        Delegates to :meth:`MemoryV2Service.recall` which tries KV exact
+        match (scope-resolved) first and falls back to multi-scope semantic
+        search.
+        """
+        query = args.get("query")
+        if not query:
+            return {"error": "query is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_get")
+
+        project_id = args.get("project_id")
+        agent_type = args.get("agent_type")
+        topic = args.get("topic")
+        top_k = args.get("top_k", 5)
+
+        try:
+            result = await self._service.recall(
+                query,
+                project_id=project_id,
+                agent_type=agent_type,
+                topic=topic,
+                top_k=top_k,
+            )
+            source = result.get("source", "unavailable")
+            raw_results = result.get("results", [])
+
+            if source == "kv":
+                formatted = [self._format_kv_entry(r) for r in raw_results]
+                return {
+                    "success": True,
+                    "source": "kv",
+                    "query": query,
+                    "count": len(formatted),
+                    "results": formatted,
+                    "scopes_searched": self._build_scope_list(project_id, agent_type),
+                }
+            elif source == "semantic":
+                formatted = self._format_search_results(raw_results)
+                return {
+                    "success": True,
+                    "source": "semantic",
+                    "query": query,
+                    "count": len(formatted),
+                    "results": formatted,
+                }
+            else:
+                return {
+                    "success": False,
+                    "source": source,
+                    "query": query,
+                    "count": 0,
+                    "results": [],
+                    "message": (
+                        "Memory service unavailable.  Ensure memsearch is "
+                        "installed and memory is enabled in config."
+                    ),
+                }
+        except Exception as e:
+            self._log.error("memory_get failed: %s", e, exc_info=True)
+            return {"error": f"memory_get failed: {e}"}
 
     @staticmethod
     def _build_scope_list(project_id: str | None, agent_type: str | None) -> list[str]:

@@ -485,10 +485,17 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "plugin_config", "plugin_disable", "plugin_enable",
-            "plugin_info", "plugin_install", "plugin_list",
-            "plugin_prompts", "plugin_reload", "plugin_remove",
-            "plugin_reset_prompts", "plugin_update",
+            "plugin_config",
+            "plugin_disable",
+            "plugin_enable",
+            "plugin_info",
+            "plugin_install",
+            "plugin_list",
+            "plugin_prompts",
+            "plugin_reload",
+            "plugin_remove",
+            "plugin_reset_prompts",
+            "plugin_update",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -503,7 +510,9 @@ class TestDriftDetection:
 
         tools = await mcp_server.list_tools()
         # Total expected = explicit definitions + auto-discovered, minus excluded
-        all_commands = set(_discover_all_commands().keys()) | {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        all_commands = set(_discover_all_commands().keys()) | {
+            d["name"] for d in _ALL_TOOL_DEFINITIONS
+        }
         expected = len(all_commands) - len(DEFAULT_EXCLUDED_COMMANDS & all_commands)
         assert len(tools) == expected
 
@@ -520,10 +529,17 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "plugin_config", "plugin_disable", "plugin_enable",
-            "plugin_info", "plugin_install", "plugin_list",
-            "plugin_prompts", "plugin_reload", "plugin_remove",
-            "plugin_reset_prompts", "plugin_update",
+            "plugin_config",
+            "plugin_disable",
+            "plugin_enable",
+            "plugin_info",
+            "plugin_install",
+            "plugin_list",
+            "plugin_prompts",
+            "plugin_reload",
+            "plugin_remove",
+            "plugin_reset_prompts",
+            "plugin_update",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -838,3 +854,107 @@ class TestMemorySearchMCPTool:
         )
         assert data["success"] is True
         assert data["count"] == 2
+
+
+class TestMemoryGetMCPTool:
+    """Tests for memory_get exposure as an MCP tool (spec §7, roadmap 2.2.11).
+
+    Verifies that memory_get is available via MCP with unified auto-routing
+    schema (KV first, then semantic fallback).
+    """
+
+    async def test_memory_get_in_v2_only_tools(self):
+        """memory_get is in the v2 plugin's V2_ONLY_TOOLS set."""
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_get" in V2_ONLY_TOOLS
+
+    async def test_memory_get_registered_as_mcp_tool(self, populated_db):
+        """memory_get appears as an MCP tool when v2 plugin tools are passed."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "memory_get" in tool_names
+
+    async def test_memory_get_schema_has_query_required(self, populated_db):
+        """memory_get MCP tool schema requires 'query' parameter."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_get"].inputSchema
+        assert "query" in schema.get("required", [])
+
+    async def test_memory_get_schema_has_expected_params(self, populated_db):
+        """memory_get MCP tool schema exposes project_id, agent_type, topic, top_k."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        props = tool_map["memory_get"].inputSchema["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "topic" in props
+        assert "top_k" in props
+
+    async def test_memory_get_delegates_to_command_handler(self, populated_db):
+        """memory_get MCP tool delegates to CommandHandler.execute()."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        mock_handler = AsyncMock()
+        mock_handler.execute.return_value = {
+            "success": True,
+            "source": "kv",
+            "query": "deploy_branch",
+            "count": 1,
+            "results": [
+                {
+                    "namespace": "project",
+                    "key": "deploy_branch",
+                    "value": "main",
+                },
+            ],
+        }
+        ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        result = await server.call_tool(
+            "memory_get",
+            {
+                "query": "deploy_branch",
+                "project_id": "test-project",
+            },
+        )
+        data = json.loads(result[0].text)
+        mock_handler.execute.assert_called_once_with(
+            "memory_get",
+            {
+                "query": "deploy_branch",
+                "project_id": "test-project",
+            },
+        )
+        assert data["success"] is True
+        assert data["source"] == "kv"

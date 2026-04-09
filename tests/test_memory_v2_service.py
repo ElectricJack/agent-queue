@@ -989,6 +989,162 @@ class TestToolSchemas:
         assert scopes == ["system"]
 
 
+class TestMemoryGet:
+    """Test memory_get unified auto-routing tool (spec §7, roadmap 2.2.11).
+
+    memory_get is the default retrieval tool for agents.  It tries KV exact
+    match first (with scope resolution) then falls back to semantic search.
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        """Plugin with a wired-up service."""
+        plugin._service = service
+        plugin._log = MagicMock()
+        return plugin
+
+    @pytest.mark.asyncio
+    async def test_memory_get_kv_hit(self, wired_plugin):
+        """memory_get returns KV result when an exact key match is found."""
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "test_key", "project_id": "proj", "agent_type": "coding"}
+        )
+        assert result["success"] is True
+        assert result["source"] == "kv"
+        assert result["count"] >= 1
+        assert "results" in result
+        # KV hit should include scopes_searched for diagnostics
+        assert "scopes_searched" in result
+        assert "project_proj" in result["scopes_searched"]
+
+    @pytest.mark.asyncio
+    async def test_memory_get_semantic_fallback(self, wired_plugin, mock_router):
+        """memory_get falls back to semantic search when no KV match."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "how does auth work?", "project_id": "proj"}
+        )
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+        assert result["count"] >= 1
+        assert "results" in result
+
+    @pytest.mark.asyncio
+    async def test_memory_get_missing_query(self, wired_plugin):
+        """memory_get returns error when query is missing."""
+        result = await wired_plugin.cmd_memory_get({})
+        assert "error" in result
+        assert "query" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_memory_get_unavailable(self, plugin):
+        """memory_get returns unavailable error when service is not ready."""
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_get({"query": "test"})
+        assert "error" in result
+        assert "not available" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_memory_get_with_topic_filter(self, wired_plugin, mock_router):
+        """memory_get passes topic filter to semantic search fallback."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "auth patterns", "project_id": "proj", "topic": "authentication"}
+        )
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+
+    @pytest.mark.asyncio
+    async def test_memory_get_with_agent_type(self, wired_plugin):
+        """memory_get uses agent_type for scope resolution."""
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "test_key", "project_id": "proj", "agent_type": "coding"}
+        )
+        assert result["success"] is True
+        # Scopes should include agent-type
+        if "scopes_searched" in result:
+            assert "agenttype_coding" in result["scopes_searched"]
+
+    @pytest.mark.asyncio
+    async def test_memory_get_minimal_params(self, wired_plugin):
+        """memory_get works with only query (no project_id or agent_type)."""
+        result = await wired_plugin.cmd_memory_get({"query": "test_key"})
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_memory_get_custom_top_k(self, wired_plugin, mock_router):
+        """memory_get passes custom top_k to semantic search."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "something", "project_id": "proj", "top_k": 3}
+        )
+        assert result["success"] is True
+
+
+class TestMemoryGetToolSchema:
+    """Test memory_get tool definition and registration."""
+
+    def test_memory_get_tool_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert tool is not None
+        assert "query" in tool["input_schema"]["required"]
+        props = tool["input_schema"]["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "topic" in props
+        assert "top_k" in props
+
+    def test_memory_get_in_v2_only_set(self):
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_get" in V2_ONLY_TOOLS
+
+    def test_memory_get_description_mentions_auto_routing(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert tool is not None
+        desc = tool["description"].lower()
+        assert "kv" in desc or "key" in desc
+        assert "semantic" in desc
+
+    def test_memory_get_does_not_require_project_id(self):
+        """memory_get should work without project_id (system-scope only)."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert tool is not None
+        # Only query is required
+        assert tool["input_schema"]["required"] == ["query"]
+
+    def test_memory_get_no_namespace_param(self):
+        """memory_get omits namespace — simpler interface than memory_recall."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert tool is not None
+        props = tool["input_schema"]["properties"]
+        assert "namespace" not in props
+
+
 class TestPluginKVSetWithScope:
     """Test the plugin command handler for memory_kv_set with scope."""
 
