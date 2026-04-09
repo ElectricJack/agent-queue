@@ -948,10 +948,12 @@ class Orchestrator:
         # This is done after the vault structure and memory plugins are
         # initialized but before hooks/rules, since hooks may trigger
         # memory operations.
+        #   - Legacy migration (roadmap 3.1.5): rename aq_{id}_memory → aq_project_{id}
         #   - aq_system (roadmap 3.1.3): cross-cutting knowledge
         #   - aq_orchestrator (roadmap 3.1.4): operational knowledge
         if self.memory_manager:
             try:
+                await self.memory_manager.migrate_legacy_project_collections()
                 await self.memory_manager.ensure_system_collection()
                 await self.memory_manager.ensure_orchestrator_collection()
             except Exception as e:

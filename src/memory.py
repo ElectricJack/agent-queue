@@ -42,13 +42,21 @@ from src.models import MemoryContext, ProjectFactsheet
 logger = logging.getLogger(__name__)
 
 try:
-    from memsearch import MemSearch, CollectionRouter, merge_and_rank
+    from memsearch import (
+        MemSearch,
+        CollectionRouter,
+        MemoryScope,
+        collection_name as memsearch_collection_name,
+        merge_and_rank,
+    )
     from memsearch.embeddings import EmbeddingProvider, get_provider as get_embedding_provider
 
     MEMSEARCH_AVAILABLE = True
 except ImportError:
     MemSearch = None  # type: ignore[assignment,misc]
     CollectionRouter = None  # type: ignore[assignment,misc]
+    MemoryScope = None  # type: ignore[assignment,misc]
+    memsearch_collection_name = None  # type: ignore[assignment]
     merge_and_rank = None  # type: ignore[assignment]
     EmbeddingProvider = None  # type: ignore[assignment,misc]
     get_embedding_provider = None  # type: ignore[assignment]
@@ -58,7 +66,7 @@ except ImportError:
 class MemoryManager:
     """Manages per-project MemSearch instances and memory operations.
 
-    Each project gets its own Milvus collection (``aq_{project_id}_memory``)
+    Each project gets its own Milvus collection (``aq_project_{id}``)
     so memories are fully isolated between projects. Instances are created
     lazily on first access.
 
@@ -86,9 +94,17 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def _collection_name(self, project_id: str) -> str:
-        """Deterministic, Milvus-safe collection name per project."""
-        safe_id = project_id.replace("-", "_").replace(" ", "_")
-        return f"aq_{safe_id}_memory"
+        """Deterministic, Milvus-safe collection name per project.
+
+        Uses the canonical ``aq_project_{id}`` format from memsearch's
+        scoping module.  Falls back to the same format using manual
+        sanitization when memsearch is not installed.
+        """
+        if MEMSEARCH_AVAILABLE and memsearch_collection_name is not None:
+            return memsearch_collection_name(MemoryScope.PROJECT, project_id)
+        # Fallback when memsearch is unavailable — mirror the canonical format
+        safe_id = project_id.replace("-", "_").replace(" ", "_").lower()
+        return f"aq_project_{safe_id}"
 
     def _project_memory_dir(self, project_id: str) -> str:
         """Central memory storage directory for a project.
@@ -413,9 +429,7 @@ class MemoryManager:
 
         try:
             await asyncio.to_thread(router.ensure_orchestrator_collection)
-            logger.info(
-                "Orchestrator-level memory collection (aq_orchestrator) ensured on startup"
-            )
+            logger.info("Orchestrator-level memory collection (aq_orchestrator) ensured on startup")
             return True
         except Exception as e:
             logger.warning("Failed to ensure orchestrator collection: %s", e)
@@ -465,6 +479,49 @@ class MemoryManager:
         except Exception as e:
             logger.warning("Failed to ensure agent-type collection for '%s': %s", agent_type, e)
             return False
+
+    async def migrate_legacy_project_collections(self) -> list[tuple[str, str, int]]:
+        """Migrate legacy ``aq_{id}_memory`` collections to ``aq_project_{id}``.
+
+        Called during orchestrator startup (roadmap 3.1.5) to rename
+        existing project collections from the old naming convention to the
+        canonical ``aq_project_{id}`` format used by the scoping system.
+
+        Since Milvus Lite does not support ``rename_collection``, this
+        copies all data (including embeddings) to a new collection and
+        drops the old one.  Safe to call repeatedly — only acts on
+        collections matching the legacy pattern.
+
+        Returns
+        -------
+        list[tuple[str, str, int]]
+            List of ``(old_name, new_name, row_count)`` for each
+            migrated collection.  Empty list if nothing to migrate or
+            memsearch is unavailable.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            logger.debug("Memory disabled or memsearch unavailable — skipping legacy migration")
+            return []
+
+        router = await self._get_router()
+        if router is None:
+            logger.warning("Could not initialize CollectionRouter — legacy migration skipped")
+            return []
+
+        try:
+            migrated = await asyncio.to_thread(router.migrate_legacy_collections)
+            if migrated:
+                logger.info(
+                    "Migrated %d legacy collection(s) to new naming convention: %s",
+                    len(migrated),
+                    ", ".join(f"{old}→{new} ({n} rows)" for old, new, n in migrated),
+                )
+            else:
+                logger.debug("No legacy collections found to migrate")
+            return migrated
+        except Exception as e:
+            logger.warning("Legacy collection migration failed: %s", e)
+            return []
 
     # ------------------------------------------------------------------
     # Instance management

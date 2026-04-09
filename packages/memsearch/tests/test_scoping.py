@@ -3856,9 +3856,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (a) Project scope wins — returns project value immediately --------
 
     @pytest.mark.asyncio
-    async def test_a_project_scope_returns_project_value(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_a_project_scope_returns_project_value(self, kv_router: CollectionRouter):
         """(a) KV key exists in project scope — returns project value,
         does NOT query agent-type or system.
 
@@ -3876,9 +3874,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(value) == "Python+SQLAlchemy"
 
     @pytest.mark.asyncio
-    async def test_a_project_scope_does_not_query_lower_scopes(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_a_project_scope_does_not_query_lower_scopes(self, kv_router: CollectionRouter):
         """(a) Verify first-match-wins short-circuits — project hit means
         the agent-type and system values are never consulted.
 
@@ -3897,9 +3893,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (b) Fallthrough to agent-type scope --------------------------------
 
     @pytest.mark.asyncio
-    async def test_b_falls_through_to_agent_type(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_b_falls_through_to_agent_type(self, kv_router: CollectionRouter):
         """(b) KV key missing from project scope, exists in agent-type scope
         — returns agent-type value.
 
@@ -3918,9 +3912,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (c) Fallthrough to system scope ------------------------------------
 
     @pytest.mark.asyncio
-    async def test_c_falls_through_to_system(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_c_falls_through_to_system(self, kv_router: CollectionRouter):
         """(c) KV key missing from project and agent-type, exists in system
         — returns system value.
 
@@ -3938,9 +3930,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (d) Missing from all scopes → None --------------------------------
 
     @pytest.mark.asyncio
-    async def test_d_missing_key_returns_none(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_d_missing_key_returns_none(self, kv_router: CollectionRouter):
         """(d) KV key missing from all scopes — returns None."""
         value = await kv_router.recall(
             "nonexistent_key",
@@ -3950,9 +3940,7 @@ class TestRoadmap319KVScopeResolution:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_d_missing_namespace_returns_none(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_d_missing_namespace_returns_none(self, kv_router: CollectionRouter):
         """(d) Key exists but in a different namespace — returns None."""
         # tech_stack exists in "project" namespace, not "system"
         value = await kv_router.recall(
@@ -3964,9 +3952,7 @@ class TestRoadmap319KVScopeResolution:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_d_missing_scopes_returns_none(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_d_missing_scopes_returns_none(self, kv_router: CollectionRouter):
         """(d) Non-existent project and agent-type, key not in system — None."""
         value = await kv_router.recall(
             "deploy_branch",
@@ -3979,9 +3965,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (e) Same key in multiple scopes — project wins (first-match) ------
 
     @pytest.mark.asyncio
-    async def test_e_project_wins_over_system(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_e_project_wins_over_system(self, kv_router: CollectionRouter):
         """(e) Same key exists in both project and system scope — project
         value wins (first-match).
 
@@ -3998,9 +3982,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(value) == "Python+SQLAlchemy"
 
     @pytest.mark.asyncio
-    async def test_e_agent_type_wins_over_system_when_no_project(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_e_agent_type_wins_over_system_when_no_project(self, kv_router: CollectionRouter):
         """(e) With no project_id, agent-type value wins over system.
 
         tech_stack is in agent-type ("Python") and system ("Generic").
@@ -4015,9 +3997,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(value) == "Python"
 
     @pytest.mark.asyncio
-    async def test_e_system_wins_when_no_project_or_agent_type(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_e_system_wins_when_no_project_or_agent_type(self, kv_router: CollectionRouter):
         """(e) With no project_id or agent_type, system is the only scope.
 
         tech_stack in system ("Generic") is returned as the only scope.
@@ -4032,9 +4012,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (f) Writing goes to most specific scope ----------------------------
 
     @pytest.mark.asyncio
-    async def test_f_write_goes_to_project_scope(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_f_write_goes_to_project_scope(self, kv_router: CollectionRouter):
         """(f) Writing a KV entry writes to the most specific scope
         (project if project_id is set).
 
@@ -4067,9 +4045,7 @@ class TestRoadmap319KVScopeResolution:
         assert sys_result is None
 
     @pytest.mark.asyncio
-    async def test_f_write_to_system_when_no_project(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_f_write_to_system_when_no_project(self, kv_router: CollectionRouter):
         """(f) Without project_id, writes to system scope (most specific
         available scope when only system is targeted).
         """
@@ -4085,9 +4061,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(value) == "sys_value"
 
     @pytest.mark.asyncio
-    async def test_f_write_to_agent_type_scope(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_f_write_to_agent_type_scope(self, kv_router: CollectionRouter):
         """(f) Writing directly to agent-type scope stores it there."""
         at_store = kv_router.get_store(MemoryScope.AGENT_TYPE, "coding")
         at_store.set_kv("at_only_key", "at_value", namespace="test")
@@ -4109,9 +4083,7 @@ class TestRoadmap319KVScopeResolution:
     # -- (g) Deleting project entry → fallthrough to lower scope -----------
 
     @pytest.mark.asyncio
-    async def test_g_delete_project_causes_fallthrough_to_agent_type(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_g_delete_project_causes_fallthrough_to_agent_type(self, kv_router: CollectionRouter):
         """(g) Deleting a project-scope KV entry causes fallthrough to
         agent-type value.
 
@@ -4143,9 +4115,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(after) == "Python"
 
     @pytest.mark.asyncio
-    async def test_g_delete_project_causes_fallthrough_to_system(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_g_delete_project_causes_fallthrough_to_system(self, kv_router: CollectionRouter):
         """(g) Deleting project AND agent-type entries causes fallthrough
         to system value.
 
@@ -4171,9 +4141,7 @@ class TestRoadmap319KVScopeResolution:
         assert json.loads(value) == "Generic"
 
     @pytest.mark.asyncio
-    async def test_g_delete_all_scopes_returns_none(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_g_delete_all_scopes_returns_none(self, kv_router: CollectionRouter):
         """(g) Deleting from all scopes returns None — no fallthrough target."""
         # Delete tech_stack from all three scopes
         proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
@@ -4194,10 +4162,417 @@ class TestRoadmap319KVScopeResolution:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_g_delete_idempotent(
-        self, kv_router: CollectionRouter
-    ):
+    async def test_g_delete_idempotent(self, kv_router: CollectionRouter):
         """(g) Deleting a non-existent key returns False (no error)."""
         proj_store = kv_router.get_store(MemoryScope.PROJECT, "myapp")
         result = proj_store.delete_kv("nonexistent_key", namespace="project")
         assert result is False
+
+
+# ---- Roadmap 3.1.5: Migrate legacy collections to new naming convention ------
+# Old format: aq_{safe_id}_memory  (e.g., aq_agent_queue_memory)
+# New format: aq_project_{safe_id} (e.g., aq_project_agent_queue)
+
+
+def _create_legacy_collection(client, name: str, dim: int = 4) -> None:
+    """Create a collection with the full memsearch schema using raw pymilvus client."""
+    from pymilvus import DataType, Function, FunctionType
+
+    schema = client.create_schema(enable_dynamic_field=True, description="legacy")
+    schema.add_field("chunk_hash", DataType.VARCHAR, max_length=64, is_primary=True)
+    schema.add_field("entry_type", DataType.VARCHAR, max_length=16)
+    schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
+    schema.add_field("content", DataType.VARCHAR, max_length=65535, enable_analyzer=True)
+    schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
+    schema.add_field("original", DataType.VARCHAR, max_length=65535)
+    schema.add_field("kv_namespace", DataType.VARCHAR, max_length=256)
+    schema.add_field("kv_key", DataType.VARCHAR, max_length=512)
+    schema.add_field("kv_value", DataType.VARCHAR, max_length=65535)
+    schema.add_field("valid_from", DataType.INT64)
+    schema.add_field("valid_to", DataType.INT64)
+    schema.add_field("topic", DataType.VARCHAR, max_length=256)
+    schema.add_field("source", DataType.VARCHAR, max_length=1024)
+    schema.add_field("tags", DataType.VARCHAR, max_length=4096)
+    schema.add_field("updated_at", DataType.INT64)
+    schema.add_field("retrieval_count", DataType.INT64)
+    schema.add_field("last_retrieved", DataType.INT64)
+    schema.add_field("heading", DataType.VARCHAR, max_length=1024)
+    schema.add_field("heading_level", DataType.INT64)
+    schema.add_field("start_line", DataType.INT64)
+    schema.add_field("end_line", DataType.INT64)
+    schema.add_function(
+        Function(
+            name="bm25_fn",
+            function_type=FunctionType.BM25,
+            input_field_names=["content"],
+            output_field_names=["sparse_vector"],
+        )
+    )
+    index_params = client.prepare_index_params()
+    index_params.add_index(field_name="embedding", index_type="FLAT", metric_type="COSINE")
+    index_params.add_index(field_name="sparse_vector", index_type="SPARSE_INVERTED_INDEX", metric_type="BM25")
+    client.create_collection(name, schema=schema, index_params=index_params)
+
+
+def _seed_legacy_data(client, name: str) -> list[dict]:
+    """Insert sample data into a legacy collection and return the rows."""
+    rows = [
+        {
+            "chunk_hash": "legacy_h1",
+            "entry_type": "document",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Project architecture overview",
+            "original": "Full original text here",
+            "kv_namespace": "",
+            "kv_key": "",
+            "kv_value": "",
+            "valid_from": 0,
+            "valid_to": 0,
+            "topic": "architecture",
+            "source": "profile.md",
+            "tags": '["architecture", "overview"]',
+            "updated_at": 1700000000,
+            "retrieval_count": 5,
+            "last_retrieved": 1700001000,
+            "heading": "Architecture",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 20,
+        },
+        {
+            "chunk_hash": "legacy_h2",
+            "entry_type": "document",
+            "embedding": [0.0, 1.0, 0.0, 0.0],
+            "content": "Testing conventions and patterns",
+            "original": "",
+            "kv_namespace": "",
+            "kv_key": "",
+            "kv_value": "",
+            "valid_from": 0,
+            "valid_to": 0,
+            "topic": "testing",
+            "source": "testing.md",
+            "tags": '["testing"]',
+            "updated_at": 1700002000,
+            "retrieval_count": 2,
+            "last_retrieved": 1700003000,
+            "heading": "Testing",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 15,
+        },
+    ]
+    client.upsert(name, rows)
+    return rows
+
+
+@pytestmark_milvus
+class TestMigrateLegacyCollections:
+    """Roadmap 3.1.5 — migrate aq_{id}_memory → aq_project_{id}."""
+
+    def test_migrates_single_collection(self, tmp_path: Path):
+        """A single legacy collection is migrated to the new name."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_single.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_myapp_memory")
+        _seed_legacy_data(client, "aq_myapp_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            result = router.migrate_legacy_collections()
+            assert len(result) == 1
+            old, new, count = result[0]
+            assert old == "aq_myapp_memory"
+            assert new == "aq_project_myapp"
+            assert count == 2
+
+            # Verify new collection exists with data
+            colls = router.list_collections()
+            coll_names = [c[2] for c in colls]
+            assert "aq_project_myapp" in coll_names
+            assert "aq_myapp_memory" not in coll_names
+
+            # Verify data was copied correctly
+            store = router.get_store(MemoryScope.PROJECT, "myapp")
+            rows = store.query(filter_expr='chunk_hash != ""', full=True)
+            assert len(rows) == 2
+            hashes = {r["chunk_hash"] for r in rows}
+            assert hashes == {"legacy_h1", "legacy_h2"}
+        finally:
+            router.close()
+
+    def test_migrates_multiple_collections(self, tmp_path: Path):
+        """Multiple legacy collections are all migrated."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_multi.db"
+        client = MilvusClient(uri=str(db))
+        for name in ["aq_alpha_memory", "aq_beta_memory"]:
+            _create_legacy_collection(client, name)
+            _seed_legacy_data(client, name)
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            result = router.migrate_legacy_collections()
+            assert len(result) == 2
+            migrated_names = {r[0]: r[1] for r in result}
+            assert migrated_names == {
+                "aq_alpha_memory": "aq_project_alpha",
+                "aq_beta_memory": "aq_project_beta",
+            }
+
+            colls = router.list_collections()
+            coll_names = {c[2] for c in colls}
+            assert "aq_project_alpha" in coll_names
+            assert "aq_project_beta" in coll_names
+            assert "aq_alpha_memory" not in coll_names
+            assert "aq_beta_memory" not in coll_names
+        finally:
+            router.close()
+
+    def test_skips_new_format_collections(self, tmp_path: Path):
+        """Collections already in new format are not touched."""
+        db = tmp_path / "migrate_skip_new.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            # Create a new-format collection directly
+            router.get_store(MemoryScope.PROJECT, "myapp")
+
+            result = router.migrate_legacy_collections()
+            assert len(result) == 0
+
+            # Verify the collection still exists
+            colls = router.list_collections()
+            coll_names = [c[2] for c in colls]
+            assert "aq_project_myapp" in coll_names
+        finally:
+            router.close()
+
+    def test_skips_system_and_orchestrator(self, tmp_path: Path):
+        """System and orchestrator collections are not treated as legacy."""
+        db = tmp_path / "migrate_skip_sys.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            router.ensure_system_collection()
+            router.ensure_orchestrator_collection()
+
+            result = router.migrate_legacy_collections()
+            assert len(result) == 0
+
+            colls = router.list_collections()
+            coll_names = {c[2] for c in colls}
+            assert "aq_system" in coll_names
+            assert "aq_orchestrator" in coll_names
+        finally:
+            router.close()
+
+    def test_no_legacy_collections_returns_empty(self, tmp_path: Path):
+        """No-op when there are no legacy collections."""
+        db = tmp_path / "migrate_empty.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            result = router.migrate_legacy_collections()
+            assert result == []
+        finally:
+            router.close()
+
+    def test_empty_legacy_collection_dropped(self, tmp_path: Path):
+        """An empty legacy collection is dropped without error."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_empty_coll.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_empty_proj_memory")
+        # Don't insert any data
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            result = router.migrate_legacy_collections()
+            assert len(result) == 1
+            old, new, count = result[0]
+            assert old == "aq_empty_proj_memory"
+            assert new == "aq_project_empty_proj"
+            assert count == 0
+
+            colls = router.list_collections()
+            coll_names = [c[2] for c in colls]
+            assert "aq_empty_proj_memory" not in coll_names
+        finally:
+            router.close()
+
+    def test_idempotent_after_migration(self, tmp_path: Path):
+        """Running migration twice is a no-op the second time."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_idempotent.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_myapp_memory")
+        _seed_legacy_data(client, "aq_myapp_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            # First run
+            result1 = router.migrate_legacy_collections()
+            assert len(result1) == 1
+
+            # Second run — nothing to migrate
+            result2 = router.migrate_legacy_collections()
+            assert len(result2) == 0
+
+            # Data still intact
+            store = router.get_store(MemoryScope.PROJECT, "myapp")
+            rows = store.query(filter_expr='chunk_hash != ""')
+            assert len(rows) == 2
+        finally:
+            router.close()
+
+    def test_new_collection_already_has_data(self, tmp_path: Path):
+        """When the new collection already has data, old one is just dropped."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_existing_new.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_myapp_memory")
+        _seed_legacy_data(client, "aq_myapp_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            # Create new collection and add data (with all required fields)
+            new_store = router.get_store(MemoryScope.PROJECT, "myapp")
+            new_store.upsert(
+                [
+                    {
+                        "chunk_hash": "new_h1",
+                        "entry_type": "document",
+                        "embedding": [0.5, 0.5, 0.0, 0.0],
+                        "content": "New format data",
+                        "original": "",
+                        "kv_namespace": "",
+                        "kv_key": "",
+                        "kv_value": "",
+                        "valid_from": 0,
+                        "valid_to": 0,
+                        "topic": "",
+                        "source": "new.md",
+                        "tags": "[]",
+                        "updated_at": 0,
+                        "retrieval_count": 0,
+                        "last_retrieved": 0,
+                        "heading": "",
+                        "heading_level": 0,
+                        "start_line": 0,
+                        "end_line": 0,
+                    }
+                ]
+            )
+
+            # Migration should detect that the new collection has data
+            # and drop the old one without copying
+            result = router.migrate_legacy_collections()
+            assert len(result) == 1
+            _, _, count = result[0]
+            assert count == 0  # No rows copied (new collection already had data)
+
+            # Verify only the new data exists
+            rows = new_store.query(filter_expr='chunk_hash != ""')
+            assert len(rows) == 1
+            assert rows[0]["chunk_hash"] == "new_h1"
+        finally:
+            router.close()
+
+    def test_preserves_data_fidelity(self, tmp_path: Path):
+        """Migrated data preserves all fields including metadata."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_fidelity.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_myapp_memory")
+        _seed_legacy_data(client, "aq_myapp_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            router.migrate_legacy_collections()
+
+            store = router.get_store(MemoryScope.PROJECT, "myapp")
+            rows = store.query(filter_expr='chunk_hash == "legacy_h1"', full=True)
+            assert len(rows) == 1
+            row = rows[0]
+
+            # Verify all fields preserved
+            assert row["content"] == "Project architecture overview"
+            assert row["original"] == "Full original text here"
+            assert row["source"] == "profile.md"
+            assert row["topic"] == "architecture"
+            assert row["entry_type"] == "document"
+            assert row["heading"] == "Architecture"
+            assert row["heading_level"] == 1
+            assert row["start_line"] == 1
+            assert row["end_line"] == 20
+            assert row["updated_at"] == 1700000000
+            assert '"architecture"' in row["tags"]
+        finally:
+            router.close()
+
+    def test_mixed_legacy_and_new_collections(self, tmp_path: Path):
+        """Only legacy collections are migrated; new-format collections are untouched."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_mixed.db"
+        client = MilvusClient(uri=str(db))
+        _create_legacy_collection(client, "aq_legacy_proj_memory")
+        _seed_legacy_data(client, "aq_legacy_proj_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            # Create new-format collections
+            router.ensure_system_collection()
+            router.get_store(MemoryScope.PROJECT, "modern_proj")
+
+            result = router.migrate_legacy_collections()
+            assert len(result) == 1
+            assert result[0][0] == "aq_legacy_proj_memory"
+            assert result[0][1] == "aq_project_legacy_proj"
+
+            # All collections should exist
+            colls = router.list_collections()
+            coll_names = {c[2] for c in colls}
+            assert "aq_system" in coll_names
+            assert "aq_project_modern_proj" in coll_names
+            assert "aq_project_legacy_proj" in coll_names
+            assert "aq_legacy_proj_memory" not in coll_names
+        finally:
+            router.close()
+
+    def test_hyphenated_project_id(self, tmp_path: Path):
+        """Legacy collections with underscore-normalized IDs migrate correctly."""
+        from pymilvus import MilvusClient
+
+        db = tmp_path / "migrate_hyphen.db"
+        client = MilvusClient(uri=str(db))
+        # Old code did: project_id.replace("-", "_").replace(" ", "_")
+        # So "mech-fighters" became "aq_mech_fighters_memory"
+        _create_legacy_collection(client, "aq_mech_fighters_memory")
+        _seed_legacy_data(client, "aq_mech_fighters_memory")
+        client.close()
+
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            result = router.migrate_legacy_collections()
+            assert len(result) == 1
+            assert result[0][0] == "aq_mech_fighters_memory"
+            assert result[0][1] == "aq_project_mech_fighters"
+
+            store = router.get_store(MemoryScope.PROJECT, "mech_fighters")
+            rows = store.query(filter_expr='chunk_hash != ""')
+            assert len(rows) == 2
+        finally:
+            router.close()

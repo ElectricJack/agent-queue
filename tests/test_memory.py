@@ -142,9 +142,9 @@ class TestMemoryManager:
     def test_collection_name_isolation(self):
         """Each project gets a unique, Milvus-safe collection name."""
         mgr = self._make_manager()
-        assert mgr._collection_name("my-project") == "aq_my_project_memory"
-        assert mgr._collection_name("other project") == "aq_other_project_memory"
-        assert mgr._collection_name("simple") == "aq_simple_memory"
+        assert mgr._collection_name("my-project") == "aq_project_my_project"
+        assert mgr._collection_name("other project") == "aq_project_other_project"
+        assert mgr._collection_name("simple") == "aq_project_simple"
 
     def test_collection_names_are_distinct(self):
         """Different project IDs produce different collection names."""
@@ -658,7 +658,7 @@ class TestMemoryManager:
 
         assert stats["enabled"] is True
         assert stats["available"] is True
-        assert stats["collection"] == "aq_my_project_memory"
+        assert stats["collection"] == "aq_project_my_project"
         assert "milvus_uri" in stats
 
     @patch("src.memory.MEMSEARCH_AVAILABLE", False)
