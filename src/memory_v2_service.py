@@ -983,6 +983,96 @@ class MemoryV2Service:
         }
 
     # ------------------------------------------------------------------
+    # Browse / List memories
+    # ------------------------------------------------------------------
+
+    async def list_memories(
+        self,
+        project_id: str,
+        *,
+        scope: str | None = None,
+        topic: str | None = None,
+        tag: str | None = None,
+        entry_type: str = "document",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Browse memory entries in a scope, returning metadata.
+
+        Pure scalar query — no vector computation.  Returns entries
+        sorted by ``updated_at`` descending (newest first) with
+        pagination via *offset* / *limit*.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier (determines default scope).
+        scope:
+            Explicit scope.  ``None`` for the project scope.
+        topic:
+            Optional topic filter.
+        tag:
+            Optional tag filter (matches entries whose JSON tags array
+            contains the specified tag).
+        entry_type:
+            Entry type filter.  Defaults to ``"document"`` (semantic
+            memories / insights).  Use ``"kv"`` or ``"temporal"`` for
+            structured entries, or ``""`` to list all types.
+        offset:
+            Number of entries to skip (for pagination).
+        limit:
+            Maximum entries to return (default 50, max 200).
+
+        Returns
+        -------
+        list[dict]
+            Each dict contains metadata fields: ``chunk_hash``,
+            ``heading``, ``topic``, ``tags``, ``source``,
+            ``retrieval_count``, ``updated_at``, ``entry_type``,
+            and a truncated ``content`` preview.
+        """
+        if not self.available:
+            return []
+
+        store = self._get_store(project_id, scope)
+        limit = min(limit, 200)
+
+        # Build filter expression
+        from memsearch.store import _escape_filter_value
+
+        filters: list[str] = []
+        if entry_type:
+            escaped = _escape_filter_value(entry_type)
+            filters.append(f'entry_type == "{escaped}"')
+        if topic:
+            escaped = _escape_filter_value(topic)
+            filters.append(f'topic == "{escaped}"')
+        if tag:
+            escaped = _escape_filter_value(tag)
+            filters.append(f'tags like "%{escaped}%"')
+
+        filter_expr = " and ".join(filters) if filters else ""
+
+        results = await asyncio.to_thread(store.query, filter_expr=filter_expr)
+
+        # Sort by updated_at descending (newest first)
+        results.sort(key=lambda r: r.get("updated_at", 0), reverse=True)
+
+        # Apply pagination
+        paginated = results[offset : offset + limit]
+
+        # Annotate with scope info
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        for r in paginated:
+            r["_collection"] = coll_name
+            r["_scope"] = mem_scope.value
+            r["_scope_id"] = scope_id
+
+        return paginated
+
+    # ------------------------------------------------------------------
     # Collection listing
     # ------------------------------------------------------------------
 

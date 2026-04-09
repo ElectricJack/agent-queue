@@ -472,6 +472,135 @@ class TestSearch:
 
 
 # ---------------------------------------------------------------------------
+# Browse / List Memories
+# ---------------------------------------------------------------------------
+
+
+class TestListMemories:
+    """Test list_memories for browsing entries in a scope."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_default(self, service, mock_store):
+        """Default call returns document entries sorted by updated_at desc."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = [
+            {
+                "chunk_hash": "h1",
+                "content": "First insight about authentication",
+                "heading": "Auth insight",
+                "topic": "authentication",
+                "tags": '["insight"]',
+                "source": "vault/auth.md",
+                "entry_type": "document",
+                "retrieval_count": 5,
+                "updated_at": 1000,
+            },
+            {
+                "chunk_hash": "h2",
+                "content": "Second insight about testing",
+                "heading": "Testing insight",
+                "topic": "testing",
+                "tags": '["insight", "testing"]',
+                "source": "vault/test.md",
+                "entry_type": "document",
+                "retrieval_count": 2,
+                "updated_at": 2000,
+            },
+        ]
+
+        results = await service.list_memories("test-project")
+        assert len(results) == 2
+        # Sorted newest first
+        assert results[0]["chunk_hash"] == "h2"
+        assert results[1]["chunk_hash"] == "h1"
+        # Scope annotation
+        assert results[0]["_scope"] == "project"
+        assert results[0]["_scope_id"] == "test-project"
+        mock_store.query.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_with_topic_filter(self, service, mock_store):
+        """Topic filter is passed to query as filter expression."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = []
+
+        await service.list_memories("test-project", topic="authentication")
+        call_args = mock_store.query.call_args
+        filter_expr = call_args.kwargs.get("filter_expr", "")
+        assert "document" in filter_expr
+        assert "authentication" in filter_expr
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_with_tag_filter(self, service, mock_store):
+        """Tag filter uses LIKE for JSON array matching."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = []
+
+        await service.list_memories("test-project", tag="insight")
+        call_args = mock_store.query.call_args
+        filter_expr = call_args.kwargs.get("filter_expr", "")
+        assert "insight" in filter_expr
+        assert "like" in filter_expr.lower() or "LIKE" in filter_expr
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_pagination(self, service, mock_store):
+        """Offset and limit for pagination."""
+        mock_store.query.side_effect = None
+        entries = [
+            {
+                "chunk_hash": f"h{i}",
+                "content": f"Memory {i}",
+                "heading": f"Heading {i}",
+                "topic": "",
+                "tags": "[]",
+                "source": "",
+                "entry_type": "document",
+                "retrieval_count": 0,
+                "updated_at": 1000 + i,
+            }
+            for i in range(10)
+        ]
+        mock_store.query.return_value = entries
+
+        results = await service.list_memories("test-project", offset=2, limit=3)
+        # After sorting desc (updated_at 1009..1000), offset=2 gives items 7,6,5
+        assert len(results) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_limit_cap(self, service, mock_store):
+        """Limit is capped at 200."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = []
+
+        await service.list_memories("test-project", limit=500)
+        # No error, limit is capped internally
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_list_memories_all_entry_types(self, service, mock_store):
+        """Empty entry_type lists all types."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = []
+
+        await service.list_memories("test-project", entry_type="")
+        call_args = mock_store.query.call_args
+        filter_expr = call_args.kwargs.get("filter_expr", "")
+        assert "entry_type" not in filter_expr
+
+    @pytest.mark.asyncio
+    async def test_list_memories_unavailable(self):
+        """Returns empty list when service is unavailable."""
+        svc = MemoryV2Service()
+        result = await svc.list_memories("proj")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 
@@ -607,6 +736,49 @@ class TestPluginHandlers:
         assert "not available" in result["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_memory_list_handler(self, wired_plugin, mock_store):
+        """memory_list returns formatted entries with metadata."""
+        mock_store.query.side_effect = None
+        mock_store.query.return_value = [
+            {
+                "chunk_hash": "h1",
+                "content": "# Auth token handling\nAlways refresh tokens before...",
+                "heading": "Auth token handling",
+                "topic": "authentication",
+                "tags": '["insight", "auth"]',
+                "source": "vault/auth.md",
+                "entry_type": "document",
+                "retrieval_count": 5,
+                "updated_at": 1000,
+            },
+        ]
+        result = await wired_plugin.cmd_memory_list({"project_id": "proj"})
+        assert result["success"] is True
+        assert result["count"] == 1
+        entry = result["entries"][0]
+        assert entry["title"] == "Auth token handling"
+        assert entry["topic"] == "authentication"
+        assert entry["tags"] == ["insight", "auth"]
+        assert entry["retrieval_count"] == 5
+        assert entry["chunk_hash"] == "h1"
+        assert "content_preview" in entry
+
+    @pytest.mark.asyncio
+    async def test_memory_list_missing_project_id(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_list({})
+        assert "error" in result
+        assert "project_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_memory_list_unavailable(self, plugin):
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_list({"project_id": "proj"})
+        assert "error" in result
+        assert "not available" in result["error"]
+
+    @pytest.mark.asyncio
     async def test_not_implemented_stubs(self, wired_plugin):
         """Overlapping v1 commands return 'not implemented'."""
         result = await wired_plugin.cmd_view_profile({"project_id": "proj"})
@@ -680,3 +852,74 @@ class TestFormatHelpers:
         assert formatted["value"] == "main"
         assert formatted["valid_from"] == 100
         assert formatted["valid_to"] == 200
+
+    def test_format_list_entry(self, plugin):
+        entry = {
+            "chunk_hash": "abc123",
+            "content": "# OAuth refresh\nTokens must be refreshed before expiry.",
+            "heading": "OAuth refresh",
+            "topic": "authentication",
+            "tags": '["insight", "auth"]',
+            "source": "vault/auth.md",
+            "entry_type": "document",
+            "retrieval_count": 7,
+            "updated_at": 1234,
+        }
+        formatted = plugin._format_list_entry(entry)
+        assert formatted["chunk_hash"] == "abc123"
+        assert formatted["title"] == "OAuth refresh"
+        assert formatted["topic"] == "authentication"
+        assert formatted["tags"] == ["insight", "auth"]
+        assert formatted["retrieval_count"] == 7
+        assert formatted["updated_at"] == 1234
+        assert formatted["entry_type"] == "document"
+        assert "content_preview" in formatted
+
+    def test_format_list_entry_no_heading_uses_content(self, plugin):
+        """When heading is empty, title is extracted from content."""
+        entry = {
+            "chunk_hash": "def456",
+            "content": "Always use parameterized queries to prevent SQL injection.",
+            "heading": "",
+            "topic": "",
+            "tags": "[]",
+            "source": "",
+            "entry_type": "document",
+            "retrieval_count": 0,
+            "updated_at": 0,
+        }
+        formatted = plugin._format_list_entry(entry)
+        assert formatted["title"] == "Always use parameterized queries to prevent SQL injection."
+
+    def test_format_list_entry_long_content_preview(self, plugin):
+        """Content preview is truncated for long content."""
+        long_content = "x" * 300
+        entry = {
+            "chunk_hash": "long1",
+            "content": long_content,
+            "heading": "Long entry",
+            "topic": "",
+            "tags": "[]",
+            "source": "",
+            "entry_type": "document",
+            "retrieval_count": 0,
+            "updated_at": 0,
+        }
+        formatted = plugin._format_list_entry(entry)
+        assert len(formatted["content_preview"]) <= 201  # 200 + ellipsis char
+        assert formatted["content_preview"].endswith("…")
+
+    def test_extract_title_markdown_heading(self, plugin):
+        assert plugin._extract_title("# My Title\nBody text") == "My Title"
+        assert plugin._extract_title("## Sub Heading\nMore text") == "Sub Heading"
+
+    def test_extract_title_plain_text(self, plugin):
+        assert plugin._extract_title("Just a plain first line") == "Just a plain first line"
+
+    def test_extract_title_empty(self, plugin):
+        assert plugin._extract_title("") == ""
+
+    def test_extract_title_long(self, plugin):
+        long_line = "A" * 100
+        result = plugin._extract_title(long_line)
+        assert len(result) == 80

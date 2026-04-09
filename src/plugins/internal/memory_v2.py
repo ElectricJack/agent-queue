@@ -67,6 +67,7 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_fact_get",
         "memory_fact_set",
         "memory_fact_history",
+        "memory_list",
     }
 )
 
@@ -375,6 +376,68 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["project_id", "key"],
         },
     },
+    # ---- Browse / List ----
+    {
+        "name": "memory_list",
+        "description": (
+            "Browse memories in a scope.  Returns metadata for each entry "
+            "(title/heading, topic, tags, retrieval_count, source, updated_at) "
+            "without performing vector search.  Use for discovery — 'what "
+            "memories exist about this project?' — before deciding whether "
+            "to search for specific content.  Supports filtering by topic, "
+            "tag, and entry type.  Results sorted newest-first with pagination."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID whose collection to browse.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Memory scope to browse.  One of 'system', 'orchestrator', "
+                        "'agenttype_{type}', or 'project_{id}'.  Defaults to the "
+                        "project scope derived from project_id."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Filter by topic (e.g. 'authentication', 'testing').  "
+                        "Only entries with this exact topic are returned."
+                    ),
+                },
+                "tag": {
+                    "type": "string",
+                    "description": (
+                        "Filter by tag.  Returns entries whose tags array contains this value."
+                    ),
+                },
+                "entry_type": {
+                    "type": "string",
+                    "enum": ["document", "kv", "temporal", ""],
+                    "description": (
+                        "Filter by entry type.  Defaults to 'document' (semantic "
+                        "memories/insights).  Use '' to list all entry types."
+                    ),
+                    "default": "document",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of entries to skip for pagination (default 0).",
+                    "default": 0,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": ("Maximum entries to return (default 50, max 200)."),
+                    "default": 50,
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
     # ---- Index Management ----
     {
         "name": "memory_reindex",
@@ -628,6 +691,8 @@ class MemoryV2Plugin(InternalPlugin):
             # Semantic search
             "memory_search": self.cmd_memory_search,
             "memory_search_by_tag": self.cmd_memory_search_by_tag,
+            # Browse / list
+            "memory_list": self.cmd_memory_list,
             # KV operations
             "memory_kv_get": self.cmd_memory_kv_get,
             "memory_kv_set": self.cmd_memory_kv_set,
@@ -1231,6 +1296,95 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_search_by_tag failed: %s", e, exc_info=True)
             return {"error": f"Tag search failed: {e}"}
+
+    # -----------------------------------------------------------------
+    # Command handlers — Browse / List
+    # -----------------------------------------------------------------
+
+    async def cmd_memory_list(self, args: dict) -> dict:
+        """Browse memories in a scope, returning metadata."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_list")
+
+        scope = args.get("scope")
+        topic = args.get("topic")
+        tag = args.get("tag")
+        entry_type = args.get("entry_type", "document")
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 50)
+
+        try:
+            entries = await self._service.list_memories(
+                project_id,
+                scope=scope,
+                topic=topic,
+                tag=tag,
+                entry_type=entry_type,
+                offset=offset,
+                limit=limit,
+            )
+            return {
+                "success": True,
+                "project_id": project_id,
+                "scope": scope or f"project_{project_id}",
+                "count": len(entries),
+                "offset": offset,
+                "limit": limit,
+                "filters": {
+                    k: v
+                    for k, v in {
+                        "topic": topic,
+                        "tag": tag,
+                        "entry_type": entry_type,
+                    }.items()
+                    if v
+                },
+                "entries": [self._format_list_entry(e) for e in entries],
+            }
+        except Exception as e:
+            self._log.error("memory_list failed: %s", e, exc_info=True)
+            return {"error": f"Memory list failed: {e}"}
+
+    def _format_list_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Format a memory entry for the list/browse response.
+
+        Returns metadata fields without the full content — just a
+        truncated preview for discovery purposes.
+        """
+        content = entry.get("content", "")
+        # Truncate content to a preview (first 200 chars)
+        preview = content[:200] + "…" if len(content) > 200 else content
+
+        return {
+            "chunk_hash": entry.get("chunk_hash", ""),
+            "title": entry.get("heading", "") or self._extract_title(content),
+            "topic": entry.get("topic", ""),
+            "tags": self._decode_tags(entry.get("tags", "[]")),
+            "source": entry.get("source", ""),
+            "entry_type": entry.get("entry_type", "document"),
+            "retrieval_count": entry.get("retrieval_count", 0),
+            "updated_at": entry.get("updated_at", 0),
+            "content_preview": preview,
+        }
+
+    @staticmethod
+    def _extract_title(content: str) -> str:
+        """Extract a title from the first line of content.
+
+        Falls back to the first ~80 characters if no markdown heading
+        is found.
+        """
+        if not content:
+            return ""
+        first_line = content.split("\n", 1)[0].strip()
+        # Strip leading markdown heading markers
+        if first_line.startswith("#"):
+            first_line = first_line.lstrip("#").strip()
+        return first_line[:80] if len(first_line) > 80 else first_line
 
     # -----------------------------------------------------------------
     # Command handlers — KV Operations
