@@ -190,6 +190,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_playbook_runs": "playbook",
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
+    "playbook_health": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -2325,6 +2326,36 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["run_id", "human_input"],
+        },
+    },
+    {
+        "name": "playbook_health",
+        "description": (
+            "Compute health metrics for playbook runs: tokens per node, "
+            "run duration statistics, transition paths, and failure rates. "
+            "Returns a comprehensive report with per-node metrics (avg duration, "
+            "token usage, failure rate), run duration percentiles (p50, p95), "
+            "most common paths through the graph, and failure analysis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Filter to a specific playbook ID. Omit for all playbooks.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "Filter by run status: running, paused, completed, failed, timed_out."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max runs to analyse (default 200).",
+                    "default": 200,
+                },
+            },
         },
     },
 ]

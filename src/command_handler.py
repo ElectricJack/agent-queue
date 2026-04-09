@@ -7241,6 +7241,41 @@ feature work stuck on feature branches across multiple workspaces.
             "mock_event": event,
         }
 
+    async def _cmd_playbook_health(self, args: dict) -> dict:
+        """Compute health metrics for playbook runs: tokens per node, run duration,
+        transition paths, and failure rates.
+
+        Returns a comprehensive health report with per-node metrics (avg duration,
+        token usage, failure rate), run duration statistics (avg, p50, p95), most
+        common transition paths through the graph, and failure analysis.
+
+        Roadmap 5.7.1.
+
+        Args:
+            playbook_id: Optional — filter to a specific playbook.
+            limit: Optional — max runs to analyse (default 200).
+            status: Optional — filter by run status.
+        """
+        from src.playbook_health import compute_playbook_health
+
+        playbook_id = args.get("playbook_id")
+        status = args.get("status")
+        limit = int(args.get("limit", 200))
+
+        valid_statuses = {"running", "paused", "completed", "failed", "timed_out"}
+        if status and status not in valid_statuses:
+            return {
+                "error": f"Invalid status '{status}'. Valid: {', '.join(sorted(valid_statuses))}"
+            }
+
+        runs = await self.db.list_playbook_runs(
+            playbook_id=playbook_id,
+            status=status,
+            limit=limit,
+        )
+
+        return compute_playbook_health(runs, playbook_id=playbook_id)
+
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.

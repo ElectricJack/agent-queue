@@ -66,6 +66,7 @@ class NodeTraceEntry:
     status: str = "running"  # running | completed | failed | skipped
     transition_to: str | None = None  # next node ID after evaluation
     transition_method: str | None = None  # "goto" | "llm" | "structured" | "otherwise"
+    tokens_used: int = 0  # estimated tokens consumed by this node (roadmap 5.7.1)
 
 
 @dataclass
@@ -1632,6 +1633,9 @@ class PlaybookRunner:
         token_estimate = _estimate_tokens(prompt, response)
         self.tokens_used += token_estimate
 
+        # Record per-node token usage (roadmap 5.7.1)
+        trace_entry.tokens_used = token_estimate
+
         # Record tokens in the daily tracker (global cap enforcement)
         if self._daily_token_tracker is not None:
             self._daily_token_tracker.add_tokens(token_estimate)
@@ -2524,6 +2528,8 @@ class PlaybookRunner:
             d["transition_to"] = entry.transition_to
         if entry.transition_method is not None:
             d["transition_method"] = entry.transition_method
+        if entry.tokens_used:
+            d["tokens_used"] = entry.tokens_used
         return d
 
     # ------------------------------------------------------------------
