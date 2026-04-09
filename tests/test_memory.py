@@ -684,7 +684,7 @@ class TestMemoryCompaction:
     async def test_compact_all_recent(self, tmp_path):
         """All recent files are kept as-is — no digests created."""
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         os.makedirs(tasks_dir)
 
         self._write_task_file(tasks_dir, "task-1.md", "# Recent task", age_days=1)
@@ -710,7 +710,7 @@ class TestMemoryCompaction:
         mock_provider.return_value = provider_instance
 
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         os.makedirs(tasks_dir)
 
         # Create medium-age files in the same ISO week.  We pick ages that
@@ -754,7 +754,7 @@ class TestMemoryCompaction:
         mock_provider.return_value = provider_instance
 
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         os.makedirs(tasks_dir)
 
         # Create old files (45 days old)
@@ -778,7 +778,7 @@ class TestMemoryCompaction:
         mock_provider.return_value = provider_instance
 
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         os.makedirs(tasks_dir)
 
         # Recent (2 days)
@@ -811,7 +811,7 @@ class TestMemoryCompaction:
         mock_provider.return_value = provider_instance
 
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         digests_dir = os.path.join(str(tmp_path), "memory", "proj", "digests")
         os.makedirs(tasks_dir)
         os.makedirs(digests_dir)
@@ -895,7 +895,7 @@ class TestMemoryCompaction:
     async def test_compact_updates_last_compact_timestamp(self, tmp_path):
         """compact() updates the _last_compact tracking dict."""
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         os.makedirs(tasks_dir)
 
         assert "proj" not in mgr._last_compact
@@ -929,7 +929,7 @@ class TestMemoryStatsEnhanced:
         mock_memsearch.return_value = mock_instance
 
         mgr = self._make_manager(str(tmp_path))
-        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        tasks_dir = os.path.join(str(tmp_path), "tasks", "proj")
         digests_dir = os.path.join(str(tmp_path), "memory", "proj", "digests")
         os.makedirs(tasks_dir)
         os.makedirs(digests_dir)

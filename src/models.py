@@ -485,6 +485,7 @@ class MemoryContext:
     recent_tasks: str = ""  # Recent task summaries for continuity
     search_results: str = ""  # Semantic search results (current behavior)
     memory_folder: str = ""  # Path to project memory folder for agent reference
+    tasks_folder: str = ""  # Path to task records folder (outside memory tree)
 
     def to_context_block(self) -> str:
         """Assemble all tiers into a single markdown context block."""
@@ -502,6 +503,11 @@ class MemoryContext:
         if self.search_results:
             sections.append(f"## Relevant Context from Project Memory\n{self.search_results}")
         if self.memory_folder:
+            tasks_ref = (
+                f"- **Task memories:** `{self.tasks_folder}`\n"
+                if self.tasks_folder
+                else ""
+            )
             sections.append(
                 "## Project Memory Reference\n"
                 "This project has a memory system with historical context, past decisions, "
@@ -509,7 +515,7 @@ class MemoryContext:
                 "automatically retrieved based on relevance to your task.\n\n"
                 "If you need additional historical context, you can browse markdown files "
                 "in the memory folder using the Read tool:\n"
-                f"- **Task memories:** `{self.memory_folder}tasks/`\n"
+                f"{tasks_ref}"
                 f"- **Project profile:** `{self.memory_folder}profile.md`\n"
                 f"- **Factsheet:** `{self.memory_folder}factsheet.md`\n"
                 f"- **Knowledge base:** `{self.memory_folder}knowledge/` "

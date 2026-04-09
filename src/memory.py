@@ -88,6 +88,14 @@ class MemoryManager:
         """
         return os.path.join(self._storage_root, "memory", project_id)
 
+    def _tasks_dir(self, project_id: str) -> str:
+        """Task record storage directory for a project.
+
+        Returns ``{data_dir}/tasks/{project_id}/``.  Task records live
+        outside the memory/vault tree per vault spec §6.
+        """
+        return os.path.join(self._storage_root, "tasks", project_id)
+
     def _profile_path(self, project_id: str) -> str:
         """Path to the project profile file.
 
@@ -197,9 +205,8 @@ class MemoryManager:
             return self._instances[project_id]
 
         try:
-            # Ensure the central memory/tasks directory exists for remember()
-            memory_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
-            os.makedirs(memory_dir, exist_ok=True)
+            # Ensure the task record directory exists for remember()
+            os.makedirs(self._tasks_dir(project_id), exist_ok=True)
 
             paths = self._memory_paths(project_id, workspace_path)
 
@@ -879,7 +886,7 @@ class MemoryManager:
         )
 
         # Gather all task memory files
-        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        tasks_dir = self._tasks_dir(project_id)
         task_summaries: list[str] = []
         if os.path.isdir(tasks_dir):
             task_files = sorted(
@@ -2068,7 +2075,7 @@ class MemoryManager:
             }
 
         # 1. Read all task memory files
-        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        tasks_dir = self._tasks_dir(project_id)
         task_summaries: list[str] = []
         if os.path.isdir(tasks_dir):
             task_files = sorted(
@@ -2311,7 +2318,7 @@ class MemoryManager:
         Returns a stats dict with counts of tasks inspected, digests
         created, and files removed.
         """
-        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        tasks_dir = self._tasks_dir(project_id)
         digests_dir = os.path.join(self._project_memory_dir(project_id), "digests")
 
         if not os.path.isdir(tasks_dir):
@@ -2512,6 +2519,11 @@ class MemoryManager:
         if os.path.isdir(memory_dir):
             ctx.memory_folder = memory_dir if memory_dir.endswith("/") else memory_dir + "/"
 
+        # Set the tasks folder path (task records live outside the memory tree)
+        tasks_dir = self._tasks_dir(project_id)
+        if os.path.isdir(tasks_dir):
+            ctx.tasks_folder = tasks_dir if tasks_dir.endswith("/") else tasks_dir + "/"
+
         # Tier 0: Project Factsheet (structured metadata, always included)
         if self.config.factsheet_in_context:
             try:
@@ -2584,7 +2596,7 @@ class MemoryManager:
         recent_count = self.config.context_include_recent
         if recent_count > 0:
             try:
-                tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+                tasks_dir = self._tasks_dir(project_id)
                 if os.path.isdir(tasks_dir):
                     task_files = sorted(
                         glob.glob(os.path.join(tasks_dir, "*.md")),
@@ -2675,7 +2687,7 @@ class MemoryManager:
     async def remember(self, task: Any, output: Any, workspace_path: str) -> str | None:
         """Save a task result as a structured markdown memory file.
 
-        Writes the file to ``{data_dir}/memory/{project_id}/tasks/{task_id}.md``
+        Writes the file to ``{data_dir}/tasks/{project_id}/{task_id}.md``
         and indexes it via ``memsearch.index_file()``. Returns the file path
         on success, ``None`` otherwise.
         """
@@ -2686,9 +2698,7 @@ class MemoryManager:
         if not instance:
             return None
 
-        memory_path = os.path.join(
-            self._project_memory_dir(task.project_id), "tasks", f"{task.id}.md"
-        )
+        memory_path = os.path.join(self._tasks_dir(task.project_id), f"{task.id}.md")
         try:
             content = self._format_task_memory(task, output)
             os.makedirs(os.path.dirname(memory_path), exist_ok=True)
@@ -2848,7 +2858,7 @@ class MemoryManager:
         last_compact = self._last_compact.get(project_id)
 
         # Age-tier breakdown of task memory files
-        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        tasks_dir = self._tasks_dir(project_id)
         digests_dir = os.path.join(self._project_memory_dir(project_id), "digests")
 
         task_count = 0
