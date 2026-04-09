@@ -855,11 +855,13 @@ class Orchestrator:
 
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
-        # can be synced to the KV backend.  Phase 1 is a logging stub;
-        # actual KV sync is wired in Phase 2.
+        # can be synced to the KV backend.  When the MemoryV2Service is
+        # available, the handler parses the file and upserts KV entries;
+        # otherwise it falls back to logging only.
         from src.facts_handler import register_facts_handlers
 
-        register_facts_handlers(self.vault_watcher)
+        memory_v2_svc = getattr(self, "_memory_v2_service", None)
+        register_facts_handlers(self.vault_watcher, service=memory_v2_svc)
 
         # Register memory/*.md watcher handlers (vault spec §5).
         # Detects changes to memory markdown files across all vault scopes

@@ -39,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.facts_parser import parse_facts_file, render_facts_file
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -394,6 +396,7 @@ class MemoryV2Service:
         value: str,
         *,
         scope: str | None = None,
+        _from_vault: bool = False,
     ) -> dict[str, Any]:
         """Write a KV entry to the scoped collection and vault facts file.
 
@@ -418,6 +421,11 @@ class MemoryV2Service:
             Explicit scope override.  One of ``"system"``,
             ``"orchestrator"``, ``"agenttype_{type}"``, or
             ``"project_{id}"``.  Defaults to the project scope.
+        _from_vault:
+            When ``True``, skip writing back to the vault ``facts.md``
+            file.  Used by the facts-file watcher handler to avoid
+            circular sync (file change -> parse -> kv_set -> file write
+            -> file change ...).
 
         Returns
         -------
@@ -437,10 +445,12 @@ class MemoryV2Service:
             content=f"{namespace}/{key}: {value}",
         )
 
-        # Sync to vault facts.md file
+        # Sync to vault facts.md file (skip when the write originated
+        # from a vault file parse to prevent circular sync loops).
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         facts_path = self._vault_facts_path(mem_scope, scope_id)
-        await asyncio.to_thread(self._sync_facts_file, facts_path, namespace, key, value)
+        if not _from_vault:
+            await asyncio.to_thread(self._sync_facts_file, facts_path, namespace, key, value)
         entry["_vault_path"] = str(facts_path)
         entry["_scope"] = mem_scope.value
         entry["_scope_id"] = scope_id
@@ -486,15 +496,9 @@ class MemoryV2Service:
     def _parse_facts_file(text: str) -> dict[str, dict[str, str]]:
         """Parse a ``facts.md`` file into ``{namespace: {key: value}}``.
 
-        The facts.md format uses markdown headings as namespaces and
-        ``key: value`` lines under each heading::
-
-            ## project
-            tech_stack: [Python, SQLAlchemy, Pygame]
-            test_command: pytest tests/ -v
-
-            ## conventions
-            commit_style: conventional
+        Delegates to :func:`src.facts_parser.parse_facts_file` — the
+        standalone parser that handles YAML frontmatter, bullet-prefixed
+        lines, and the full spec format.
 
         Parameters
         ----------
@@ -504,50 +508,27 @@ class MemoryV2Service:
         Returns
         -------
         dict[str, dict[str, str]]
-            Mapping of namespace → {key → value}.
+            Mapping of namespace -> {key -> value}.
         """
-        result: dict[str, dict[str, str]] = {}
-        current_ns: str | None = None
-
-        for line in text.splitlines():
-            stripped = line.strip()
-            # Detect namespace heading (## namespace)
-            if stripped.startswith("## "):
-                current_ns = stripped[3:].strip()
-                if current_ns and current_ns not in result:
-                    result[current_ns] = {}
-            elif current_ns and ":" in stripped and stripped and not stripped.startswith("#"):
-                # key: value line
-                colon_idx = stripped.index(":")
-                k = stripped[:colon_idx].strip()
-                v = stripped[colon_idx + 1 :].strip()
-                if k:
-                    result[current_ns][k] = v
-
-        return result
+        return parse_facts_file(text)
 
     @staticmethod
     def _render_facts_file(data: dict[str, dict[str, str]]) -> str:
         """Render a ``{namespace: {key: value}}`` dict to facts.md format.
 
+        Delegates to :func:`src.facts_parser.render_facts_file`.
+
         Parameters
         ----------
         data:
-            Mapping of namespace → {key → value}.
+            Mapping of namespace -> {key -> value}.
 
         Returns
         -------
         str
             Formatted markdown content for the facts.md file.
         """
-        sections: list[str] = []
-        for ns in sorted(data.keys()):
-            entries = data[ns]
-            lines = [f"## {ns}"]
-            for k in sorted(entries.keys()):
-                lines.append(f"{k}: {entries[k]}")
-            sections.append("\n".join(lines))
-        return "\n\n".join(sections) + "\n" if sections else ""
+        return render_facts_file(data)
 
     def _sync_facts_file(
         self,

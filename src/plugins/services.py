@@ -194,6 +194,7 @@ class MemoryV2ServiceProtocol(Protocol):
         value: str,
         *,
         scope: str | None = None,
+        _from_vault: bool = False,
     ) -> dict: ...
     async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
     async def kv_recall(
