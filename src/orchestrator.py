@@ -134,6 +134,7 @@ from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.tokens.budget import BudgetManager
+from src.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
@@ -790,9 +791,15 @@ class Orchestrator:
            agents left over from the previous run are reset to a schedulable
            state.  Must run before the first scheduling cycle to avoid
            ghost assignments.  See ``_recover_stale_state``.
-        4. **Hook engine** — subscribe to EventBus events and pre-populate
+        4. **Vault manager** — create ``VaultManager`` and ensure the vault
+           directory structure exists.  Must run before plugins, hooks,
+           rules, memory, or any file watchers that depend on vault paths.
+        5. **Plugins** — discover and load plugin modules.
+        6. **Hook engine** — subscribe to EventBus events and pre-populate
            last-run timestamps so periodic hooks don't all fire simultaneously
            on startup.  Depends on DB for reading last-run times.
+        7. **Rule manager** — install default rules and start file watcher.
+        8. **Config watcher** — hot-reload support for config.yaml.
 
         This method must be called (and awaited) before ``run_one_cycle``.
         Called by ``main.py`` during startup, after ``load_config()`` but
@@ -801,6 +808,11 @@ class Orchestrator:
         await self.db.initialize()
         await self._sync_profiles_from_config()
         await self._recover_stale_state()
+
+        # Initialize VaultManager — central path resolution and directory
+        # management for the vault.  Must be available before any subsystem
+        # that reads vault paths (hooks, rules, memory, plugins).
+        self.vault_manager = VaultManager(self.config)
 
         # Ensure per-project task directories exist under {data_dir}/tasks/.
         # Part of the vault migration (Phase 1) — task records live outside
@@ -977,30 +989,28 @@ class Orchestrator:
         3. Create per-project subdirectories under ``vault/projects/``.
 
         All operations are idempotent — safe to call on every startup.
-        Called during ``initialize()`` after the database is ready.
+        Called during ``initialize()`` after the database is ready and
+        ``self.vault_manager`` has been created.
         """
-        from src.vault import (
-            ensure_vault_layout,
-            ensure_vault_profile_dirs,
-            ensure_vault_project_dirs,
-            migrate_obsidian_config,
-        )
+        from src.vault import migrate_obsidian_config
 
-        # Migrate legacy .obsidian config before ensure_vault_layout creates
+        # Migrate legacy .obsidian config before ensure_layout creates
         # an empty vault/.obsidian/ directory (spec §6, Phase 1).
         migrate_obsidian_config(self.config.data_dir)
 
-        ensure_vault_layout(self.config.data_dir)
+        # Create the static vault tree (system, orchestrator, agent-types,
+        # projects, templates directories).
+        self.vault_manager.ensure_layout()
 
         # Per-profile directories (vault/agent-types/{profile_id}/)
         all_profiles = await self.db.list_profiles()
         for profile in all_profiles:
-            ensure_vault_profile_dirs(self.config.data_dir, profile.id)
+            self.vault_manager.register_agent_type(profile.id)
 
         # Per-project directories (vault/projects/{project_id}/)
         all_projects = await self.db.list_projects()
         for project in all_projects:
-            ensure_vault_project_dirs(self.config.data_dir, project.id)
+            self.vault_manager.register_project(project.id)
 
         if all_profiles or all_projects:
             logger.info(
