@@ -647,6 +647,7 @@ class PlaybookRun:
     started_at: float = 0.0
     completed_at: float | None = None
     error: str | None = None
+    pinned_graph: str | None = None  # JSON-serialised compiled graph for version pinning
 
 
 class PhaseResult(Enum):

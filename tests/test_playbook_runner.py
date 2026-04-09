@@ -921,6 +921,339 @@ class TestDBPersistence:
 
 
 # ---------------------------------------------------------------------------
+# Version pinning (5.2.12)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionPinning:
+    """In-flight runs continue with old version when recompiled."""
+
+    async def test_run_pins_graph_in_db_record(self, mock_supervisor, event_data, mock_db):
+        """run() should persist the compiled graph in pinned_graph."""
+        graph = {
+            "id": "pin-test",
+            "version": 3,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # The created DB record should contain the pinned graph
+        created_run = mock_db.create_playbook_run.call_args[0][0]
+        assert created_run.pinned_graph is not None
+        pinned = json.loads(created_run.pinned_graph)
+        assert pinned == graph
+        assert pinned["version"] == 3
+
+    async def test_resume_uses_pinned_graph_not_current(self, mock_supervisor, mock_db):
+        """Resume should use pinned_graph from DB, ignoring the caller-supplied graph."""
+        # The pinned graph (v2) has a different structure than the current (v3).
+        # Specifically, the pinned version has a "review" node that transitions
+        # to "execute", while the current v3 removed the "execute" node.
+        v2_graph = {
+            "id": "evolving-playbook",
+            "version": 2,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the code.",
+                    "goto": "review",
+                },
+                "review": {
+                    "prompt": "Present for review.",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"when": "approved", "goto": "execute"},
+                        {"when": "rejected", "goto": "done"},
+                    ],
+                },
+                "execute": {
+                    "prompt": "Execute the v2 plan.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        v3_graph = {
+            "id": "evolving-playbook",
+            "version": 3,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the code (v3 updated).",
+                    "goto": "review",
+                },
+                "review": {
+                    "prompt": "Present for review (v3 updated).",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"when": "approved", "goto": "done"},
+                        {"when": "rejected", "goto": "done"},
+                    ],
+                },
+                # "execute" node was REMOVED in v3
+                "done": {"terminal": True},
+            },
+        }
+
+        # Build a paused run that has pinned_graph from v2
+        paused_run = PlaybookRun(
+            run_id="pinned-resume-1",
+            playbook_id="evolving-playbook",
+            playbook_version=2,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event received: ..."},
+                    {"role": "user", "content": "Analyse the code."},
+                    {"role": "assistant", "content": "Analysis done."},
+                    {"role": "user", "content": "Present for review."},
+                    {"role": "assistant", "content": "Here is the review."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100.0,
+                        "completed_at": 101.0,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101.0,
+                        "completed_at": 102.0,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=50,
+            started_at=100.0,
+            pinned_graph=json.dumps(v2_graph),
+        )
+
+        # LLM calls: transition classification → "1" (approved → execute in v2),
+        # then execute node → "V2 plan executed."
+        responses = iter(["1", "V2 plan executed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        # Pass v3_graph as the current graph, but resume should use pinned v2
+        result = await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=v3_graph,  # Current version — should NOT be used
+            supervisor=mock_supervisor,
+            human_input="Approved, go ahead.",
+            db=mock_db,
+        )
+
+        assert result.status == "completed"
+        assert result.run_id == "pinned-resume-1"
+        # The "execute" node only exists in v2, not v3.
+        # If pinning works, the run should have walked through "execute".
+        executed_nodes = [t["node_id"] for t in result.node_trace]
+        assert "execute" in executed_nodes
+
+    async def test_resume_falls_back_to_caller_graph_without_pinned(
+        self, mock_supervisor, human_review_graph, mock_db
+    ):
+        """Resume falls back to the caller-supplied graph when no pinned_graph."""
+        # Simulate a pre-5.2.12 run with no pinned_graph
+        paused_run = PlaybookRun(
+            run_id="legacy-run-1",
+            playbook_id="human-review-playbook",
+            playbook_version=1,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event received: ..."},
+                    {"role": "user", "content": "Analyse the issue and propose a plan."},
+                    {"role": "assistant", "content": "Analysis complete."},
+                    {"role": "user", "content": "Present your analysis for human review."},
+                    {"role": "assistant", "content": "Here is the analysis."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100.0,
+                        "completed_at": 101.0,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101.0,
+                        "completed_at": 102.0,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=50,
+            started_at=100.0,
+            pinned_graph=None,  # No pinned graph (pre-5.2.12)
+        )
+
+        responses = iter(["1", "Plan executed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        result = await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=human_review_graph,  # Should be used as fallback
+            supervisor=mock_supervisor,
+            human_input="Approved.",
+            db=mock_db,
+        )
+
+        assert result.status == "completed"
+        executed_nodes = [t["node_id"] for t in result.node_trace]
+        assert "execute" in executed_nodes
+
+    async def test_pinned_graph_version_preserved_in_runner(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """The runner should store the correct version from the pinned graph."""
+        graph = {
+            "id": "version-check",
+            "version": 7,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Do A.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        created_run = mock_db.create_playbook_run.call_args[0][0]
+        assert created_run.playbook_version == 7
+        pinned = json.loads(created_run.pinned_graph)
+        assert pinned["version"] == 7
+
+    async def test_resume_with_pinned_graph_uses_pinned_prompts(self, mock_supervisor, mock_db):
+        """Verify the runner actually sends the pinned graph's prompts, not the current ones."""
+        v1_graph = {
+            "id": "prompt-check",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "V1: scan for security issues.",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"goto": "fix", "when": "approved"},
+                        {"goto": "done", "otherwise": True},
+                    ],
+                },
+                "fix": {
+                    "prompt": "V1: apply security fixes.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        v2_graph = {
+            "id": "prompt-check",
+            "version": 2,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "V2: scan for performance issues.",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"goto": "fix", "when": "approved"},
+                        {"goto": "done", "otherwise": True},
+                    ],
+                },
+                "fix": {
+                    "prompt": "V2: apply performance fixes.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        paused_run = PlaybookRun(
+            run_id="prompt-pin-1",
+            playbook_id="prompt-check",
+            playbook_version=1,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node="start",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event received: ..."},
+                    {"role": "user", "content": "V1: scan for security issues."},
+                    {"role": "assistant", "content": "Found 2 security issues."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "start",
+                        "started_at": 100.0,
+                        "completed_at": 101.0,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=30,
+            started_at=100.0,
+            pinned_graph=json.dumps(v1_graph),
+        )
+
+        # Track what prompt the supervisor receives
+        prompts_received = []
+
+        async def capture_chat(**kwargs):
+            text = kwargs.get("text", "")
+            prompts_received.append(text)
+            if "condition" in text.lower() or "which" in text.lower():
+                return "1"  # approved
+            return "Security fixes applied."
+
+        mock_supervisor.chat.side_effect = capture_chat
+
+        result = await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=v2_graph,
+            supervisor=mock_supervisor,
+            human_input="Approved.",
+            db=mock_db,
+        )
+
+        assert result.status == "completed"
+        # The "fix" node should have been called with v1's prompt
+        assert any("V1: apply security fixes" in p for p in prompts_received)
+        # V2's prompt should NOT appear
+        assert not any("V2: apply performance fixes" in p for p in prompts_received)
+
+    async def test_pinned_graph_persisted_on_run_no_db(self, mock_supervisor, event_data):
+        """When db is None, run still works; pinned_graph is set on the local object."""
+        graph = {
+            "id": "no-db-pin",
+            "version": 4,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Do A.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=None)
+        result = await runner.run()
+        assert result.status == "completed"
+
+
+# ---------------------------------------------------------------------------
 # Progress callbacks
 # ---------------------------------------------------------------------------
 

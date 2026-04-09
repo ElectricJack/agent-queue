@@ -248,7 +248,9 @@ class PlaybookRunner:
         """
         started_at = time.time()
 
-        # Create the DB record
+        # Create the DB record — pin the compiled graph so that in-flight
+        # runs continue with the version they started with, even if the
+        # playbook is recompiled while the run is paused.
         db_run = PlaybookRun(
             run_id=self.run_id,
             playbook_id=self._playbook_id,
@@ -256,6 +258,7 @@ class PlaybookRunner:
             trigger_event=json.dumps(self.event),
             status="running",
             started_at=started_at,
+            pinned_graph=json.dumps(self.graph),
         )
         if self.db:
             await self.db.create_playbook_run(db_run)
@@ -395,12 +398,22 @@ class PlaybookRunner:
         injects the human's input into conversation history, and continues
         walking the graph from the paused node.
 
+        **Version pinning (5.2.12):** If the run has a ``pinned_graph``
+        (the compiled graph snapshot saved at run start), it is used instead
+        of the caller-supplied *graph*.  This ensures that in-flight runs
+        continue with the version they started with, even if the playbook
+        was recompiled while the run was paused.  The *graph* parameter
+        serves as a fallback for runs created before version pinning was
+        added.
+
         Parameters
         ----------
         db_run:
             The persisted :class:`PlaybookRun` with status ``"paused"``.
         graph:
-            The compiled playbook graph (must match ``db_run.playbook_id``).
+            The compiled playbook graph — used as a fallback when no
+            ``pinned_graph`` is stored in the run record (backward
+            compatibility with pre-5.2.12 runs).
         supervisor:
             Supervisor instance for LLM calls.
         human_input:
@@ -410,7 +423,25 @@ class PlaybookRunner:
         on_progress:
             Optional progress callback.
         """
-        runner = cls(graph, json.loads(db_run.trigger_event), supervisor, db, on_progress)
+        # Use the pinned graph from the run record if available (version
+        # pinning), otherwise fall back to the caller-supplied graph.
+        if db_run.pinned_graph:
+            effective_graph = json.loads(db_run.pinned_graph)
+            logger.debug(
+                "Resuming run %s with pinned graph v%d (current graph v%d)",
+                db_run.run_id,
+                effective_graph.get("version", 0),
+                graph.get("version", 0),
+            )
+        else:
+            effective_graph = graph
+            logger.debug(
+                "Resuming run %s without pinned graph — using current v%d",
+                db_run.run_id,
+                graph.get("version", 0),
+            )
+
+        runner = cls(effective_graph, json.loads(db_run.trigger_event), supervisor, db, on_progress)
         runner.run_id = db_run.run_id
         runner.messages = json.loads(db_run.conversation_history)
         runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
@@ -439,7 +470,7 @@ class PlaybookRunner:
                 error="Cannot resume: no current_node recorded",
             )
 
-        paused_node = graph["nodes"].get(paused_node_id)
+        paused_node = effective_graph["nodes"].get(paused_node_id)
         if not paused_node:
             return RunResult(
                 run_id=db_run.run_id,
@@ -498,7 +529,7 @@ class PlaybookRunner:
         final_response: str | None = None
 
         while True:
-            node = graph["nodes"].get(current_node_id)
+            node = effective_graph["nodes"].get(current_node_id)
             if node is None:
                 return await runner._fail(
                     db_run,

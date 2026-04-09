@@ -831,6 +831,7 @@ def _make_playbook_run(
     **kwargs,
 ) -> PlaybookRun:
     """Helper to build a PlaybookRun with sensible defaults."""
+    pinned_graph = kwargs.get("pinned_graph")
     return PlaybookRun(
         run_id=run_id,
         playbook_id=playbook_id,
@@ -844,6 +845,7 @@ def _make_playbook_run(
         started_at=kwargs.get("started_at", time.time()),
         completed_at=kwargs.get("completed_at"),
         error=kwargs.get("error"),
+        pinned_graph=json.dumps(pinned_graph) if pinned_graph is not None else None,
     )
 
 
@@ -1219,6 +1221,100 @@ class TestPlaybookRunQueries:
         restored = json.loads(fetched.conversation_history)
         assert len(restored) == 100
         assert restored[99]["content"].startswith("Completed task 49.")
+
+    async def test_pinned_graph_round_trip(self, db):
+        """Pinned compiled graph must survive serialization through the DB."""
+        graph = {
+            "id": "review-playbook",
+            "version": 2,
+            "source_hash": "abcdef1234567890",
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the issue.",
+                    "goto": "review",
+                },
+                "review": {
+                    "prompt": "Present for human review.",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"goto": "execute", "when": "approved"},
+                        {"goto": "done", "otherwise": True},
+                    ],
+                },
+                "execute": {"prompt": "Execute the plan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        run = _make_playbook_run(
+            run_id="pinned-1",
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("pinned-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is not None
+        restored = json.loads(fetched.pinned_graph)
+        assert restored == graph
+        assert restored["version"] == 2
+        assert "analyse" in restored["nodes"]
+        assert restored["nodes"]["review"]["wait_for_human"] is True
+
+    async def test_pinned_graph_null_by_default(self, db):
+        """Runs created without a pinned_graph should have None."""
+        run = _make_playbook_run(run_id="no-graph-1")
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("no-graph-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is None
+
+    async def test_paused_run_with_pinned_graph_full_state(self, db):
+        """A paused run with pinned_graph preserves all state for resume."""
+        graph = {
+            "id": "review-pb",
+            "version": 5,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "review"},
+                "review": {
+                    "prompt": "Review.",
+                    "wait_for_human": True,
+                    "transitions": [{"goto": "done", "otherwise": True}],
+                },
+                "done": {"terminal": True},
+            },
+        }
+        messages = [
+            {"role": "user", "content": "Event: test"},
+            {"role": "user", "content": "Scan."},
+            {"role": "assistant", "content": "Scan complete."},
+        ]
+        run = _make_playbook_run(
+            run_id="paused-pinned-1",
+            playbook_id="review-pb",
+            version=5,
+            status="paused",
+            current_node="review",
+            conversation_history=messages,
+            tokens_used=100,
+            started_at=2000.0,
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("paused-pinned-1")
+        assert fetched is not None
+        assert fetched.status == "paused"
+        assert fetched.current_node == "review"
+        assert fetched.playbook_version == 5
+        # Pinned graph matches original
+        restored_graph = json.loads(fetched.pinned_graph)
+        assert restored_graph == graph
+        assert restored_graph["version"] == 5
+        # Other state also round-trips
+        assert json.loads(fetched.conversation_history) == messages
+        assert fetched.tokens_used == 100
 
 
 class TestMockAdapter:

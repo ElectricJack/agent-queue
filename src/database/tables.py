@@ -376,6 +376,7 @@ playbook_runs = Table(
     Column("started_at", Float, nullable=False),
     Column("completed_at", Float, nullable=True),
     Column("error", Text, nullable=True),
+    Column("pinned_graph", Text, nullable=True),
     CheckConstraint(
         "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
         name="ck_playbook_runs_status",
