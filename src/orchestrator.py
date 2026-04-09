@@ -996,6 +996,7 @@ class Orchestrator:
             copy_project_memory_to_vault,
             migrate_notes_to_vault,
             migrate_obsidian_config,
+            migrate_rule_files,
         )
 
         # Migrate legacy .obsidian config before ensure_layout creates
@@ -1026,6 +1027,11 @@ class Orchestrator:
         # Uses copy (not move) — old paths still used by v1 memory system.
         for project in all_projects:
             copy_project_memory_to_vault(self.config.data_dir, project.id)
+
+        # Migrate rule files from legacy memory/ locations to vault
+        # playbook directories (spec §6, Phase 1).  Must run after
+        # ensure_vault_layout and per-project dirs so destinations exist.
+        migrate_rule_files(self.config.data_dir)
 
         if all_profiles or all_projects:
             logger.info(

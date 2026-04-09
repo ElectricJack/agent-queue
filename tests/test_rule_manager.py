@@ -34,7 +34,9 @@ def test_save_rule_creates_file(rule_manager, storage_root):
     assert result["success"] is True
     assert result["id"] == "rule-test"
 
-    rule_path = os.path.join(storage_root, "memory", "my-project", "rules", "rule-test.md")
+    rule_path = os.path.join(
+        storage_root, "vault", "projects", "my-project", "playbooks", "rule-test.md"
+    )
     assert os.path.isfile(rule_path)
 
     with open(rule_path) as f:
@@ -54,7 +56,7 @@ def test_save_rule_global_scope(rule_manager, storage_root):
     )
     assert result["success"] is True
 
-    rule_path = os.path.join(storage_root, "memory", "global", "rules", "rule-global.md")
+    rule_path = os.path.join(storage_root, "vault", "system", "playbooks", "rule-global.md")
     assert os.path.isfile(rule_path)
 
 
@@ -717,6 +719,8 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
     orch.db.list_agents = AsyncMock(return_value=[])
     orch.db.list_workspaces = AsyncMock(return_value=[])
     orch.db.list_tasks = AsyncMock(return_value=[])
+    orch.db.list_projects = AsyncMock(return_value=[])
+    orch.db.list_profiles = AsyncMock(return_value=[])
 
     with patch.object(orch, "_sync_profiles_from_config", new_callable=AsyncMock):
         asyncio.run(orch.initialize())
@@ -767,14 +771,14 @@ def test_install_defaults_idempotent(storage_root):
 
 
 def test_get_all_rule_dirs(storage_root):
-    """_get_all_rule_dirs returns existing rule directories."""
+    """_get_all_rule_dirs returns existing vault playbook directories."""
     from src.rule_manager import RuleManager
 
     rm = RuleManager(storage_root=storage_root)
 
-    # Create some rule dirs
-    os.makedirs(os.path.join(storage_root, "memory", "proj-a", "rules"))
-    os.makedirs(os.path.join(storage_root, "memory", "global", "rules"))
+    # Create vault playbook dirs
+    os.makedirs(os.path.join(storage_root, "vault", "projects", "proj-a", "playbooks"))
+    os.makedirs(os.path.join(storage_root, "vault", "system", "playbooks"))
 
     dirs = rm._get_all_rule_dirs()
     paths = {d[0] for d in dirs}
@@ -782,7 +786,7 @@ def test_get_all_rule_dirs(storage_root):
 
     assert len(dirs) == 2
     assert any("proj-a" in p for p in paths)
-    assert any("global" in p for p in paths)
+    assert any("system" in p for p in paths)
     assert "proj-a" in pids
     assert None in pids  # global scope
 
@@ -793,7 +797,7 @@ def test_start_and_stop_file_watcher(storage_root):
     from src.rule_manager import RuleManager
 
     rm = RuleManager(storage_root=storage_root)
-    os.makedirs(os.path.join(storage_root, "memory", "proj", "rules"))
+    os.makedirs(os.path.join(storage_root, "vault", "projects", "proj", "playbooks"))
     bus = EventBus()
 
     async def _run():
@@ -837,15 +841,14 @@ def test_on_rule_folder_changed_modified(storage_root, mock_db):
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
 
-    # Create an active rule file on disk
-    rules_dir = os.path.join(storage_root, "memory", "proj", "rules")
-    os.makedirs(rules_dir, exist_ok=True)
+    # Create an active rule file on disk (vault location)
     rm.save_rule(
         id="rule-watch-test",
         project_id="proj",
         rule_type="active",
         content="# Watch Test\n\n## Trigger\nEvery 10 minutes.\n\n## Logic\nDo it.",
     )
+    rules_dir = os.path.join(storage_root, "vault", "projects", "proj", "playbooks")
 
     async def _run():
         await rm._on_rule_folder_changed(
@@ -890,15 +893,14 @@ def test_on_rule_folder_changed_passive_rule_skipped(storage_root, mock_db):
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
 
-    # Create a passive rule file on disk
-    rules_dir = os.path.join(storage_root, "memory", "proj", "rules")
-    os.makedirs(rules_dir, exist_ok=True)
+    # Create a passive rule file on disk (vault location)
     rm.save_rule(
         id="rule-passive",
         project_id="proj",
         rule_type="passive",
         content="# Passive Rule\n\n## Intent\nJust guidance.",
     )
+    rules_dir = os.path.join(storage_root, "vault", "projects", "proj", "playbooks")
 
     async def _run():
         await rm._on_rule_folder_changed(
@@ -1228,8 +1230,8 @@ def test_cleanup_duplicate_rules(storage_root):
     """_cleanup_duplicate_rules removes rule-rule-* files when canonical exists."""
     from src.rule_manager import RuleManager
 
-    # Create canonical rule
-    rules_dir = os.path.join(storage_root, "memory", "test-project", "rules")
+    # Create canonical rule in vault playbook location
+    rules_dir = os.path.join(storage_root, "vault", "projects", "test-project", "playbooks")
     os.makedirs(rules_dir, exist_ok=True)
 
     canonical_content = (
@@ -1289,10 +1291,15 @@ def test_migrate_orphan_hooks_strips_rule_prefix(storage_root):
 
     # The rule file should be rule-restart-daemon.md, NOT rule-rule-restart-daemon.md
     expected_path = os.path.join(
-        storage_root, "memory", "my-project", "rules", "rule-restart-daemon.md"
+        storage_root, "vault", "projects", "my-project", "playbooks", "rule-restart-daemon.md"
     )
     unexpected_path = os.path.join(
-        storage_root, "memory", "my-project", "rules", "rule-rule-restart-daemon.md"
+        storage_root,
+        "vault",
+        "projects",
+        "my-project",
+        "playbooks",
+        "rule-rule-restart-daemon.md",
     )
     assert os.path.isfile(expected_path), f"Expected rule file at {expected_path}"
     assert not os.path.isfile(unexpected_path), f"Should NOT create duplicate at {unexpected_path}"

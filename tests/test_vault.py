@@ -13,6 +13,7 @@ from src.vault import (
     ensure_vault_project_dirs,
     migrate_notes_to_vault,
     migrate_obsidian_config,
+    migrate_rule_files,
 )
 
 
@@ -192,7 +193,6 @@ def test_multiple_profiles_and_projects(tmp_path):
     assert (projects / "project-b" / "references").is_dir()
 
 
-# ---------------------------------------------------------------------------
 # migrate_notes_to_vault (vault spec §6, Phase 1)
 # ---------------------------------------------------------------------------
 
@@ -516,3 +516,225 @@ def test_copy_memory_all_files_together(tmp_path):
     assert (source / "profile.md").exists()
     assert (source / "factsheet.md").exists()
     assert (knowledge / "arch.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# migrate_rule_files (vault spec §6, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def _create_rule_file(path, rule_id="rule-test", rule_type="active"):
+    """Helper: write a minimal rule markdown file with frontmatter."""
+    content = (
+        f"---\nid: {rule_id}\ntype: {rule_type}\nproject_id: null\n"
+        f"hooks: []\ncreated: '2026-01-01T00:00:00+00:00'\n"
+        f"updated: '2026-01-01T00:00:00+00:00'\n---\n\n"
+        f"# {rule_id.replace('rule-', '').replace('-', ' ').title()}\n\n"
+        f"## Intent\nTest rule.\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return content
+
+
+def test_migrate_rule_files_moves_global_rules(tmp_path):
+    """Global rules are moved from memory/global/rules/ to vault/system/playbooks/."""
+    # Set up source
+    src = tmp_path / "memory" / "global" / "rules" / "rule-test.md"
+    content = _create_rule_file(src)
+
+    # Create vault destination dir
+    ensure_vault_layout(str(tmp_path))
+
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 1
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    # File should be at new location
+    dest = tmp_path / "vault" / "system" / "playbooks" / "rule-test.md"
+    assert dest.is_file()
+    assert dest.read_text() == content
+
+    # Source should be gone
+    assert not src.exists()
+
+
+def test_migrate_rule_files_moves_project_rules(tmp_path):
+    """Project rules are moved from memory/{pid}/rules/ to vault/projects/{pid}/playbooks/."""
+    src = tmp_path / "memory" / "my-project" / "rules" / "rule-check.md"
+    content = _create_rule_file(src, rule_id="rule-check")
+
+    ensure_vault_layout(str(tmp_path))
+    ensure_vault_project_dirs(str(tmp_path), "my-project")
+
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 1
+
+    dest = tmp_path / "vault" / "projects" / "my-project" / "playbooks" / "rule-check.md"
+    assert dest.is_file()
+    assert dest.read_text() == content
+    assert not src.exists()
+
+
+def test_migrate_rule_files_skips_existing_destination(tmp_path):
+    """Files already at destination are skipped (idempotent)."""
+    src = tmp_path / "memory" / "global" / "rules" / "rule-dup.md"
+    _create_rule_file(src, rule_id="rule-dup")
+
+    # Pre-create the destination file with different content
+    dest = tmp_path / "vault" / "system" / "playbooks" / "rule-dup.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("# Already here\n")
+
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 0
+    assert result["skipped"] == 1
+
+    # Destination retains original content
+    assert dest.read_text() == "# Already here\n"
+    # Source is still present (not removed)
+    assert src.exists()
+
+
+def test_migrate_rule_files_idempotent(tmp_path):
+    """Running migration twice: first moves, second is a no-op."""
+    src = tmp_path / "memory" / "global" / "rules" / "rule-idem.md"
+    _create_rule_file(src, rule_id="rule-idem")
+    ensure_vault_layout(str(tmp_path))
+
+    result1 = migrate_rule_files(str(tmp_path))
+    assert result1["moved"] == 1
+
+    # Source gone after first run; second run should skip gracefully
+    result2 = migrate_rule_files(str(tmp_path))
+    assert result2["moved"] == 0
+    assert result2["skipped"] == 0  # no source files left
+
+    # File still at destination
+    assert (tmp_path / "vault" / "system" / "playbooks" / "rule-idem.md").is_file()
+
+
+def test_migrate_rule_files_multiple_scopes(tmp_path):
+    """Rules from multiple scopes (global + projects) are all migrated."""
+    # Global rules
+    _create_rule_file(
+        tmp_path / "memory" / "global" / "rules" / "rule-a.md",
+        rule_id="rule-a",
+    )
+    _create_rule_file(
+        tmp_path / "memory" / "global" / "rules" / "rule-b.md",
+        rule_id="rule-b",
+    )
+    # Project rules
+    _create_rule_file(
+        tmp_path / "memory" / "proj-1" / "rules" / "rule-c.md",
+        rule_id="rule-c",
+    )
+    _create_rule_file(
+        tmp_path / "memory" / "proj-2" / "rules" / "rule-d.md",
+        rule_id="rule-d",
+    )
+
+    ensure_vault_layout(str(tmp_path))
+    ensure_vault_project_dirs(str(tmp_path), "proj-1")
+    ensure_vault_project_dirs(str(tmp_path), "proj-2")
+
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 4
+    assert result["errors"] == 0
+    assert len(result["details"]) == 4
+
+    # Verify all destinations
+    assert (tmp_path / "vault" / "system" / "playbooks" / "rule-a.md").is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "rule-b.md").is_file()
+    assert (tmp_path / "vault" / "projects" / "proj-1" / "playbooks" / "rule-c.md").is_file()
+    assert (tmp_path / "vault" / "projects" / "proj-2" / "playbooks" / "rule-d.md").is_file()
+
+
+def test_migrate_rule_files_no_memory_dir(tmp_path):
+    """When memory directory doesn't exist, returns empty stats."""
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 0
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+
+def test_migrate_rule_files_ignores_non_md_files(tmp_path):
+    """Non-.md files in rules/ directories are not migrated."""
+    rules_dir = tmp_path / "memory" / "global" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "rule-good.md").write_text("# Good rule\n")
+    (rules_dir / "notes.txt").write_text("not a rule")
+    (rules_dir / ".hidden").write_text("hidden file")
+
+    ensure_vault_layout(str(tmp_path))
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 1
+    # Non-md files still in source
+    assert (rules_dir / "notes.txt").exists()
+    assert (rules_dir / ".hidden").exists()
+
+
+def test_migrate_rule_files_creates_dest_dirs(tmp_path):
+    """Destination directories are created if they don't exist yet."""
+    src = tmp_path / "memory" / "new-project" / "rules" / "rule-x.md"
+    _create_rule_file(src, rule_id="rule-x")
+
+    # Don't call ensure_vault_layout — migration should create dest dirs
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 1
+    dest = tmp_path / "vault" / "projects" / "new-project" / "playbooks" / "rule-x.md"
+    assert dest.is_file()
+
+
+def test_migrate_rule_files_preserves_content(tmp_path):
+    """Migrated files preserve exact content including frontmatter."""
+    src = tmp_path / "memory" / "global" / "rules" / "rule-preserve.md"
+    content = (
+        "---\nid: rule-preserve\ntype: active\nproject_id: null\n"
+        "hooks:\n- hook-abc123\n- hook-def456\n"
+        "created: '2026-03-15T12:00:00+00:00'\n"
+        "updated: '2026-04-01T08:30:00+00:00'\n---\n\n"
+        "# Preserve Test\n\n## Intent\nPreserve all content exactly.\n\n"
+        "## Trigger\nEvery 2 hours.\n\n## Logic\n1. Do the thing.\n2. Report.\n"
+    )
+    src.parent.mkdir(parents=True)
+    src.write_text(content)
+
+    ensure_vault_layout(str(tmp_path))
+    migrate_rule_files(str(tmp_path))
+
+    dest = tmp_path / "vault" / "system" / "playbooks" / "rule-preserve.md"
+    assert dest.read_text() == content
+
+
+def test_migrate_rule_files_logs_details(tmp_path):
+    """Each move/skip is recorded in the details list."""
+    _create_rule_file(
+        tmp_path / "memory" / "global" / "rules" / "rule-moved.md",
+        rule_id="rule-moved",
+    )
+    dest = tmp_path / "vault" / "system" / "playbooks" / "rule-skipped.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("# existing\n")
+    _create_rule_file(
+        tmp_path / "memory" / "global" / "rules" / "rule-skipped.md",
+        rule_id="rule-skipped",
+    )
+
+    result = migrate_rule_files(str(tmp_path))
+
+    assert result["moved"] == 1
+    assert result["skipped"] == 1
+    # Details should contain entries for both files
+    details_text = "\n".join(result["details"])
+    assert "MOVE" in details_text
+    assert "SKIP" in details_text

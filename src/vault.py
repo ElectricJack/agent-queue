@@ -109,6 +109,89 @@ def migrate_notes_to_vault(data_dir: str, project_id: str) -> bool:
     return moved_any
 
 
+def migrate_rule_files(data_dir: str) -> dict:
+    """Move rule markdown files from ``memory/`` to vault playbook locations.
+
+    Part of vault migration Phase 1 (spec §6).  Moves rule files:
+
+    - **Global rules:** ``memory/global/rules/*.md`` →
+      ``vault/system/playbooks/``
+    - **Project rules:** ``memory/{project_id}/rules/*.md`` →
+      ``vault/projects/{project_id}/playbooks/``
+
+    The operation is **idempotent**:
+
+    * Files already present at the destination are skipped.
+    * Source files are removed only after a successful copy.
+    * Each move is logged individually for auditability.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``moved``, ``skipped``, and ``errors`` counts plus a
+        ``details`` list of per-file log messages.
+    """
+    stats: dict = {"moved": 0, "skipped": 0, "errors": 0, "details": []}
+    memory_root = os.path.join(data_dir, "memory")
+
+    if not os.path.isdir(memory_root):
+        logger.debug("Rule file migration: memory root %s does not exist, skipping", memory_root)
+        return stats
+
+    for scope_dir in sorted(os.listdir(memory_root)):
+        rules_dir = os.path.join(memory_root, scope_dir, "rules")
+        if not os.path.isdir(rules_dir):
+            continue
+
+        # Determine vault destination based on scope
+        if scope_dir == "global":
+            dest_dir = os.path.join(data_dir, "vault", "system", "playbooks")
+        else:
+            dest_dir = os.path.join(data_dir, "vault", "projects", scope_dir, "playbooks")
+
+        # Ensure destination directory exists
+        os.makedirs(dest_dir, exist_ok=True)
+
+        for filename in sorted(os.listdir(rules_dir)):
+            if not filename.endswith(".md"):
+                continue
+
+            src_path = os.path.join(rules_dir, filename)
+            dest_path = os.path.join(dest_dir, filename)
+
+            # Idempotent: skip if destination already exists
+            if os.path.exists(dest_path):
+                stats["skipped"] += 1
+                detail = f"SKIP {scope_dir}/{filename}: already at destination"
+                stats["details"].append(detail)
+                logger.debug("Rule migration: %s already at %s, skipping", filename, dest_dir)
+                continue
+
+            try:
+                shutil.copy2(src_path, dest_path)
+                os.remove(src_path)
+                stats["moved"] += 1
+                detail = f"MOVE {scope_dir}/{filename}: {rules_dir} → {dest_dir}"
+                stats["details"].append(detail)
+                logger.info("Migrated rule file %s → %s", src_path, dest_path)
+            except Exception as e:
+                stats["errors"] += 1
+                detail = f"ERROR {scope_dir}/{filename}: {e}"
+                stats["details"].append(detail)
+                logger.warning("Failed to migrate rule file %s: %s", src_path, e)
+
+    if stats["moved"] or stats["errors"]:
+        logger.info(
+            "Rule file migration complete: %d moved, %d skipped, %d errors",
+            stats["moved"],
+            stats["skipped"],
+            stats["errors"],
+        )
+
+    return stats
+
+
 def migrate_obsidian_config(data_dir: str) -> bool:
     """Move Obsidian config from ``memory/.obsidian/`` to ``vault/.obsidian/``.
 
@@ -137,9 +220,7 @@ def migrate_obsidian_config(data_dir: str) -> bool:
         return False
 
     if os.path.exists(dest):
-        logger.debug(
-            "Obsidian config migration: destination %s already exists, skipping", dest
-        )
+        logger.debug("Obsidian config migration: destination %s already exists, skipping", dest)
         return False
 
     # Ensure the vault/ parent directory exists before moving into it.
@@ -148,6 +229,7 @@ def migrate_obsidian_config(data_dir: str) -> bool:
     shutil.move(source, dest)
     logger.info("Migrated Obsidian config from %s to %s", source, dest)
     return True
+
 
 # ---------------------------------------------------------------------------
 # Static vault subdirectories (always created at startup)

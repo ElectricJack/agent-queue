@@ -1,7 +1,7 @@
 """Rule system for persistent autonomous behaviors.
 
 Rules are structured markdown files with YAML frontmatter stored in the
-memory filesystem.  There are two rule types:
+vault playbook directories.  There are two rule types:
 
 - **Active rules** generate hooks for automated execution.  When an active
   rule is saved, the ``RuleManager`` creates (or updates) a corresponding
@@ -11,10 +11,15 @@ memory filesystem.  There are two rule types:
   injected into the Supervisor's system prompt when relevant to the
   current conversation.
 
-Storage layout::
+Storage layout (vault)::
 
-    ~/.agent-queue/memory/{project_id}/rules/{rule_id}.md
+    ~/.agent-queue/vault/system/playbooks/{rule_id}.md          (global)
+    ~/.agent-queue/vault/projects/{project_id}/playbooks/{rule_id}.md
+
+Legacy layout (pre-vault, migrated at startup)::
+
     ~/.agent-queue/memory/global/rules/{rule_id}.md
+    ~/.agent-queue/memory/{project_id}/rules/{rule_id}.md
 
 File format: YAML frontmatter (``id``, ``type``, ``project_id``, ``hooks``,
 ``created``, ``updated``) followed by Markdown body content.
@@ -92,7 +97,9 @@ class RuleManager:
 
         Args:
             storage_root: Base directory (e.g. ``~/.agent-queue``).
-                Rule files are stored under ``{storage_root}/memory/``.
+                Rule files are stored under ``{storage_root}/vault/``
+                (system playbooks for global, project playbooks for
+                project-scoped rules).
             db: Optional database for hook metadata queries.
             hook_engine: Optional hook engine for creating derived hooks.
             orchestrator: Optional orchestrator for LLM-based rule prompt
@@ -110,7 +117,11 @@ class RuleManager:
     # ------------------------------------------------------------------
 
     def _rules_dir(self, project_id: str | None) -> str:
-        """Return the directory containing rules for a given scope.
+        """Return the vault directory containing rules for a given scope.
+
+        Global rules live under ``vault/system/playbooks/``, while
+        project-scoped rules live under
+        ``vault/projects/{project_id}/playbooks/``.
 
         Args:
             project_id: Project ID, or ``None`` for global scope.
@@ -118,8 +129,9 @@ class RuleManager:
         # Guard against stringified "None" being treated as a real project ID
         if project_id == "None":
             project_id = None
-        scope = project_id or _GLOBAL_SCOPE
-        return os.path.join(self._storage_root, "memory", scope, "rules")
+        if project_id:
+            return os.path.join(self._storage_root, "vault", "projects", project_id, "playbooks")
+        return os.path.join(self._storage_root, "vault", "system", "playbooks")
 
     def _rule_path(self, rule_id: str, project_id: str | None) -> str:
         """Return the full filesystem path for a rule file.
@@ -131,19 +143,39 @@ class RuleManager:
         return os.path.join(self._rules_dir(project_id), f"{rule_id}.md")
 
     def _find_rule_path(self, rule_id: str) -> tuple[str, str | None] | None:
-        """Find a rule file by ID across all scopes.
+        """Find a rule file by ID across all vault scopes.
 
-        Returns (file_path, project_id_or_None) or None.
+        Searches vault playbook directories first (system, then per-project).
+        Falls back to legacy ``memory/`` locations for backward compatibility
+        with unmigrated files.
+
+        Returns ``(file_path, project_id_or_None)`` or ``None``.
         """
+        # 1. Check vault system playbooks (global scope)
+        system_dir = os.path.join(self._storage_root, "vault", "system", "playbooks")
+        candidate = os.path.join(system_dir, f"{rule_id}.md")
+        if os.path.isfile(candidate):
+            return candidate, None
+
+        # 2. Check vault project playbooks
+        projects_dir = os.path.join(self._storage_root, "vault", "projects")
+        if os.path.isdir(projects_dir):
+            for project_id in sorted(os.listdir(projects_dir)):
+                playbooks_dir = os.path.join(projects_dir, project_id, "playbooks")
+                candidate = os.path.join(playbooks_dir, f"{rule_id}.md")
+                if os.path.isfile(candidate):
+                    return candidate, project_id
+
+        # 3. Fallback: legacy memory/ locations (backward compat)
         memory_root = os.path.join(self._storage_root, "memory")
-        if not os.path.isdir(memory_root):
-            return None
-        for scope_dir in os.listdir(memory_root):
-            rules_dir = os.path.join(memory_root, scope_dir, "rules")
-            candidate = os.path.join(rules_dir, f"{rule_id}.md")
-            if os.path.isfile(candidate):
-                pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
-                return candidate, pid
+        if os.path.isdir(memory_root):
+            for scope_dir in sorted(os.listdir(memory_root)):
+                rules_dir = os.path.join(memory_root, scope_dir, "rules")
+                candidate = os.path.join(rules_dir, f"{rule_id}.md")
+                if os.path.isfile(candidate):
+                    pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
+                    return candidate, pid
+
         return None
 
     # ------------------------------------------------------------------
@@ -951,13 +983,8 @@ class RuleManager:
         Returns:
             Number of duplicate rule files removed.
         """
-        memory_root = os.path.join(self._storage_root, "memory")
-        if not os.path.isdir(memory_root):
-            return 0
-
         removed = 0
-        for scope_dir in os.listdir(memory_root):
-            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+        for rules_dir, _pid in self._get_all_rule_dirs():
             if not os.path.isdir(rules_dir):
                 continue
 
@@ -1083,16 +1110,10 @@ class RuleManager:
             "orphan_hooks_migrated": migration_stats["migrated"],
         }
 
-        memory_root = os.path.join(self._storage_root, "memory")
-        if not os.path.isdir(memory_root):
-            return stats
-
-        for scope_dir in os.listdir(memory_root):
-            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+        # Scan all rule directories (vault + legacy memory)
+        for rules_dir, pid in self._get_all_rule_dirs():
             if not os.path.isdir(rules_dir):
                 continue
-
-            pid = None if scope_dir in (_GLOBAL_SCOPE, "None") else scope_dir
 
             for filename in os.listdir(rules_dir):
                 if not filename.endswith(".md"):
@@ -1195,18 +1216,35 @@ class RuleManager:
     def _get_all_rule_dirs(self) -> list[tuple[str, str | None]]:
         """Return all existing rule directories as (abs_path, project_id|None).
 
-        Scans ``{storage_root}/memory/`` for scope directories containing
-        a ``rules/`` subfolder.
+        Scans vault playbook directories: ``vault/system/playbooks/`` for
+        global rules and ``vault/projects/*/playbooks/`` for project rules.
+        Also includes legacy ``memory/*/rules/`` directories for backward
+        compatibility with unmigrated files.
         """
-        memory_root = os.path.join(self._storage_root, "memory")
-        if not os.path.isdir(memory_root):
-            return []
         result = []
-        for scope_dir in os.listdir(memory_root):
-            rules_dir = os.path.join(memory_root, scope_dir, "rules")
-            if os.path.isdir(rules_dir):
-                pid = None if scope_dir in (_GLOBAL_SCOPE, "None") else scope_dir
-                result.append((rules_dir, pid))
+
+        # Vault system playbooks (global scope)
+        system_dir = os.path.join(self._storage_root, "vault", "system", "playbooks")
+        if os.path.isdir(system_dir):
+            result.append((system_dir, None))
+
+        # Vault project playbooks
+        projects_dir = os.path.join(self._storage_root, "vault", "projects")
+        if os.path.isdir(projects_dir):
+            for project_id in sorted(os.listdir(projects_dir)):
+                playbooks_dir = os.path.join(projects_dir, project_id, "playbooks")
+                if os.path.isdir(playbooks_dir):
+                    result.append((playbooks_dir, project_id))
+
+        # Legacy memory/ locations (backward compat)
+        memory_root = os.path.join(self._storage_root, "memory")
+        if os.path.isdir(memory_root):
+            for scope_dir in sorted(os.listdir(memory_root)):
+                rules_dir = os.path.join(memory_root, scope_dir, "rules")
+                if os.path.isdir(rules_dir):
+                    pid = None if scope_dir in (_GLOBAL_SCOPE, "None") else scope_dir
+                    result.append((rules_dir, pid))
+
         return result
 
     async def start_file_watcher(self, bus: EventBus) -> None:
