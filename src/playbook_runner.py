@@ -194,7 +194,7 @@ _EVENT_FALLBACK_STATUS: dict[PlaybookRunEvent, PlaybookRunStatus] = {
     PlaybookRunEvent.NODE_FAILED: PlaybookRunStatus.FAILED,
     PlaybookRunEvent.TRANSITION_FAILED: PlaybookRunStatus.FAILED,
     PlaybookRunEvent.GRAPH_ERROR: PlaybookRunStatus.FAILED,
-    PlaybookRunEvent.BUDGET_EXCEEDED: PlaybookRunStatus.TIMED_OUT,
+    PlaybookRunEvent.BUDGET_EXCEEDED: PlaybookRunStatus.FAILED,
     PlaybookRunEvent.HUMAN_WAIT: PlaybookRunStatus.PAUSED,
     PlaybookRunEvent.HUMAN_RESUMED: PlaybookRunStatus.RUNNING,
 }
@@ -366,11 +366,16 @@ class PlaybookRunner:
                     await self.on_progress("node_terminal", current_node_id)
                 break
 
-            # Check token budget before executing
+            # Check token budget before executing (guard for tokens accumulated
+            # by transition evaluation in the previous iteration)
             if self._max_tokens and self.tokens_used >= self._max_tokens:
                 return await self._fail(
                     db_run,
-                    f"Token budget exceeded ({self.tokens_used}/{self._max_tokens})",
+                    (
+                        f"token_budget_exceeded: budget {self._max_tokens} "
+                        f"exhausted before node '{current_node_id}' "
+                        f"(used {self.tokens_used})"
+                    ),
                     started_at,
                     event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
@@ -387,6 +392,22 @@ class PlaybookRunner:
                     started_at,
                     current_node=current_node_id,
                     event=PlaybookRunEvent.NODE_FAILED,
+                )
+
+            # Check token budget after node completes (spec §6 step 6d).
+            # The node is allowed to finish (graceful), but we fail before
+            # spending additional tokens on transition evaluation.
+            if self._max_tokens and self.tokens_used >= self._max_tokens:
+                return await self._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {self._max_tokens} "
+                        f"exhausted after node '{current_node_id}' "
+                        f"(used {self.tokens_used})"
+                    ),
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
             # Human-in-the-loop pause
@@ -617,7 +638,11 @@ class PlaybookRunner:
             if runner._max_tokens and runner.tokens_used >= runner._max_tokens:
                 return await runner._fail(
                     db_run,
-                    f"Token budget exceeded ({runner.tokens_used}/{runner._max_tokens})",
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted before node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
                     started_at,
                     event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
@@ -632,6 +657,20 @@ class PlaybookRunner:
                     started_at,
                     current_node=current_node_id,
                     event=PlaybookRunEvent.NODE_FAILED,
+                )
+
+            # Check token budget after node completes (spec §6 step 6d)
+            if runner._max_tokens and runner.tokens_used >= runner._max_tokens:
+                return await runner._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted after node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
             if node.get("wait_for_human"):
@@ -1493,11 +1532,12 @@ class PlaybookRunner:
         current_node: str | None = None,
         event: PlaybookRunEvent = PlaybookRunEvent.NODE_FAILED,
     ) -> RunResult:
-        """Mark the run as failed/timed_out and persist.
+        """Mark the run as failed and persist.
 
         The target status is determined by the state machine based on the
-        *event*.  For example, ``BUDGET_EXCEEDED`` produces ``timed_out``
-        while ``NODE_FAILED`` produces ``failed``.
+        *event*.  Both ``BUDGET_EXCEEDED`` and ``NODE_FAILED`` produce
+        ``failed`` status.  For budget exceeded, the error string starts
+        with ``token_budget_exceeded:`` per spec §6.
         """
         # Validate transition via state machine
         self._transition(event)

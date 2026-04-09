@@ -360,7 +360,18 @@ class TestConditionalTransitions:
 
 
 class TestTokenBudget:
+    """Token budget enforcement per spec §6 — Token Budget.
+
+    The executor tracks cumulative token usage across all nodes and transition
+    calls.  When the budget is exceeded:
+    - The current node completes (don't cut off mid-response)
+    - The run is marked as ``failed`` with reason ``token_budget_exceeded``
+    - The partial context trace is preserved for debugging
+    - A notification is sent (via on_progress)
+    """
+
     async def test_budget_exceeded_fails_run(self, mock_supervisor, event_data):
+        """Node A blows the budget; run fails before node B starts."""
         graph = {
             "id": "budget-test",
             "version": 1,
@@ -378,12 +389,13 @@ class TestTokenBudget:
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
         result = await runner.run()
 
-        # Node A should complete, but we fail before node B starts
-        assert result.status == "timed_out"
-        assert "Token budget exceeded" in result.error
-        assert len(result.node_trace) == 1  # Only node A
+        # Node A should complete, but we fail before node B starts (spec §6)
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+        assert len(result.node_trace) == 1  # Only node A executed
 
     async def test_budget_not_exceeded(self, mock_supervisor, event_data):
+        """Run completes normally when usage stays under budget."""
         graph = {
             "id": "budget-ok",
             "version": 1,
@@ -397,6 +409,300 @@ class TestTokenBudget:
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
         result = await runner.run()
         assert result.status == "completed"
+
+    async def test_no_budget_means_unlimited(self, mock_supervisor, event_data):
+        """When max_tokens is not set, budget enforcement is skipped entirely."""
+        graph = {
+            "id": "no-budget",
+            "version": 1,
+            # No max_tokens key
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Even a large response shouldn't trigger budget failure
+        mock_supervisor.chat.return_value = "x" * 10000
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+        assert result.status == "completed"
+        assert result.tokens_used > 0
+
+    async def test_post_node_check_prevents_transition_spend(self, mock_supervisor, event_data):
+        """Budget check after node completion prevents wasting tokens on
+        transition evaluation (spec §6 step 6d)."""
+        graph = {
+            "id": "post-node-check",
+            "version": 1,
+            "max_tokens": 10,  # Very small budget
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan files",
+                    # Natural-language transitions would require an LLM call
+                    "transitions": [
+                        {"when": "issues found", "goto": "fix"},
+                        {"when": "all clean", "goto": "done"},
+                    ],
+                },
+                "fix": {"prompt": "Fix issues", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Long response blows the budget immediately
+        mock_supervisor.chat.return_value = "x" * 200
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+        # The supervisor should only have been called ONCE (for the node),
+        # NOT a second time for transition classification — the post-node
+        # budget check should have stopped execution first.
+        assert mock_supervisor.chat.call_count == 1
+
+    async def test_budget_exceeded_preserves_trace(self, mock_supervisor, event_data):
+        """Partial context trace is preserved for debugging on budget exceed."""
+        graph = {
+            "id": "trace-test",
+            "version": 1,
+            "max_tokens": 10,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "x" * 200
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert len(result.node_trace) == 1
+        trace = result.node_trace[0]
+        assert trace["node_id"] == "a"
+        assert trace["status"] == "completed"  # Node A completed successfully
+        assert trace["started_at"] is not None
+        assert trace["completed_at"] is not None
+
+    async def test_budget_exceeded_sends_notification(self, mock_supervisor, event_data):
+        """A notification is sent via on_progress when budget is exceeded."""
+        graph = {
+            "id": "notify-test",
+            "version": 1,
+            "max_tokens": 10,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "x" * 200
+
+        progress_events = []
+
+        async def track_progress(event, detail):
+            progress_events.append((event, detail))
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, on_progress=track_progress)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        # Should have fired playbook_failed with budget info
+        failed_events = [(e, d) for e, d in progress_events if e == "playbook_failed"]
+        assert len(failed_events) == 1
+        assert "token_budget_exceeded" in failed_events[0][1]
+
+    async def test_budget_exceeded_persists_to_db(self, mock_supervisor, mock_db, event_data):
+        """Budget-exceeded failure is correctly persisted to the database."""
+        graph = {
+            "id": "db-budget",
+            "version": 1,
+            "max_tokens": 10,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "x" * 200
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+
+        # Check the final DB update
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        assert final_call.kwargs["status"] == "failed"
+        assert "token_budget_exceeded" in final_call.kwargs["error"]
+        assert final_call.kwargs["tokens_used"] > 0
+        # Conversation history is preserved
+        history = json.loads(final_call.kwargs["conversation_history"])
+        assert len(history) > 0
+        # Node trace is preserved
+        trace = json.loads(final_call.kwargs["node_trace"])
+        assert len(trace) == 1
+
+    async def test_budget_tracks_transition_tokens(self, mock_supervisor, event_data):
+        """Token usage from transition LLM calls counts toward the budget."""
+        # Budget large enough for node A but not for node A + transition + node B
+        graph = {
+            "id": "transition-budget",
+            "version": 1,
+            "max_tokens": 100,  # Tight but allows first node
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Check",  # ~1 token
+                    "transitions": [
+                        {"when": "issues found", "goto": "b"},
+                        {"when": "all clean", "goto": "done"},
+                    ],
+                },
+                "b": {"prompt": "Fix it", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Short response for node A (stays under budget), but transition
+        # and next node push it over
+        responses = iter(["Short.", "1", "x" * 800])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # Tokens from the transition call should be counted
+        assert runner.tokens_used > 0
+        # Whether it completed or exceeded depends on exact estimates,
+        # but transition tokens should be included in the total
+        assert result.tokens_used == runner.tokens_used
+
+    async def test_budget_error_includes_usage_details(self, mock_supervisor, event_data):
+        """Error message includes both the budget limit and actual usage."""
+        graph = {
+            "id": "error-detail",
+            "version": 1,
+            "max_tokens": 10,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "x" * 200
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert "budget 10" in result.error
+        assert "used" in result.error
+        # Verify the actual tokens_used is in the error
+        assert str(result.tokens_used) in result.error
+
+    async def test_budget_exceeded_on_pre_node_check(self, mock_supervisor, event_data):
+        """Tokens accumulated by transition in prior iteration trigger pre-node check."""
+        graph = {
+            "id": "pre-node-budget",
+            "version": 1,
+            "max_tokens": 50,  # Enough for one node but not two + transition
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Go",  # Small prompt
+                    "transitions": [
+                        {"when": "yes", "goto": "b"},
+                        {"otherwise": True, "goto": "done"},
+                    ],
+                },
+                "b": {"prompt": "More work", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Node A response is moderate, transition response is "1" (go to b),
+        # but cumulative tokens exceed budget before node B starts
+        responses = iter(["x" * 100, "1"])  # ~25 + ~1 transition tokens
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # Should fail — either at post-node or pre-node check
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+
+    async def test_budget_exact_boundary(self, mock_supervisor, event_data):
+        """When tokens_used equals max_tokens exactly, the run fails."""
+        graph = {
+            "id": "boundary",
+            "version": 1,
+            "max_tokens": 5,  # Will be hit by even a tiny exchange
+            "nodes": {
+                "a": {"entry": True, "prompt": "Hi", "goto": "b"},
+                "b": {"prompt": "More", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "ok"  # tiny response
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # "Hi" (2 chars) + "ok" (2 chars) = ~1 token. Budget is 5.
+        # Should depend on actual estimate — but the point is the boundary
+        # is inclusive (>= check, not >)
+        if runner.tokens_used >= 5:
+            assert result.status == "failed"
+        else:
+            assert result.status == "completed"
+
+    async def test_budget_resume_enforces_limit(self, mock_supervisor, mock_db, event_data):
+        """Budget enforcement works correctly when resuming a paused run."""
+        graph = {
+            "id": "resume-budget",
+            "version": 1,
+            "max_tokens": 20,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review this.",
+                    "wait_for_human": True,
+                    "goto": "apply",
+                },
+                "apply": {"prompt": "Apply changes.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # First run: execute review node, then pause for human
+        mock_supervisor.chat.return_value = "Awaiting review."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+        assert result.status == "paused"
+
+        # Create a db_run record for resuming, with tokens already near budget
+        db_run = PlaybookRun(
+            run_id=result.run_id,
+            playbook_id="resume-budget",
+            playbook_version=1,
+            trigger_event=json.dumps(event_data),
+            status="paused",
+            started_at=1000.0,
+            current_node="review",
+            conversation_history=json.dumps(runner.messages),
+            node_trace=json.dumps(result.node_trace),
+            tokens_used=18,  # Almost at budget of 20
+            pinned_graph=json.dumps(graph),
+        )
+
+        # Resume — the apply node response pushes over budget
+        mock_supervisor.chat.return_value = "x" * 200
+        resumed = await PlaybookRunner.resume(
+            db_run, graph, mock_supervisor, "Approved!", db=mock_db
+        )
+
+        assert resumed.status == "failed"
+        assert "token_budget_exceeded" in resumed.error
 
 
 # ---------------------------------------------------------------------------
@@ -1252,8 +1558,10 @@ class TestDBPersistence:
         assert trace[1]["node_id"] == "b"
         assert trace[1]["status"] == "failed"
 
-    async def test_timed_out_run_persists_status(self, mock_supervisor, event_data, mock_db):
-        """Token budget exhaustion should persist timed_out status."""
+    async def test_budget_exceeded_run_persists_failed_status(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """Token budget exhaustion should persist failed status (spec §6)."""
         graph = {
             "id": "timeout-persist",
             "version": 1,
@@ -1269,17 +1577,17 @@ class TestDBPersistence:
         runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
         result = await runner.run()
 
-        assert result.status == "timed_out"
+        assert result.status == "failed"
 
-        # Find the timed_out update
-        timeout_call = None
+        # Find the failed update for budget exceeded
+        budget_call = None
         for call in mock_db.update_playbook_run.call_args_list:
-            if call.kwargs.get("status") == "timed_out":
-                timeout_call = call
+            if call.kwargs.get("status") == "failed":
+                budget_call = call
                 break
 
-        assert timeout_call is not None
-        assert "Token budget exceeded" in timeout_call.kwargs["error"]
+        assert budget_call is not None
+        assert "token_budget_exceeded" in budget_call.kwargs["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -16,12 +16,10 @@ State diagram::
     │         │                      └───────────┘
     │         │  NODE_FAILED /
     │         │  TRANSITION_FAILED / ┌────────┐
-    │ RUNNING │  GRAPH_ERROR        │ FAILED │
+    │ RUNNING │  GRAPH_ERROR /      │ FAILED │
+    │         │  BUDGET_EXCEEDED    │        │
     │         ├─────────────────────►│        │
     │         │                      └────────┘
-    │         │  BUDGET_EXCEEDED     ┌───────────┐
-    │         ├─────────────────────►│ TIMED_OUT │
-    │         │                      └───────────┘
     │         │  HUMAN_WAIT          ┌────────┐
     │         ├─────────────────────►│ PAUSED │
     └────▲────┘                      │        │
@@ -62,7 +60,7 @@ VALID_PLAYBOOK_RUN_TRANSITIONS: dict[
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.NODE_FAILED): PlaybookRunStatus.FAILED,
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.TRANSITION_FAILED): PlaybookRunStatus.FAILED,
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.GRAPH_ERROR): PlaybookRunStatus.FAILED,
-    (PlaybookRunStatus.RUNNING, PlaybookRunEvent.BUDGET_EXCEEDED): PlaybookRunStatus.TIMED_OUT,
+    (PlaybookRunStatus.RUNNING, PlaybookRunEvent.BUDGET_EXCEEDED): PlaybookRunStatus.FAILED,
     # --- Running → paused (human-in-the-loop) ---
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.HUMAN_WAIT): PlaybookRunStatus.PAUSED,
     # --- Paused → running (resume) ---
