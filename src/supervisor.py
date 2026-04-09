@@ -882,35 +882,70 @@ class Supervisor:
 
             round_num += 1
 
-    async def summarize(self, transcript: str) -> str | None:
-        """Summarize a conversation transcript. Returns None on failure."""
+    async def summarize(
+        self,
+        transcript: str,
+        *,
+        system_prompt: str | None = None,
+        instruction: str | None = None,
+    ) -> str | None:
+        """Summarize a conversation transcript.  Returns ``None`` on failure.
+
+        Parameters
+        ----------
+        transcript:
+            The text to summarize.
+        system_prompt:
+            Optional system prompt override.  Defaults to a generic
+            summarization prompt when not provided.
+        instruction:
+            Optional user-message instruction that precedes the transcript.
+            Defaults to a Discord-oriented summarization instruction when
+            not provided.  Callers (e.g. playbook runner) can pass a
+            domain-specific instruction for better summaries.
+        """
         if not self._provider:
             return None
         async with self._llm_lock:
-            return await self._summarize_unlocked(transcript)
+            return await self._summarize_unlocked(
+                transcript,
+                system_prompt=system_prompt,
+                instruction=instruction,
+            )
 
-    async def _summarize_unlocked(self, transcript: str) -> str | None:
+    async def _summarize_unlocked(
+        self,
+        transcript: str,
+        *,
+        system_prompt: str | None = None,
+        instruction: str | None = None,
+    ) -> str | None:
         """Inner summarize without lock — called by ``summarize()``."""
         # Tag logged calls with the summarize caller identity
         prev_caller = None
         if isinstance(self._provider, LoggedChatProvider):
             prev_caller = self._provider._caller
             self._provider._caller = "supervisor.summarize"
+
+        effective_system = system_prompt or (
+            "You are a helpful assistant that summarizes conversations."
+        )
+        effective_instruction = instruction or (
+            "Summarize this Discord conversation concisely. "
+            "Preserve key details: project names, task IDs, repo names, "
+            "decisions made, and any pending questions or requests. "
+            "Keep it factual and brief."
+        )
+
         try:
             resp = await self._provider.create_message(
                 messages=[
                     {
                         "role": "user",
-                        "content": (
-                            "Summarize this Discord conversation concisely. "
-                            "Preserve key details: project names, task IDs, repo names, "
-                            "decisions made, and any pending questions or requests. "
-                            "Keep it factual and brief.\n\n"
-                            f"{transcript}"
-                        ),
+                        "content": f"{effective_instruction}\n\n{transcript}",
                     }
                 ],
-                system="You are a helpful assistant that summarizes conversations.",
+                system=effective_system,
                 max_tokens=512,
             )
             parts = resp.text_parts
