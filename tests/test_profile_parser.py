@@ -23,6 +23,7 @@ from src.profile_parser import (
     _extract_prompt_text,
     _parse_section,
     _split_sections,
+    _validate_mcp_servers,
     parse_frontmatter,
     parse_profile,
     parsed_profile_to_agent_profile,
@@ -979,14 +980,18 @@ class TestEdgeCases:
         assert result.config["model"] == "first"
 
     def test_deeply_nested_json(self):
+        """Deeply nested env values are parsed but flagged as validation errors."""
         text = (
             '## MCP Servers\n```json\n'
             '{"server": {"command": "npx", "args": ["-y", "pkg"], '
             '"env": {"KEY": "val", "NESTED": {"a": 1}}}}\n```\n'
         )
         result = parse_profile(text)
-        assert result.is_valid
+        # JSON parses fine and is accessible
         assert result.mcp_servers["server"]["env"]["NESTED"]["a"] == 1
+        # But non-string env values are now flagged as errors
+        assert not result.is_valid
+        assert any("env['NESTED']" in e and "string" in e for e in result.errors)
 
     def test_h1_heading_not_treated_as_section(self):
         text = "# Title\n\n## Config\n```json\n{}\n```\n"
@@ -1028,3 +1033,385 @@ class TestEdgeCases:
         assert result.is_valid
         assert result.tools["allowed"] == []
         assert result.tools["denied"] == ["shell", "Write"]
+
+
+# ---------------------------------------------------------------------------
+# MCP Servers validation (_validate_mcp_servers)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateMcpServers:
+    """Test structural validation of MCP server definitions.
+
+    Per the spec (docs/specs/design/profiles.md §2): MCP server commands are
+    validated for basic structure — command exists, args are strings.
+    """
+
+    # -- Valid configurations --
+
+    def test_valid_full_server(self):
+        """A complete server definition with command, args, and env passes."""
+        servers = {
+            "github": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+            }
+        }
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_command_only(self):
+        """A server with only command (no args or env) is valid."""
+        servers = {"linter": {"command": "eslint"}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_command_with_args(self):
+        """A server with command and args (no env) is valid."""
+        servers = {"formatter": {"command": "prettier", "args": ["--write", "."]}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_command_with_env(self):
+        """A server with command and env (no args) is valid."""
+        servers = {"gh": {"command": "npx", "env": {"TOKEN": "abc123"}}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_multiple_servers(self):
+        """Multiple valid server definitions all pass."""
+        servers = {
+            "github": {
+                "command": "npx",
+                "args": ["-y", "server-github"],
+                "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+            },
+            "eslint": {"command": "eslint-server"},
+            "prettier": {"command": "prettier", "args": ["--write"]},
+        }
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_empty_args(self):
+        """Empty args list is valid."""
+        servers = {"s": {"command": "cmd", "args": []}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_empty_env(self):
+        """Empty env dict is valid."""
+        servers = {"s": {"command": "cmd", "env": {}}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_extra_keys_allowed(self):
+        """Unknown keys are preserved for forward-compatibility."""
+        servers = {"s": {"command": "cmd", "timeout": 30, "cwd": "/tmp"}}
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    def test_valid_empty_servers_dict(self):
+        """An empty MCP servers dict is valid (no servers defined)."""
+        errors = _validate_mcp_servers({})
+        assert errors == []
+
+    def test_valid_env_with_variable_placeholders(self):
+        """Env values with ${VAR} placeholders are valid strings."""
+        servers = {
+            "gh": {
+                "command": "npx",
+                "env": {"TOKEN": "${GITHUB_TOKEN}", "PATH": "${HOME}/bin"},
+            }
+        }
+        errors = _validate_mcp_servers(servers)
+        assert errors == []
+
+    # -- Invalid: server entry not a dict --
+
+    def test_server_entry_is_string(self):
+        """Server value must be a dict, not a string."""
+        servers = {"bad": "not-a-dict"}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "bad" in errors[0]
+        assert "expected an object" in errors[0]
+        assert "str" in errors[0]
+
+    def test_server_entry_is_list(self):
+        """Server value must be a dict, not a list."""
+        servers = {"bad": ["command", "npx"]}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "expected an object" in errors[0]
+        assert "list" in errors[0]
+
+    def test_server_entry_is_number(self):
+        """Server value must be a dict, not a number."""
+        servers = {"bad": 42}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "expected an object" in errors[0]
+
+    def test_server_entry_is_null(self):
+        """Server value must be a dict, not null."""
+        servers = {"bad": None}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "expected an object" in errors[0]
+
+    # -- Invalid: missing command --
+
+    def test_missing_command(self):
+        """Missing 'command' field is an error."""
+        servers = {"gh": {"args": ["-y", "pkg"]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "missing required field 'command'" in errors[0]
+        assert "gh" in errors[0]
+
+    def test_missing_command_with_env_only(self):
+        """Server with only env but no command is an error."""
+        servers = {"gh": {"env": {"TOKEN": "abc"}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "missing required field 'command'" in errors[0]
+
+    def test_empty_server_dict(self):
+        """Server with empty dict (no fields at all) is an error."""
+        servers = {"empty": {}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "missing required field 'command'" in errors[0]
+
+    # -- Invalid: command wrong type --
+
+    def test_command_is_number(self):
+        """Command must be a string, not a number."""
+        servers = {"s": {"command": 42}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must be a string" in errors[0]
+        assert "int" in errors[0]
+
+    def test_command_is_list(self):
+        """Command must be a string, not a list."""
+        servers = {"s": {"command": ["npx", "-y"]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must be a string" in errors[0]
+        assert "list" in errors[0]
+
+    def test_command_is_bool(self):
+        """Command must be a string, not a boolean."""
+        servers = {"s": {"command": True}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must be a string" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_command_is_null(self):
+        """Command must be a string, not null."""
+        servers = {"s": {"command": None}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must be a string" in errors[0]
+
+    def test_command_empty_string(self):
+        """Command must not be empty or whitespace-only."""
+        servers = {"s": {"command": ""}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must not be empty" in errors[0]
+
+    def test_command_whitespace_only(self):
+        """Command must not be whitespace-only."""
+        servers = {"s": {"command": "   "}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'command' must not be empty" in errors[0]
+
+    # -- Invalid: args wrong type --
+
+    def test_args_is_string(self):
+        """Args must be a list, not a string."""
+        servers = {"s": {"command": "npx", "args": "-y pkg"}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'args' must be an array" in errors[0]
+        assert "str" in errors[0]
+
+    def test_args_is_number(self):
+        """Args must be a list, not a number."""
+        servers = {"s": {"command": "npx", "args": 42}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'args' must be an array" in errors[0]
+
+    def test_args_is_dict(self):
+        """Args must be a list, not a dict."""
+        servers = {"s": {"command": "npx", "args": {"flag": "value"}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'args' must be an array" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_args_contains_non_string(self):
+        """Individual args must be strings."""
+        servers = {"s": {"command": "npx", "args": ["-y", 42, True]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 2  # 42 and True
+        assert any("args[1]" in e and "int" in e for e in errors)
+        assert any("args[2]" in e and "bool" in e for e in errors)
+
+    def test_args_contains_null(self):
+        """Null args entries are not allowed."""
+        servers = {"s": {"command": "npx", "args": ["-y", None]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "args[1]" in errors[0]
+
+    def test_args_contains_nested_list(self):
+        """Nested lists in args are not allowed."""
+        servers = {"s": {"command": "npx", "args": ["-y", ["nested"]]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "args[1]" in errors[0]
+        assert "list" in errors[0]
+
+    # -- Invalid: env wrong type --
+
+    def test_env_is_string(self):
+        """Env must be a dict, not a string."""
+        servers = {"s": {"command": "npx", "env": "TOKEN=abc"}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'env' must be an object" in errors[0]
+        assert "str" in errors[0]
+
+    def test_env_is_list(self):
+        """Env must be a dict, not a list."""
+        servers = {"s": {"command": "npx", "env": ["TOKEN=abc"]}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "'env' must be an object" in errors[0]
+        assert "list" in errors[0]
+
+    def test_env_value_is_number(self):
+        """Env values must be strings."""
+        servers = {"s": {"command": "npx", "env": {"PORT": 8080}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "env['PORT']" in errors[0]
+        assert "int" in errors[0]
+
+    def test_env_value_is_bool(self):
+        """Env values must be strings, not booleans."""
+        servers = {"s": {"command": "npx", "env": {"DEBUG": True}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "env['DEBUG']" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_env_value_is_null(self):
+        """Env values must be strings, not null."""
+        servers = {"s": {"command": "npx", "env": {"TOKEN": None}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "env['TOKEN']" in errors[0]
+
+    def test_env_value_is_nested_dict(self):
+        """Env values must be strings, not nested dicts."""
+        servers = {"s": {"command": "npx", "env": {"NESTED": {"a": 1}}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 1
+        assert "env['NESTED']" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_env_multiple_invalid_values(self):
+        """Multiple invalid env values produce multiple errors."""
+        servers = {"s": {"command": "npx", "env": {"A": 1, "B": True, "C": "ok"}}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 2  # A and B are invalid, C is fine
+
+    # -- Multiple errors across servers --
+
+    def test_multiple_servers_with_errors(self):
+        """Errors from different servers are all reported."""
+        servers = {
+            "good": {"command": "npx", "args": ["-y"]},
+            "no_cmd": {"args": ["-y"]},
+            "bad_args": {"command": "npx", "args": "not-a-list"},
+        }
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 2
+        assert any("no_cmd" in e and "missing required field 'command'" in e for e in errors)
+        assert any("bad_args" in e and "'args' must be an array" in e for e in errors)
+
+    def test_same_server_multiple_errors(self):
+        """A server with multiple issues reports all of them."""
+        servers = {"s": {"command": 42, "args": "bad", "env": "bad"}}
+        errors = _validate_mcp_servers(servers)
+        assert len(errors) == 3
+        assert any("'command' must be a string" in e for e in errors)
+        assert any("'args' must be an array" in e for e in errors)
+        assert any("'env' must be an object" in e for e in errors)
+
+    # -- Integration via parse_profile --
+
+    def test_integration_valid_mcp_servers(self):
+        """Valid MCP servers pass parse_profile without errors."""
+        text = (
+            '## MCP Servers\n```json\n'
+            '{"gh": {"command": "npx", "args": ["-y", "server-github"], '
+            '"env": {"TOKEN": "${GITHUB_TOKEN}"}}}\n```\n'
+        )
+        result = parse_profile(text)
+        assert result.is_valid, f"Unexpected errors: {result.errors}"
+        assert result.mcp_servers["gh"]["command"] == "npx"
+
+    def test_integration_missing_command(self):
+        """parse_profile reports missing command in MCP server."""
+        text = '## MCP Servers\n```json\n{"gh": {"args": ["-y"]}}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("missing required field 'command'" in e for e in result.errors)
+        # Data is still stored (parse, then validate)
+        assert result.mcp_servers == {"gh": {"args": ["-y"]}}
+
+    def test_integration_bad_args_type(self):
+        """parse_profile reports non-array args in MCP server."""
+        text = '## MCP Servers\n```json\n{"s": {"command": "x", "args": "bad"}}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("'args' must be an array" in e for e in result.errors)
+
+    def test_integration_bad_env_value(self):
+        """parse_profile reports non-string env values in MCP server."""
+        text = (
+            '## MCP Servers\n```json\n'
+            '{"s": {"command": "x", "env": {"PORT": 8080}}}\n```\n'
+        )
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("env['PORT']" in e for e in result.errors)
+
+    def test_integration_server_not_dict(self):
+        """parse_profile reports server entry that isn't a dict."""
+        text = '## MCP Servers\n```json\n{"bad": "not-a-dict"}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("expected an object" in e for e in result.errors)
+
+    def test_integration_command_only_valid(self):
+        """A command-only MCP server passes validation in parse_profile."""
+        text = '## MCP Servers\n```json\n{"linter": {"command": "eslint"}}\n```\n'
+        result = parse_profile(text)
+        assert result.is_valid
+        assert result.mcp_servers["linter"]["command"] == "eslint"
+
+    def test_integration_spec_example_valid(self):
+        """The spec example MCP servers block passes validation."""
+        result = parse_profile(SPEC_EXAMPLE)
+        assert result.is_valid, f"Unexpected errors: {result.errors}"
+        assert result.mcp_servers["github"]["command"] == "npx"

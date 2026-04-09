@@ -321,6 +321,81 @@ def _parse_section(heading: str, body: str) -> tuple[ProfileSection, list[str]]:
     return section, errors
 
 
+def _validate_mcp_servers(servers: dict) -> list[str]:
+    """Validate the structure of MCP server definitions.
+
+    Each server entry must be an object with at least a ``command`` string.
+    Optional ``args`` must be a list of strings, and optional ``env`` must
+    be a dict mapping strings to strings.
+
+    Parameters
+    ----------
+    servers:
+        The parsed MCP Servers dict (server_name → config).
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.  Empty list means all servers are valid.
+    """
+    errors: list[str] = []
+
+    for name, config in servers.items():
+        prefix = f"MCP server '{name}'"
+
+        # Each server entry must be a dict
+        if not isinstance(config, dict):
+            errors.append(
+                f"{prefix}: expected an object, got {type(config).__name__}"
+            )
+            continue
+
+        # 'command' is required and must be a non-empty string
+        if "command" not in config:
+            errors.append(f"{prefix}: missing required field 'command'")
+        elif not isinstance(config["command"], str):
+            errors.append(
+                f"{prefix}: 'command' must be a string, "
+                f"got {type(config['command']).__name__}"
+            )
+        elif not config["command"].strip():
+            errors.append(f"{prefix}: 'command' must not be empty")
+
+        # 'args' is optional but must be a list of strings if present
+        if "args" in config:
+            args = config["args"]
+            if not isinstance(args, list):
+                errors.append(
+                    f"{prefix}: 'args' must be an array, "
+                    f"got {type(args).__name__}"
+                )
+            else:
+                for i, arg in enumerate(args):
+                    if not isinstance(arg, str):
+                        errors.append(
+                            f"{prefix}: args[{i}] must be a string, "
+                            f"got {type(arg).__name__}"
+                        )
+
+        # 'env' is optional but must be a dict with string values if present
+        if "env" in config:
+            env = config["env"]
+            if not isinstance(env, dict):
+                errors.append(
+                    f"{prefix}: 'env' must be an object, "
+                    f"got {type(env).__name__}"
+                )
+            else:
+                for key, val in env.items():
+                    if not isinstance(val, str):
+                        errors.append(
+                            f"{prefix}: env['{key}'] must be a string, "
+                            f"got {type(val).__name__}"
+                        )
+
+    return errors
+
+
 def parse_profile(text: str) -> ParsedProfile:
     """Parse a markdown profile file into structured data.
 
@@ -403,6 +478,8 @@ def parse_profile(text: str) -> ParsedProfile:
         elif heading_lower == "mcp servers" and section.json_data is not None:
             if isinstance(section.json_data, dict):
                 result.mcp_servers = section.json_data
+                # Validate individual server definitions
+                result.errors.extend(_validate_mcp_servers(section.json_data))
             else:
                 result.errors.append(
                     f"## MCP Servers JSON must be an object, "
