@@ -11,10 +11,14 @@ Tests the core execution model from docs/specs/design/playbooks.md §6:
 - Per-node LLM config overrides
 - Error handling (missing nodes, failed LLM calls)
 - DB persistence of run state
+- Prompt building and context injection (5.2.3)
+- Timeout enforcement (5.2.3)
+- Progress forwarding to Supervisor (5.2.3)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -183,7 +187,7 @@ class TestLinearExecution:
         mock_supervisor.chat.assert_called_once()
         call_kwargs = mock_supervisor.chat.call_args
         assert call_kwargs.kwargs["text"] == "Run scan on files."
-        assert call_kwargs.kwargs["user_name"] == "playbook-runner"
+        assert call_kwargs.kwargs["user_name"] == "playbook-runner:scan"
 
     async def test_conversation_history_accumulates(
         self, mock_supervisor, simple_graph, event_data
@@ -831,3 +835,328 @@ class TestNodeTraceEntry:
             "completed_at": 101.5,
             "status": "completed",
         }
+
+
+# ---------------------------------------------------------------------------
+# 5.2.3: Prompt building and context
+# ---------------------------------------------------------------------------
+
+
+class TestPromptBuilding:
+    """Test prompt construction via _build_node_prompt."""
+
+    def test_returns_node_prompt(self, mock_supervisor, event_data):
+        graph = {
+            "id": "prompt-test",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Do something specific.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        prompt = runner._build_node_prompt("a", graph["nodes"]["a"])
+        assert prompt == "Do something specific."
+
+    def test_empty_prompt_returns_empty(self, mock_supervisor, event_data):
+        graph = {"id": "empty-prompt", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        prompt = runner._build_node_prompt("a", {})
+        assert prompt == ""
+
+    async def test_prompt_passed_to_supervisor_unchanged(self, mock_supervisor, event_data):
+        """Node prompt from the compiled graph is passed directly to supervisor.chat()."""
+        graph = {
+            "id": "pass-through",
+            "version": 1,
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Run vibecop_check on changed files.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["text"] == "Run vibecop_check on changed files."
+
+    async def test_event_context_in_seed_message(self, mock_supervisor, event_data):
+        """The trigger event data is included in the conversation seed message."""
+        graph = {
+            "id": "context-test",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Seed message should contain the full event JSON
+        seed = runner.messages[0]
+        assert seed["role"] == "user"
+        assert "Event received:" in seed["content"]
+        assert '"project_id": "test-proj"' in seed["content"]
+        assert '"commit_hash": "abc123"' in seed["content"]
+        assert "context-test" in seed["content"]
+
+    async def test_accumulated_history_includes_all_prior_nodes(self, mock_supervisor, event_data):
+        """At node C, the history should include seed + node A + node B exchanges."""
+        graph = {
+            "id": "accumulation-test",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "c"},
+                "c": {"prompt": "Step C", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        responses = iter(["Result A", "Result B", "Result C"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        calls = mock_supervisor.chat.call_args_list
+        assert len(calls) == 3
+
+        # Node C (third call) should get seed + A prompt + A response + B prompt + B response
+        third_history = calls[2].kwargs["history"]
+        assert len(third_history) == 5  # seed, A prompt, A response, B prompt, B response
+        assert third_history[0]["role"] == "user"  # seed
+        assert third_history[1]["content"] == "Step A"
+        assert third_history[2]["content"] == "Result A"
+        assert third_history[3]["content"] == "Step B"
+        assert third_history[4]["content"] == "Result B"
+
+
+# ---------------------------------------------------------------------------
+# 5.2.3: LLM config resolution
+# ---------------------------------------------------------------------------
+
+
+class TestLLMConfigResolution:
+    """Test _resolve_node_llm_config method."""
+
+    def test_node_config_wins(self, mock_supervisor, event_data):
+        graph = {
+            "id": "config-resolution",
+            "version": 1,
+            "llm_config": {"model": "cheap-model"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"llm_config": {"model": "expensive-model"}}
+        result = runner._resolve_node_llm_config(node)
+        assert result == {"model": "expensive-model"}
+
+    def test_playbook_fallback(self, mock_supervisor, event_data):
+        graph = {
+            "id": "config-resolution",
+            "version": 1,
+            "llm_config": {"model": "cheap-model"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"prompt": "Do something"}
+        result = runner._resolve_node_llm_config(node)
+        assert result == {"model": "cheap-model"}
+
+    def test_no_config_returns_none(self, mock_supervisor, event_data):
+        graph = {"id": "no-config", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"prompt": "Do something"}
+        result = runner._resolve_node_llm_config(node)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 5.2.3: Timeout enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutEnforcement:
+    """Test timeout_seconds per-node enforcement."""
+
+    async def test_timeout_fails_node(self, mock_supervisor, event_data, mock_db):
+        """A node with timeout_seconds that exceeds the limit should fail the run."""
+        graph = {
+            "id": "timeout-test",
+            "version": 1,
+            "nodes": {
+                "slow": {
+                    "entry": True,
+                    "prompt": "Do something slow.",
+                    "timeout_seconds": 1,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        # Simulate a slow supervisor call
+        async def slow_chat(**kw):
+            await asyncio.sleep(5)
+            return "Eventually done."
+
+        mock_supervisor.chat.side_effect = slow_chat
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "timed out" in result.error.lower()
+        assert result.node_trace[0]["status"] == "failed"
+
+    async def test_no_timeout_works_normally(self, mock_supervisor, event_data):
+        """Nodes without timeout_seconds are not artificially limited."""
+        graph = {
+            "id": "no-timeout",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+        assert result.status == "completed"
+
+    async def test_timeout_within_budget_completes(self, mock_supervisor, event_data):
+        """A node that finishes within timeout_seconds should complete normally."""
+        graph = {
+            "id": "timeout-ok",
+            "version": 1,
+            "nodes": {
+                "fast": {
+                    "entry": True,
+                    "prompt": "Do something fast.",
+                    "timeout_seconds": 30,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done quickly."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+        assert result.status == "completed"
+        assert result.final_response == "Done quickly."
+
+
+# ---------------------------------------------------------------------------
+# 5.2.3: Progress forwarding to Supervisor
+# ---------------------------------------------------------------------------
+
+
+class TestSupervisorProgressForwarding:
+    """Test that on_progress is bridged to supervisor.chat(on_progress=...)."""
+
+    async def test_progress_callback_forwarded(self, mock_supervisor, event_data):
+        """The runner's on_progress should be forwarded to supervisor.chat()."""
+        graph = {
+            "id": "progress-test",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+
+        async def noop_progress(event, detail):
+            pass
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, on_progress=noop_progress)
+        await runner.run()
+
+        # Supervisor.chat() should have received an on_progress callback
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["on_progress"] is not None
+        assert callable(call_kwargs["on_progress"])
+
+    async def test_no_progress_forwards_none(self, mock_supervisor, event_data):
+        """Without on_progress, supervisor.chat() should get on_progress=None."""
+        graph = {
+            "id": "no-progress",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["on_progress"] is None
+
+    async def test_progress_bridge_maps_events(self, mock_supervisor, event_data):
+        """The progress bridge should map supervisor events to node-scoped events."""
+        graph = {
+            "id": "bridge-test",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan files.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        all_events: list[tuple[str, str | None]] = []
+
+        async def track_progress(event, detail):
+            all_events.append((event, detail))
+
+        # Capture the bridge callback and invoke it during chat()
+        bridge_ref = None
+
+        async def chat_with_bridge(**kw):
+            nonlocal bridge_ref
+            bridge_ref = kw.get("on_progress")
+            if bridge_ref:
+                await bridge_ref("tool_use", "vibecop_check")
+                await bridge_ref("responding", None)
+            return "Scan complete."
+
+        mock_supervisor.chat.side_effect = chat_with_bridge
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, on_progress=track_progress)
+        await runner.run()
+
+        # The bridge should have mapped supervisor events to node-scoped events
+        event_types = [e[0] for e in all_events]
+        assert "node_tool_use" in event_types
+        assert "node_responding" in event_types
+
+        # Check the detail includes node_id prefix
+        tool_event = next(e for e in all_events if e[0] == "node_tool_use")
+        assert tool_event[1] == "scan:vibecop_check"
+
+        responding_event = next(e for e in all_events if e[0] == "node_responding")
+        assert responding_event[1] == "scan"
+
+    async def test_user_name_includes_node_id(self, mock_supervisor, event_data):
+        """Supervisor.chat() should be called with user_name including the node ID."""
+        graph = {
+            "id": "user-name-test",
+            "version": 1,
+            "nodes": {
+                "analyse": {"entry": True, "prompt": "Analyse code.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["user_name"] == "playbook-runner:analyse"

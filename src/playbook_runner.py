@@ -26,6 +26,7 @@ See also: :mod:`src.playbook_handler` (vault watcher / compilation dispatch).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -475,11 +476,18 @@ class PlaybookRunner:
     ) -> str:
         """Execute a single node and return the Supervisor's response.
 
+        Implements the core "build prompt + context → invoke Supervisor →
+        accumulate history" loop from spec §6:
+
         1. Optionally summarize history (if ``summarize_before`` is set).
-        2. Send the node prompt to the Supervisor with accumulated history.
-        3. Append prompt/response to ``self.messages``.
-        4. Track tokens and update node trace.
-        5. Persist run state to DB.
+        2. Build the node prompt via :meth:`_build_node_prompt`.
+        3. Resolve per-node LLM config via :meth:`_resolve_node_llm_config`.
+        4. Invoke ``supervisor.chat()`` with accumulated history, forwarding
+           ``on_progress`` for tool-call visibility.
+        5. Enforce ``timeout_seconds`` if set on the node.
+        6. Append prompt/response to ``self.messages``.
+        7. Track tokens and update node trace.
+        8. Persist run state to DB.
         """
         trace_entry = NodeTraceEntry(node_id=node_id, started_at=time.time())
         self.node_trace.append(trace_entry)
@@ -491,19 +499,35 @@ class PlaybookRunner:
         if node.get("summarize_before") and len(self.messages) > 2:
             await self._summarize_history()
 
-        prompt = node.get("prompt", "")
+        # Build prompt + context
+        prompt = self._build_node_prompt(node_id, node)
 
         # Resolve per-node LLM config (node overrides playbook-level)
-        node_llm_config = node.get("llm_config") or self._llm_config
+        node_llm_config = self._resolve_node_llm_config(node)
+
+        # Build a progress bridge so the caller can observe tool usage
+        # inside this node's supervisor call
+        supervisor_progress = self._make_supervisor_progress(node_id)
 
         # Execute via Supervisor — the Supervisor handles the internal
         # multi-turn tool-use loop and returns only the final text response.
-        response = await self.supervisor.chat(
-            text=prompt,
-            user_name="playbook-runner",
-            history=list(self.messages),  # Copy so Supervisor doesn't mutate ours
-            llm_config=node_llm_config,
-        )
+        timeout = node.get("timeout_seconds")
+        try:
+            coro = self.supervisor.chat(
+                text=prompt,
+                user_name=f"playbook-runner:{node_id}",
+                history=list(self.messages),  # Copy so Supervisor doesn't mutate ours
+                on_progress=supervisor_progress,
+                llm_config=node_llm_config,
+            )
+            if timeout:
+                response = await asyncio.wait_for(coro, timeout=timeout)
+            else:
+                response = await coro
+        except asyncio.TimeoutError:
+            trace_entry.completed_at = time.time()
+            trace_entry.status = "failed"
+            raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
 
         # Append to our conversation history (node-level granularity)
         self.messages.append({"role": "user", "content": prompt})
@@ -532,6 +556,85 @@ class PlaybookRunner:
             await self.on_progress("node_completed", node_id)
 
         return response
+
+    # ------------------------------------------------------------------
+    # Internal: prompt + context building
+    # ------------------------------------------------------------------
+
+    def _build_node_prompt(self, node_id: str, node: dict) -> str:
+        """Build the prompt text for a single node.
+
+        Currently returns the node's ``prompt`` field directly — context flows
+        through conversation history per spec §6, not through prompt templating.
+
+        This method exists as a clean extension point for future enrichment
+        (e.g., injecting tool-availability hints, step-position metadata, or
+        node-specific instructions) without changing ``_execute_node()``.
+
+        Parameters
+        ----------
+        node_id:
+            Identifier of the node being executed (for logging/debugging).
+        node:
+            The node definition dict from the compiled playbook graph.
+
+        Returns
+        -------
+        str
+            The fully constructed prompt to send to the Supervisor.
+        """
+        return node.get("prompt", "")
+
+    def _resolve_node_llm_config(self, node: dict) -> dict | None:
+        """Resolve the effective LLM config for a node.
+
+        Node-level ``llm_config`` overrides playbook-level ``llm_config``.
+        When neither is set, returns *None* to use the Supervisor's default
+        provider.
+
+        Parameters
+        ----------
+        node:
+            The node definition dict from the compiled playbook graph.
+
+        Returns
+        -------
+        dict or None
+            LLM config dict suitable for passing to ``supervisor.chat()``,
+            or *None* for default behaviour.
+        """
+        return node.get("llm_config") or self._llm_config
+
+    def _make_supervisor_progress(
+        self,
+        node_id: str,
+    ) -> Callable[[str, str | None], Awaitable[None]] | None:
+        """Create a progress callback bridge for a supervisor.chat() call.
+
+        Maps supervisor-level progress events (``"thinking"``, ``"tool_use"``,
+        ``"responding"``) into node-scoped events that the runner's
+        ``on_progress`` callback can forward to the UI.
+
+        Emits events of the form ``("node_tool_use", "node_id:tool_name")``.
+
+        Returns *None* when no ``on_progress`` callback is configured (so the
+        Supervisor skips progress reporting entirely, avoiding overhead).
+
+        Parameters
+        ----------
+        node_id:
+            The node this supervisor call is executing, used as a prefix.
+        """
+        if not self.on_progress:
+            return None
+
+        on_progress = self.on_progress  # capture for closure
+
+        async def _bridge(event: str, detail: str | None) -> None:
+            # Map supervisor events to node-scoped events
+            await on_progress(f"node_{event}", f"{node_id}:{detail}" if detail else node_id)
+
+        return _bridge
 
     # ------------------------------------------------------------------
     # Internal: transition evaluation
