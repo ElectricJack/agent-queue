@@ -202,7 +202,7 @@ class TestCompilationSuccess:
 
     @pytest.mark.asyncio
     async def test_version_increments_on_recompilation(self, tmp_path: Path) -> None:
-        """Recompiling an existing playbook with changed content increments version."""
+        """Recompiling with changed markdown increments the version number."""
         provider = _make_mock_provider()
         # Need two responses for two compilations
         from src.chat_providers.types import ChatResponse, TextBlock
@@ -219,128 +219,10 @@ class TestCompilationSuccess:
         await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
         assert manager.get_playbook("test-playbook").version == 1
 
-        # Use different markdown content so the source hash changes
+        # Use different markdown body to trigger recompilation (source hash differs)
         modified_md = _make_playbook_md(body="# Updated\n\nDo something different then finish.")
         await manager.compile_playbook(modified_md)
         assert manager.get_playbook("test-playbook").version == 2
-
-
-# ---------------------------------------------------------------------------
-# Test: Source-hash change detection (skip recompilation when unchanged)
-# ---------------------------------------------------------------------------
-
-
-class TestSourceHashChangeDetection:
-    """Test that unchanged playbooks are not recompiled (roadmap 5.1.5)."""
-
-    @pytest.mark.asyncio
-    async def test_skip_recompilation_when_hash_unchanged(self, tmp_path: Path) -> None:
-        """Recompiling identical markdown returns the existing playbook without LLM call."""
-        provider = _make_mock_provider()
-        manager = PlaybookManager(
-            chat_provider=provider,
-            data_dir=str(tmp_path),
-        )
-
-        # First compile
-        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert result1.success
-        assert manager.get_playbook("test-playbook").version == 1
-        assert provider.create_message.call_count == 1
-
-        # Second compile with identical markdown — should skip LLM
-        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert result2.success
-        assert result2.playbook is not None
-        assert result2.playbook.version == 1  # Same version, not incremented
-        # LLM should NOT have been called again
-        assert provider.create_message.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_recompile_when_content_changes(self, tmp_path: Path) -> None:
-        """Changing the markdown body triggers actual recompilation."""
-        provider = _make_mock_provider()
-        from src.chat_providers.types import ChatResponse, TextBlock
-
-        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
-        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
-        provider.create_message = AsyncMock(side_effect=[resp, resp])
-
-        manager = PlaybookManager(
-            chat_provider=provider,
-            data_dir=str(tmp_path),
-        )
-
-        # First compile
-        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert result1.success
-        assert manager.get_playbook("test-playbook").version == 1
-
-        # Modify the markdown body
-        modified_md = _make_playbook_md(body="# Updated\n\nDo something different then finish.")
-        result2 = await manager.compile_playbook(modified_md)
-        assert result2.success
-        assert manager.get_playbook("test-playbook").version == 2
-        # Both compilations should have called the LLM
-        assert provider.create_message.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_skip_does_not_emit_events(self, tmp_path: Path) -> None:
-        """Skipping recompilation does not emit success/failure events."""
-        provider = _make_mock_provider()
-        bus = _make_event_bus()
-        manager = PlaybookManager(
-            chat_provider=provider,
-            event_bus=bus,
-            data_dir=str(tmp_path),
-        )
-
-        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        bus.emit.reset_mock()
-
-        # Second compile with identical content — should skip
-        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        bus.emit.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_hash_check_after_load_from_disk(self, tmp_path: Path) -> None:
-        """Source hash check works for playbooks loaded from disk at startup."""
-        # Compile and persist
-        provider = _make_mock_provider()
-        manager1 = PlaybookManager(
-            chat_provider=provider,
-            data_dir=str(tmp_path),
-        )
-        await manager1.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert provider.create_message.call_count == 1
-
-        # Create a new manager (simulating restart) and load from disk
-        provider2 = _make_mock_provider()
-        manager2 = PlaybookManager(
-            chat_provider=provider2,
-            data_dir=str(tmp_path),
-        )
-        loaded = await manager2.load_from_disk()
-        assert loaded == 1
-
-        # Recompile the same markdown — should skip because hash matches
-        result = await manager2.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert result.success
-        assert result.playbook.version == 1  # Same version
-        provider2.create_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_new_playbook_always_compiles(self, tmp_path: Path) -> None:
-        """A playbook ID not in the registry always triggers compilation."""
-        provider = _make_mock_provider()
-        manager = PlaybookManager(
-            chat_provider=provider,
-            data_dir=str(tmp_path),
-        )
-
-        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
-        assert result.success
-        assert provider.create_message.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +263,8 @@ class TestCompilationFailureRetainsPrevious:
 
         bus.emit.reset_mock()
 
-        # Compile again with DIFFERENT content (so hash changes) but bad LLM output
-        modified_md = _make_playbook_md(body="# Updated\n\nChanged content to trigger recompile.")
+        # Compile again with modified markdown (different hash) — bad output causes failure
+        modified_md = _make_playbook_md(body="# Changed\n\nDo something else entirely.")
         result2 = await manager.compile_playbook(modified_md)
         assert not result2.success
 
@@ -413,10 +295,9 @@ class TestCompilationFailureRetainsPrevious:
         original_data = json.loads(json_path.read_text())
         assert original_data["version"] == 1
 
-        # Failed recompilation with different content (hash changes) — disk file untouched
-        modified_md = _make_playbook_md(body="# Updated\n\nChanged content.")
-        result2 = await manager.compile_playbook(modified_md)
-        assert not result2.success
+        # Failed recompilation with changed markdown — disk file untouched
+        modified_md = _make_playbook_md(body="# Revised\n\nDo something new and different.")
+        await manager.compile_playbook(modified_md)
         assert json_path.exists()
         after_data = json.loads(json_path.read_text())
         assert after_data["version"] == 1  # Not overwritten
@@ -471,10 +352,10 @@ class TestCompilationFailureRetainsPrevious:
 
         bus.emit.reset_mock()
 
-        # Now switch to a failing provider and use different content
+        # Now switch to a failing provider and use changed markdown (so hash differs)
         manager._compiler._provider = _make_failing_provider()
 
-        modified_md = _make_playbook_md(body="# Updated\n\nChanged content to trigger recompile.")
+        modified_md = _make_playbook_md(body="# Modified\n\nDo something totally new.")
         result2 = await manager.compile_playbook(modified_md)
         assert not result2.success
         assert any("LLM call failed" in e for e in result2.errors)
@@ -893,9 +774,11 @@ class TestPlaybookHandler:
         await on_playbook_changed([change], playbook_manager=manager)
         assert manager.get_playbook("test-playbook").version == 1
 
-        # Modify the file content (so hash changes) and recompile
-        modified_md = _make_playbook_md(body="# Updated\n\nChanged body for v2.")
+        # Write different content to simulate actual file modification
+        modified_md = _make_playbook_md(body="# Changed\n\nDo something else now.")
         md_path.write_text(modified_md)
+
+        # Modify and recompile — different hash triggers actual compilation
         await on_playbook_changed([change], playbook_manager=manager)
         assert manager.get_playbook("test-playbook").version == 2
 
@@ -1054,3 +937,225 @@ class TestHelperFunctions:
             "project",
             "my-app",
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: Source hash change detection (roadmap 5.1.5)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceHashChangeDetection:
+    """Test that unchanged markdown skips recompilation.
+
+    Covers roadmap 5.1.5 requirements:
+      - Same markdown → skip compilation (no LLM call)
+      - Different markdown → proceed with compilation
+      - force=True → always compile regardless of hash
+      - No existing version → proceed with compilation
+      - Skipped result has correct fields (success=True, skipped=True)
+      - Loaded-from-disk versions enable hash comparison
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_markdown_skips_compilation(self, tmp_path: Path) -> None:
+        """Compiling with identical markdown skips the LLM call."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # First compilation — invokes LLM
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        assert provider.create_message.call_count == 1
+
+        # Second compilation with same markdown — should be skipped
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result2.success
+        assert result2.skipped
+        assert result2.playbook is not None
+        assert result2.playbook.id == "test-playbook"
+        assert result2.playbook.version == 1  # No version increment
+        # LLM was NOT called a second time
+        assert provider.create_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_different_markdown_triggers_compilation(self, tmp_path: Path) -> None:
+        """Compiling with changed markdown triggers full compilation."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+
+        # Different body → different source hash
+        modified_md = _make_playbook_md(body="# Updated\n\nDo something different.")
+        result2 = await manager.compile_playbook(modified_md)
+        assert result2.success
+        assert not result2.skipped
+        assert result2.playbook.version == 2
+        # LLM was called both times
+        assert provider.create_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_force_bypasses_hash_check(self, tmp_path: Path) -> None:
+        """force=True always invokes the compiler, even with same markdown."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+
+        # Same markdown but force=True — should recompile
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD, force=True)
+        assert result2.success
+        assert not result2.skipped
+        assert result2.playbook.version == 2
+        assert provider.create_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_existing_version_always_compiles(self, tmp_path: Path) -> None:
+        """First compilation always proceeds (no hash to compare against)."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result.success
+        assert not result.skipped
+        assert provider.create_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_skipped_result_contains_source_hash(self, tmp_path: Path) -> None:
+        """Skipped result includes the source_hash for the unchanged content."""
+        from src.playbook_compiler import PlaybookCompiler
+
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result.skipped
+        expected_hash = PlaybookCompiler._compute_source_hash(SIMPLE_PLAYBOOK_MD)
+        assert result.source_hash == expected_hash
+
+    @pytest.mark.asyncio
+    async def test_skipped_result_returns_existing_playbook(self, tmp_path: Path) -> None:
+        """Skipped result returns the active compiled playbook instance."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result2.skipped
+        # Returns the same playbook object
+        assert result2.playbook is result1.playbook
+
+    @pytest.mark.asyncio
+    async def test_skip_no_success_event_emitted(self, tmp_path: Path) -> None:
+        """No compilation event is emitted when compilation is skipped."""
+        provider = _make_mock_provider()
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        bus.emit.reset_mock()
+
+        # Same markdown — skipped, no event
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        bus.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skip_works_after_load_from_disk(self, tmp_path: Path) -> None:
+        """Hash check works against playbooks loaded from disk at startup."""
+        from src.playbook_compiler import PlaybookCompiler
+
+        # Pre-populate a compiled playbook on disk with a known hash
+        compiled_dir = tmp_path / "playbooks" / "compiled"
+        compiled_dir.mkdir(parents=True)
+
+        source_hash = PlaybookCompiler._compute_source_hash(SIMPLE_PLAYBOOK_MD)
+        playbook = _make_playbook(source_hash=source_hash)
+        (compiled_dir / "test-playbook.json").write_text(json.dumps(playbook.to_dict(), indent=2))
+
+        # Create manager, load from disk
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+        loaded = await manager.load_from_disk()
+        assert loaded == 1
+
+        # Now compile the same markdown — should be skipped
+        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result.success
+        assert result.skipped
+        assert result.playbook.version == 1
+        # LLM was NOT called
+        assert provider.create_message.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_handler_skips_unchanged_file(self, tmp_path: Path) -> None:
+        """Vault watcher handler skips compilation when file hasn't changed."""
+        from src.playbook_handler import on_playbook_changed
+
+        md_path = tmp_path / "test.md"
+        md_path.write_text(SIMPLE_PLAYBOOK_MD)
+
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        change = MagicMock()
+        change.path = str(md_path)
+        change.rel_path = "system/playbooks/test.md"
+        change.operation = "created"
+
+        # First call — compiles
+        await on_playbook_changed([change], playbook_manager=manager)
+        assert manager.get_playbook("test-playbook") is not None
+        assert provider.create_message.call_count == 1
+
+        # File unchanged, trigger again — should skip
+        change.operation = "modified"
+        await on_playbook_changed([change], playbook_manager=manager)
+        assert manager.get_playbook("test-playbook").version == 1
+        # LLM was NOT called again
+        assert provider.create_message.call_count == 1

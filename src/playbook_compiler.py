@@ -70,6 +70,9 @@ class CompilationResult:
         raw_json: The raw JSON dict extracted from the LLM response,
             before dataclass conversion.  Useful for debugging.
         retries_used: How many retry rounds were needed (0 = first attempt).
+        skipped: ``True`` if compilation was skipped because the source
+            markdown has not changed since the last successful compilation
+            (source hash matches the active compiled version).
     """
 
     success: bool
@@ -78,6 +81,7 @@ class CompilationResult:
     source_hash: str = ""
     raw_json: dict[str, Any] | None = None
     retries_used: int = 0
+    skipped: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +243,7 @@ class PlaybookCompiler:
 
             # Success!
             logger.info(
-                "Playbook '%s' compiled successfully (version=%d, hash=%s, "
-                "nodes=%d, retries=%d)",
+                "Playbook '%s' compiled successfully (version=%d, hash=%s, nodes=%d, retries=%d)",
                 playbook.id,
                 playbook.version,
                 source_hash,
@@ -358,16 +361,16 @@ class PlaybookCompiler:
             "(```json ... ```). No other text, explanation, or commentary.\n"
             "2. The JSON must conform to the schema above. Do not add extra "
             "fields.\n"
-            "3. Every playbook must have exactly ONE node with `\"entry\": true`.\n"
+            '3. Every playbook must have exactly ONE node with `"entry": true`.\n'
             "4. Every playbook must have at least ONE node with "
-            "`\"terminal\": true`.\n"
-            "5. Non-terminal nodes MUST have a `\"prompt\"` field — a focused "
+            '`"terminal": true`.\n'
+            '5. Non-terminal nodes MUST have a `"prompt"` field — a focused '
             "instruction describing what the LLM should do at that step.\n"
-            "6. Each non-terminal node must have either `\"transitions\"` (a list "
-            "of conditional edges) OR `\"goto\"` (an unconditional next node), "
+            '6. Each non-terminal node must have either `"transitions"` (a list '
+            'of conditional edges) OR `"goto"` (an unconditional next node), '
             "but NOT both.\n"
-            "7. Every transition must have either `\"when\"` (a natural language "
-            "condition) or `\"otherwise\": true` (the fallback), plus a `\"goto\"` "
+            '7. Every transition must have either `"when"` (a natural language '
+            'condition) or `"otherwise": true` (the fallback), plus a `"goto"` '
             "target.\n"
             "8. Node IDs should be short, descriptive, snake_case identifiers.\n"
             "9. Prompts in nodes should be clear, actionable instructions — "

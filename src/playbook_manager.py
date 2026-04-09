@@ -155,8 +155,15 @@ class PlaybookManager:
         *,
         source_path: str = "",
         rel_path: str = "",
+        force: bool = False,
     ) -> CompilationResult:
         """Compile a playbook markdown file and update the active version.
+
+        Before invoking the LLM compiler, checks whether the source markdown
+        has changed by comparing the SHA-256 hash of the new content against
+        the hash stored in the currently active compiled version.  If the
+        hashes match (and *force* is ``False``), compilation is skipped and
+        the existing compiled playbook is returned immediately.
 
         On success, the new compiled playbook replaces the previous version
         in the in-memory registry and is persisted to disk.
@@ -173,11 +180,16 @@ class PlaybookManager:
             Absolute path to the source ``.md`` file (for notifications).
         rel_path:
             Vault-relative path (for logging).
+        force:
+            When ``True``, skip the source hash check and always invoke the
+            compiler.  Useful for manual recompilation commands.
 
         Returns
         -------
         CompilationResult
-            The compilation result from the underlying compiler.
+            The compilation result from the underlying compiler.  When
+            compilation is skipped, ``result.skipped`` is ``True`` and
+            ``result.playbook`` is the existing active version.
         """
         if self._compiler is None:
             logger.info(
@@ -197,23 +209,25 @@ class PlaybookManager:
         existing = self._active.get(playbook_id)
         existing_version = existing.version if existing else 0
 
-        # Source-hash change detection (roadmap 5.1.5): skip recompilation
-        # when the markdown content is identical to what produced the
-        # currently active compiled version.  This avoids wasteful LLM calls
-        # when the file is touched without meaningful edits.
-        source_hash = PlaybookCompiler._compute_source_hash(markdown)
-        if existing is not None and existing.source_hash == source_hash:
-            logger.info(
-                "Playbook '%s' unchanged (hash=%s), skipping recompilation: %s",
-                playbook_id,
-                source_hash,
-                rel_path or source_path,
-            )
-            return CompilationResult(
-                success=True,
-                playbook=existing,
-                source_hash=source_hash,
-            )
+        # --- Source hash change detection (roadmap 5.1.5) ---
+        # Compute the hash of the incoming markdown and compare against the
+        # active compiled version.  If unchanged, skip the expensive LLM call.
+        if not force and playbook_id:
+            source_hash = PlaybookCompiler._compute_source_hash(markdown)
+
+            if existing is not None and existing.source_hash == source_hash:
+                logger.info(
+                    "Playbook '%s' unchanged (hash=%s), skipping recompilation%s",
+                    playbook_id,
+                    source_hash,
+                    f" ({rel_path})" if rel_path else "",
+                )
+                return CompilationResult(
+                    success=True,
+                    playbook=existing,
+                    source_hash=source_hash,
+                    skipped=True,
+                )
 
         # Compile
         result = await self._compiler.compile(
