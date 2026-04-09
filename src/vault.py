@@ -341,23 +341,98 @@ accumulate real experience.
 
 ## Async / Sync Mismatches
 - Never use synchronous I/O (e.g. `subprocess.run()`, `open().read()`)
-  in async code paths — it blocks the event loop
+  in async code paths — it blocks the event loop and stalls all
+  concurrent tasks
 - When calling async APIs from sync contexts, use an event loop bridge
-  (not `asyncio.run()` inside an existing loop)
+  (not `asyncio.run()` inside an already-running loop — that raises
+  `RuntimeError`)
+- Watch for libraries that look async but do sync I/O internally
+  (e.g. some ORM operations, DNS resolution)
+- `asyncio.to_thread()` is the correct way to run blocking code from
+  async contexts (Python 3.9+)
 
 ## Import Cycles
 - Circular imports often manifest as `AttributeError` at runtime, not
-  at import time
+  at import time — the partially-initialised module is missing the
+  symbol you need
 - Use local imports inside functions to break cycles when needed
+- Prefer moving shared types to a separate module (e.g. `types.py`,
+  `models.py`) that both sides can import without circularity
+- `TYPE_CHECKING` guards (`from __future__ import annotations` +
+  `if TYPE_CHECKING:`) let you use types for hints without runtime
+  import
 
 ## Silent Failures
-- Bare `except: pass` swallows errors that could help debug later issues
-- Always log caught exceptions, even if you choose not to re-raise
+- Bare `except: pass` swallows errors that could help debug later
+  issues — always catch specific exception types
+- Always log caught exceptions with `logger.exception()` or
+  `logger.error(..., exc_info=True)` — even if you choose not to
+  re-raise
+- Watch for functions that return `None` on failure instead of raising
+  — callers may not check the return value
+- Async tasks that raise exceptions silently disappear if you don't
+  `await` or attach a done callback
 
 ## Type Mismatches
 - JSON `null` becomes Python `None` — check before accessing attributes
-- Dict `.get()` returns `None` by default, which may not be falsy enough
-  (e.g. `0` and `""` are falsy but valid values)
+  or calling methods on parsed data
+- Dict `.get()` returns `None` by default, which may not be falsy
+  enough (e.g. `0` and `""` are falsy but valid values — use a
+  sentinel: `d.get(key, _MISSING)`)
+- String IDs vs integer IDs: databases may return `int`, while JSON
+  APIs return `str` — normalise early and consistently
+- `bool` is a subclass of `int` in Python: `isinstance(True, int)`
+  is `True`, so order your type checks carefully
+
+## Resource Management
+- Always use context managers (`with` / `async with`) for files,
+  database connections, HTTP sessions, and locks
+- Forgetting to close an HTTP client leaks connections and may exhaust
+  the OS file-descriptor limit under load
+- Temporary files and directories need cleanup — use `tempfile` context
+  managers rather than manual creation + deletion
+- Database connections returned to a pool in an error state can poison
+  the next caller — ensure proper rollback on failure
+
+## Error Handling Anti-Patterns
+- Catching `Exception` too broadly hides bugs — catch the narrowest
+  type that makes sense (e.g. `ValueError`, `KeyError`, `httpx.HTTPError`)
+- Re-raising with bare `raise` preserves the original traceback;
+  `raise new_exception from original` chains them properly
+- Don't use exceptions for control flow in performance-sensitive paths
+  — check conditions first (LBYL) when feasible
+- Retries without backoff or a maximum count can cause infinite loops
+  or thundering-herd effects
+
+## Concurrency and Shared State
+- Shared mutable state between async tasks causes race conditions even
+  without threads — any `await` is a potential context switch
+- Prefer message-passing (queues) or immutable data over shared dicts
+  and lists
+- `asyncio.Lock` is not thread-safe; `threading.Lock` is not
+  async-safe — use the right one for your context
+- When spawning background tasks, always store a reference and handle
+  cancellation; orphaned tasks leak memory
+
+## Configuration and Environment
+- Never hard-code file paths, URLs, or credentials — load from config
+  or environment variables
+- Missing environment variables should fail loudly at startup, not at
+  first use ten minutes later
+- Default values for config should be safe (e.g. default to read-only,
+  default to localhost, default to stricter limits)
+- Validate configuration at load time with clear error messages; don't
+  let bad config propagate deep into the system
+
+## Dependency Gotchas
+- Pinned versions prevent unexpected breakage; unpinned versions
+  invite it — but over-pinning creates upgrade debt
+- Check that optional dependencies are actually installed before
+  importing them — use try/except ImportError with clear messaging
+- Watch for breaking changes in minor versions of pre-1.0 packages
+  (semver says minor bumps can break in 0.x)
+- Vendored or monkey-patched libraries make upgrades dangerous —
+  document the patches and why they exist
 """,
         "git-conventions.md": """\
 ---
@@ -373,22 +448,77 @@ conventions.
 ## Commit Messages
 - Write concise messages that explain *why*, not just *what*
 - Use imperative mood: "Add rate limiting" not "Added rate limiting"
-- Keep the first line under 72 characters
+- Keep the subject line under 72 characters; use the body for detail
+- If the project uses Conventional Commits, follow the format:
+  `type(scope): description` — e.g. `fix(auth): handle expired tokens`
+- Common prefixes: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+- Reference issue numbers when applicable: "Fix token refresh (#42)"
 
 ## Commit Scope
-- Prefer small, focused commits over large ones
+- Prefer small, focused commits over large ones — easier to review,
+  bisect, and revert
 - Each commit should be a single logical change that passes tests
 - Don't mix refactoring with feature changes in the same commit
+- Don't mix formatting/linting fixes with logic changes
+- If a task touches multiple files, group changes by purpose rather
+  than by file
 
 ## Branch Hygiene
 - Work on feature branches, not directly on main/master
-- Rebase or merge from the base branch before creating a PR
-- Delete branches after merging
+- Name branches descriptively: `feature/add-rate-limiting`,
+  `fix/token-refresh`, `refactor/db-connection-pool`
+- Rebase or merge from the base branch before creating a PR to
+  minimise merge conflicts
+- Delete branches after merging — stale branches add confusion
+- If a branch falls far behind the base, rebase incrementally
+  rather than in one large, conflict-heavy operation
+
+## Pull Requests
+- Keep PRs focused on a single feature, fix, or refactor — large
+  PRs are hard to review and slow to merge
+- Write a clear description: what changed, why, and how to test it
+- If the PR is not ready for review, mark it as a draft
+- Address all review comments before requesting re-review
+- Prefer squash-merge for feature branches to keep history clean
+  (unless the project prefers merge commits)
 
 ## What Not to Commit
-- Never commit secrets, API keys, .env files, or credentials
-- Avoid committing generated files, build artifacts, or large binaries
-- Keep `.gitignore` up to date
+- Never commit secrets, API keys, `.env` files, or credentials —
+  if accidentally committed, rotate the secret immediately (git
+  history is permanent even after force-push)
+- Avoid committing generated files, build artifacts, or large
+  binaries — use `.gitignore` to exclude them
+- Don't commit editor/IDE config (`.vscode/`, `.idea/`) unless the
+  project deliberately shares settings
+- Keep `.gitignore` up to date as the project evolves; review it
+  when adding new tools or frameworks
+
+## Conflict Resolution
+- When resolving merge conflicts, understand both sides before
+  choosing — don't blindly accept "ours" or "theirs"
+- After resolving, re-run tests to ensure the merge didn't break
+  anything
+- If a conflict is large or touches critical code, consider
+  breaking the merge into smaller steps or asking the original
+  author for guidance
+
+## Working with History
+- Use `git log --oneline` or `git log --graph` to understand
+  recent history before making changes
+- Prefer `git rebase` for local-only commits to keep history
+  linear; avoid rebasing commits already pushed to shared branches
+- Never force-push to shared branches (main, develop) — it
+  rewrites history for everyone
+- Use `git stash` to save work-in-progress before switching
+  branches — don't leave uncommitted changes scattered around
+
+## Pre-commit Hooks and CI
+- Respect pre-commit hooks: if a hook fails, fix the underlying
+  issue rather than skipping it with `--no-verify`
+- Ensure code passes linting and formatting before committing —
+  most projects have hooks or CI checks for this
+- Run the relevant test suite locally before pushing to avoid
+  blocking the CI pipeline for others
 """,
     },
     "code-review": {
