@@ -1,4 +1,4 @@
-"""Tests for topic auto-detection in memory_save (roadmap 2.2.6, spec §3).
+"""Tests for topic auto-detection in memory_save (roadmap 2.2.6 + 2.2.19, spec §3).
 
 Tests cover:
 - Controlled vocabulary: list exists, expected topics present
@@ -6,6 +6,8 @@ Tests cover:
 - LLM-based inference: prompt format, normalization, fallback on failure
 - Integration with cmd_memory_save: topic inferred when not provided,
   passed through when explicit, flag in response
+- Roadmap 2.2.19 (a)-(f): end-to-end auto-detect from content, explicit
+  override, short content fallback, consistency, controlled vocabulary
 """
 
 from __future__ import annotations
@@ -512,3 +514,336 @@ class TestMemorySaveTopicIntegration:
         assert result["success"] is True
         assert result["action"] == "merged"
         assert result.get("topic_auto_detected") is True
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 2.2.19 — spec §3 acceptance tests (a)-(f)
+# ---------------------------------------------------------------------------
+
+
+class TestRoadmap2219TopicAutoDetection:
+    """Roadmap 2.2.19: acceptance tests for topic auto-detection.
+
+    These are end-to-end tests that exercise the full ``cmd_memory_save``
+    path (or ``_infer_topic`` directly) per the spec §3 test cases (a)-(f).
+    """
+
+    # (a) Content about "pytest fixtures and mocking" → "testing"
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_a_pytest_fixtures_and_mocking_via_llm(self, wired_plugin, mock_router):
+        """(a) LLM path: content about pytest fixtures and mocking → testing."""
+        mock_router.search = AsyncMock(return_value=[])
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="testing")
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": (
+                    "When writing tests for the auth module, use pytest fixtures "
+                    "and mocking to isolate external API dependencies."
+                ),
+            }
+        )
+        assert result["success"] is True
+        assert result["topic"] == "testing"
+        assert result["topic_auto_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_pytest_fixtures_and_mocking_via_keywords(self, wired_plugin):
+        """(a) Keyword fallback: content about pytest fixtures and mocking → testing."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        result = await wired_plugin._infer_topic(
+            "Use pytest fixtures and mocking for unit test isolation."
+        )
+        assert result == "testing"
+
+    # (b) Content about "database schema migration" → "database"
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_b_database_schema_migration_via_llm(self, wired_plugin, mock_router):
+        """(b) LLM path: content about database schema migration → database."""
+        mock_router.search = AsyncMock(return_value=[])
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="database")
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": (
+                    "The database schema migration for the users table must add "
+                    "a NOT NULL column with a default value to avoid locking issues."
+                ),
+            }
+        )
+        assert result["success"] is True
+        assert result["topic"] == "database"
+        assert result["topic_auto_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_b_database_schema_migration_via_keywords(self, wired_plugin):
+        """(b) Keyword fallback: database schema migration → database."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        result = await wired_plugin._infer_topic(
+            "The database schema migration needs careful review of column constraints."
+        )
+        assert result == "database"
+
+    @pytest.mark.asyncio
+    async def test_b_database_migration_topic_is_relevant(self, plugin):
+        """(b) Keyword result for database migration is 'database' (not infrastructure)."""
+        # The spec says "database" or "infrastructure" — verify our vocabulary
+        # covers it with "database" since "infrastructure" is not in CONTROLLED_TOPICS.
+        result = plugin._infer_topic_via_keywords("database schema migration with Alembic")
+        assert result == "database"
+
+    # (c) Explicit topic parameter overrides auto-detection
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_c_explicit_topic_overrides_auto_detection(self, wired_plugin, mock_router):
+        """(c) Providing an explicit topic skips inference entirely."""
+        mock_router.search = AsyncMock(return_value=[])
+        # LLM would classify as "testing" but we pass "documentation"
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="testing")
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": ("pytest fixtures and mocking best practices for async code."),
+                "topic": "documentation",
+            }
+        )
+        assert result["success"] is True
+        assert result["topic"] == "documentation"
+        # No auto-detection flag when topic was explicitly provided
+        assert "topic_auto_detected" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_c_explicit_topic_prevents_llm_call(self, wired_plugin, mock_router):
+        """(c) When an explicit topic is given, _infer_topic is never called."""
+        mock_router.search = AsyncMock(return_value=[])
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "OAuth token refresh needs scope re-request.",
+                "topic": "security",
+            }
+        )
+        assert result["success"] is True
+        assert result["topic"] == "security"
+        # Verify the LLM was not called for topic inference (may still be
+        # called for summary, but not with CONTROLLED TOPICS prompt).
+        for call in wired_plugin._ctx.invoke_llm.call_args_list:
+            prompt = call[0][0] if call[0] else call[1].get("prompt", "")
+            assert "CONTROLLED TOPICS" not in prompt, (
+                "LLM should not be called for topic classification when topic is explicit"
+            )
+
+    # (d) Short content (< 10 tokens) falls back to task context
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_short_content_with_task_context_via_llm(self, wired_plugin):
+        """(d) Very short content uses source_task context to infer a topic via LLM."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="authentication")
+
+        result = await wired_plugin._infer_topic(
+            "Fix the bug.",
+            source_task="task-fix-oauth-token-refresh",
+        )
+        assert result == "authentication"
+        # Verify the source_task was passed as context to the LLM
+        call_args = wired_plugin._ctx.invoke_llm.call_args
+        prompt = call_args[0][0]
+        assert "task-fix-oauth-token-refresh" in prompt
+
+    @pytest.mark.asyncio
+    async def test_d_short_content_with_tags_context_via_llm(self, wired_plugin):
+        """(d) Very short content uses tags context to infer topic via LLM."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="database")
+
+        result = await wired_plugin._infer_topic(
+            "Done.",
+            tags=["schema-change", "migration"],
+        )
+        assert result == "database"
+        # Tags should appear in the LLM prompt
+        call_args = wired_plugin._ctx.invoke_llm.call_args
+        prompt = call_args[0][0]
+        assert "schema-change" in prompt
+        assert "migration" in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_d_short_content_integration_in_save(self, wired_plugin, mock_router):
+        """(d) End-to-end: short content + source_task in cmd_memory_save."""
+        mock_router.search = AsyncMock(return_value=[])
+
+        async def llm_handler(prompt, **kwargs):
+            if "CONTROLLED TOPICS" in prompt:
+                # Short content, but source_task gives context
+                return "deployment"
+            return "Summary"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=llm_handler)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Bump tag.",
+                "source_task": "task-deploy-docker-v2",
+            }
+        )
+        assert result["success"] is True
+        assert result["topic"] == "deployment"
+        assert result["topic_auto_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_d_short_content_keyword_fallback_with_cue(self, wired_plugin):
+        """(d) Short content with keyword cue still detects topic via keywords."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        # Even very short content can have a keyword match
+        result = await wired_plugin._infer_topic("Fix pytest.")
+        assert result == "testing"
+
+    # (e) Consistency — similar content produces the same topic
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_e_keyword_consistency_identical_content(self, plugin):
+        """(e) Keyword fallback returns the same topic for identical content."""
+        content = "The pytest fixture setup needs improvement for async tests."
+        topic1 = plugin._infer_topic_via_keywords(content)
+        topic2 = plugin._infer_topic_via_keywords(content)
+        assert topic1 == topic2
+        assert topic1 == "testing"
+
+    @pytest.mark.asyncio
+    async def test_e_keyword_consistency_similar_content(self, plugin):
+        """(e) Keyword fallback returns the same topic for similar content."""
+        content_a = "pytest fixtures and mocking strategies for unit tests"
+        content_b = "Using pytest fixtures with mock objects in test suites"
+        topic_a = plugin._infer_topic_via_keywords(content_a)
+        topic_b = plugin._infer_topic_via_keywords(content_b)
+        assert topic_a == topic_b == "testing"
+
+    @pytest.mark.asyncio
+    async def test_e_llm_consistency_same_content(self, wired_plugin):
+        """(e) LLM returns the same topic for the same content (deterministic mock)."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="database")
+
+        topic1 = await wired_plugin._infer_topic(
+            "Database schema migration with Alembic for PostgreSQL."
+        )
+        topic2 = await wired_plugin._infer_topic(
+            "Database schema migration with Alembic for PostgreSQL."
+        )
+        assert topic1 == topic2 == "database"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_e_consistency_across_saves(self, wired_plugin, mock_router):
+        """(e) Saving similar content twice via cmd_memory_save yields the same topic."""
+        mock_router.search = AsyncMock(return_value=[])
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="testing")
+
+        result1 = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Always use pytest fixtures for database test isolation.",
+            }
+        )
+        result2 = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Use pytest fixtures to isolate database layer in tests.",
+            }
+        )
+        assert result1["topic"] == result2["topic"] == "testing"
+        assert result1["topic_auto_detected"] is True
+        assert result2["topic_auto_detected"] is True
+
+    # (f) Auto-detected topic is from the controlled vocabulary
+    # ---------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_llm_result_from_controlled_vocabulary(self, wired_plugin):
+        """(f) When LLM returns a controlled topic, result is in the vocabulary."""
+        for expected in ["testing", "database", "authentication", "deployment", "security"]:
+            wired_plugin._ctx.invoke_llm = AsyncMock(return_value=expected)
+            result = await wired_plugin._infer_topic(f"Some content about {expected}")
+            assert result in wired_plugin.CONTROLLED_TOPICS, (
+                f"Topic {result!r} not in controlled vocabulary"
+            )
+
+    @pytest.mark.asyncio
+    async def test_f_keyword_result_from_controlled_vocabulary(self, plugin):
+        """(f) All keyword-inferred topics are from the controlled vocabulary."""
+        test_contents = [
+            "OAuth token refresh failed",
+            "SQL database migration schema",
+            "pytest fixture isolation",
+            "Docker deployment container",
+            "CVE security encryption patch",
+            "cache performance latency",
+            "GitHub Actions CI/CD pipeline",
+            "structlog logger setup",
+            "cron job scheduling queue",
+            "plugin extension system",
+        ]
+        for content in test_contents:
+            topic = plugin._infer_topic_via_keywords(content)
+            assert topic is not None, f"No topic inferred for: {content!r}"
+            assert topic in plugin.CONTROLLED_TOPICS, (
+                f"Topic {topic!r} from content {content!r} not in controlled vocabulary"
+            )
+
+    @pytest.mark.asyncio
+    async def test_f_all_keyword_map_values_in_vocabulary(self, plugin):
+        """(f) Every value in _KEYWORD_TOPIC_MAP is a valid controlled topic."""
+        for keyword, topic in plugin._KEYWORD_TOPIC_MAP.items():
+            assert topic in plugin.CONTROLLED_TOPICS, (
+                f"Keyword {keyword!r} maps to {topic!r} which is not in CONTROLLED_TOPICS"
+            )
+
+    @pytest.mark.asyncio
+    async def test_f_llm_novel_topic_still_normalized(self, wired_plugin):
+        """(f) LLM may return a novel topic — it's normalized but still valid."""
+        # LLM returns a topic not in the controlled list (allowed by spec)
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="API Design")
+        result = await wired_plugin._infer_topic("REST endpoint design patterns")
+        # Should be normalized to lowercase-hyphenated form
+        assert result == "api-design"
+        # It's not in CONTROLLED_TOPICS but it's still a valid format
+        assert result == result.lower()
+        assert " " not in result
+        assert "_" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_f_auto_detected_topic_stored_in_entry(self, wired_plugin, mock_router):
+        """(f) Auto-detected topic is persisted in the upserted document."""
+        mock_router.search = AsyncMock(return_value=[])
+        wired_plugin._ctx.invoke_llm = AsyncMock(return_value="testing")
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "pytest fixtures are essential for reliable test suites.",
+            }
+        )
+
+        store = mock_router.get_store.return_value
+        upserted = store.upsert.call_args[0][0][0]
+        assert upserted["topic"] == "testing"
+        assert upserted["topic"] in wired_plugin.CONTROLLED_TOPICS
