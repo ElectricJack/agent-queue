@@ -13,6 +13,7 @@ from src.vault import (
     _STARTER_KNOWLEDGE,
     copy_project_memory_to_vault,
     copy_starter_knowledge,
+    ensure_default_playbooks,
     ensure_default_templates,
     ensure_orchestrator_profile,
     ensure_vault_layout,
@@ -919,6 +920,127 @@ def test_starter_knowledge_covers_expected_types():
     # QA has testing patterns and process
     assert "testing-patterns.md" in _STARTER_KNOWLEDGE["qa"]
     assert "qa-process.md" in _STARTER_KNOWLEDGE["qa"]
+
+
+# ---------------------------------------------------------------------------
+# Default playbook tests (playbooks spec §12)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_default_playbooks_creates_task_outcome(tmp_path):
+    """ensure_default_playbooks installs task-outcome.md to vault/system/playbooks/."""
+    result = ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
+    assert playbook_path.is_file()
+    assert "task-outcome.md" in result["created"]
+    assert len(result["skipped"]) == 0
+
+
+def test_ensure_default_playbooks_idempotent(tmp_path):
+    """Calling ensure_default_playbooks twice does not overwrite existing files."""
+    ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
+    custom_content = "---\nid: task-outcome\ntriggers:\n  - task.completed\nscope: system\n---\n"
+    playbook_path.write_text(custom_content)
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert playbook_path.read_text() == custom_content
+    assert "task-outcome.md" in result["skipped"]
+
+
+def test_ensure_default_playbooks_partial_existing(tmp_path):
+    """Only missing playbooks are installed; existing ones are skipped."""
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+
+    # Pre-create the task-outcome playbook
+    existing = playbooks_dir / "task-outcome.md"
+    existing.write_text("# customised\n")
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert "task-outcome.md" in result["skipped"]
+    assert existing.read_text() == "# customised\n"
+
+
+def test_task_outcome_playbook_has_valid_frontmatter():
+    """The bundled task-outcome.md has valid YAML frontmatter with required fields."""
+    import os
+
+    import yaml
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "task-outcome.md",
+    )
+    content = open(playbook_path).read()
+
+    # Must start with YAML frontmatter
+    assert content.startswith("---")
+    lines = content.strip().splitlines()
+    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+    fm_text = "\n".join(lines[1:end_idx])
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["id"] == "task-outcome"
+    assert isinstance(fm["triggers"], list)
+    assert "task.completed" in fm["triggers"]
+    assert "task.failed" in fm["triggers"]
+    assert fm["scope"] == "system"
+
+
+def test_task_outcome_playbook_consolidates_three_concerns():
+    """The task-outcome playbook body addresses reflection, spec-drift, and error-recovery."""
+    import os
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "task-outcome.md",
+    )
+    content = open(playbook_path).read()
+
+    # Extract body (after frontmatter)
+    parts = content.split("---", 2)
+    body = parts[2].strip()
+
+    # Reflection concerns: acceptance criteria review
+    assert "acceptance criteria" in body.lower()
+
+    # Spec-drift concerns: spec divergence detection
+    assert "spec" in body.lower()
+
+    # Error-recovery concerns: transient errors, retry, fix tasks
+    assert "retry" in body.lower()
+    assert "transient" in body.lower() or "rate limit" in body.lower()
+    assert "fix task" in body.lower() or "create" in body.lower()
+
+
+def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
+    """ensure_vault_layout installs default playbooks as part of the layout."""
+    ensure_vault_layout(str(tmp_path))
+
+    assert (tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md").is_file()
+
+
+def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
+    """ensure_vault_layout does not overwrite user-customised playbooks."""
+    ensure_vault_layout(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
+    custom = "# User's custom task-outcome playbook\n"
+    playbook_path.write_text(custom)
+
+    ensure_vault_layout(str(tmp_path))
+    assert playbook_path.read_text() == custom
 
 
 # ---------------------------------------------------------------------------

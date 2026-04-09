@@ -967,6 +967,10 @@ def ensure_vault_layout(data_dir: str) -> None:
     packs) into ``vault/templates/`` if they don't already exist.  See
     :func:`ensure_default_templates` for details.
 
+    Installs default system playbooks (``task-outcome.md``, etc.) into
+    ``vault/system/playbooks/`` if they don't already exist.  See
+    :func:`ensure_default_playbooks` for details.
+
     The orchestrator's own ``profile.md`` (roadmap §4.2.3) is written to
     ``vault/orchestrator/profile.md`` if it doesn't already exist.  See
     :func:`ensure_orchestrator_profile` for details.
@@ -979,6 +983,7 @@ def ensure_vault_layout(data_dir: str) -> None:
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
+    ensure_default_playbooks(data_dir)
     ensure_orchestrator_profile(data_dir)
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
 
@@ -1040,6 +1045,66 @@ def ensure_default_templates(data_dir: str) -> dict:
             "Created %d default template(s) in %s",
             len(result["created"]),
             templates_dir,
+        )
+
+    return result
+
+
+def ensure_default_playbooks(data_dir: str) -> dict:
+    """Install default playbook files into ``vault/system/playbooks/`` if absent.
+
+    Copies bundled playbook markdown files from ``src/prompts/default_playbooks/``
+    into the vault's system playbook directory.  These playbooks are compiled at
+    first use by the :class:`~src.playbook_compiler.PlaybookCompiler`.
+
+    Default playbooks (playbooks spec §12):
+
+    - ``task-outcome.md`` — consolidates post-action reflection, spec-drift
+      detection, and error-recovery monitoring into a single playbook triggered
+      on ``task.completed`` and ``task.failed``.
+
+    The operation is **idempotent**: existing files in the vault are never
+    overwritten.  Users can customise or disable playbooks without losing
+    changes on restart.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` (list of filenames written) and
+        ``skipped`` (list of filenames that already existed).
+    """
+    defaults_dir = os.path.join(os.path.dirname(__file__), "prompts", "default_playbooks")
+    playbooks_dir = os.path.join(data_dir, "vault", "system", "playbooks")
+    os.makedirs(playbooks_dir, exist_ok=True)
+
+    result: dict = {"created": [], "skipped": []}
+
+    if not os.path.isdir(defaults_dir):
+        logger.debug("No default playbooks directory found at %s", defaults_dir)
+        return result
+
+    for filename in sorted(os.listdir(defaults_dir)):
+        if not filename.endswith(".md"):
+            continue
+        src_path = os.path.join(defaults_dir, filename)
+        dst_path = os.path.join(playbooks_dir, filename)
+
+        if os.path.exists(dst_path):
+            result["skipped"].append(filename)
+            logger.debug("Default playbook already exists, skipping: %s", filename)
+            continue
+
+        shutil.copy2(src_path, dst_path)
+        result["created"].append(filename)
+        logger.debug("Installed default playbook: %s", filename)
+
+    if result["created"]:
+        logger.info(
+            "Installed %d default playbook(s) to %s: %s",
+            len(result["created"]),
+            playbooks_dir,
+            ", ".join(result["created"]),
         )
 
     return result
