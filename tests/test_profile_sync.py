@@ -13,6 +13,7 @@ Covers:
 - Pattern matching for agent-types/*/profile.md and orchestrator/profile.md
 - End-to-end dispatch through VaultWatcher with DB sync
 - Notification events: sync failures emit notify.profile_sync_failed
+- Roadmap 4.1.10 (a)-(g): Profile parser and DB sync integration tests
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ import pytest
 
 from src.database import Database
 from src.models import AgentProfile
-from src.profile_parser import parse_profile
+from src.known_tools import KNOWN_TOOL_NAMES
+from src.profile_parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 from src.profile_sync import (
     PROFILE_PATTERNS,
     ProfileSyncResult,
@@ -1276,3 +1278,889 @@ class TestProfileSyncNotifications:
         assert "event_type" in event
         assert "severity" in event
         assert "category" in event
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 4.1.10 — Profile parser and DB sync integration
+# ---------------------------------------------------------------------------
+#
+# Tests (a)-(g) per docs/specs/design/roadmap.md §4.1.10:
+#   (a) Valid profile.md with all sections parses every field correctly
+#   (b) Parsed Config JSON values sync to agent_profiles DB table
+#   (c) Parsed Tools list syncs and tool names validated against registry
+#   (d) English sections (Role, Rules, Reflection) stored as raw markdown
+#   (e) Partial profile parses present sections, leaves others as defaults
+#   (f) Round-trip: write → parse → sync to DB → read DB → verify
+#   (g) Sync is an upsert — existing profile updated, not duplicated
+# ---------------------------------------------------------------------------
+
+# A comprehensive profile with all sections for roadmap tests.
+ROADMAP_FULL_PROFILE = """\
+---
+id: full-agent
+name: Full Integration Agent
+tags: [test, integration]
+---
+
+# Full Integration Agent
+
+## Role
+You are a **senior software engineer** specializing in Python backend services.
+You follow project conventions, write thorough tests, and produce clean,
+well-documented code.
+
+### Primary Responsibilities
+- Implement new features
+- Fix bugs and regressions
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto",
+  "max_tokens_per_task": 200000
+}
+```
+
+## Tools
+```json
+{
+  "allowed": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+  "denied": ["WebSearch"]
+}
+```
+
+## MCP Servers
+```json
+{
+  "github": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
+  },
+  "playwright": {
+    "command": "npx",
+    "args": ["@anthropic/mcp-playwright"]
+  }
+}
+```
+
+## Rules
+- Always run existing tests before committing
+- Never commit secrets, .env files, or credentials
+- Prefer small, focused commits over large ones
+- If tests fail after your changes, fix them before moving on
+
+## Reflection
+After completing a task, consider:
+- Did I encounter any surprising behavior worth remembering?
+- Did I resolve an error that might recur? If so, save the pattern.
+"""
+
+
+class TestRoadmap4110:
+    """Roadmap 4.1.10 — Profile parser and DB sync integration tests.
+
+    Validates the full pipeline per profiles spec §2 (Hybrid Format) and
+    §3 (Sync Model): markdown file → parse → validate → upsert DB row.
+    """
+
+    # -------------------------------------------------------------------
+    # (a) Valid profile.md with all sections parses every field correctly
+    # -------------------------------------------------------------------
+
+    def test_a_all_sections_parse_frontmatter(self):
+        """(a) Frontmatter fields (id, name, tags) are parsed correctly."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid, f"Parse errors: {result.errors}"
+        assert result.frontmatter.id == "full-agent"
+        assert result.frontmatter.name == "Full Integration Agent"
+        assert result.frontmatter.tags == ["test", "integration"]
+
+    def test_a_all_sections_parse_config(self):
+        """(a) Config section JSON is parsed with all three known keys."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert result.config["model"] == "claude-sonnet-4-6"
+        assert result.config["permission_mode"] == "auto"
+        assert result.config["max_tokens_per_task"] == 200000
+
+    def test_a_all_sections_parse_tools(self):
+        """(a) Tools section JSON is parsed with allowed and denied lists."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert result.tools["allowed"] == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        assert result.tools["denied"] == ["WebSearch"]
+
+    def test_a_all_sections_parse_mcp_servers(self):
+        """(a) MCP Servers section JSON is parsed with all server definitions."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert len(result.mcp_servers) == 2
+        assert "github" in result.mcp_servers
+        assert "playwright" in result.mcp_servers
+
+        github = result.mcp_servers["github"]
+        assert github["command"] == "npx"
+        assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
+        assert github["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+
+        playwright = result.mcp_servers["playwright"]
+        assert playwright["command"] == "npx"
+        assert playwright["args"] == ["@anthropic/mcp-playwright"]
+
+    def test_a_all_sections_parse_role(self):
+        """(a) Role section is parsed as text content."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert "senior software engineer" in result.role
+        assert "Python backend services" in result.role
+        assert "### Primary Responsibilities" in result.role
+
+    def test_a_all_sections_parse_rules(self):
+        """(a) Rules section is parsed as text content."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert "- Always run existing tests before committing" in result.rules
+        assert "- Never commit secrets" in result.rules
+        assert "- Prefer small, focused commits" in result.rules
+
+    def test_a_all_sections_parse_reflection(self):
+        """(a) Reflection section is parsed as text content."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert "After completing a task, consider:" in result.reflection
+        assert "surprising behavior" in result.reflection
+        assert "save the pattern" in result.reflection
+
+    def test_a_all_six_sections_present(self):
+        """(a) All six sections are stored in the sections dict."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        expected = {"config", "tools", "mcp servers", "role", "rules", "reflection"}
+        assert expected == set(result.sections.keys())
+
+    def test_a_no_errors_or_warnings(self):
+        """(a) A valid full profile produces no errors and no warnings."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.is_valid
+        assert result.errors == []
+        assert result.warnings == []
+
+    # -------------------------------------------------------------------
+    # (b) Parsed Config JSON values sync to agent_profiles DB table
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_b_config_model_syncs_to_db(self, db):
+        """(b) Config 'model' value syncs to the agent_profiles.model column."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("full-agent")
+        assert profile.model == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_b_config_permission_mode_syncs_to_db(self, db):
+        """(b) Config 'permission_mode' syncs to agent_profiles.permission_mode."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("full-agent")
+        assert profile.permission_mode == "auto"
+
+    @pytest.mark.asyncio
+    async def test_b_config_max_tokens_parsed_not_lost(self, db):
+        """(b) Config 'max_tokens_per_task' is parsed and validated correctly.
+
+        Note: max_tokens_per_task is validated at parse time and available
+        in ParsedProfile.config but is not mapped to a dedicated AgentProfile
+        field.  It may be consumed at task-execution time from the parsed config.
+        """
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        assert parsed.config["max_tokens_per_task"] == 200000
+        assert parsed.is_valid  # Validation passed
+
+    @pytest.mark.asyncio
+    async def test_b_all_valid_permission_modes_sync(self, db):
+        """(b) Each valid permission_mode value syncs without error."""
+        from src.profile_parser import VALID_PERMISSION_MODES
+
+        for mode in sorted(VALID_PERMISSION_MODES):
+            text = f"""\
+---
+id: mode-test-{mode}
+name: Mode Test {mode}
+---
+
+## Config
+```json
+{{"permission_mode": "{mode}"}}
+```
+"""
+            parsed = parse_profile(text)
+            assert parsed.is_valid, f"Mode {mode!r} should be valid: {parsed.errors}"
+            result = await sync_profile_to_db(parsed, db)
+            assert result.success, f"Sync failed for mode {mode!r}: {result.errors}"
+
+            profile = await db.get_profile(f"mode-test-{mode}")
+            assert profile.permission_mode == mode
+
+    @pytest.mark.asyncio
+    async def test_b_invalid_permission_mode_rejected(self, db):
+        """(b) Invalid permission_mode produces a parse error — not synced."""
+        text = """\
+---
+id: bad-mode
+name: Bad Mode
+---
+
+## Config
+```json
+{"permission_mode": "invalid_mode"}
+```
+"""
+        parsed = parse_profile(text)
+        assert not parsed.is_valid
+        assert any("permission_mode" in e for e in parsed.errors)
+
+        result = await sync_profile_to_db(parsed, db)
+        assert not result.success
+        assert await db.get_profile("bad-mode") is None
+
+    # -------------------------------------------------------------------
+    # (c) Parsed Tools list syncs and tool names validated
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_allowed_tools_sync_to_db(self, db):
+        """(c) Parsed allowed tools list syncs to agent_profiles.allowed_tools."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("full-agent")
+        expected = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        assert profile.allowed_tools == expected
+
+    @pytest.mark.asyncio
+    async def test_c_known_tools_no_warnings(self, db):
+        """(c) Known tool names (from KNOWN_TOOL_NAMES) produce no warnings."""
+        # All tools in ROADMAP_FULL_PROFILE are known Claude Code built-ins
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+        # No tool-related warnings — all are recognized
+        assert result.warnings is None or not any("tool" in w.lower() for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_c_unknown_tools_produce_warnings_not_errors(self, db):
+        """(c) Unrecognized tool names produce warnings (not errors) — sync succeeds."""
+        text = """\
+---
+id: custom-tools
+name: Custom Tools
+---
+
+## Tools
+```json
+{
+  "allowed": ["Read", "my_custom_tool", "another_unknown"]
+}
+```
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid  # Unknown tools are warnings, not errors
+
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+        assert result.warnings
+        assert any("my_custom_tool" in w for w in result.warnings)
+        assert any("another_unknown" in w for w in result.warnings)
+
+        # Tools are still stored even though some are unknown
+        profile = await db.get_profile("custom-tools")
+        assert "my_custom_tool" in profile.allowed_tools
+        assert "another_unknown" in profile.allowed_tools
+
+    def test_c_parser_tool_validation_with_known_tools(self):
+        """(c) Parser validates tool names against known_tools when provided."""
+        text = """\
+---
+id: validated
+name: Validated
+---
+
+## Tools
+```json
+{
+  "allowed": ["Read", "nonexistent_tool"]
+}
+```
+"""
+        known = {"Read", "Write", "Bash"}
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid  # Unknown tools are warnings, not errors
+        assert any("nonexistent_tool" in w for w in result.warnings)
+
+    def test_c_tools_structural_validation(self):
+        """(c) Tools with invalid structure produce parse errors."""
+        text = """\
+## Tools
+```json
+{
+  "allowed": [123, true, null]
+}
+```
+"""
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert len(result.errors) >= 1
+        assert any("must be a string" in e for e in result.errors)
+
+    # -------------------------------------------------------------------
+    # (d) English sections stored as raw markdown strings
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_role_stored_as_raw_markdown_in_db(self, db):
+        """(d) Role markdown survives parse → sync → DB read as raw text."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        await sync_profile_to_db(parsed, db)
+
+        profile = await db.get_profile("full-agent")
+        # The system_prompt_suffix contains all prompt sections with labels
+        assert "## Role" in profile.system_prompt_suffix
+        assert "**senior software engineer**" in profile.system_prompt_suffix
+        assert "### Primary Responsibilities" in profile.system_prompt_suffix
+        assert "- Implement new features" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_d_rules_stored_as_raw_markdown_in_db(self, db):
+        """(d) Rules markdown survives parse → sync → DB read as raw text."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        await sync_profile_to_db(parsed, db)
+
+        profile = await db.get_profile("full-agent")
+        assert "## Rules" in profile.system_prompt_suffix
+        assert "- Always run existing tests before committing" in profile.system_prompt_suffix
+        assert "- Never commit secrets" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_d_reflection_stored_as_raw_markdown_in_db(self, db):
+        """(d) Reflection markdown survives parse → sync → DB read as raw text."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        await sync_profile_to_db(parsed, db)
+
+        profile = await db.get_profile("full-agent")
+        assert "## Reflection" in profile.system_prompt_suffix
+        assert "After completing a task, consider:" in profile.system_prompt_suffix
+        assert "surprising behavior" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_d_markdown_formatting_preserved_through_sync(self, db):
+        """(d) Rich markdown (bold, sub-headings, lists) is preserved through DB sync."""
+        text = """\
+---
+id: rich-md
+name: Rich Markdown
+---
+
+## Role
+You are a **bold** and _italic_ agent.
+
+### Sub-heading
+- List item one
+- List item two
+
+> A blockquote
+
+## Rules
+1. Numbered rule
+2. Another rule with `inline code`
+
+```python
+# Code example in rules
+def test(): pass
+```
+"""
+        parsed = parse_profile(text)
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("rich-md")
+        suffix = profile.system_prompt_suffix
+        # Bold and italic preserved
+        assert "**bold**" in suffix
+        assert "_italic_" in suffix
+        # Sub-headings preserved
+        assert "### Sub-heading" in suffix
+        # Lists preserved
+        assert "- List item one" in suffix
+        # Blockquote preserved
+        assert "> A blockquote" in suffix
+        # Numbered list preserved
+        assert "1. Numbered rule" in suffix
+        # Inline code preserved
+        assert "`inline code`" in suffix
+        # Code block in rules preserved
+        assert "```python" in suffix
+        assert "def test(): pass" in suffix
+
+    def test_d_english_sections_are_not_json_parsed(self):
+        """(d) English sections do not attempt JSON extraction."""
+        result = parse_profile(ROADMAP_FULL_PROFILE)
+        assert result.sections["role"].json_data is None
+        assert result.sections["rules"].json_data is None
+        assert result.sections["reflection"].json_data is None
+
+    # -------------------------------------------------------------------
+    # (e) Partial profile — present sections parsed, others defaulted
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_e_role_and_config_only(self, db):
+        """(e) Profile with only Role + Config — Tools, MCP Servers, Rules, Reflection default."""
+        text = """\
+---
+id: partial-rc
+name: Role Config Only
+---
+
+## Role
+You are a focused agent.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6", "permission_mode": "plan"}
+```
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid
+        # Present sections have content
+        assert "focused agent" in parsed.role
+        assert parsed.config["model"] == "claude-sonnet-4-6"
+        assert parsed.config["permission_mode"] == "plan"
+        # Missing sections use defaults
+        assert parsed.tools == {}
+        assert parsed.mcp_servers == {}
+        assert parsed.rules == ""
+        assert parsed.reflection == ""
+
+        # Sync to DB — defaults should be empty/blank
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("partial-rc")
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "plan"
+        assert profile.allowed_tools == []
+        assert profile.mcp_servers == {}
+        # system_prompt_suffix should contain only Role (no Rules/Reflection)
+        assert "## Role" in profile.system_prompt_suffix
+        assert "## Rules" not in profile.system_prompt_suffix
+        assert "## Reflection" not in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_e_tools_and_mcp_only(self, db):
+        """(e) Profile with only Tools + MCP Servers — Config, Role, Rules, Reflection default."""
+        text = """\
+---
+id: partial-tm
+name: Tools MCP Only
+---
+
+## Tools
+```json
+{"allowed": ["Read", "Bash"]}
+```
+
+## MCP Servers
+```json
+{"linter": {"command": "eslint-server"}}
+```
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid
+        assert parsed.tools["allowed"] == ["Read", "Bash"]
+        assert "linter" in parsed.mcp_servers
+        # Defaults
+        assert parsed.config == {}
+        assert parsed.role == ""
+        assert parsed.rules == ""
+        assert parsed.reflection == ""
+
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("partial-tm")
+        assert profile.model == ""
+        assert profile.permission_mode == ""
+        assert profile.allowed_tools == ["Read", "Bash"]
+        assert profile.mcp_servers["linter"]["command"] == "eslint-server"
+        assert profile.system_prompt_suffix == ""
+
+    @pytest.mark.asyncio
+    async def test_e_rules_only(self, db):
+        """(e) Profile with only Rules — everything else defaults."""
+        text = """\
+---
+id: rules-only
+name: Rules Only
+---
+
+## Rules
+- Follow PEP 8
+- Write docstrings
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid
+        assert "- Follow PEP 8" in parsed.rules
+        assert parsed.config == {}
+        assert parsed.tools == {}
+        assert parsed.mcp_servers == {}
+        assert parsed.role == ""
+        assert parsed.reflection == ""
+
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("rules-only")
+        assert profile.model == ""
+        assert profile.allowed_tools == []
+        assert profile.mcp_servers == {}
+        assert "## Rules" in profile.system_prompt_suffix
+        assert "- Follow PEP 8" in profile.system_prompt_suffix
+        # Only Rules in suffix — no Role or Reflection labels
+        assert "## Role" not in profile.system_prompt_suffix
+        assert "## Reflection" not in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_e_frontmatter_only(self, db):
+        """(e) Profile with only frontmatter — all sections default."""
+        text = """\
+---
+id: bare
+name: Bare Profile
+---
+"""
+        parsed = parse_profile(text)
+        assert parsed.is_valid
+        assert parsed.config == {}
+        assert parsed.tools == {}
+        assert parsed.mcp_servers == {}
+        assert parsed.role == ""
+        assert parsed.rules == ""
+        assert parsed.reflection == ""
+
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+
+        profile = await db.get_profile("bare")
+        assert profile.name == "Bare Profile"
+        assert profile.model == ""
+        assert profile.permission_mode == ""
+        assert profile.allowed_tools == []
+        assert profile.mcp_servers == {}
+        assert profile.system_prompt_suffix == ""
+
+    # -------------------------------------------------------------------
+    # (f) Round-trip: write → parse → sync to DB → read DB → verify
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_round_trip_full_profile(self, db):
+        """(f) Full round-trip: markdown → parse → sync → DB read → field verification."""
+        # Step 1: Parse the markdown
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+        assert parsed.is_valid
+
+        # Step 2: Convert to AgentProfile dict (intermediate verification)
+        profile_dict = parsed_profile_to_agent_profile(parsed)
+        assert profile_dict["id"] == "full-agent"
+        assert profile_dict["name"] == "Full Integration Agent"
+        assert profile_dict["model"] == "claude-sonnet-4-6"
+        assert profile_dict["permission_mode"] == "auto"
+        assert profile_dict["allowed_tools"] == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        assert len(profile_dict["mcp_servers"]) == 2
+        assert "role" in profile_dict
+        assert "rules" in profile_dict
+        assert "reflection" in profile_dict
+        assert "system_prompt_suffix" in profile_dict
+
+        # Step 3: Sync to database
+        result = await sync_profile_to_db(parsed, db)
+        assert result.success
+        assert result.action == "created"
+        assert result.profile_id == "full-agent"
+
+        # Step 4: Read back from database
+        profile = await db.get_profile("full-agent")
+        assert profile is not None
+
+        # Step 5: Verify ALL fields match the original parsed content
+        assert profile.id == "full-agent"
+        assert profile.name == "Full Integration Agent"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+
+        # MCP servers round-trip
+        assert len(profile.mcp_servers) == 2
+        github = profile.mcp_servers["github"]
+        assert github["command"] == "npx"
+        assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
+        assert github["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+        playwright = profile.mcp_servers["playwright"]
+        assert playwright["command"] == "npx"
+        assert playwright["args"] == ["@anthropic/mcp-playwright"]
+
+        # Prompt sections round-trip (in system_prompt_suffix)
+        assert "senior software engineer" in profile.system_prompt_suffix
+        assert "### Primary Responsibilities" in profile.system_prompt_suffix
+        assert "- Always run existing tests before committing" in profile.system_prompt_suffix
+        assert "surprising behavior" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_f_round_trip_via_text_wrapper(self, db):
+        """(f) Round-trip using sync_profile_text_to_db convenience wrapper."""
+        # Single call: markdown text → parse → sync
+        result = await sync_profile_text_to_db(ROADMAP_FULL_PROFILE, db)
+        assert result.success
+        assert result.profile_id == "full-agent"
+
+        # Read back and verify key fields
+        profile = await db.get_profile("full-agent")
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        assert "github" in profile.mcp_servers
+        assert "playwright" in profile.mcp_servers
+        assert "senior software engineer" in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_f_round_trip_partial_profile(self, db):
+        """(f) Round-trip with a partial profile preserves present fields and defaults."""
+        text = """\
+---
+id: partial-rt
+name: Partial Round-Trip
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+
+## Role
+You handle code reviews.
+"""
+        result = await sync_profile_text_to_db(text, db)
+        assert result.success
+
+        profile = await db.get_profile("partial-rt")
+        assert profile.id == "partial-rt"
+        assert profile.name == "Partial Round-Trip"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == ""  # Not specified → default
+        assert profile.allowed_tools == []  # No Tools section → empty
+        assert profile.mcp_servers == {}  # No MCP Servers → empty
+        assert "code reviews" in profile.system_prompt_suffix
+        # Only Role in suffix
+        assert "## Role" in profile.system_prompt_suffix
+        assert "## Rules" not in profile.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_f_round_trip_via_file_watcher(self, db, tmp_path):
+        """(f) Round-trip through the VaultWatcher file handler pipeline."""
+        profile_path = tmp_path / "agent-types" / "roundtrip" / "profile.md"
+        _create_file(str(profile_path), ROADMAP_FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/roundtrip/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db)
+
+        # Verify the full profile round-tripped through the watcher pipeline
+        profile = await db.get_profile("full-agent")
+        assert profile is not None
+        assert profile.name == "Full Integration Agent"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        assert len(profile.mcp_servers) == 2
+        assert "senior software engineer" in profile.system_prompt_suffix
+
+    # -------------------------------------------------------------------
+    # (g) Sync is an upsert — existing profile updated, not duplicated
+    # -------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_g_upsert_creates_then_updates(self, db):
+        """(g) First sync creates; second sync updates the same row."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+
+        r1 = await sync_profile_to_db(parsed, db)
+        assert r1.success
+        assert r1.action == "created"
+
+        r2 = await sync_profile_to_db(parsed, db)
+        assert r2.success
+        assert r2.action == "updated"
+
+    @pytest.mark.asyncio
+    async def test_g_upsert_does_not_duplicate(self, db):
+        """(g) Multiple syncs of the same profile produce exactly one DB row."""
+        parsed = parse_profile(ROADMAP_FULL_PROFILE)
+
+        for _ in range(5):
+            result = await sync_profile_to_db(parsed, db)
+            assert result.success
+
+        profiles = await db.list_profiles()
+        matching = [p for p in profiles if p.id == "full-agent"]
+        assert len(matching) == 1
+
+    @pytest.mark.asyncio
+    async def test_g_upsert_updates_all_fields(self, db):
+        """(g) Upsert updates every mutable field on the existing row."""
+        # Create initial version
+        v1_text = """\
+---
+id: evolving
+name: Version One
+---
+
+## Config
+```json
+{"model": "old-model", "permission_mode": "plan"}
+```
+
+## Tools
+```json
+{"allowed": ["Read"]}
+```
+
+## Role
+Original role.
+"""
+        r1 = await sync_profile_text_to_db(v1_text, db)
+        assert r1.success
+        assert r1.action == "created"
+
+        p1 = await db.get_profile("evolving")
+        assert p1.name == "Version One"
+        assert p1.model == "old-model"
+        assert p1.permission_mode == "plan"
+        assert p1.allowed_tools == ["Read"]
+
+        # Update with different values
+        v2_text = """\
+---
+id: evolving
+name: Version Two
+---
+
+## Config
+```json
+{"model": "new-model", "permission_mode": "auto"}
+```
+
+## Tools
+```json
+{"allowed": ["Read", "Write", "Bash"]}
+```
+
+## MCP Servers
+```json
+{"linter": {"command": "eslint"}}
+```
+
+## Role
+Updated role.
+
+## Rules
+- New rule
+"""
+        r2 = await sync_profile_text_to_db(v2_text, db)
+        assert r2.success
+        assert r2.action == "updated"
+
+        p2 = await db.get_profile("evolving")
+        assert p2.name == "Version Two"
+        assert p2.model == "new-model"
+        assert p2.permission_mode == "auto"
+        assert p2.allowed_tools == ["Read", "Write", "Bash"]
+        assert p2.mcp_servers == {"linter": {"command": "eslint"}}
+        assert "Updated role" in p2.system_prompt_suffix
+        assert "- New rule" in p2.system_prompt_suffix
+
+    @pytest.mark.asyncio
+    async def test_g_upsert_preserves_row_on_invalid_update(self, db):
+        """(g) Failed sync (invalid JSON) preserves the existing DB row."""
+        # Seed a valid profile
+        await sync_profile_text_to_db(
+            """\
+---
+id: stable
+name: Stable Profile
+---
+
+## Config
+```json
+{"model": "good-model"}
+```
+""",
+            db,
+        )
+
+        original = await db.get_profile("stable")
+        assert original.model == "good-model"
+
+        # Attempt to sync invalid version
+        bad_text = """\
+---
+id: stable
+name: Broken Stable
+---
+
+## Config
+```json
+{not valid json}
+```
+"""
+        result = await sync_profile_text_to_db(bad_text, db)
+        assert not result.success
+
+        # Original row preserved unchanged
+        preserved = await db.get_profile("stable")
+        assert preserved.name == "Stable Profile"
+        assert preserved.model == "good-model"
+
+    @pytest.mark.asyncio
+    async def test_g_upsert_only_one_row_after_create_update_cycle(self, db):
+        """(g) Create → update → update produces exactly one row with latest values."""
+        texts = [
+            '---\nid: cycle\nname: V1\n---\n\n## Config\n```json\n{"model": "m1"}\n```\n',
+            '---\nid: cycle\nname: V2\n---\n\n## Config\n```json\n{"model": "m2"}\n```\n',
+            '---\nid: cycle\nname: V3\n---\n\n## Config\n```json\n{"model": "m3"}\n```\n',
+        ]
+
+        actions = []
+        for text in texts:
+            result = await sync_profile_text_to_db(text, db)
+            assert result.success
+            actions.append(result.action)
+
+        assert actions == ["created", "updated", "updated"]
+
+        # Only one row, with V3 values
+        profiles = await db.list_profiles()
+        matching = [p for p in profiles if p.id == "cycle"]
+        assert len(matching) == 1
+        assert matching[0].name == "V3"
+        assert matching[0].model == "m3"
