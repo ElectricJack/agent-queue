@@ -6249,6 +6249,36 @@ feature work stuck on feature branches across multiple workspaces.
 
         return result
 
+    async def _cmd_migrate_profiles(self, args: dict) -> dict:
+        """Migrate DB-only profiles to vault markdown files.
+
+        Reads all profiles from the agent_profiles table and writes them
+        as hybrid-format markdown files in the vault.  Profiles that already
+        have a vault file are skipped (unless force=True).
+
+        Args:
+            dry_run (bool): Preview what would be migrated without writing.
+            verify (bool): Verify round-trip fidelity after writing (default True).
+            force (bool): Overwrite existing vault files (default False).
+
+        Returns:
+            Migration report dict with written/skipped/error counts.
+        """
+        from src.profile_migration import migrate_db_profiles_to_vault
+
+        dry_run = args.get("dry_run", False)
+        verify = args.get("verify", True)
+        force = args.get("force", False)
+
+        report = await migrate_db_profiles_to_vault(
+            self.db,
+            self.config.data_dir,
+            dry_run=dry_run,
+            verify=verify,
+            force=force,
+        )
+        return report.to_dict()
+
     # -------------------------------------------------------------------
     # Tool navigation commands (Phase 3 -- tiered tool system)
     # -------------------------------------------------------------------
