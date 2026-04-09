@@ -502,3 +502,295 @@ def test_topic_filter_with_source_prefix(store: MilvusStore):
     assert "combo_1" in result_hashes, "Should match: right source + right topic"
     assert "combo_2" not in result_hashes, "Should exclude: wrong source prefix"
     assert "combo_3" not in result_hashes, "Should exclude: wrong topic"
+
+
+# ---- Topic fallback tests (MemSearch.search auto-widen) ----------------------
+
+
+class _MockEmbedder:
+    """Fake embedding provider for testing without API keys."""
+
+    model_name = "mock-embed"
+    dimension = 4
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0, 0.0]] * len(texts)
+
+
+@pytest.fixture
+def memsearch_mock(tmp_path: Path):
+    """MemSearch instance with a mock embedder (no API key needed)."""
+    from unittest.mock import patch
+
+    from memsearch.core import MemSearch
+
+    with patch("memsearch.core.get_provider", return_value=_MockEmbedder()):
+        ms = MemSearch(milvus_uri=str(tmp_path / "fallback_test.db"))
+    yield ms
+    ms.close()
+
+
+@pytest.mark.asyncio
+async def test_topic_fallback_widens_when_few_results(memsearch_mock):
+    """MemSearch.search() auto-widens to unfiltered when topic yields < 3 results.
+
+    Spec: docs/specs/design/memory-scoping.md §3 — 'If the topic filter returns
+    too few results (< 3), the search automatically falls back to unfiltered search
+    to avoid missing relevant cross-topic knowledge.'
+    """
+    ms = memsearch_mock
+
+    # Populate: 1 rare-topic chunk + 1 untagged = 2 results with topic filter (< 3)
+    # Plus 4 chunks with a different topic that should appear after fallback
+    chunks = [
+        {
+            "chunk_hash": "rare1",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Rare topic knowledge about edge cases",
+            "source": "rare.md",
+            "heading": "Rare",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "rare_topic",
+        },
+        {
+            "chunk_hash": "untagged1",
+            "embedding": [0.9, 0.1, 0.0, 0.0],
+            "content": "General knowledge without topic tag",
+            "source": "general.md",
+            "heading": "General",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "",
+        },
+        {
+            "chunk_hash": "common1",
+            "embedding": [0.8, 0.2, 0.0, 0.0],
+            "content": "Common topic knowledge item one",
+            "source": "common1.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+        {
+            "chunk_hash": "common2",
+            "embedding": [0.7, 0.3, 0.0, 0.0],
+            "content": "Common topic knowledge item two",
+            "source": "common2.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+        {
+            "chunk_hash": "common3",
+            "embedding": [0.6, 0.4, 0.0, 0.0],
+            "content": "Common topic knowledge item three",
+            "source": "common3.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+        {
+            "chunk_hash": "common4",
+            "embedding": [0.5, 0.5, 0.0, 0.0],
+            "content": "Common topic knowledge item four",
+            "source": "common4.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+    ]
+    ms.store.upsert(chunks)
+
+    # Search with rare_topic — only 2 matches (rare1 + untagged1), below threshold of 3
+    results = await ms.search("knowledge", topic="rare_topic", top_k=10)
+
+    # Fallback should have widened: we now get results from ALL topics
+    result_hashes = {r["chunk_hash"] for r in results}
+    assert len(results) >= 3, (
+        f"Fallback should have widened search to return more results, got {len(results)}"
+    )
+    # Chunks from the other topic should now be included
+    common_found = result_hashes & {"common1", "common2", "common3", "common4"}
+    assert len(common_found) > 0, (
+        "After fallback, results should include chunks from other topics"
+    )
+
+
+@pytest.mark.asyncio
+async def test_topic_no_fallback_when_enough_results(memsearch_mock):
+    """MemSearch.search() does NOT widen when topic filter yields >= 3 results."""
+    ms = memsearch_mock
+
+    # Populate: 3 same-topic chunks + 1 untagged = 4 results >= threshold
+    # Plus 2 chunks with a different topic that should NOT appear
+    chunks = [
+        {
+            "chunk_hash": "auth1",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Authentication via OAuth tokens",
+            "source": "auth1.md",
+            "heading": "Auth",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "auth2",
+            "embedding": [0.9, 0.1, 0.0, 0.0],
+            "content": "Authentication session management",
+            "source": "auth2.md",
+            "heading": "Auth",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "auth3",
+            "embedding": [0.8, 0.2, 0.0, 0.0],
+            "content": "Authentication password hashing",
+            "source": "auth3.md",
+            "heading": "Auth",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "authentication",
+        },
+        {
+            "chunk_hash": "untagged_n",
+            "embedding": [0.7, 0.3, 0.0, 0.0],
+            "content": "General project conventions",
+            "source": "conventions.md",
+            "heading": "Conventions",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "",
+        },
+        {
+            "chunk_hash": "deploy1",
+            "embedding": [0.6, 0.4, 0.0, 0.0],
+            "content": "Deployment pipeline configuration",
+            "source": "deploy.md",
+            "heading": "Deploy",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "deployment",
+        },
+        {
+            "chunk_hash": "deploy2",
+            "embedding": [0.5, 0.5, 0.0, 0.0],
+            "content": "Deployment rollback procedures",
+            "source": "deploy2.md",
+            "heading": "Deploy",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "deployment",
+        },
+    ]
+    ms.store.upsert(chunks)
+
+    # Search with authentication topic — 4 matches (3 auth + 1 untagged) >= 3 threshold
+    results = await ms.search("authentication", topic="authentication", top_k=10)
+
+    result_hashes = {r["chunk_hash"] for r in results}
+    # Should NOT include deployment chunks (no fallback triggered)
+    assert "deploy1" not in result_hashes, (
+        "Should not fallback — topic filter returned enough results"
+    )
+    assert "deploy2" not in result_hashes, (
+        "Should not fallback — topic filter returned enough results"
+    )
+    # Should include auth chunks and untagged
+    auth_found = result_hashes & {"auth1", "auth2", "auth3"}
+    assert len(auth_found) >= 1, "Should include authentication-topic chunks"
+
+
+@pytest.mark.asyncio
+async def test_topic_fallback_preserves_source_prefix(memsearch_mock):
+    """Fallback removes topic filter but preserves source_prefix constraint."""
+    ms = memsearch_mock
+
+    # Populate: 1 chunk matching both source prefix + topic (< 3 → triggers fallback)
+    # Plus chunks in different source paths that should remain excluded after fallback
+    chunks = [
+        {
+            "chunk_hash": "projA_rare",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Rare topic in project A",
+            "source": "/projects/alpha/rare.md",
+            "heading": "Rare",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "rare_topic",
+        },
+        {
+            "chunk_hash": "projA_common",
+            "embedding": [0.9, 0.1, 0.0, 0.0],
+            "content": "Common topic in project A",
+            "source": "/projects/alpha/common.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+        {
+            "chunk_hash": "projB_rare",
+            "embedding": [0.8, 0.2, 0.0, 0.0],
+            "content": "Rare topic in project B",
+            "source": "/projects/beta/rare.md",
+            "heading": "Rare",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "rare_topic",
+        },
+        {
+            "chunk_hash": "projB_common",
+            "embedding": [0.7, 0.3, 0.0, 0.0],
+            "content": "Common topic in project B",
+            "source": "/projects/beta/common.md",
+            "heading": "Common",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "topic": "common_topic",
+        },
+    ]
+    ms.store.upsert(chunks)
+
+    # Search with rare_topic + source prefix for project alpha
+    # Only 1 match (projA_rare) — below threshold → fallback
+    # Fallback should widen topic but KEEP source prefix
+    results = await ms.search(
+        "topic", topic="rare_topic", source_prefix="/projects/alpha", top_k=10
+    )
+
+    result_hashes = {r["chunk_hash"] for r in results}
+    # After fallback: should include projA_common (same source, different topic)
+    assert "projA_common" in result_hashes, (
+        "Fallback should widen topic but keep source prefix — projA_common should appear"
+    )
+    # Should NOT include project B chunks (source prefix still active)
+    assert "projB_rare" not in result_hashes, (
+        "Source prefix should still exclude other projects after fallback"
+    )
+    assert "projB_common" not in result_hashes, (
+        "Source prefix should still exclude other projects after fallback"
+    )
