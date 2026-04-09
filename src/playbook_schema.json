@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-queue.dev/schemas/compiled-playbook.json",
+  "title": "Compiled Playbook",
+  "description": "Runtime artifact produced by LLM compilation of a playbook markdown file. Defines a directed graph of LLM decision points (nodes) connected by conditional transitions (edges). See docs/specs/design/playbooks.md \u00a75.",
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "source_hash",
+    "triggers",
+    "scope",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique playbook identifier.",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "description": "Auto-incremented on each recompilation.",
+      "minimum": 1
+    },
+    "source_hash": {
+      "type": "string",
+      "description": "Hash of source markdown for change detection.",
+      "minLength": 1
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Event types that start this playbook.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "scope": {
+      "type": "string",
+      "description": "Where this playbook applies: 'system', 'project', or 'agent-type:{type}'.",
+      "pattern": "^(system|project|agent-type:.+)$"
+    },
+    "cooldown_seconds": {
+      "type": "integer",
+      "description": "Minimum seconds between executions.",
+      "minimum": 0
+    },
+    "max_tokens": {
+      "type": "integer",
+      "description": "Token budget for the entire run. Run fails if exceeded.",
+      "minimum": 1
+    },
+    "llm_config": {
+      "$ref": "#/$defs/llm_config"
+    },
+    "nodes": {
+      "type": "object",
+      "description": "Map of node ID to node definition. Must contain exactly one entry node and at least one terminal node.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/node"
+      }
+    }
+  },
+  "$defs": {
+    "llm_config": {
+      "type": "object",
+      "description": "LLM provider/model override.",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Chat provider name (e.g. 'anthropic', 'google')."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier (e.g. 'claude-sonnet-4-20250514')."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "description": "A single step in the playbook graph. Either an action node (has prompt + transitions/goto), a terminal node (terminal=true), or a human-gate node (wait_for_human=true).",
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "boolean",
+          "description": "If true, this is the starting node. Exactly one per playbook.",
+          "default": false
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Focused instruction for the LLM at this step. Required for non-terminal nodes."
+        },
+        "transitions": {
+          "type": "array",
+          "description": "Conditional edges. Mutually exclusive with 'goto'. Evaluated by a separate LLM call or structured check.",
+          "items": {
+            "$ref": "#/$defs/transition"
+          },
+          "minItems": 1
+        },
+        "goto": {
+          "type": "string",
+          "description": "Unconditional next node ID. Mutually exclusive with 'transitions'."
+        },
+        "terminal": {
+          "type": "boolean",
+          "description": "If true, execution ends at this node.",
+          "default": false
+        },
+        "wait_for_human": {
+          "type": "boolean",
+          "description": "If true, pause execution and surface for human review.",
+          "default": false
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Max time for this node's LLM call before failing.",
+          "minimum": 1
+        },
+        "llm_config": {
+          "$ref": "#/$defs/llm_config"
+        },
+        "summarize_before": {
+          "type": "boolean",
+          "description": "If true, summarize conversation history before this node to manage context size.",
+          "default": false
+        }
+      },
+      "if": {
+        "not": {
+          "properties": {
+            "terminal": {
+              "const": true
+            }
+          },
+          "required": [
+            "terminal"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "prompt"
+        ]
+      }
+    },
+    "transition": {
+      "type": "object",
+      "description": "A conditional edge connecting two nodes. Must have either 'when' (condition) or 'otherwise' (default fallback).",
+      "required": [
+        "goto"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "description": "Natural language condition (string) OR structured function-call expression (object) evaluated to determine if this transition should be followed.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "description": "Structured expression for deterministic evaluation without an LLM call."
+            }
+          ]
+        },
+        "goto": {
+          "type": "string",
+          "description": "Target node ID.",
+          "minLength": 1
+        },
+        "otherwise": {
+          "type": "boolean",
+          "description": "If true, this is the default/fallback transition when no other 'when' condition matches.",
+          "const": true
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "when",
+            "goto"
+          ]
+        },
+        {
+          "required": [
+            "otherwise",
+            "goto"
+          ]
+        }
+      ]
+    }
+  }
+}

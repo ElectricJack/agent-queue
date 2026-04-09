@@ -1,0 +1,947 @@
+"""Tests for compiled playbook models and JSON Schema.
+
+Validates the dataclasses (round-trip serialization, validation logic,
+graph helpers) and the generated JSON Schema against the spec example
+from ``docs/specs/design/playbooks.md`` Section 5.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.playbook_models import (
+    CompiledPlaybook,
+    LlmConfig,
+    NodeTraceEntry,
+    PlaybookNode,
+    PlaybookRun,
+    PlaybookRunStatus,
+    PlaybookScope,
+    PlaybookTransition,
+    generate_json_schema,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — the spec example from §5
+# ---------------------------------------------------------------------------
+
+SPEC_EXAMPLE_JSON = {
+    "id": "code-quality-gate",
+    "version": 1,
+    "source_hash": "a1b2c3d4",
+    "triggers": ["git.commit"],
+    "scope": "system",
+    "cooldown_seconds": 60,
+    "max_tokens": 50000,
+    "nodes": {
+        "scan": {
+            "entry": True,
+            "prompt": (
+                "Run vibecop_check on the files changed in this commit. "
+                "Use the diff to scope the scan to only changed files, not the entire repo."
+            ),
+            "transitions": [
+                {"when": "no findings", "goto": "done"},
+                {"when": "findings exist", "goto": "triage"},
+            ],
+        },
+        "triage": {
+            "prompt": "Group the scan findings by severity (error, warning, info).",
+            "transitions": [
+                {"when": "has errors", "goto": "create_error_tasks"},
+                {"when": "warnings only", "goto": "create_warning_task"},
+                {"when": "info only", "goto": "log_to_memory"},
+            ],
+        },
+        "create_error_tasks": {
+            "prompt": (
+                "Create one high-priority task per file that has errors. "
+                "Include the vibecop output and file path. If the commit was "
+                "made by an agent still running a task, attach as follow-ups "
+                "to that agent's task."
+            ),
+            "goto": "create_warning_task",
+        },
+        "create_warning_task": {
+            "prompt": "Batch all warnings into a single medium-priority task.",
+            "goto": "log_to_memory",
+        },
+        "log_to_memory": {
+            "prompt": "Record any info-level findings in project memory for reference.",
+            "goto": "done",
+        },
+        "done": {"terminal": True},
+    },
+}
+
+
+@pytest.fixture
+def spec_example() -> dict:
+    """The code-quality-gate example from the spec, as raw dict."""
+    return json.loads(json.dumps(SPEC_EXAMPLE_JSON))  # deep copy
+
+
+@pytest.fixture
+def spec_playbook(spec_example: dict) -> CompiledPlaybook:
+    """Parsed CompiledPlaybook from the spec example."""
+    return CompiledPlaybook.from_dict(spec_example)
+
+
+# ---------------------------------------------------------------------------
+# LlmConfig
+# ---------------------------------------------------------------------------
+
+
+class TestLlmConfig:
+    def test_round_trip(self):
+        cfg = LlmConfig(provider="anthropic", model="claude-sonnet-4-20250514")
+        d = cfg.to_dict()
+        assert d == {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        restored = LlmConfig.from_dict(d)
+        assert restored == cfg
+
+    def test_empty_fields_omitted(self):
+        cfg = LlmConfig()
+        assert cfg.to_dict() == {}
+
+    def test_partial_fields(self):
+        cfg = LlmConfig(model="gemini-2.0-flash")
+        d = cfg.to_dict()
+        assert d == {"model": "gemini-2.0-flash"}
+        assert "provider" not in d
+
+
+# ---------------------------------------------------------------------------
+# PlaybookTransition
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookTransition:
+    def test_natural_language_round_trip(self):
+        t = PlaybookTransition(goto="triage", when="findings exist")
+        d = t.to_dict()
+        assert d == {"goto": "triage", "when": "findings exist"}
+        restored = PlaybookTransition.from_dict(d)
+        assert restored == t
+
+    def test_structured_when_round_trip(self):
+        expr = {"function": "has_tool_output", "contains": "no findings"}
+        t = PlaybookTransition(goto="done", when=expr)
+        d = t.to_dict()
+        assert d["when"] == expr
+        restored = PlaybookTransition.from_dict(d)
+        assert restored.when == expr
+
+    def test_otherwise_round_trip(self):
+        t = PlaybookTransition(goto="fallback", otherwise=True)
+        d = t.to_dict()
+        assert d == {"goto": "fallback", "otherwise": True}
+        assert "when" not in d
+        restored = PlaybookTransition.from_dict(d)
+        assert restored.otherwise is True
+        assert restored.when is None
+
+    def test_otherwise_defaults_false(self):
+        t = PlaybookTransition.from_dict({"goto": "next", "when": "condition"})
+        assert t.otherwise is False
+
+
+# ---------------------------------------------------------------------------
+# PlaybookNode
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookNode:
+    def test_action_node_with_transitions(self):
+        node = PlaybookNode(
+            prompt="Do something.",
+            entry=True,
+            transitions=[
+                PlaybookTransition(goto="a", when="yes"),
+                PlaybookTransition(goto="b", when="no"),
+            ],
+        )
+        d = node.to_dict()
+        assert d["entry"] is True
+        assert d["prompt"] == "Do something."
+        assert len(d["transitions"]) == 2
+        assert "goto" not in d  # mutually exclusive
+        assert "terminal" not in d
+
+    def test_action_node_with_goto(self):
+        node = PlaybookNode(prompt="Step 2.", goto="step3")
+        d = node.to_dict()
+        assert d == {"prompt": "Step 2.", "goto": "step3"}
+
+    def test_terminal_node(self):
+        node = PlaybookNode(terminal=True)
+        d = node.to_dict()
+        assert d == {"terminal": True}
+        assert "prompt" not in d
+
+    def test_human_gate_node(self):
+        node = PlaybookNode(
+            prompt="Review this.",
+            wait_for_human=True,
+            goto="after_review",
+        )
+        d = node.to_dict()
+        assert d["wait_for_human"] is True
+        assert d["goto"] == "after_review"
+
+    def test_optional_fields(self):
+        node = PlaybookNode(
+            prompt="Complex step.",
+            goto="next",
+            timeout_seconds=120,
+            llm_config=LlmConfig(model="fast-model"),
+            summarize_before=True,
+        )
+        d = node.to_dict()
+        assert d["timeout_seconds"] == 120
+        assert d["llm_config"] == {"model": "fast-model"}
+        assert d["summarize_before"] is True
+
+    def test_round_trip(self):
+        node = PlaybookNode(
+            prompt="Test.",
+            entry=True,
+            transitions=[PlaybookTransition(goto="end", when="done")],
+            timeout_seconds=60,
+            llm_config=LlmConfig(provider="anthropic"),
+            summarize_before=True,
+        )
+        restored = PlaybookNode.from_dict(node.to_dict())
+        assert restored.prompt == node.prompt
+        assert restored.entry == node.entry
+        assert len(restored.transitions) == 1
+        assert restored.timeout_seconds == 60
+        assert restored.llm_config is not None
+        assert restored.llm_config.provider == "anthropic"
+        assert restored.summarize_before is True
+
+    def test_defaults(self):
+        node = PlaybookNode()
+        assert node.prompt == ""
+        assert node.entry is False
+        assert node.terminal is False
+        assert node.transitions == []
+        assert node.goto is None
+        assert node.wait_for_human is False
+        assert node.timeout_seconds is None
+        assert node.llm_config is None
+        assert node.summarize_before is False
+
+
+# ---------------------------------------------------------------------------
+# CompiledPlaybook — serialization
+# ---------------------------------------------------------------------------
+
+
+class TestCompiledPlaybookSerialization:
+    def test_spec_example_round_trip(self, spec_example: dict, spec_playbook: CompiledPlaybook):
+        """The spec example should survive a from_dict → to_dict round trip."""
+        result = spec_playbook.to_dict()
+        assert result == spec_example
+
+    def test_required_fields(self, spec_playbook: CompiledPlaybook):
+        assert spec_playbook.id == "code-quality-gate"
+        assert spec_playbook.version == 1
+        assert spec_playbook.source_hash == "a1b2c3d4"
+        assert spec_playbook.triggers == ["git.commit"]
+        assert spec_playbook.scope == "system"
+
+    def test_optional_fields(self, spec_playbook: CompiledPlaybook):
+        assert spec_playbook.cooldown_seconds == 60
+        assert spec_playbook.max_tokens == 50000
+        assert spec_playbook.llm_config is None  # not in example
+
+    def test_nodes_parsed(self, spec_playbook: CompiledPlaybook):
+        assert len(spec_playbook.nodes) == 6
+        assert "scan" in spec_playbook.nodes
+        assert "done" in spec_playbook.nodes
+
+    def test_entry_node(self, spec_playbook: CompiledPlaybook):
+        scan = spec_playbook.nodes["scan"]
+        assert scan.entry is True
+        assert scan.prompt.startswith("Run vibecop_check")
+        assert len(scan.transitions) == 2
+
+    def test_terminal_node(self, spec_playbook: CompiledPlaybook):
+        done = spec_playbook.nodes["done"]
+        assert done.terminal is True
+        assert done.prompt == ""
+
+    def test_goto_node(self, spec_playbook: CompiledPlaybook):
+        create_err = spec_playbook.nodes["create_error_tasks"]
+        assert create_err.goto == "create_warning_task"
+        assert create_err.transitions == []
+
+    def test_with_llm_config(self):
+        data = {
+            "id": "test",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["test.event"],
+            "scope": "system",
+            "llm_config": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
+            "nodes": {
+                "start": {"entry": True, "prompt": "Go.", "goto": "end"},
+                "end": {"terminal": True},
+            },
+        }
+        pb = CompiledPlaybook.from_dict(data)
+        assert pb.llm_config is not None
+        assert pb.llm_config.provider == "anthropic"
+        result = pb.to_dict()
+        assert result["llm_config"] == {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+        }
+
+    def test_minimal_playbook_round_trip(self):
+        data = {
+            "id": "minimal",
+            "version": 1,
+            "source_hash": "xyz",
+            "triggers": ["timer.30m"],
+            "scope": "project",
+            "nodes": {
+                "start": {"entry": True, "prompt": "Do the thing.", "goto": "end"},
+                "end": {"terminal": True},
+            },
+        }
+        pb = CompiledPlaybook.from_dict(data)
+        assert pb.to_dict() == data
+
+
+# ---------------------------------------------------------------------------
+# CompiledPlaybook — scope helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookScope:
+    def test_system_scope(self):
+        pb = CompiledPlaybook(id="t", version=1, source_hash="h", triggers=["x"], scope="system")
+        scope, ident = pb.parse_scope()
+        assert scope == PlaybookScope.SYSTEM
+        assert ident is None
+
+    def test_project_scope(self):
+        pb = CompiledPlaybook(id="t", version=1, source_hash="h", triggers=["x"], scope="project")
+        scope, ident = pb.parse_scope()
+        assert scope == PlaybookScope.PROJECT
+        assert ident is None
+
+    def test_agent_type_scope(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="agent-type:coding",
+        )
+        scope, ident = pb.parse_scope()
+        assert scope == PlaybookScope.AGENT_TYPE
+        assert ident == "coding"
+
+    def test_agent_type_scope_with_complex_name(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="agent-type:web-developer",
+        )
+        scope, ident = pb.parse_scope()
+        assert scope == PlaybookScope.AGENT_TYPE
+        assert ident == "web-developer"
+
+    def test_unknown_scope_defaults_system(self):
+        pb = CompiledPlaybook(id="t", version=1, source_hash="h", triggers=["x"], scope="bogus")
+        scope, ident = pb.parse_scope()
+        assert scope == PlaybookScope.SYSTEM
+        assert ident is None
+
+
+# ---------------------------------------------------------------------------
+# CompiledPlaybook — graph helpers
+# ---------------------------------------------------------------------------
+
+
+class TestGraphHelpers:
+    def test_entry_node_id(self, spec_playbook: CompiledPlaybook):
+        assert spec_playbook.entry_node_id() == "scan"
+
+    def test_entry_node_id_missing(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={"a": PlaybookNode(prompt="x", terminal=True)},
+        )
+        assert pb.entry_node_id() is None
+
+    def test_terminal_node_ids(self, spec_playbook: CompiledPlaybook):
+        assert spec_playbook.terminal_node_ids() == ["done"]
+
+    def test_reachable_node_ids(self, spec_playbook: CompiledPlaybook):
+        reachable = spec_playbook.reachable_node_ids()
+        assert reachable == {
+            "scan",
+            "done",
+            "triage",
+            "create_error_tasks",
+            "create_warning_task",
+            "log_to_memory",
+        }
+
+    def test_reachable_detects_unreachable(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(entry=True, prompt="Go.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+                "orphan": PlaybookNode(prompt="Nobody reaches me.", goto="end"),
+            },
+        )
+        reachable = pb.reachable_node_ids()
+        assert "orphan" not in reachable
+        assert reachable == {"start", "end"}
+
+    def test_reachable_from_specific_node(self, spec_playbook: CompiledPlaybook):
+        reachable = spec_playbook.reachable_node_ids("triage")
+        assert "scan" not in reachable
+        assert "triage" in reachable
+        assert "done" in reachable
+
+    def test_reachable_empty_when_no_entry(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+        )
+        assert pb.reachable_node_ids() == set()
+
+
+# ---------------------------------------------------------------------------
+# CompiledPlaybook — validation
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookValidation:
+    def test_spec_example_is_valid(self, spec_playbook: CompiledPlaybook):
+        errors = spec_playbook.validate()
+        assert errors == [], f"Spec example should be valid, got: {errors}"
+
+    def test_missing_id(self):
+        pb = CompiledPlaybook(
+            id="",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "s": PlaybookNode(entry=True, prompt="Go.", goto="e"),
+                "e": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("id" in e for e in errors)
+
+    def test_missing_triggers(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=[],
+            scope="system",
+            nodes={
+                "s": PlaybookNode(entry=True, prompt="Go.", goto="e"),
+                "e": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("triggers" in e for e in errors)
+
+    def test_missing_scope(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="",
+            nodes={
+                "s": PlaybookNode(entry=True, prompt="Go.", goto="e"),
+                "e": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("scope" in e for e in errors)
+
+    def test_missing_source_hash(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "s": PlaybookNode(entry=True, prompt="Go.", goto="e"),
+                "e": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("source_hash" in e for e in errors)
+
+    def test_no_nodes(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+        )
+        errors = pb.validate()
+        assert any("no nodes" in e for e in errors)
+
+    def test_no_entry_node(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(prompt="Go.", goto="b"),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("entry" in e.lower() for e in errors)
+
+    def test_multiple_entry_nodes(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="c"),
+                "b": PlaybookNode(entry=True, prompt="Also go.", goto="c"),
+                "c": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("multiple entry" in e.lower() for e in errors)
+
+    def test_no_terminal_node(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="b"),
+                "b": PlaybookNode(prompt="Continue.", goto="a"),  # cycle, no terminal
+            },
+        )
+        errors = pb.validate()
+        assert any("terminal" in e.lower() for e in errors)
+
+    def test_non_terminal_without_prompt(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, goto="b"),  # missing prompt
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("prompt" in e for e in errors)
+
+    def test_transitions_and_goto_mutually_exclusive(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(
+                    entry=True,
+                    prompt="Go.",
+                    transitions=[PlaybookTransition(goto="b", when="yes")],
+                    goto="b",  # conflict!
+                ),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("mutually exclusive" in e for e in errors)
+
+    def test_non_terminal_no_exit_path(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Dead end."),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("transitions" in e and "goto" in e for e in errors)
+
+    def test_transition_target_missing(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(
+                    entry=True,
+                    prompt="Go.",
+                    transitions=[PlaybookTransition(goto="nonexistent", when="yes")],
+                ),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("nonexistent" in e for e in errors)
+
+    def test_goto_target_missing(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="nonexistent"),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("nonexistent" in e for e in errors)
+
+    def test_unreachable_nodes(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="b"),
+                "b": PlaybookNode(terminal=True),
+                "orphan": PlaybookNode(prompt="Alone.", goto="b"),
+            },
+        )
+        errors = pb.validate()
+        assert any("unreachable" in e.lower() for e in errors)
+        assert any("orphan" in e for e in errors)
+
+    def test_transition_without_when_or_otherwise(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(
+                    entry=True,
+                    prompt="Go.",
+                    transitions=[PlaybookTransition(goto="b")],  # no when or otherwise
+                ),
+                "b": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("when" in e and "otherwise" in e for e in errors)
+
+    def test_valid_minimal_playbook(self):
+        pb = CompiledPlaybook(
+            id="minimal",
+            version=1,
+            source_hash="abc",
+            triggers=["timer.5m"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(entry=True, prompt="Do it.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        assert pb.validate() == []
+
+    def test_valid_with_otherwise_transition(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Check.",
+                    transitions=[
+                        PlaybookTransition(goto="a", when="condition met"),
+                        PlaybookTransition(goto="b", otherwise=True),
+                    ],
+                ),
+                "a": PlaybookNode(prompt="Path A.", goto="end"),
+                "b": PlaybookNode(prompt="Path B.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        assert pb.validate() == []
+
+    def test_wait_for_human_node_needs_exit(self):
+        """A wait_for_human node without goto/transitions is allowed (pauses)."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Review.",
+                    wait_for_human=True,
+                ),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        # wait_for_human without exit is allowed — executor handles resume
+        assert not any("transitions" in e and "goto" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# NodeTraceEntry
+# ---------------------------------------------------------------------------
+
+
+class TestNodeTraceEntry:
+    def test_round_trip(self):
+        entry = NodeTraceEntry(
+            node_id="scan",
+            started_at=1000.0,
+            completed_at=1005.0,
+            status="completed",
+        )
+        d = entry.to_dict()
+        assert d == {
+            "node_id": "scan",
+            "started_at": 1000.0,
+            "completed_at": 1005.0,
+            "status": "completed",
+        }
+        restored = NodeTraceEntry.from_dict(d)
+        assert restored == entry
+
+    def test_running_entry_omits_completed_at(self):
+        entry = NodeTraceEntry(node_id="step1", started_at=1000.0)
+        d = entry.to_dict()
+        assert "completed_at" not in d
+        assert d["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# PlaybookRun
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookRun:
+    def test_round_trip(self):
+        run = PlaybookRun(
+            run_id="run-123",
+            playbook_id="code-quality-gate",
+            playbook_version=1,
+            trigger_event={"type": "git.commit", "commit_hash": "abc"},
+            status=PlaybookRunStatus.COMPLETED,
+            current_node="done",
+            conversation_history=[
+                {"role": "user", "content": "Event received: ..."},
+                {"role": "assistant", "content": "Running scan..."},
+            ],
+            node_trace=[
+                NodeTraceEntry(
+                    node_id="scan", started_at=1000.0, completed_at=1005.0, status="completed"
+                ),
+                NodeTraceEntry(
+                    node_id="done", started_at=1005.0, completed_at=1005.1, status="completed"
+                ),
+            ],
+            tokens_used=2500,
+            started_at=1000.0,
+            completed_at=1005.1,
+        )
+        d = run.to_dict()
+        assert d["status"] == "completed"
+        assert len(d["node_trace"]) == 2
+        assert d["tokens_used"] == 2500
+
+        restored = PlaybookRun.from_dict(d)
+        assert restored.run_id == "run-123"
+        assert restored.status == PlaybookRunStatus.COMPLETED
+        assert len(restored.node_trace) == 2
+        assert restored.node_trace[0].node_id == "scan"
+
+    def test_failed_run(self):
+        run = PlaybookRun(
+            run_id="run-456",
+            playbook_id="test",
+            playbook_version=1,
+            status=PlaybookRunStatus.FAILED,
+            current_node="step2",
+            error="LLM call timed out",
+            started_at=2000.0,
+        )
+        d = run.to_dict()
+        assert d["status"] == "failed"
+        assert d["error"] == "LLM call timed out"
+        assert d["current_node"] == "step2"
+        assert "completed_at" not in d
+
+    def test_paused_run_preserves_history(self):
+        history = [
+            {"role": "user", "content": "prompt 1"},
+            {"role": "assistant", "content": "response 1"},
+        ]
+        run = PlaybookRun(
+            run_id="run-789",
+            playbook_id="review",
+            playbook_version=2,
+            status=PlaybookRunStatus.PAUSED,
+            current_node="human_review",
+            conversation_history=history,
+            started_at=3000.0,
+        )
+        d = run.to_dict()
+        restored = PlaybookRun.from_dict(d)
+        assert restored.status == PlaybookRunStatus.PAUSED
+        assert restored.conversation_history == history
+
+
+# ---------------------------------------------------------------------------
+# JSON Schema
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSchema:
+    def test_schema_is_valid_structure(self):
+        schema = generate_json_schema()
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        assert schema["type"] == "object"
+        assert "id" in schema["required"]
+        assert "version" in schema["required"]
+        assert "source_hash" in schema["required"]
+        assert "triggers" in schema["required"]
+        assert "scope" in schema["required"]
+        assert "nodes" in schema["required"]
+
+    def test_schema_has_definitions(self):
+        schema = generate_json_schema()
+        assert "node" in schema["$defs"]
+        assert "transition" in schema["$defs"]
+        assert "llm_config" in schema["$defs"]
+
+    def test_schema_validates_spec_example(self):
+        """If jsonschema is available, validate the spec example against the schema."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        # Should not raise
+        jsonschema.validate(instance=SPEC_EXAMPLE_JSON, schema=schema)
+
+    def test_schema_rejects_missing_required_fields(self):
+        """Schema should reject a playbook missing required fields."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        invalid = {"id": "test", "version": 1}  # missing triggers, scope, nodes, source_hash
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=invalid, schema=schema)
+
+    def test_schema_rejects_bad_scope(self):
+        """Schema should reject invalid scope values."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        bad = {
+            "id": "test",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["x"],
+            "scope": "invalid-scope",
+            "nodes": {"s": {"entry": True, "prompt": "Go.", "goto": "e"}, "e": {"terminal": True}},
+        }
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=bad, schema=schema)
+
+    def test_schema_accepts_agent_type_scope(self):
+        """Schema should accept agent-type:X scope values."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        valid = {
+            "id": "test",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["x"],
+            "scope": "agent-type:coding",
+            "nodes": {"s": {"entry": True, "prompt": "Go.", "goto": "e"}, "e": {"terminal": True}},
+        }
+        jsonschema.validate(instance=valid, schema=schema)
+
+    def test_schema_file_matches_generated(self):
+        """The checked-in schema file should match the generated output."""
+        import pathlib
+
+        schema_path = pathlib.Path(__file__).parent.parent / "src" / "playbook_schema.json"
+        if not schema_path.exists():
+            pytest.skip("playbook_schema.json not found")
+
+        with open(schema_path) as f:
+            on_disk = json.load(f)
+        generated = generate_json_schema()
+        assert on_disk == generated, (
+            "playbook_schema.json is out of sync with generate_json_schema(). Regenerate it."
+        )
