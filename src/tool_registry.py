@@ -184,6 +184,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_active_tasks_all_projects": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
+    "list_playbooks": "playbook",
     "list_playbook_runs": "playbook",
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
@@ -2153,6 +2154,23 @@ _ALL_TOOL_DEFINITIONS = [
                         "Defaults to true for manual compilation."
                     ),
                     "default": True,
+                },
+            },
+        },
+    },
+    {
+        "name": "list_playbooks",
+        "description": (
+            "List all playbooks across scopes with status, triggers, and last run info. "
+            "Returns every active compiled playbook. Optionally filter by scope."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "description": "Filter by scope type",
+                    "enum": ["system", "project", "agent-type"],
                 },
             },
         },

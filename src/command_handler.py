@@ -6562,6 +6562,102 @@ feature work stuck on feature branches across multiple workspaces.
     # Playbook commands (spec §15)
     # ------------------------------------------------------------------
 
+    async def _cmd_list_playbooks(self, args: dict) -> dict:
+        """List all playbooks across scopes with status and last run info.
+
+        Returns every active compiled playbook with its scope, triggers,
+        compilation metadata, cooldown state, and most recent run info
+        from the database.  Supports optional filtering by scope.
+
+        Args:
+            scope: Optional — filter by scope type
+                (``system``, ``project``, ``agent-type``).
+        """
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            return {"error": "Playbook manager is not initialised"}
+
+        scope_filter = args.get("scope")
+        valid_scopes = {"system", "project", "agent-type"}
+        if scope_filter and scope_filter not in valid_scopes:
+            return {
+                "error": (
+                    f"Invalid scope '{scope_filter}'. "
+                    f"Valid: {', '.join(sorted(valid_scopes))}"
+                )
+            }
+
+        playbooks_data = []
+        for pb_id, pb in sorted(pm.active_playbooks.items()):
+            # Parse scope for filtering
+            scope_enum, scope_detail = pb.parse_scope()
+            if scope_filter and scope_enum.value != scope_filter:
+                continue
+
+            # Trigger event types
+            triggers = [
+                t.event_type if hasattr(t, "event_type") else str(t)
+                for t in pb.triggers
+            ]
+
+            # Scope identifier (project_id for project-scoped playbooks)
+            scope_id = pm.get_scope_identifier(pb_id)
+
+            # In-flight runs
+            running_runs = pm.get_runs_for_playbook(pb_id)
+
+            # Cooldown state
+            cooldown_remaining = pm.get_cooldown_remaining(pb_id, pb.scope)
+
+            # Last run from database
+            last_run_info: dict | None = None
+            try:
+                runs = await self.db.list_playbook_runs(
+                    playbook_id=pb_id,
+                    limit=1,
+                )
+                if runs:
+                    r = runs[0]
+                    last_run_info = {
+                        "run_id": r.run_id,
+                        "status": r.status,
+                        "started_at": r.started_at,
+                        "completed_at": r.completed_at,
+                        "tokens_used": r.tokens_used,
+                    }
+            except Exception:
+                pass  # DB unavailable — skip last run info
+
+            entry: dict = {
+                "id": pb_id,
+                "scope": pb.scope,
+                "triggers": triggers,
+                "version": pb.version,
+                "compiled_at": pb.compiled_at,
+                "node_count": len(pb.nodes),
+                "status": "active",
+                "running_count": len(running_runs),
+            }
+            if scope_id:
+                entry["scope_identifier"] = scope_id
+            if scope_detail:
+                entry["agent_type"] = scope_detail
+            if pb.cooldown_seconds:
+                entry["cooldown_seconds"] = pb.cooldown_seconds
+                if cooldown_remaining > 0:
+                    entry["cooldown_remaining"] = round(cooldown_remaining, 1)
+            if pb.max_tokens:
+                entry["max_tokens"] = pb.max_tokens
+            if last_run_info:
+                entry["last_run"] = last_run_info
+
+            playbooks_data.append(entry)
+
+        return {
+            "playbooks": playbooks_data,
+            "count": len(playbooks_data),
+        }
+
     async def _cmd_list_playbook_runs(self, args: dict) -> dict:
         """List recent playbook runs with optional filtering.
 

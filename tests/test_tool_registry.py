@@ -119,6 +119,7 @@ def test_registry_has_categories(registry):
         "system",
         "task",
         "plugin",
+        "playbook",
     }
 
     for cat in categories:
