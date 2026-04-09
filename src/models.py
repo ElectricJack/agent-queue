@@ -474,13 +474,15 @@ class MemoryContext:
 
     Each field contains pre-formatted markdown text ready for injection into
     the agent's context. The orchestrator assembles these tiers in priority
-    order (factsheet first, then profile, notes, recent tasks, and semantic
-    search) and trims to fit the configured token budget.
+    order (factsheet first, then profile, topic context, notes, recent tasks,
+    and semantic search) and trims to fit the configured token budget.
     """
 
     factsheet: str = ""  # Project factsheet (Tier 0, highest priority — always included)
     profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
+    topic_context: str = ""  # L2 topic-filtered knowledge (Tier 2, on-demand by topic)
+    detected_topics: list[str] = field(default_factory=list)  # Topics detected from task context
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
     search_results: str = ""  # Semantic search results (current behavior)
@@ -496,6 +498,13 @@ class MemoryContext:
             sections.append(f"## Project Profile\n{self.profile}")
         if self.project_docs:
             sections.append(f"## Project Documentation\n{self.project_docs}")
+        if self.topic_context:
+            topic_label = ", ".join(self.detected_topics) if self.detected_topics else "detected"
+            sections.append(
+                f"## Topic Context ({topic_label})\n"
+                "The following knowledge was pre-loaded based on topics detected "
+                f"in your task description.\n\n{self.topic_context}"
+            )
         if self.notes:
             sections.append(f"## Relevant Notes\n{self.notes}")
         if self.recent_tasks:
@@ -503,11 +512,7 @@ class MemoryContext:
         if self.search_results:
             sections.append(f"## Relevant Context from Project Memory\n{self.search_results}")
         if self.memory_folder:
-            tasks_ref = (
-                f"- **Task memories:** `{self.tasks_folder}`\n"
-                if self.tasks_folder
-                else ""
-            )
+            tasks_ref = f"- **Task memories:** `{self.tasks_folder}`\n" if self.tasks_folder else ""
             sections.append(
                 "## Project Memory Reference\n"
                 "This project has a memory system with historical context, past decisions, "
@@ -530,6 +535,7 @@ class MemoryContext:
                 self.factsheet,
                 self.profile,
                 self.project_docs,
+                self.topic_context,
                 self.notes,
                 self.recent_tasks,
                 self.search_results,

@@ -32,6 +32,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from typing import Any
@@ -2955,6 +2956,236 @@ class MemoryManager:
             logger.warning(f"Digest summarization failed: {e}")
             return ""
 
+    # ------------------------------------------------------------------
+    # L2 Topic Detection (spec §3)
+    # ------------------------------------------------------------------
+
+    # Default keyword aliases mapping common terms to knowledge topic names.
+    # Keys are lowercase patterns that appear in task text; values are the
+    # corresponding knowledge topic name.  The topic name itself is always
+    # matched as a keyword too — these aliases catch synonyms and related terms.
+    TOPIC_KEYWORD_ALIASES: dict[str, str] = {
+        # architecture
+        "architect": "architecture",
+        "design pattern": "architecture",
+        "module structure": "architecture",
+        "system design": "architecture",
+        "component": "architecture",
+        "refactor": "architecture",
+        "restructure": "architecture",
+        # api-and-endpoints
+        "api": "api-and-endpoints",
+        "endpoint": "api-and-endpoints",
+        "rest": "api-and-endpoints",
+        "graphql": "api-and-endpoints",
+        "route": "api-and-endpoints",
+        "handler": "api-and-endpoints",
+        "request": "api-and-endpoints",
+        "response": "api-and-endpoints",
+        "webhook": "api-and-endpoints",
+        # deployment
+        "deploy": "deployment",
+        "ci/cd": "deployment",
+        "ci cd": "deployment",
+        "pipeline": "deployment",
+        "docker": "deployment",
+        "container": "deployment",
+        "kubernetes": "deployment",
+        "k8s": "deployment",
+        "release": "deployment",
+        "staging": "deployment",
+        "production": "deployment",
+        # dependencies
+        "dependency": "dependencies",
+        "package": "dependencies",
+        "library": "dependencies",
+        "upgrade": "dependencies",
+        "version": "dependencies",
+        "import": "dependencies",
+        "install": "dependencies",
+        "requirements": "dependencies",
+        # gotchas
+        "gotcha": "gotchas",
+        "pitfall": "gotchas",
+        "caveat": "gotchas",
+        "workaround": "gotchas",
+        "edge case": "gotchas",
+        "known issue": "gotchas",
+        "quirk": "gotchas",
+        # conventions
+        "convention": "conventions",
+        "style": "conventions",
+        "naming": "conventions",
+        "format": "conventions",
+        "lint": "conventions",
+        "standard": "conventions",
+        "best practice": "conventions",
+        "code review": "conventions",
+        # decisions
+        "decision": "decisions",
+        "adr": "decisions",
+        "trade-off": "decisions",
+        "tradeoff": "decisions",
+        "rationale": "decisions",
+        "why we": "decisions",
+        "chose": "decisions",
+    }
+
+    async def detect_topics(
+        self,
+        project_id: str,
+        text: str,
+    ) -> list[str]:
+        """Detect knowledge topics relevant to the given text.
+
+        Uses keyword matching against available knowledge topics (both
+        configured defaults and extra topics found on disk).  Returns topic
+        names ordered by match strength (number of keyword hits), limited to
+        ``topic_max_knowledge_files`` from config.
+
+        This is a fast, deterministic operation — no LLM calls, no embedding.
+        Designed for L2 pre-filtering at task start (spec §3).
+
+        Parameters
+        ----------
+        project_id:
+            Project whose knowledge base to check.
+        text:
+            Task title + description (or any text to detect topics from).
+
+        Returns
+        -------
+        list[str]
+            Topic names that matched, ordered by relevance (most keyword
+            hits first).  Empty if topic detection is disabled or no
+            topics matched.
+        """
+        if not self.config.topic_detection_enabled:
+            return []
+
+        if not text or not text.strip():
+            return []
+
+        # Collect all available topics (configured + on-disk extras)
+        available_topics: set[str] = set()
+
+        # Configured topics are always candidates
+        available_topics.update(self.config.knowledge_topics)
+
+        # Also include extra topics found on disk
+        knowledge_dir = self._knowledge_dir(project_id)
+        if os.path.isdir(knowledge_dir):
+            for fname in os.listdir(knowledge_dir):
+                if fname.endswith(".md"):
+                    available_topics.add(fname[:-3])
+
+        if not available_topics:
+            return []
+
+        # Normalize text for matching
+        text_lower = text.lower()
+        # Tokenize for word-boundary matching
+        text_words = set(re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", text_lower))
+
+        # Score each topic by keyword hits
+        topic_scores: dict[str, float] = {}
+
+        for topic in available_topics:
+            score = 0.0
+
+            # Direct topic name match (highest signal)
+            topic_lower = topic.lower()
+            # Exact word match for topic name (e.g., "deployment" in text)
+            if topic_lower in text_words:
+                score += 3.0
+            # Hyphenated topic name as substring (e.g., "api-and-endpoints")
+            elif topic_lower in text_lower:
+                score += 2.5
+            # Individual words from hyphenated topic names
+            # (e.g., "api" from "api-and-endpoints")
+            else:
+                topic_parts = set(topic_lower.split("-")) - {"and", "or", "the", "a", "an"}
+                overlap = topic_parts & text_words
+                if overlap and len(overlap) >= len(topic_parts) * 0.5:
+                    score += 1.5 * (len(overlap) / max(len(topic_parts), 1))
+
+            # Check keyword aliases
+            for keyword, target_topic in self.TOPIC_KEYWORD_ALIASES.items():
+                if target_topic != topic:
+                    continue
+                # Multi-word alias: substring match
+                if " " in keyword or "-" in keyword:
+                    if keyword in text_lower:
+                        score += 1.0
+                else:
+                    # Single-word alias: word-boundary match
+                    if keyword in text_words:
+                        score += 1.0
+
+            if score > 0:
+                topic_scores[topic] = score
+
+        # Sort by score descending, then alphabetically for stability
+        sorted_topics = sorted(
+            topic_scores.keys(),
+            key=lambda t: (-topic_scores[t], t),
+        )
+
+        max_topics = self.config.topic_max_knowledge_files
+        return sorted_topics[:max_topics]
+
+    async def _load_topic_context(
+        self,
+        project_id: str,
+        topics: list[str],
+    ) -> str:
+        """Load knowledge base content for the detected topics.
+
+        Reads knowledge topic files and assembles them into a formatted
+        string suitable for context injection (L2 tier).
+
+        Parameters
+        ----------
+        project_id:
+            Project whose knowledge base to read from.
+        topics:
+            Topic names to load (as returned by ``detect_topics``).
+
+        Returns
+        -------
+        str
+            Formatted markdown with each topic's content, or empty string
+            if no topics have content on disk.
+        """
+        if not topics:
+            return ""
+
+        max_chars = self.config.topic_max_chars_per_file
+        parts: list[str] = []
+
+        for topic in topics:
+            content = await self.read_knowledge_topic(project_id, topic)
+            if not content or not content.strip():
+                continue
+
+            # Strip frontmatter if present
+            stripped = content.strip()
+            if stripped.startswith("---"):
+                end = stripped.find("---", 3)
+                if end != -1:
+                    stripped = stripped[end + 3 :].strip()
+
+            if not stripped:
+                continue
+
+            # Truncate to budget
+            if len(stripped) > max_chars:
+                stripped = stripped[:max_chars] + "\n\n[truncated]"
+
+            parts.append(f"### {topic}\n{stripped}")
+
+        return "\n\n".join(parts)
+
     async def build_context(
         self,
         project_id: str,
@@ -2970,9 +3201,10 @@ class MemoryManager:
         0. Project factsheet (structured metadata — always included, instant lookup)
         1. Project profile (always included)
         1.5. Project documentation (CLAUDE.md — foundational context)
-        2. Relevant notes (semantic search matched)
-        3. Recent task memories (for continuity)
-        4. Semantic search results (de-duplicated against above)
+        2. Topic context (L2 — knowledge files pre-loaded based on detected topics)
+        3. Relevant notes (semantic search matched)
+        4. Recent task memories (for continuity)
+        5. Semantic search results (de-duplicated against above)
 
         The orchestrator uses this instead of the old flat recall approach.
         """
@@ -3024,6 +3256,27 @@ class MemoryManager:
             if doc_parts:
                 ctx.project_docs = "\n\n".join(doc_parts)
 
+        # Tier 2: Topic Context (L2 — spec §3)
+        # Detect topics from task description, then load matching knowledge
+        # base files.  This is fast (keyword matching, file reads) and runs
+        # before any semantic search to give the agent focused domain knowledge.
+        if self.config.topic_detection_enabled and self.config.index_knowledge:
+            try:
+                task_text = f"{task.title} {task.description}"
+                detected = await self.detect_topics(project_id, task_text)
+                if detected:
+                    topic_content = await self._load_topic_context(project_id, detected)
+                    if topic_content:
+                        ctx.topic_context = topic_content
+                        ctx.detected_topics = detected
+                        logger.debug(
+                            "L2 topic context loaded for task %s: %s",
+                            getattr(task, "id", "?"),
+                            detected,
+                        )
+            except Exception as e:
+                logger.warning("L2 topic detection failed for project %s: %s", project_id, e)
+
         instance = await self.get_instance(project_id, workspace_path)
         if not instance:
             return ctx
@@ -3031,7 +3284,7 @@ class MemoryManager:
         query = f"{task.title} {task.description}"
         seen_sources: set[str] = set()
 
-        # Tier 2: Relevant Notes (search notes directory specifically)
+        # Tier 3: Relevant Notes (search notes directory specifically)
         if self.config.index_notes:
             try:
                 notes_results = await instance.search(query, top_k=3)
@@ -3056,7 +3309,7 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(f"Notes search failed for project {project_id}: {e}")
 
-        # Tier 3: Recent Task Memories
+        # Tier 4: Recent Task Memories
         recent_count = self.config.context_include_recent
         if recent_count > 0:
             try:
@@ -3085,7 +3338,7 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(f"Recent tasks read failed for project {project_id}: {e}")
 
-        # Tier 4: Semantic Search Results (de-duplicated)
+        # Tier 5: Semantic Search Results (de-duplicated)
         try:
             k = self.config.recall_top_k
             results = await instance.search(query, top_k=k + len(seen_sources))
