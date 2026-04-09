@@ -312,6 +312,44 @@ class CompiledPlaybook:
                 queue.append(node.goto)
         return visited
 
+    def nodes_reaching_terminal(self) -> set[str]:
+        """Return the set of node IDs that have at least one path to a terminal node.
+
+        Uses reverse BFS: builds a reverse adjacency graph and walks backwards
+        from all terminal nodes.  Nodes *not* in this set are trapped in cycles
+        that never reach completion.
+
+        This is the complement to :meth:`reachable_node_ids` — that method
+        checks forward reachability from entry, this one checks backward
+        reachability *to* terminals.
+        """
+        terminal_ids = self.terminal_node_ids()
+        if not terminal_ids:
+            return set()
+
+        # Build reverse adjacency: for each edge A→B, record B→A
+        reverse_adj: dict[str, set[str]] = {nid: set() for nid in self.nodes}
+        for nid, node in self.nodes.items():
+            for t in node.transitions:
+                if t.goto in reverse_adj:
+                    reverse_adj[t.goto].add(nid)
+            if node.goto is not None and node.goto in reverse_adj:
+                reverse_adj[node.goto].add(nid)
+
+        # BFS backwards from all terminal nodes
+        visited: set[str] = set()
+        queue = list(terminal_ids)
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            for predecessor in reverse_adj.get(current, set()):
+                if predecessor not in visited:
+                    queue.append(predecessor)
+
+        return visited
+
     # -- validation ----------------------------------------------------------
 
     def validate(self) -> list[str]:
@@ -330,6 +368,9 @@ class CompiledPlaybook:
         7. All transition ``goto`` targets reference existing nodes.
         8. All node ``goto`` targets reference existing nodes.
         9. All nodes are reachable from the entry node.
+        10. All reachable nodes have a path to at least one terminal node
+            (detects cycles without exit conditions).
+        11. Each node has at most one ``otherwise`` fallback transition.
         """
         errors: list[str] = []
 
@@ -378,6 +419,7 @@ class CompiledPlaybook:
                     )
 
             # 7. Transition goto targets exist
+            otherwise_count = 0
             for i, t in enumerate(node.transitions):
                 if t.goto not in self.nodes:
                     errors.append(
@@ -388,6 +430,15 @@ class CompiledPlaybook:
                     errors.append(
                         f"Node '{nid}' transition[{i}]: must have either 'when' or 'otherwise'"
                     )
+                if t.otherwise:
+                    otherwise_count += 1
+
+            # 11. At most one otherwise transition per node
+            if otherwise_count > 1:
+                errors.append(
+                    f"Node '{nid}': has {otherwise_count} 'otherwise' transitions "
+                    "(at most one fallback allowed)"
+                )
 
             # 8. Node goto target exists
             if node.goto is not None and node.goto not in self.nodes:
@@ -400,6 +451,27 @@ class CompiledPlaybook:
             if unreachable:
                 errors.append(
                     f"Unreachable nodes (not reachable from entry): {sorted(unreachable)}"
+                )
+
+        # 10. Cycles without exits — every reachable node must have a path to
+        #     at least one terminal node.  Nodes that are reachable from entry
+        #     but cannot reach any terminal are trapped in cycles.
+        if entry_nodes and terminal_nodes:
+            can_reach_terminal = self.nodes_reaching_terminal()
+            reachable = self.reachable_node_ids(entry_nodes[0])
+            trapped: set[str] = set()
+            for nid in reachable - can_reach_terminal:
+                node = self.nodes.get(nid)
+                # wait_for_human nodes without explicit exit paths are handled
+                # by the executor at resume time — don't flag them.
+                if node and node.wait_for_human and not node.transitions and node.goto is None:
+                    continue
+                trapped.add(nid)
+            if trapped:
+                errors.append(
+                    f"Nodes in cycles without exit to terminal: {sorted(trapped)} "
+                    "— these nodes are reachable from entry but cannot reach "
+                    "any terminal node"
                 )
 
         return errors

@@ -739,6 +739,334 @@ class TestPlaybookValidation:
         errors = pb.validate()
         # wait_for_human without exit is allowed — executor handles resume
         assert not any("transitions" in e and "goto" in e for e in errors)
+        # wait_for_human should NOT be flagged as trapped in a cycle
+        assert not any("cycles without exit" in e.lower() for e in errors)
+
+    # -- Check 10: Cycles without exits ------------------------------------
+
+    def test_simple_cycle_without_exit(self):
+        """Two nodes forming a cycle with no path to terminal → error."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Step A.", goto="b"),
+                "b": PlaybookNode(prompt="Step B.", goto="a"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        cycle_errors = [e for e in errors if "cycles without exit" in e.lower()]
+        assert len(cycle_errors) == 1
+        assert "a" in cycle_errors[0]
+        assert "b" in cycle_errors[0]
+        # The terminal 'done' is unreachable but NOT in the cycle error
+        assert any("unreachable" in e.lower() for e in errors)
+
+    def test_cycle_with_exit_is_valid(self):
+        """A cycle that has an escape path to terminal is valid (retry loop)."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Try the thing.",
+                    transitions=[
+                        PlaybookTransition(goto="done", when="success"),
+                        PlaybookTransition(goto="retry", when="failure"),
+                    ],
+                ),
+                "retry": PlaybookNode(prompt="Fix and try again.", goto="start"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Cycle with exit should be valid, got: {errors}"
+
+    def test_self_loop_without_exit(self):
+        """A node looping to itself with no escape path → error."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "loop": PlaybookNode(entry=True, prompt="Forever.", goto="loop"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        cycle_errors = [e for e in errors if "cycles without exit" in e.lower()]
+        assert len(cycle_errors) == 1
+        assert "loop" in cycle_errors[0]
+
+    def test_self_loop_with_exit(self):
+        """A node that can loop to itself OR proceed to terminal is valid."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "poll": PlaybookNode(
+                    entry=True,
+                    prompt="Check status.",
+                    transitions=[
+                        PlaybookTransition(goto="poll", when="not ready"),
+                        PlaybookTransition(goto="done", when="ready"),
+                    ],
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Self-loop with exit should be valid, got: {errors}"
+
+    def test_complex_graph_partial_cycle_trap(self):
+        """Only nodes trapped in the cycle are reported, not the whole graph."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Begin.",
+                    transitions=[
+                        PlaybookTransition(goto="good_path", when="option A"),
+                        PlaybookTransition(goto="bad_cycle_a", when="option B"),
+                    ],
+                ),
+                "good_path": PlaybookNode(prompt="This works.", goto="done"),
+                "bad_cycle_a": PlaybookNode(prompt="Trapped A.", goto="bad_cycle_b"),
+                "bad_cycle_b": PlaybookNode(prompt="Trapped B.", goto="bad_cycle_a"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        cycle_errors = [e for e in errors if "cycles without exit" in e.lower()]
+        assert len(cycle_errors) == 1
+        assert "bad_cycle_a" in cycle_errors[0]
+        assert "bad_cycle_b" in cycle_errors[0]
+        # start and good_path should NOT be flagged
+        assert "start" not in cycle_errors[0]
+        assert "good_path" not in cycle_errors[0]
+
+    def test_three_node_cycle_with_one_exit(self):
+        """A→B→C→A where C also goes to terminal → all can reach terminal."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Step A.", goto="b"),
+                "b": PlaybookNode(prompt="Step B.", goto="c"),
+                "c": PlaybookNode(
+                    prompt="Step C.",
+                    transitions=[
+                        PlaybookTransition(goto="a", when="retry"),
+                        PlaybookTransition(goto="done", otherwise=True),
+                    ],
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Cycle with exit should be valid, got: {errors}"
+
+    def test_wait_for_human_with_goto_in_cycle_detected(self):
+        """wait_for_human node WITH explicit goto in a cycle IS flagged."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "review": PlaybookNode(
+                    entry=True,
+                    prompt="Review.",
+                    wait_for_human=True,
+                    goto="process",
+                ),
+                "process": PlaybookNode(prompt="Process.", goto="review"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        cycle_errors = [e for e in errors if "cycles without exit" in e.lower()]
+        assert len(cycle_errors) == 1
+        assert "review" in cycle_errors[0]
+        assert "process" in cycle_errors[0]
+
+    # -- Check 11: Multiple otherwise transitions --------------------------
+
+    def test_multiple_otherwise_transitions(self):
+        """A node with multiple 'otherwise' transitions → error."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Check.",
+                    transitions=[
+                        PlaybookTransition(goto="a", when="condition"),
+                        PlaybookTransition(goto="b", otherwise=True),
+                        PlaybookTransition(goto="c", otherwise=True),  # duplicate!
+                    ],
+                ),
+                "a": PlaybookNode(prompt="A.", goto="end"),
+                "b": PlaybookNode(prompt="B.", goto="end"),
+                "c": PlaybookNode(prompt="C.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any("otherwise" in e and "start" in e for e in errors)
+
+    def test_single_otherwise_transition_is_valid(self):
+        """A node with exactly one 'otherwise' transition is fine."""
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Check.",
+                    transitions=[
+                        PlaybookTransition(goto="a", when="condition"),
+                        PlaybookTransition(goto="b", otherwise=True),
+                    ],
+                ),
+                "a": PlaybookNode(prompt="A.", goto="end"),
+                "b": PlaybookNode(prompt="B.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Single otherwise should be valid, got: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Graph helper: nodes_reaching_terminal
+# ---------------------------------------------------------------------------
+
+
+class TestNodesReachingTerminal:
+    def test_spec_example_all_reach_terminal(self, spec_playbook: CompiledPlaybook):
+        reaching = spec_playbook.nodes_reaching_terminal()
+        assert reaching == set(spec_playbook.nodes.keys())
+
+    def test_simple_linear(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="b"),
+                "b": PlaybookNode(prompt="Continue.", goto="c"),
+                "c": PlaybookNode(terminal=True),
+            },
+        )
+        assert pb.nodes_reaching_terminal() == {"a", "b", "c"}
+
+    def test_cycle_without_exit(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="b"),
+                "b": PlaybookNode(prompt="Loop.", goto="a"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        reaching = pb.nodes_reaching_terminal()
+        assert "end" in reaching
+        assert "a" not in reaching
+        assert "b" not in reaching
+
+    def test_cycle_with_exit(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(
+                    entry=True,
+                    prompt="Try.",
+                    transitions=[
+                        PlaybookTransition(goto="b", when="retry"),
+                        PlaybookTransition(goto="end", when="done"),
+                    ],
+                ),
+                "b": PlaybookNode(prompt="Fix.", goto="a"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        assert pb.nodes_reaching_terminal() == {"a", "b", "end"}
+
+    def test_no_terminal_nodes(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Go.", goto="b"),
+                "b": PlaybookNode(prompt="Loop.", goto="a"),
+            },
+        )
+        assert pb.nodes_reaching_terminal() == set()
+
+    def test_multiple_terminals(self):
+        pb = CompiledPlaybook(
+            id="t",
+            version=1,
+            source_hash="h",
+            triggers=["x"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Check.",
+                    transitions=[
+                        PlaybookTransition(goto="success", when="ok"),
+                        PlaybookTransition(goto="failure", when="bad"),
+                    ],
+                ),
+                "success": PlaybookNode(terminal=True),
+                "failure": PlaybookNode(terminal=True),
+            },
+        )
+        assert pb.nodes_reaching_terminal() == {"start", "success", "failure"}
 
 
 # ---------------------------------------------------------------------------
