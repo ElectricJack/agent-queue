@@ -112,6 +112,66 @@ def _estimate_tokens(*texts: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Daily token tracking (global playbook cap, spec §6 Token Budget)
+# ---------------------------------------------------------------------------
+
+
+class DailyTokenTracker:
+    """Track cumulative playbook token usage per calendar day.
+
+    Used to enforce a global daily token cap (``max_daily_playbook_tokens``
+    in config) across all playbook runs.  The tracker stores per-day totals
+    and automatically resets when the date changes (at midnight by default,
+    or at a configured ``reset_hour``).
+
+    Thread-safety note: this class is *not* thread-safe but is designed for
+    use in a single-threaded asyncio loop.
+    """
+
+    def __init__(self, *, reset_hour: int = 0) -> None:
+        """Initialise the tracker.
+
+        Parameters
+        ----------
+        reset_hour:
+            Hour of day (0–23) when the daily counter resets.  Defaults to
+            0 (midnight).
+        """
+        self._usage: dict[str, int] = {}
+        self._reset_hour: int = reset_hour
+
+    @property
+    def reset_hour(self) -> int:
+        return self._reset_hour
+
+    @reset_hour.setter
+    def reset_hour(self, value: int) -> None:
+        self._reset_hour = value
+
+    def _today_key(self, *, now: datetime.datetime | None = None) -> str:
+        """Return the date key for the current accounting day.
+
+        If *now* is provided it is used instead of ``datetime.datetime.now()``
+        (useful for testing).
+        """
+        now = now or datetime.datetime.now()
+        # Subtract reset_hour so that e.g. 02:00 with reset_hour=6 still
+        # belongs to the previous calendar day.
+        adjusted = now - datetime.timedelta(hours=self._reset_hour)
+        return adjusted.strftime("%Y-%m-%d")
+
+    def add_tokens(self, count: int, *, now: datetime.datetime | None = None) -> None:
+        """Record *count* tokens for the current day."""
+        key = self._today_key(now=now)
+        self._usage[key] = self._usage.get(key, 0) + count
+
+    def get_usage(self, *, now: datetime.datetime | None = None) -> int:
+        """Return total tokens used today."""
+        key = self._today_key(now=now)
+        return self._usage.get(key, 0)
+
+
+# ---------------------------------------------------------------------------
 # Expression evaluation helpers (structured transitions §6, roadmap 5.2.5)
 # ---------------------------------------------------------------------------
 
@@ -259,12 +319,16 @@ class PlaybookRunner:
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
         max_daily_playbook_tokens: int | None = None,
+        daily_token_tracker: DailyTokenTracker | None = None,
+        daily_token_cap: int | None = None,
     ):
         self.graph = graph
         self.event = event
         self.supervisor = supervisor
         self.db = db
         self.on_progress = on_progress
+        self._daily_token_tracker = daily_token_tracker
+        self._daily_token_cap = daily_token_cap
 
         # Conversation history — node prompts and final responses only.
         self.messages: list[dict] = []
@@ -378,6 +442,37 @@ class PlaybookRunner:
         """
         started_at = time.time()
 
+        # ---- Daily token cap pre-flight check ----
+        # If a global daily cap is configured and usage already exceeds it,
+        # reject the run before creating any DB records or executing nodes.
+        if (
+            self._daily_token_tracker is not None
+            and self._daily_token_cap is not None
+            and self._daily_token_tracker.get_usage() >= self._daily_token_cap
+        ):
+            daily_usage = self._daily_token_tracker.get_usage()
+            error = (
+                f"daily_token_cap_exceeded: daily cap {self._daily_token_cap} "
+                f"exhausted (used {daily_usage})"
+            )
+            logger.warning(
+                "Playbook '%s' blocked — daily token cap reached: %s/%s",
+                self._playbook_id,
+                daily_usage,
+                self._daily_token_cap,
+            )
+            # We cannot call _fail() because no db_run exists yet.
+            # Build a minimal RunResult directly.
+            if self.on_progress:
+                await self.on_progress("playbook_failed", error)
+            return RunResult(
+                run_id=self.run_id,
+                status="failed",
+                node_trace=[],
+                tokens_used=0,
+                error=error,
+            )
+
         # Create the DB record — pin the compiled graph so that in-flight
         # runs continue with the version they started with, even if the
         # playbook is recompiled while the run is paused.
@@ -452,7 +547,7 @@ class PlaybookRunner:
 
             # Check token budget before executing (guard for tokens accumulated
             # by transition evaluation in the previous iteration)
-            if self._max_tokens and self.tokens_used >= self._max_tokens:
+            if self._max_tokens is not None and self.tokens_used >= self._max_tokens:
                 return await self._fail(
                     db_run,
                     (
@@ -481,7 +576,7 @@ class PlaybookRunner:
             # Check token budget after node completes (spec §6 step 6d).
             # The node is allowed to finish (graceful), but we fail before
             # spending additional tokens on transition evaluation.
-            if self._max_tokens and self.tokens_used >= self._max_tokens:
+            if self._max_tokens is not None and self.tokens_used >= self._max_tokens:
                 return await self._fail(
                     db_run,
                     (
@@ -719,7 +814,7 @@ class PlaybookRunner:
             if node.get("terminal"):
                 break
 
-            if runner._max_tokens and runner.tokens_used >= runner._max_tokens:
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
                 return await runner._fail(
                     db_run,
                     (
@@ -744,7 +839,7 @@ class PlaybookRunner:
                 )
 
             # Check token budget after node completes (spec §6 step 6d)
-            if runner._max_tokens and runner.tokens_used >= runner._max_tokens:
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
                 return await runner._fail(
                     db_run,
                     (
@@ -884,6 +979,26 @@ class PlaybookRunner:
         # Track tokens
         token_estimate = _estimate_tokens(prompt, response)
         self.tokens_used += token_estimate
+
+        # Record tokens in the daily tracker (global cap enforcement)
+        if self._daily_token_tracker is not None:
+            self._daily_token_tracker.add_tokens(token_estimate)
+
+        # Budget warning: log when approaching budget (within 10%) but not
+        # yet exceeded.  This lets operators spot runs that are close to
+        # their limit without failing them prematurely.
+        if self._max_tokens is not None and self._max_tokens > 0:
+            usage_pct = self.tokens_used / self._max_tokens
+            if usage_pct >= 0.9 and self.tokens_used < self._max_tokens:
+                logger.warning(
+                    "Playbook '%s' run %s approaching token budget: "
+                    "%d/%d (%.0f%%)",
+                    self._playbook_id,
+                    self.run_id,
+                    self.tokens_used,
+                    self._max_tokens,
+                    usage_pct * 100,
+                )
 
         # Update trace
         trace_entry.completed_at = time.time()

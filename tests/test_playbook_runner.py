@@ -19,6 +19,7 @@ Tests the core execution model from docs/specs/design/playbooks.md §6:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import time
@@ -28,6 +29,7 @@ import pytest
 
 from src.models import PlaybookRun
 from src.playbook_runner import (
+    DailyTokenTracker,
     NodeTraceEntry,
     PlaybookRunner,
     _compare,
@@ -705,6 +707,347 @@ class TestTokenBudget:
 
         assert resumed.status == "failed"
         assert "token_budget_exceeded" in resumed.error
+
+    # ------------------------------------------------------------------
+    # (c) Budget warning when approaching (within 10%)
+    # ------------------------------------------------------------------
+
+    async def test_approaching_budget_logs_warning(self, mock_supervisor, event_data, caplog):
+        """When token usage reaches 90%+ of budget, a warning is logged but
+        the run continues to completion (roadmap 5.2.16 case c)."""
+        graph = {
+            "id": "warn-test",
+            "version": 1,
+            "max_tokens": 100,  # Budget of 100 tokens
+            "nodes": {
+                "a": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Node A: prompt "Go" (2 chars → 1 tok) + response (360 chars → 90 tok)
+        # Total: ~91 tokens.  91/100 = 91% — in the warning band (>= 90%)
+        # but under budget (< 100), so the run completes with a warning.
+        mock_supervisor.chat.return_value = "x" * 360
+
+        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+            runner = PlaybookRunner(graph, event_data, mock_supervisor)
+            result = await runner.run()
+
+        # Run should complete (not fail) — warning is advisory only
+        assert result.status == "completed"
+        # A warning about approaching budget should have been logged
+        warning_msgs = [r.message for r in caplog.records if "approaching token budget" in r.message]
+        assert len(warning_msgs) >= 1
+        assert "warn-test" in warning_msgs[0]
+
+    async def test_approaching_budget_continues_execution(self, mock_supervisor, event_data):
+        """Run at 90%+ of budget finishes all remaining nodes (case c)."""
+        graph = {
+            "id": "warn-continue",
+            "version": 1,
+            "max_tokens": 200,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        # Node A response sized to push usage to ~90% of 200 (≈180 tokens)
+        # "Step A" ≈ 2 tokens, response ≈ 700/4 = 175 tokens → total ~177
+        # Node B response is tiny
+        responses = iter(["x" * 700, "ok"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Both nodes executed
+        assert len(result.node_trace) == 2
+
+    # ------------------------------------------------------------------
+    # (d) Global daily token cap blocks new runs
+    # ------------------------------------------------------------------
+
+    async def test_daily_cap_blocks_new_run(self, mock_supervisor, event_data):
+        """When daily playbook token usage exceeds the cap, new runs are
+        blocked immediately (roadmap 5.2.16 case d)."""
+        graph = {
+            "id": "daily-cap-test",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Work", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        tracker = DailyTokenTracker()
+        # Simulate prior runs consuming 10_000 tokens today
+        tracker.add_tokens(10_000)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            daily_token_tracker=tracker,
+            daily_token_cap=10_000,  # Cap already reached
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "daily_token_cap_exceeded" in result.error
+        assert result.tokens_used == 0  # No tokens consumed — run never started
+        assert result.node_trace == []  # No nodes executed
+        # Supervisor should NOT have been called
+        mock_supervisor.chat.assert_not_called()
+
+    async def test_daily_cap_allows_run_under_limit(self, mock_supervisor, event_data):
+        """Runs proceed normally when daily usage is below the cap."""
+        graph = {
+            "id": "daily-cap-ok",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Work", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        tracker = DailyTokenTracker()
+        tracker.add_tokens(5_000)  # Well under cap
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            daily_token_tracker=tracker,
+            daily_token_cap=10_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Daily tracker should reflect the tokens from this run too
+        assert tracker.get_usage() > 5_000
+
+    async def test_daily_cap_sends_notification(self, mock_supervisor, event_data):
+        """Blocked run sends a playbook_failed progress notification."""
+        graph = {
+            "id": "daily-cap-notify",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Work", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        tracker = DailyTokenTracker()
+        tracker.add_tokens(500)
+
+        progress_events = []
+
+        async def track_progress(event, detail):
+            progress_events.append((event, detail))
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            daily_token_tracker=tracker,
+            daily_token_cap=500,
+            on_progress=track_progress,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        failed_events = [(e, d) for e, d in progress_events if e == "playbook_failed"]
+        assert len(failed_events) == 1
+        assert "daily_token_cap_exceeded" in failed_events[0][1]
+
+    # ------------------------------------------------------------------
+    # (e) Daily cap resets at midnight (or configured time)
+    # ------------------------------------------------------------------
+
+    async def test_daily_cap_resets_at_midnight(self, mock_supervisor, event_data):
+        """Daily token usage resets when the date changes (case e)."""
+        tracker = DailyTokenTracker()
+
+        # Simulate usage on April 8
+        april_8 = datetime.datetime(2026, 4, 8, 23, 0)
+        tracker.add_tokens(10_000, now=april_8)
+        assert tracker.get_usage(now=april_8) == 10_000
+
+        # After midnight (April 9) — usage resets to 0
+        april_9 = datetime.datetime(2026, 4, 9, 0, 30)
+        assert tracker.get_usage(now=april_9) == 0
+
+        # New usage on April 9 is tracked separately
+        tracker.add_tokens(500, now=april_9)
+        assert tracker.get_usage(now=april_9) == 500
+        # April 8 usage is still accessible
+        assert tracker.get_usage(now=april_8) == 10_000
+
+    async def test_daily_cap_resets_at_configured_hour(self, mock_supervisor, event_data):
+        """Daily cap respects a custom reset hour (e.g. 6 AM)."""
+        tracker = DailyTokenTracker(reset_hour=6)
+
+        # Usage at 5 AM on April 9 — still belongs to "April 8" bucket
+        # because reset_hour=6 means the new day starts at 06:00
+        pre_reset = datetime.datetime(2026, 4, 9, 5, 30)
+        tracker.add_tokens(3_000, now=pre_reset)
+        assert tracker.get_usage(now=pre_reset) == 3_000
+
+        # Usage at 7 AM on April 9 — new day bucket
+        post_reset = datetime.datetime(2026, 4, 9, 7, 0)
+        assert tracker.get_usage(now=post_reset) == 0
+
+        tracker.add_tokens(1_000, now=post_reset)
+        assert tracker.get_usage(now=post_reset) == 1_000
+        # Pre-reset bucket unchanged
+        assert tracker.get_usage(now=pre_reset) == 3_000
+
+    async def test_daily_cap_blocks_after_accumulation(self, mock_supervisor, event_data):
+        """Multiple runs accumulate toward the daily cap until it blocks."""
+        graph = {
+            "id": "daily-accum",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        tracker = DailyTokenTracker()
+        mock_supervisor.chat.return_value = "Done."
+
+        # First run succeeds — usage under cap
+        runner1 = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            daily_token_tracker=tracker,
+            daily_token_cap=100,
+        )
+        r1 = await runner1.run()
+        assert r1.status == "completed"
+        assert tracker.get_usage() > 0
+
+        # Artificially push daily usage to the cap
+        tracker.add_tokens(100 - tracker.get_usage())
+
+        # Second run should be blocked
+        runner2 = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            daily_token_tracker=tracker,
+            daily_token_cap=100,
+        )
+        r2 = await runner2.run()
+        assert r2.status == "failed"
+        assert "daily_token_cap_exceeded" in r2.error
+
+    # ------------------------------------------------------------------
+    # (f) Token counting includes both input and output tokens
+    # ------------------------------------------------------------------
+
+    async def test_input_and_output_tokens_counted(self, mock_supervisor, event_data):
+        """Both the prompt (input) and response (output) tokens are counted
+        toward the budget (roadmap 5.2.16 case f)."""
+        graph = {
+            "id": "io-count",
+            "version": 1,
+            "max_tokens": 100_000,
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "A" * 100,  # ~25 input tokens
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "B" * 200  # ~50 output tokens
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Token count should reflect BOTH input (~25) and output (~50)
+        # _estimate_tokens counts chars/4 for each string
+        expected_input = len("A" * 100) // 4  # 25
+        expected_output = len("B" * 200) // 4  # 50
+        expected_total = expected_input + expected_output  # 75
+        assert result.tokens_used >= expected_total
+        # Verify it's not just counting output (must be > output alone)
+        assert result.tokens_used > expected_output
+
+    # ------------------------------------------------------------------
+    # (g) Zero-budget run fails immediately (first node never starts)
+    # ------------------------------------------------------------------
+
+    async def test_zero_budget_fails_before_first_node(self, mock_supervisor, event_data):
+        """A run with max_tokens=0 fails immediately — no nodes execute
+        (roadmap 5.2.16 case g)."""
+        graph = {
+            "id": "zero-budget",
+            "version": 1,
+            "max_tokens": 0,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+        assert result.node_trace == []  # No nodes executed
+        # Supervisor should NOT have been called
+        mock_supervisor.chat.assert_not_called()
+
+    async def test_zero_budget_preserves_run_metadata(self, mock_supervisor, mock_db, event_data):
+        """Zero-budget failure persists correctly to the database."""
+        graph = {
+            "id": "zero-budget-db",
+            "version": 1,
+            "max_tokens": 0,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+
+        # DB record should have been created and then updated with failure
+        mock_db.create_playbook_run.assert_called_once()
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        assert final_call.kwargs["status"] == "failed"
+        assert "token_budget_exceeded" in final_call.kwargs["error"]
+
+    async def test_first_node_exceeds_tiny_budget(self, mock_supervisor, event_data):
+        """A very small positive budget that the first node exceeds causes
+        failure after that node (the node is allowed to complete gracefully)."""
+        graph = {
+            "id": "tiny-budget",
+            "version": 1,
+            "max_tokens": 1,  # Only 1 token — any real node will exceed
+            "nodes": {
+                "a": {"entry": True, "prompt": "Do work", "goto": "b"},
+                "b": {"prompt": "More work", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Here is the result"
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # Should fail after node A (graceful — node completes then budget check)
+        assert result.status == "failed"
+        assert "token_budget_exceeded" in result.error
+        assert len(result.node_trace) == 1  # Only node A ran
+        # Second node should NOT have been called
+        assert mock_supervisor.chat.call_count == 1
 
 
 # ---------------------------------------------------------------------------
