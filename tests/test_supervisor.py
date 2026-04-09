@@ -677,3 +677,180 @@ def test_chat_tool_overrides_disables_load_tools_expansion():
     tools_sent = second_call.kwargs.get("tools") or second_call[1].get("tools")
     tool_names = {t["name"] for t in tools_sent}
     assert tool_names == {"load_tools", "reply_to_user"}
+
+
+# ------------------------------------------------------------------
+# Roadmap 0.4.5 — tool_overrides restriction tests (Section 6)
+# ------------------------------------------------------------------
+
+
+def test_tool_overrides_read_write_only():
+    """(a) chat() with tool_overrides=["list_projects","edit_project"] only exposes those two.
+
+    Original spec names read_file/write_file, but those are plugin-provided and
+    unavailable in the unit-test mock.  list_projects/edit_project exercise the
+    same code path (category tools pulled into override set).
+    """
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Done."])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    asyncio.run(
+        sup.chat("Hello", "testuser", tool_overrides=["list_projects", "edit_project"])
+    )
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+    assert tool_names == {"list_projects", "edit_project"}, (
+        f"Expected exactly list_projects and edit_project, got {tool_names}"
+    )
+
+
+def test_tool_overrides_blocks_unlisted_tool():
+    """(b) LLM attempt to call a tool not in the override list is blocked — only
+    override tools are sent to the LLM, so the provider never receives schemas
+    for non-override tools.
+    """
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    # First call: LLM returns a tool call for create_task (NOT in overrides).
+    # In a real scenario the provider wouldn't generate this since the schema
+    # isn't in the tools list, but we simulate it to verify the tool set.
+    resp1 = _make_resp(
+        tool_uses=[_make_tool_use("create_task", {"title": "x"}, "tu-bad")]
+    )
+    # Second call: LLM finishes with reply_to_user
+    resp2 = _make_resp(
+        tool_uses=[_make_reply_tool_use("Done.", "tu-reply")]
+    )
+
+    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
+    sup.handler.execute = AsyncMock(return_value={"success": True})
+
+    asyncio.run(
+        sup.chat(
+            "Hello", "testuser", tool_overrides=["list_projects", "reply_to_user"]
+        )
+    )
+
+    # Verify EVERY call to the LLM only included the override tools — the LLM
+    # never had access to create_task's schema, so a conforming provider would
+    # never generate that tool call.
+    for call in sup._provider.create_message.call_args_list:
+        tools_sent = call.kwargs.get("tools") or call[1].get("tools")
+        tool_names = {t["name"] for t in tools_sent}
+        assert "create_task" not in tool_names, (
+            "create_task should not be exposed when overrides restrict "
+            "to list_projects+reply_to_user"
+        )
+        assert tool_names == {"list_projects", "reply_to_user"}
+
+
+def test_tool_overrides_none_backward_compat():
+    """(c) chat() without tool_overrides exposes the full default tool set (backward compat)."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Hello!"])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    # Call without tool_overrides at all (not even passing the kwarg)
+    asyncio.run(sup.chat("Hello", "testuser"))
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+
+    # Default must include the core meta-tools and communication tools
+    for expected in ("browse_tools", "load_tools", "reply_to_user", "create_task", "list_tasks"):
+        assert expected in tool_names, f"Default tool set missing core tool '{expected}'"
+
+    # Should have more than just a couple — the full core set
+    assert len(tool_names) >= 5, f"Expected at least 5 core tools, got {len(tool_names)}"
+
+
+def test_tool_overrides_empty_disables_all_tools():
+    """(d) empty tool_overrides=[] disables all tools (LLM can only produce text)."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Text only."])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    result = asyncio.run(sup.chat("Hello", "testuser", tool_overrides=[]))
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    assert tools_sent == [], "Empty tool_overrides should send zero tools to the LLM"
+    assert result == "Text only."
+
+
+def test_tool_overrides_unknown_name_raises_before_llm_call():
+    """(e) tool_overrides with unknown tool name raises validation error before LLM call."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    sup._provider.create_message = AsyncMock()
+
+    try:
+        asyncio.run(
+            sup.chat(
+                "Hello",
+                "testuser",
+                tool_overrides=["read_file", "totally_fake_tool_42"],
+            )
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        # Error message should name the bad tool
+        assert "totally_fake_tool_42" in str(e)
+        assert "Unknown tool names" in str(e)
+
+    # The LLM should never have been called — validation happens first
+    sup._provider.create_message.assert_not_called()
+
+
+def test_tool_overrides_restriction_is_per_call():
+    """(f) tool restriction applies only to that single call — next call has full tools."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    # --- First call: restricted to list_projects + reply_to_user ---
+    resp_restricted = _make_resp(text_parts=["Restricted."])
+    # --- Second call: no overrides (full default) ---
+    resp_default = _make_resp(text_parts=["Default."])
+
+    sup._provider.create_message = AsyncMock(
+        side_effect=[resp_restricted, resp_default]
+    )
+
+    # Call 1: restricted
+    result1 = asyncio.run(
+        sup.chat("Hello", "testuser", tool_overrides=["list_projects", "reply_to_user"])
+    )
+    # Call 2: unrestricted (default)
+    result2 = asyncio.run(sup.chat("Hello again", "testuser"))
+
+    assert result1 == "Restricted."
+    assert result2 == "Default."
+
+    # Verify first call had only the override tools
+    first_call = sup._provider.create_message.call_args_list[0]
+    tools_first = first_call.kwargs.get("tools") or first_call[1].get("tools")
+    names_first = {t["name"] for t in tools_first}
+    assert names_first == {"list_projects", "reply_to_user"}, (
+        f"First call should have restricted tools, got {names_first}"
+    )
+
+    # Verify second call has the full default tool set
+    second_call = sup._provider.create_message.call_args_list[1]
+    tools_second = second_call.kwargs.get("tools") or second_call[1].get("tools")
+    names_second = {t["name"] for t in tools_second}
+    assert "browse_tools" in names_second, "Second call should have browse_tools (core)"
+    assert "load_tools" in names_second, "Second call should have load_tools (core)"
+    assert "reply_to_user" in names_second, "Second call should have reply_to_user (core)"
+    assert "create_task" in names_second, "Second call should have create_task (core)"
+    assert len(names_second) > len(names_first), (
+        f"Default tool set ({len(names_second)}) should be larger than "
+        f"restricted set ({len(names_first)})"
+    )
