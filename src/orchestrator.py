@@ -846,6 +846,13 @@ class Orchestrator:
             debounce_seconds=2.0,
         )
 
+        # Register profile.md watchers (profiles spec §3 — file → DB sync).
+        # Must happen before the initial snapshot so changes are detected
+        # from the first check() call.
+        from src.profile_sync import register_profile_handlers
+
+        register_profile_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
