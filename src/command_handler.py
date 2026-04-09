@@ -6644,23 +6644,81 @@ feature work stuck on feature branches across multiple workspaces.
                 )
             }
 
-        # Check pause timeout (spec §9: default 24 hours)
-        pause_timeout_seconds = int(args.get("timeout_seconds", 86400))
-        # Determine when the run was paused from the node trace
-        paused_at = self._get_paused_at(db_run)
-        if paused_at and (time.time() - paused_at) > pause_timeout_seconds:
-            # Mark as timed out
-            await self.db.update_playbook_run(
-                run_id,
-                status="timed_out",
-                completed_at=time.time(),
-                error=f"Pause timeout exceeded ({pause_timeout_seconds}s)",
+        # Check pause timeout (spec §9, roadmap 5.4.4: configurable, default 24h)
+        # Resolve the effective graph for timeout configuration
+        timeout_graph = None
+        if db_run.pinned_graph:
+            timeout_graph = json.loads(db_run.pinned_graph)
+        elif hasattr(self.orchestrator, "playbook_manager"):
+            pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
+            if pb:
+                timeout_graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
+
+        from src.playbook_runner import PlaybookRunner
+
+        if timeout_graph:
+            pause_timeout_seconds = PlaybookRunner._resolve_pause_timeout(
+                timeout_graph, db_run.current_node
             )
-            return {
-                "error": (
-                    f"Run '{run_id}' has exceeded its pause timeout "
-                    f"({pause_timeout_seconds}s). The run has been marked as timed_out."
+        else:
+            pause_timeout_seconds = int(args.get("timeout_seconds", 86400))
+
+        # Determine when the run was paused (prefer dedicated column, fall back
+        # to node trace for backward compatibility)
+        paused_at = db_run.paused_at or self._get_paused_at(db_run)
+        if paused_at and (time.time() - paused_at) > pause_timeout_seconds:
+            # Handle timeout — may transition to a timeout node if configured
+            event_bus = getattr(self.orchestrator, "bus", None)
+
+            # Try to create a Supervisor for timeout node execution
+            supervisor = None
+            paused_node = (timeout_graph or {}).get("nodes", {}).get(db_run.current_node or "", {})
+            on_timeout_node = paused_node.get("on_timeout")
+            if on_timeout_node:
+                from src.supervisor import Supervisor as SupervisorCls
+
+                supervisor = SupervisorCls(self.orchestrator, self.config)
+                if not supervisor.initialize():
+                    supervisor = None
+
+            try:
+                result = await PlaybookRunner.handle_timeout(
+                    db_run=db_run,
+                    graph=timeout_graph or {},
+                    supervisor=supervisor,
+                    db=self.db,
+                    event_bus=event_bus,
                 )
+            except Exception as exc:
+                logger.error("Timeout handling failed for run %s: %s", run_id, exc, exc_info=True)
+                await self.db.update_playbook_run(
+                    run_id,
+                    status="timed_out",
+                    completed_at=time.time(),
+                    error=f"Pause timeout exceeded ({pause_timeout_seconds}s)",
+                )
+                return {
+                    "error": (
+                        f"Run '{run_id}' has exceeded its pause timeout "
+                        f"({pause_timeout_seconds}s). The run has been marked as timed_out."
+                    )
+                }
+
+            if result.status == "timed_out":
+                return {
+                    "error": (
+                        f"Run '{run_id}' has exceeded its pause timeout "
+                        f"({pause_timeout_seconds}s). The run has been marked as timed_out."
+                    )
+                }
+            # Timeout node transition succeeded — return the result
+            return {
+                "resumed": run_id,
+                "playbook_id": db_run.playbook_id,
+                "status": result.status,
+                "tokens_used": result.tokens_used,
+                "timeout_transition": True,
+                "error": result.error,
             }
 
         # Resolve the playbook graph — pinned_graph is preferred (version
@@ -6731,5 +6789,108 @@ feature work stuck on feature branches across multiple workspaces.
         except (json.JSONDecodeError, TypeError):
             pass
         return db_run.started_at
+
+    async def check_paused_playbook_timeouts(self) -> list[dict]:
+        """Sweep all paused playbook runs and handle any that have timed out.
+
+        Called by the orchestrator tick loop (roadmap 5.4.4).  For each
+        paused run whose timeout has expired, either transitions to the
+        designated timeout node or marks the run as ``timed_out``.
+
+        Returns a list of result dicts for each timed-out run processed.
+        """
+        paused_runs = await self.db.list_playbook_runs(status="paused", limit=100)
+        if not paused_runs:
+            return []
+
+        results = []
+        now = time.time()
+
+        for db_run in paused_runs:
+            # Resolve the effective graph
+            graph = None
+            if db_run.pinned_graph:
+                graph = json.loads(db_run.pinned_graph)
+            elif hasattr(self.orchestrator, "playbook_manager"):
+                pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
+                if pb:
+                    graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
+
+            if not graph:
+                continue
+
+            from src.playbook_runner import PlaybookRunner
+
+            timeout_seconds = PlaybookRunner._resolve_pause_timeout(graph, db_run.current_node)
+
+            # Determine when the run was paused
+            paused_at = db_run.paused_at or self._get_paused_at(db_run)
+            if not paused_at:
+                continue
+
+            if (now - paused_at) <= timeout_seconds:
+                continue  # Not timed out yet
+
+            logger.info(
+                "Playbook run %s (node '%s') exceeded pause timeout (%ds)",
+                db_run.run_id,
+                db_run.current_node,
+                timeout_seconds,
+            )
+
+            # Check if a Supervisor is needed (on_timeout node present)
+            supervisor = None
+            paused_node = graph.get("nodes", {}).get(db_run.current_node or "", {})
+            on_timeout_node = paused_node.get("on_timeout")
+            if on_timeout_node and on_timeout_node in graph.get("nodes", {}):
+                from src.supervisor import Supervisor
+
+                supervisor = Supervisor(self.orchestrator, self.config)
+                if not supervisor.initialize():
+                    logger.warning(
+                        "Failed to create Supervisor for timeout transition "
+                        "on run %s — will mark as timed_out",
+                        db_run.run_id,
+                    )
+                    supervisor = None
+
+            event_bus = getattr(self.orchestrator, "bus", None)
+
+            try:
+                result = await PlaybookRunner.handle_timeout(
+                    db_run=db_run,
+                    graph=graph,
+                    supervisor=supervisor,
+                    db=self.db,
+                    event_bus=event_bus,
+                )
+                results.append(
+                    {
+                        "run_id": db_run.run_id,
+                        "playbook_id": db_run.playbook_id,
+                        "status": result.status,
+                        "timeout_seconds": timeout_seconds,
+                        "on_timeout": on_timeout_node,
+                    }
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to handle timeout for run %s: %s",
+                    db_run.run_id,
+                    exc,
+                    exc_info=True,
+                )
+                # Best-effort: mark as timed_out directly
+                try:
+                    await self.db.update_playbook_run(
+                        db_run.run_id,
+                        status="timed_out",
+                        completed_at=time.time(),
+                        error=f"Pause timeout exceeded ({timeout_seconds}s)",
+                    )
+                except Exception:
+                    pass
+
+        return results
 
     # Rule system commands are implemented above (Phase 2).

@@ -23,9 +23,9 @@ State diagram::
     │         │  HUMAN_WAIT          ┌────────┐
     │         ├─────────────────────►│ PAUSED │
     └────▲────┘                      │        │
-         │      HUMAN_RESUMED        │        │
-         └───────────────────────────┤        │
-                                     └────────┘
+         │      HUMAN_RESUMED        │        ├──PAUSE_TIMEOUT──►┌───────────┐
+         └───────────────────────────┤        │                  │ TIMED_OUT │
+                                     └────────┘                  └───────────┘
 
 See docs/specs/design/playbooks.md §6 for the execution model specification.
 """
@@ -65,6 +65,8 @@ VALID_PLAYBOOK_RUN_TRANSITIONS: dict[
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.HUMAN_WAIT): PlaybookRunStatus.PAUSED,
     # --- Paused → running (resume) ---
     (PlaybookRunStatus.PAUSED, PlaybookRunEvent.HUMAN_RESUMED): PlaybookRunStatus.RUNNING,
+    # --- Paused → timed out (pause timeout expired) ---
+    (PlaybookRunStatus.PAUSED, PlaybookRunEvent.PAUSE_TIMEOUT): PlaybookRunStatus.TIMED_OUT,
 }
 
 # Derived set of valid (from_status, to_status) pairs for quick validation

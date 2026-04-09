@@ -274,6 +274,7 @@ _EVENT_FALLBACK_STATUS: dict[PlaybookRunEvent, PlaybookRunStatus] = {
     PlaybookRunEvent.BUDGET_EXCEEDED: PlaybookRunStatus.FAILED,
     PlaybookRunEvent.HUMAN_WAIT: PlaybookRunStatus.PAUSED,
     PlaybookRunEvent.HUMAN_RESUMED: PlaybookRunStatus.RUNNING,
+    PlaybookRunEvent.PAUSE_TIMEOUT: PlaybookRunStatus.TIMED_OUT,
 }
 
 
@@ -285,6 +286,18 @@ def _event_to_fallback_status(event: PlaybookRunEvent) -> PlaybookRunStatus:
     complete without crashing.
     """
     return _EVENT_FALLBACK_STATUS[event]
+
+
+class _DummySupervisor:
+    """Placeholder supervisor used when timeout handling doesn't need LLM calls.
+
+    Only used by :meth:`PlaybookRunner.handle_timeout` for the simple
+    timed_out-without-timeout-node path, where the runner constructor
+    requires a supervisor but no LLM calls are made.
+    """
+
+    async def chat(self, **kwargs: Any) -> str:
+        raise RuntimeError("_DummySupervisor does not support chat()")
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +611,34 @@ class PlaybookRunner:
             "decision": human_input[:2000],  # cap for event payload
         }
         await self._emit_bus_event("human.review.completed", payload)
+
+    async def _emit_timed_out_event(
+        self,
+        *,
+        node_id: str,
+        paused_at: float,
+        timeout_seconds: int,
+        transitioned_to: str | None = None,
+    ) -> None:
+        """Emit ``playbook.run.timed_out`` on the EventBus.
+
+        Fired when a paused run exceeds its configured pause timeout (spec §9,
+        roadmap 5.4.4).  If the run transitions to a timeout node, the node ID
+        is included so downstream subscribers know the run continues rather
+        than simply failing.
+        """
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "node_id": node_id,
+            "paused_at": paused_at,
+            "timeout_seconds": timeout_seconds,
+            "waited_seconds": round(time.time() - paused_at, 2),
+        }
+        if transitioned_to is not None:
+            payload["transitioned_to"] = transitioned_to
+        payload["tokens_used"] = self.tokens_used
+        await self._emit_bus_event("playbook.run.timed_out", payload)
 
     # ------------------------------------------------------------------
     # Public API
@@ -1101,6 +1142,330 @@ class PlaybookRunner:
             tokens_used=runner.tokens_used,
             final_response=final_response,
         )
+
+    # ------------------------------------------------------------------
+    # Timeout handling (roadmap 5.4.4)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def handle_timeout(
+        cls,
+        db_run: PlaybookRun,
+        graph: dict,
+        supervisor: Supervisor | None = None,
+        db: DatabaseBackend | None = None,
+        on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
+    ) -> RunResult:
+        """Handle a paused run whose pause timeout has expired.
+
+        Resolves the pause timeout for the paused node (node-level override →
+        playbook-level override → default 24h).  If the node defines an
+        ``on_timeout`` target, the run transitions to that node and continues
+        graph execution.  Otherwise, the run is marked as ``timed_out``.
+
+        This method is called by the orchestrator's background sweep or by
+        ``_cmd_resume_playbook()`` when a resume attempt arrives too late.
+
+        Parameters
+        ----------
+        db_run:
+            The persisted :class:`PlaybookRun` with status ``"paused"``.
+        graph:
+            The compiled playbook graph (fallback if no pinned_graph).
+        supervisor:
+            Supervisor instance — only needed when an ``on_timeout`` node
+            requires LLM calls.  May be *None* for simple timeout-to-fail.
+        db:
+            Database backend for persisting updates.
+        on_progress:
+            Optional progress callback.
+        event_bus:
+            Optional EventBus for emitting timeout events.
+        """
+        # Resolve effective graph (version pinning)
+        if db_run.pinned_graph:
+            effective_graph = json.loads(db_run.pinned_graph)
+        else:
+            effective_graph = graph
+
+        paused_node_id = db_run.current_node
+        paused_at = db_run.paused_at or db_run.started_at
+
+        # Resolve timeout: node-level → playbook-level → default 24h
+        timeout_seconds = cls._resolve_pause_timeout(effective_graph, paused_node_id)
+
+        # Check if the node defines an on_timeout target
+        on_timeout_node = None
+        if paused_node_id:
+            paused_node = effective_graph.get("nodes", {}).get(paused_node_id, {})
+            on_timeout_node = paused_node.get("on_timeout")
+
+        if on_timeout_node and on_timeout_node in effective_graph.get("nodes", {}):
+            # Transition to the timeout node and continue graph execution
+            if supervisor is None:
+                # Cannot transition without a supervisor — fall through to fail
+                logger.warning(
+                    "Run %s has on_timeout='%s' but no Supervisor available — marking as timed_out",
+                    db_run.run_id,
+                    on_timeout_node,
+                )
+            else:
+                return await cls._resume_at_timeout_node(
+                    db_run=db_run,
+                    effective_graph=effective_graph,
+                    supervisor=supervisor,
+                    timeout_node_id=on_timeout_node,
+                    paused_node_id=paused_node_id,
+                    paused_at=paused_at,
+                    timeout_seconds=timeout_seconds,
+                    db=db,
+                    on_progress=on_progress,
+                    event_bus=event_bus,
+                )
+
+        # No timeout node — mark as timed_out
+        runner = cls(
+            effective_graph,
+            json.loads(db_run.trigger_event),
+            supervisor or _DummySupervisor(),  # type: ignore[arg-type]
+            db,
+            on_progress,
+            event_bus=event_bus,
+        )
+        runner.run_id = db_run.run_id
+        runner.messages = json.loads(db_run.conversation_history)
+        runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
+        runner.tokens_used = db_run.tokens_used
+        runner._status = PlaybookRunStatus.PAUSED
+
+        # Transition PAUSED → TIMED_OUT
+        runner._transition(PlaybookRunEvent.PAUSE_TIMEOUT)
+        completed_at = time.time()
+        error = f"Pause timeout exceeded ({timeout_seconds}s)"
+
+        trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
+        if db:
+            await db.update_playbook_run(
+                db_run.run_id,
+                status=runner._status.value,
+                completed_at=completed_at,
+                error=error,
+            )
+
+        if on_progress:
+            await on_progress("playbook_timed_out", paused_node_id)
+
+        await runner._emit_timed_out_event(
+            node_id=paused_node_id or "<unknown>",
+            paused_at=paused_at,
+            timeout_seconds=timeout_seconds,
+        )
+
+        return RunResult(
+            run_id=db_run.run_id,
+            status=runner._status.value,
+            node_trace=trace_dicts,
+            tokens_used=runner.tokens_used,
+            error=error,
+        )
+
+    @classmethod
+    async def _resume_at_timeout_node(
+        cls,
+        *,
+        db_run: PlaybookRun,
+        effective_graph: dict,
+        supervisor: Supervisor,
+        timeout_node_id: str,
+        paused_node_id: str | None,
+        paused_at: float,
+        timeout_seconds: int,
+        db: DatabaseBackend | None = None,
+        on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
+    ) -> RunResult:
+        """Transition a timed-out run to a timeout node and continue execution.
+
+        Reconstructs the runner from the persisted run, injects a timeout
+        context message, and walks the graph starting from the timeout node.
+        """
+        runner = cls(
+            effective_graph,
+            json.loads(db_run.trigger_event),
+            supervisor,
+            db,
+            on_progress,
+            event_bus=event_bus,
+        )
+        runner.run_id = db_run.run_id
+        runner.messages = json.loads(db_run.conversation_history)
+        runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
+        runner.tokens_used = db_run.tokens_used
+        runner._status = PlaybookRunStatus.PAUSED
+
+        # Transition PAUSED → RUNNING (via HUMAN_RESUMED) — we re-use this
+        # because the run continues execution, just with timeout context
+        # instead of human input.
+        runner._transition(PlaybookRunEvent.HUMAN_RESUMED)
+
+        # Inject timeout context into conversation
+        runner.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[Pause timeout]: The human review at node "
+                    f"'{paused_node_id}' timed out after {timeout_seconds}s. "
+                    f"No human input was received. The playbook is now "
+                    f"continuing from the designated timeout node "
+                    f"'{timeout_node_id}'."
+                ),
+            }
+        )
+
+        # Update DB status to running
+        if db:
+            await db.update_playbook_run(db_run.run_id, status=runner._status.value)
+
+        # Emit timeout event with transition info
+        await runner._emit_timed_out_event(
+            node_id=paused_node_id or "<unknown>",
+            paused_at=paused_at,
+            timeout_seconds=timeout_seconds,
+            transitioned_to=timeout_node_id,
+        )
+
+        if on_progress:
+            await on_progress("playbook_timeout_transition", timeout_node_id)
+
+        # Walk graph from the timeout node
+        started_at = db_run.started_at
+        current_node_id = timeout_node_id
+        final_response: str | None = None
+
+        while True:
+            node = effective_graph["nodes"].get(current_node_id)
+            if node is None:
+                return await runner._fail(
+                    db_run,
+                    f"Node '{current_node_id}' not found in graph",
+                    started_at,
+                    event=PlaybookRunEvent.GRAPH_ERROR,
+                )
+
+            if node.get("terminal"):
+                break
+
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
+                return await runner._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted before node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
+                    started_at,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
+                )
+
+            try:
+                response = await runner._execute_node(current_node_id, node, db_run)
+                final_response = response
+            except Exception as exc:
+                return await runner._fail(
+                    db_run,
+                    f"Node '{current_node_id}' failed: {exc}",
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.NODE_FAILED,
+                )
+
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
+                return await runner._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted after node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
+                )
+
+            if node.get("wait_for_human"):
+                return await runner._pause(db_run, current_node_id, started_at)
+
+            try:
+                next_node_id, t_method = await runner._evaluate_transition(
+                    current_node_id, node, response
+                )
+            except Exception as exc:
+                return await runner._fail(
+                    db_run,
+                    f"Transition from '{current_node_id}' failed: {exc}",
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.TRANSITION_FAILED,
+                )
+
+            if runner.node_trace:
+                runner.node_trace[-1].transition_to = next_node_id
+                runner.node_trace[-1].transition_method = t_method
+
+            if next_node_id is None:
+                break
+
+            current_node_id = next_node_id
+
+        # Completed successfully
+        runner._transition(PlaybookRunEvent.TERMINAL_REACHED)
+        completed_at = time.time()
+        trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
+
+        if db:
+            await db.update_playbook_run(
+                db_run.run_id,
+                status=runner._status.value,
+                conversation_history=json.dumps(runner.messages),
+                node_trace=json.dumps(trace_dicts),
+                tokens_used=runner.tokens_used,
+                completed_at=completed_at,
+            )
+
+        await runner._emit_completed_event(
+            final_context=final_response,
+            started_at=db_run.started_at,
+        )
+
+        return RunResult(
+            run_id=db_run.run_id,
+            status=runner._status.value,
+            node_trace=trace_dicts,
+            tokens_used=runner.tokens_used,
+            final_response=final_response,
+        )
+
+    @staticmethod
+    def _resolve_pause_timeout(graph: dict, node_id: str | None) -> int:
+        """Resolve the effective pause timeout for a paused node.
+
+        Priority: node-level ``pause_timeout_seconds`` → playbook-level
+        ``pause_timeout_seconds`` → default 86400 (24 hours).
+        """
+        default_timeout = 86400  # 24 hours
+
+        if node_id:
+            node = graph.get("nodes", {}).get(node_id, {})
+            node_timeout = node.get("pause_timeout_seconds")
+            if node_timeout is not None:
+                return int(node_timeout)
+
+        playbook_timeout = graph.get("pause_timeout_seconds")
+        if playbook_timeout is not None:
+            return int(playbook_timeout)
+
+        return default_timeout
 
     # ------------------------------------------------------------------
     # Internal: node execution
@@ -2024,6 +2389,7 @@ class PlaybookRunner:
                 conversation_history=json.dumps(self.messages),
                 node_trace=json.dumps(trace_dicts),
                 tokens_used=self.tokens_used,
+                paused_at=paused_at,
             )
 
         if self.on_progress:

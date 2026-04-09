@@ -40,6 +40,7 @@ class PlaybookQueryMixin:
                     completed_at=run.completed_at,
                     error=run.error,
                     pinned_graph=run.pinned_graph,
+                    paused_at=run.paused_at,
                 )
             )
 
@@ -129,4 +130,5 @@ class PlaybookQueryMixin:
             completed_at=row["completed_at"],
             error=row["error"],
             pinned_graph=row["pinned_graph"],
+            paused_at=row["paused_at"],
         )

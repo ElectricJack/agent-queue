@@ -6537,3 +6537,583 @@ class TestPauseTimeout:
         )
         paused_at = CommandHandler._get_paused_at(run)
         assert paused_at == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Configurable pause timeout (spec §9, roadmap 5.4.4)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigurablePauseTimeout:
+    """Tests for configurable pause timeout — roadmap 5.4.4.
+
+    Covers:
+    (a) Default 24h timeout respected
+    (b) Custom timeout (e.g., 1h) respected
+    (c) Timeout transitions to timeout node if defined
+    (d) Without timeout node, transitions to "failed" (timed_out) status
+    (e) Resume of timed-out run rejected
+    (f) Timeout notification event emitted
+    (g) Timeout countdown resets on re-pause
+    """
+
+    # -- Helper: build a paused PlaybookRun ----------------------------------
+
+    @staticmethod
+    def _make_paused_run(
+        run_id: str = "r1",
+        playbook_id: str = "test-pb",
+        current_node: str = "review",
+        paused_at: float | None = None,
+        started_at: float = 100.0,
+        graph: dict | None = None,
+        messages: list | None = None,
+        node_trace: list | None = None,
+    ) -> PlaybookRun:
+        return PlaybookRun(
+            run_id=run_id,
+            playbook_id=playbook_id,
+            playbook_version=1,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node=current_node,
+            conversation_history=json.dumps(messages or []),
+            node_trace=json.dumps(
+                node_trace
+                or [
+                    {
+                        "node_id": current_node,
+                        "started_at": started_at,
+                        "completed_at": started_at + 1,
+                        "status": "completed",
+                    }
+                ]
+            ),
+            tokens_used=100,
+            started_at=started_at,
+            paused_at=paused_at,
+            pinned_graph=json.dumps(graph) if graph else None,
+        )
+
+    # -- (a) Default 24h timeout ---------------------------------------------
+
+    async def test_default_24h_timeout_respected(self):
+        """_resolve_pause_timeout returns 86400 (24h) when no overrides set."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {"prompt": "Review", "wait_for_human": True, "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        result = PlaybookRunner._resolve_pause_timeout(graph, "review")
+        assert result == 86400
+
+    # -- (b) Custom timeout (node-level and playbook-level) ------------------
+
+    async def test_node_level_timeout_override(self):
+        """Node-level pause_timeout_seconds overrides playbook-level and default."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "pause_timeout_seconds": 7200,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 3600,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        result = PlaybookRunner._resolve_pause_timeout(graph, "review")
+        assert result == 3600
+
+    async def test_playbook_level_timeout_override(self):
+        """Playbook-level pause_timeout_seconds overrides default 24h."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "pause_timeout_seconds": 7200,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        result = PlaybookRunner._resolve_pause_timeout(graph, "review")
+        assert result == 7200
+
+    async def test_node_timeout_takes_precedence_over_playbook(self):
+        """Node-level timeout wins over playbook-level timeout."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "pause_timeout_seconds": 7200,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 1800,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        assert PlaybookRunner._resolve_pause_timeout(graph, "review") == 1800
+
+    # -- (c) Timeout transitions to timeout node if defined ------------------
+
+    async def test_timeout_transitions_to_timeout_node(self):
+        """handle_timeout routes to on_timeout node when defined."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "on_timeout": "handle_timeout",
+                    "goto": "done",
+                },
+                "handle_timeout": {
+                    "prompt": "Handle the timeout gracefully.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+            messages=[
+                {"role": "user", "content": "test"},
+                {"role": "assistant", "content": "analysis complete"},
+            ],
+        )
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Timeout handled.")
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        result = await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            supervisor=mock_supervisor,
+            db=mock_db,
+        )
+
+        assert result.status == "completed"
+        assert result.error is None
+        # Verify the Supervisor was called (the timeout node was executed)
+        mock_supervisor.chat.assert_called()
+
+    # -- (d) Without timeout node, transitions to timed_out ------------------
+
+    async def test_timeout_without_node_marks_timed_out(self):
+        """handle_timeout marks run as timed_out when no on_timeout node."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        result = await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+        )
+
+        assert result.status == "timed_out"
+        assert "Pause timeout exceeded" in result.error
+
+    async def test_timeout_without_supervisor_marks_timed_out(self):
+        """handle_timeout marks timed_out when on_timeout exists but no supervisor."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "on_timeout": "handle_timeout",
+                    "goto": "done",
+                },
+                "handle_timeout": {
+                    "prompt": "Handle the timeout.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        result = await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            supervisor=None,
+            db=mock_db,
+        )
+
+        assert result.status == "timed_out"
+
+    # -- (e) Resume of timed-out run rejected --------------------------------
+
+    async def test_resume_timed_out_run_rejected(self):
+        """_cmd_resume_playbook rejects resume for already-timed-out runs."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler.db = AsyncMock()
+        handler.db.get_playbook_run = AsyncMock(
+            return_value=PlaybookRun(
+                run_id="r1",
+                playbook_id="pb",
+                playbook_version=1,
+                status="timed_out",
+                started_at=100.0,
+            )
+        )
+
+        result = await handler._cmd_resume_playbook({"run_id": "r1", "human_input": "approved"})
+        assert "error" in result
+        assert "timed_out" in result["error"]
+
+    # -- (f) Timeout event emitted -------------------------------------------
+
+    async def test_timeout_emits_timed_out_event(self):
+        """handle_timeout emits playbook.run.timed_out event on EventBus."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        mock_bus = AsyncMock()
+        mock_bus.emit = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+            event_bus=mock_bus,
+        )
+
+        mock_bus.emit.assert_called_once()
+        event_type, payload = mock_bus.emit.call_args[0]
+        assert event_type == "playbook.run.timed_out"
+        assert payload["run_id"] == "r1"
+        assert payload["node_id"] == "review"
+        assert payload["timeout_seconds"] == 10
+        assert "transitioned_to" not in payload  # No timeout node
+
+    async def test_timeout_with_transition_emits_event_with_target(self):
+        """Timeout event includes transitioned_to when on_timeout is used."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "on_timeout": "handle_timeout",
+                    "goto": "done",
+                },
+                "handle_timeout": {
+                    "prompt": "Handle the timeout.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+            messages=[
+                {"role": "user", "content": "test"},
+                {"role": "assistant", "content": "analysis done"},
+            ],
+        )
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Handled timeout.")
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        mock_bus = AsyncMock()
+        mock_bus.emit = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            supervisor=mock_supervisor,
+            db=mock_db,
+            event_bus=mock_bus,
+        )
+
+        # Find the timed_out event (there may also be a completed event)
+        timed_out_calls = [
+            c for c in mock_bus.emit.call_args_list if c[0][0] == "playbook.run.timed_out"
+        ]
+        assert len(timed_out_calls) == 1
+        payload = timed_out_calls[0][0][1]
+        assert payload["transitioned_to"] == "handle_timeout"
+
+    # -- (g) Timeout countdown resets on re-pause ----------------------------
+
+    async def test_pause_persists_paused_at(self, mock_supervisor, mock_db):
+        """_pause() persists paused_at timestamp in the DB update."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review this.",
+                    "wait_for_human": True,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, {"type": "test"}, mock_supervisor, mock_db)
+        result = await runner.run()
+
+        assert result.status == "paused"
+        # Verify paused_at was persisted in the DB update
+        update_calls = mock_db.update_playbook_run.call_args_list
+        # Find the call that set paused_at
+        paused_calls = [c for c in update_calls if "paused_at" in (c[1] or {})]
+        assert len(paused_calls) >= 1
+        paused_at_value = paused_calls[-1][1]["paused_at"]
+        assert isinstance(paused_at_value, float)
+        assert paused_at_value > 0
+
+    # -- State machine transition: PAUSED → TIMED_OUT -----------------------
+
+    async def test_state_machine_pause_timeout_transition(self):
+        """State machine allows PAUSED → TIMED_OUT via PAUSE_TIMEOUT event."""
+        from src.models import PlaybookRunEvent, PlaybookRunStatus
+        from src.playbook_state_machine import playbook_run_transition
+
+        result = playbook_run_transition(
+            PlaybookRunStatus.PAUSED,
+            PlaybookRunEvent.PAUSE_TIMEOUT,
+        )
+        assert result == PlaybookRunStatus.TIMED_OUT
+
+    # -- PlaybookNode model fields ------------------------------------------
+
+    async def test_playbook_node_pause_timeout_roundtrip(self):
+        """PlaybookNode serializes/deserializes pause_timeout_seconds and on_timeout."""
+        from src.playbook_models import PlaybookNode
+
+        node = PlaybookNode(
+            prompt="Review",
+            wait_for_human=True,
+            pause_timeout_seconds=3600,
+            on_timeout="fallback",
+        )
+        d = node.to_dict()
+        assert d["pause_timeout_seconds"] == 3600
+        assert d["on_timeout"] == "fallback"
+
+        restored = PlaybookNode.from_dict(d)
+        assert restored.pause_timeout_seconds == 3600
+        assert restored.on_timeout == "fallback"
+
+    async def test_compiled_playbook_pause_timeout_roundtrip(self):
+        """CompiledPlaybook serializes/deserializes pause_timeout_seconds."""
+        from src.playbook_models import CompiledPlaybook, PlaybookNode
+
+        pb = CompiledPlaybook(
+            id="test",
+            version=1,
+            source_hash="abc",
+            triggers=["manual"],
+            scope="system",
+            pause_timeout_seconds=7200,
+            nodes={
+                "start": PlaybookNode(entry=True, prompt="Go", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        d = pb.to_dict()
+        assert d["pause_timeout_seconds"] == 7200
+
+        restored = CompiledPlaybook.from_dict(d)
+        assert restored.pause_timeout_seconds == 7200
+
+    # -- Fallback: paused_at from node trace --------------------------------
+
+    async def test_handle_timeout_uses_node_trace_fallback(self):
+        """handle_timeout falls back to node trace when paused_at is None."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        # Create run without paused_at — handle_timeout should use started_at
+        db_run = self._make_paused_run(
+            paused_at=None,
+            started_at=1.0,  # Very old timestamp — definitely expired
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        result = await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+        )
+        assert result.status == "timed_out"
+
+    # -- DB update on timed_out --------------------------------------------
+
+    async def test_timeout_updates_db_status(self):
+        """handle_timeout updates DB with timed_out status and error."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100000,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+        )
+
+        mock_db.update_playbook_run.assert_called()
+        update_kwargs = mock_db.update_playbook_run.call_args[1]
+        assert update_kwargs["status"] == "timed_out"
+        assert "completed_at" in update_kwargs
+        assert "Pause timeout exceeded" in update_kwargs["error"]
+
+    # -- on_timeout with invalid node ID -----------------------------------
+
+    async def test_timeout_invalid_target_marks_timed_out(self):
+        """on_timeout pointing to a non-existent node falls through to timed_out."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "on_timeout": "nonexistent_node",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        result = await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+        )
+        # on_timeout target doesn't exist in nodes → falls through to timed_out
+        assert result.status == "timed_out"
+
+    # -- Progress callback on timeout --------------------------------------
+
+    async def test_timeout_calls_progress_callback(self):
+        """handle_timeout invokes on_progress with playbook_timed_out."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        progress = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+            on_progress=progress,
+        )
+
+        progress.assert_called_with("playbook_timed_out", "review")
