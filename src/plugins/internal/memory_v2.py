@@ -68,6 +68,8 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_fact_set",
         "memory_fact_list",
         "memory_fact_history",
+        "memory_fact_recall",
+        "memory_recall",
         "memory_list",
     }
 )
@@ -306,6 +308,98 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["project_id", "namespace"],
+        },
+    },
+    # ---- Scoped KV Recall (spec §6) ----
+    {
+        "name": "memory_fact_recall",
+        "description": (
+            "Exact KV lookup by key with automatic scope resolution.  "
+            "Searches scopes in order of specificity — project → agent-type "
+            "→ system — and returns the first match (most specific wins).  "
+            "Use this instead of memory_kv_get when you want automatic "
+            "scope fallback rather than querying a single scope."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "The key to look up.",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID.  When set, the project scope is "
+                        "searched first (highest priority)."
+                    ),
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": (
+                        "Agent type name (e.g. 'coding').  When set, the "
+                        "agent-type scope is searched second."
+                    ),
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": (
+                        "Optional KV namespace filter (e.g. 'project', "
+                        "'conventions').  When set, only entries in this "
+                        "namespace are considered."
+                    ),
+                },
+            },
+            "required": ["key"],
+        },
+    },
+    # ---- Unified Smart Recall (spec §7) ----
+    {
+        "name": "memory_recall",
+        "description": (
+            "Smart memory retrieval — tries KV exact match first, then "
+            "falls back to semantic search.  Use when you're not sure "
+            "whether the information is a structured fact or an "
+            "unstructured insight.  For the KV attempt, the query is used "
+            "as the key with scope resolution (project → agent-type → "
+            "system).  If no KV match is found, performs multi-scope "
+            "semantic search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search query.  Used as the KV key for exact match "
+                        "and as the semantic search query for fallback."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID for scope resolution.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": ("Agent type name (e.g. 'coding') for scope resolution."),
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": (
+                        "KV namespace for the exact-match attempt (e.g. 'project', 'conventions')."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": ("Topic filter for the semantic search fallback."),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max semantic search results (default 5).",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
         },
     },
     # ---- Temporal Facts ----
@@ -744,6 +838,9 @@ class MemoryV2Plugin(InternalPlugin):
             "memory_kv_get": self.cmd_memory_kv_get,
             "memory_kv_set": self.cmd_memory_kv_set,
             "memory_kv_list": self.cmd_memory_kv_list,
+            # Scoped recall (spec §6–§7)
+            "memory_fact_recall": self.cmd_memory_fact_recall,
+            "memory_recall": self.cmd_memory_recall,
             # Temporal facts
             "memory_fact_get": self.cmd_memory_fact_get,
             "memory_fact_set": self.cmd_memory_fact_set,
@@ -1536,6 +1633,152 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_kv_list failed: %s", e, exc_info=True)
             return {"error": f"KV list failed: {e}"}
+
+    # -----------------------------------------------------------------
+    # Command handlers — Scoped Recall (spec §6–§7)
+    # -----------------------------------------------------------------
+
+    async def cmd_memory_fact_recall(self, args: dict) -> dict:
+        """KV lookup with scope resolution — first match wins.
+
+        Searches scopes in order: project → agent-type → system.
+        Per spec ``docs/specs/design/memory-scoping.md`` §6.
+        """
+        key = args.get("key")
+        if not key:
+            return {"error": "key is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_fact_recall")
+
+        project_id = args.get("project_id")
+        agent_type = args.get("agent_type")
+        namespace = args.get("namespace")
+
+        try:
+            entry = await self._service.kv_recall(
+                key,
+                project_id=project_id,
+                agent_type=agent_type,
+                namespace=namespace,
+            )
+            if entry is None:
+                return {
+                    "success": True,
+                    "found": False,
+                    "key": key,
+                    "project_id": project_id or "",
+                    "agent_type": agent_type or "",
+                    "namespace": namespace or "",
+                    "scopes_searched": self._build_scope_list(project_id, agent_type),
+                }
+            formatted = self._format_kv_entry(entry)
+            return {
+                "success": True,
+                "found": True,
+                "key": key,
+                "resolved_scope": entry.get("_scope", ""),
+                "resolved_scope_id": entry.get("_scope_id", ""),
+                "collection": entry.get("_collection", ""),
+                **formatted,
+            }
+        except Exception as e:
+            self._log.error("memory_fact_recall failed: %s", e, exc_info=True)
+            return {"error": f"Fact recall failed: {e}"}
+
+    async def cmd_memory_recall(self, args: dict) -> dict:
+        """Smart retrieval: KV exact match first, then semantic search.
+
+        Per spec ``docs/specs/design/memory-scoping.md`` §7.
+        """
+        query = args.get("query")
+        if not query:
+            return {"error": "query is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_recall")
+
+        project_id = args.get("project_id")
+        agent_type = args.get("agent_type")
+        namespace = args.get("namespace")
+        topic = args.get("topic")
+        top_k = args.get("top_k", 5)
+
+        try:
+            result = await self._service.recall(
+                query,
+                project_id=project_id,
+                agent_type=agent_type,
+                namespace=namespace,
+                topic=topic,
+                top_k=top_k,
+            )
+            source = result.get("source", "unavailable")
+            raw_results = result.get("results", [])
+
+            if source == "kv":
+                # Single KV match — format it
+                formatted = [self._format_kv_entry(r) for r in raw_results]
+                return {
+                    "success": True,
+                    "source": "kv",
+                    "query": query,
+                    "count": len(formatted),
+                    "results": formatted,
+                }
+            elif source == "semantic":
+                # Semantic search results
+                formatted = self._format_search_results(raw_results)
+                return {
+                    "success": True,
+                    "source": "semantic",
+                    "query": query,
+                    "count": len(formatted),
+                    "results": formatted,
+                }
+            else:
+                return {
+                    "success": False,
+                    "source": source,
+                    "query": query,
+                    "count": 0,
+                    "results": [],
+                }
+        except Exception as e:
+            self._log.error("memory_recall failed: %s", e, exc_info=True)
+            return {"error": f"Recall failed: {e}"}
+
+    @staticmethod
+    def _build_scope_list(project_id: str | None, agent_type: str | None) -> list[str]:
+        """Build the list of scopes that would be searched, for diagnostics."""
+        scopes: list[str] = []
+        if project_id:
+            scopes.append(f"project_{project_id}")
+        if agent_type:
+            scopes.append(f"agenttype_{agent_type}")
+        scopes.append("system")
+        return scopes
+
+    def _format_search_results(self, results: list[dict]) -> list[dict]:
+        """Format semantic search results for API response."""
+        formatted: list[dict] = []
+        for r in results:
+            entry: dict[str, Any] = {
+                "content": r.get("content", ""),
+                "heading": r.get("heading", ""),
+                "source": r.get("source", ""),
+                "score": r.get("score", 0.0),
+                "topic": r.get("topic", ""),
+                "tags": self._decode_tags(r.get("tags", "[]")),
+            }
+            if "_collection" in r:
+                entry["collection"] = r["_collection"]
+            if "_scope" in r:
+                entry["scope"] = r["_scope"]
+            if "_scope_id" in r:
+                entry["scope_id"] = r["_scope_id"]
+            formatted.append(entry)
+        return formatted
 
     # -----------------------------------------------------------------
     # Command handlers — Temporal Facts

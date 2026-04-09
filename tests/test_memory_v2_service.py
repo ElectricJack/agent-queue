@@ -611,6 +611,384 @@ class TestFactsFileSync:
         assert "key: value" in content
 
 
+class TestKVRecall:
+    """Test kv_recall — scoped KV lookup with first-match-wins (spec §6)."""
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_finds_in_project_scope(self, service, mock_store):
+        """When a key exists in the project scope, return it immediately."""
+        result = await service.kv_recall(
+            "test_key",
+            project_id="my-project",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert result is not None
+        assert result["kv_key"] == "test_key"
+        assert result["_scope"] is not None
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_falls_through_to_agent_type(self, service, mock_router, mock_store):
+        """When project scope misses, search agent-type scope."""
+        call_count = 0
+
+        def scope_aware_store(*args, **kwargs):
+            nonlocal call_count
+            store = MagicMock()
+            call_count += 1
+            if call_count == 1:
+                # Project scope: miss
+                store.get_kv.return_value = None
+            else:
+                # Agent-type or system scope: hit
+                store.get_kv.return_value = {
+                    "kv_namespace": "project",
+                    "kv_key": "test_key",
+                    "kv_value": '"agent_type_value"',
+                    "updated_at": 2000,
+                    "tags": "[]",
+                    "source": "",
+                }
+            return store
+
+        mock_router.get_store.side_effect = scope_aware_store
+
+        result = await service.kv_recall(
+            "test_key",
+            project_id="my-project",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert result is not None
+        assert result["kv_value"] == '"agent_type_value"'
+        # Should have called get_store twice (project miss, agent-type hit)
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_falls_through_to_system(self, service, mock_router):
+        """When project and agent-type miss, search system scope."""
+        call_count = 0
+
+        def scope_aware_store(*args, **kwargs):
+            nonlocal call_count
+            store = MagicMock()
+            call_count += 1
+            if call_count <= 2:
+                # Project and agent-type: miss
+                store.get_kv.return_value = None
+            else:
+                # System scope: hit
+                store.get_kv.return_value = {
+                    "kv_namespace": "global",
+                    "kv_key": "test_key",
+                    "kv_value": '"system_value"',
+                    "updated_at": 3000,
+                    "tags": "[]",
+                    "source": "",
+                }
+            return store
+
+        mock_router.get_store.side_effect = scope_aware_store
+
+        result = await service.kv_recall(
+            "test_key",
+            project_id="my-project",
+            agent_type="coding",
+            namespace="global",
+        )
+        assert result is not None
+        assert result["kv_value"] == '"system_value"'
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_returns_none_when_all_miss(self, service, mock_router):
+        """When no scope has the key, return None."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await service.kv_recall(
+            "nonexistent_key",
+            project_id="my-project",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_without_project_id(self, service, mock_router, mock_store):
+        """When project_id is None, skip project scope."""
+        call_count = 0
+
+        def scope_aware_store(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return mock_store
+
+        mock_router.get_store.side_effect = scope_aware_store
+
+        result = await service.kv_recall(
+            "test_key",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert result is not None
+        # Should search agent-type + system = 1 call (agent-type hit)
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_without_agent_type(self, service, mock_router, mock_store):
+        """When agent_type is None, skip agent-type scope."""
+        mock_store.get_kv.return_value = None
+        call_count = 0
+
+        def scope_aware_store(*args, **kwargs):
+            nonlocal call_count
+            store = MagicMock()
+            call_count += 1
+            if call_count == 1:
+                store.get_kv.return_value = None  # project: miss
+            else:
+                store.get_kv.return_value = {
+                    "kv_namespace": "global",
+                    "kv_key": "test_key",
+                    "kv_value": '"sys"',
+                    "updated_at": 1,
+                    "tags": "[]",
+                    "source": "",
+                }
+            return store
+
+        mock_router.get_store.side_effect = scope_aware_store
+
+        result = await service.kv_recall(
+            "test_key",
+            project_id="proj",
+            namespace="global",
+        )
+        assert result is not None
+        # project + system = 2 calls (no agent-type)
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_system_only(self, service, mock_store):
+        """With no project_id or agent_type, only system scope is searched."""
+        result = await service.kv_recall("test_key")
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_unavailable(self):
+        """Returns None when service is unavailable."""
+        svc = MemoryV2Service()
+        result = await svc.kv_recall("key", project_id="proj")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_kv_recall_default_namespace(self, service, mock_store):
+        """When namespace is None, defaults to empty string."""
+        await service.kv_recall("test_key", project_id="proj")
+        mock_store.get_kv.assert_called_with("test_key", namespace="")
+
+
+class TestRecall:
+    """Test recall — unified smart retrieval (spec §7)."""
+
+    @pytest.mark.asyncio
+    async def test_recall_returns_kv_when_found(self, service, mock_store):
+        """When a KV match is found, return source='kv'."""
+        result = await service.recall(
+            "test_key",
+            project_id="proj",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert result["source"] == "kv"
+        assert len(result["results"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_recall_falls_back_to_semantic(self, service, mock_router, mock_embedder):
+        """When no KV match, falls back to semantic search."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await service.recall(
+            "how does auth work?",
+            project_id="proj",
+            agent_type="coding",
+        )
+        assert result["source"] == "semantic"
+        assert len(result["results"]) >= 0
+
+    @pytest.mark.asyncio
+    async def test_recall_unavailable(self):
+        """Returns unavailable source when service is not initialized."""
+        svc = MemoryV2Service()
+        result = await svc.recall("query")
+        assert result["source"] == "unavailable"
+        assert result["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_recall_passes_topic_to_search(self, service, mock_router, mock_embedder):
+        """Topic filter is forwarded to the semantic search fallback."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        await service.recall(
+            "testing best practices",
+            project_id="proj",
+            topic="testing",
+        )
+        # Semantic search should have been called (the router.search mock)
+        mock_router.search.assert_called_once()
+        call_kwargs = mock_router.search.call_args
+        assert call_kwargs.kwargs.get("topic") == "testing"
+
+
+class TestPluginRecallHandlers:
+    """Test plugin command handlers for memory_fact_recall and memory_recall."""
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        """Plugin with a wired-up service."""
+        plugin._service = service
+        plugin._log = MagicMock()
+        return plugin
+
+    @pytest.mark.asyncio
+    async def test_fact_recall_handler_found(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_fact_recall(
+            {"key": "test_key", "project_id": "proj", "agent_type": "coding"}
+        )
+        assert result["success"] is True
+        assert result["found"] is True
+        assert result["key"] == "test_key"
+        assert "resolved_scope" in result
+
+    @pytest.mark.asyncio
+    async def test_fact_recall_handler_not_found(self, wired_plugin, mock_router):
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await wired_plugin.cmd_memory_fact_recall(
+            {"key": "missing", "project_id": "proj", "agent_type": "coding"}
+        )
+        assert result["success"] is True
+        assert result["found"] is False
+        assert "scopes_searched" in result
+        assert len(result["scopes_searched"]) == 3  # project, agent-type, system
+
+    @pytest.mark.asyncio
+    async def test_fact_recall_handler_missing_key(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_fact_recall({})
+        assert "error" in result
+        assert "key" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_fact_recall_handler_unavailable(self, plugin):
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_fact_recall({"key": "test"})
+        assert "error" in result
+        assert "not available" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_recall_handler_kv_hit(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_recall(
+            {"query": "test_key", "project_id": "proj", "namespace": "project"}
+        )
+        assert result["success"] is True
+        assert result["source"] == "kv"
+        assert result["count"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_recall_handler_semantic_fallback(self, wired_plugin, mock_router):
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        result = await wired_plugin.cmd_memory_recall(
+            {"query": "how does auth work?", "project_id": "proj"}
+        )
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+
+    @pytest.mark.asyncio
+    async def test_recall_handler_missing_query(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_recall({})
+        assert "error" in result
+        assert "query" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_recall_handler_unavailable(self, plugin):
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_recall({"query": "test"})
+        assert "error" in result
+        assert "not available" in result["error"]
+
+
+class TestToolSchemas:
+    """Test tool definitions for new recall tools."""
+
+    def test_memory_fact_recall_tool_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_fact_recall"), None)
+        assert tool is not None
+        assert "key" in tool["input_schema"]["required"]
+        props = tool["input_schema"]["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "namespace" in props
+
+    def test_memory_recall_tool_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_recall"), None)
+        assert tool is not None
+        assert "query" in tool["input_schema"]["required"]
+        props = tool["input_schema"]["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "namespace" in props
+        assert "topic" in props
+        assert "top_k" in props
+
+    def test_new_tools_in_v2_only_set(self):
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_fact_recall" in V2_ONLY_TOOLS
+        assert "memory_recall" in V2_ONLY_TOOLS
+
+    def test_build_scope_list(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        # Both project and agent-type
+        scopes = MemoryV2Plugin._build_scope_list("my-proj", "coding")
+        assert scopes == ["project_my-proj", "agenttype_coding", "system"]
+
+        # Only project
+        scopes = MemoryV2Plugin._build_scope_list("my-proj", None)
+        assert scopes == ["project_my-proj", "system"]
+
+        # Only agent-type
+        scopes = MemoryV2Plugin._build_scope_list(None, "coding")
+        assert scopes == ["agenttype_coding", "system"]
+
+        # Neither
+        scopes = MemoryV2Plugin._build_scope_list(None, None)
+        assert scopes == ["system"]
+
+
 class TestPluginKVSetWithScope:
     """Test the plugin command handler for memory_kv_set with scope."""
 
@@ -730,23 +1108,17 @@ class TestTemporalFacts:
         assert len(results) == 2
         assert results[0]["kv_key"] == "deploy_branch"
         assert results[1]["kv_key"] == "python_version"
-        mock_store.list_temporal.assert_called_once_with(
-            namespace="", current_only=True
-        )
+        mock_store.list_temporal.assert_called_once_with(namespace="", current_only=True)
 
     @pytest.mark.asyncio
     async def test_fact_list_with_namespace(self, service, mock_store):
         await service.fact_list("test-project", "config")
-        mock_store.list_temporal.assert_called_once_with(
-            namespace="config", current_only=True
-        )
+        mock_store.list_temporal.assert_called_once_with(namespace="config", current_only=True)
 
     @pytest.mark.asyncio
     async def test_fact_list_include_closed(self, service, mock_store):
         await service.fact_list("test-project", current_only=False)
-        mock_store.list_temporal.assert_called_once_with(
-            namespace="", current_only=False
-        )
+        mock_store.list_temporal.assert_called_once_with(namespace="", current_only=False)
 
     @pytest.mark.asyncio
     async def test_fact_list_unavailable(self):
@@ -1049,9 +1421,7 @@ class TestPluginHandlers:
 
     @pytest.mark.asyncio
     async def test_fact_list_handler(self, wired_plugin):
-        result = await wired_plugin.cmd_memory_fact_list(
-            {"project_id": "proj"}
-        )
+        result = await wired_plugin.cmd_memory_fact_list({"project_id": "proj"})
         assert result["success"] is True
         assert result["count"] == 2
         assert result["namespace"] == ""

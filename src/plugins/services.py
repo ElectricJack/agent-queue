@@ -196,6 +196,24 @@ class MemoryV2ServiceProtocol(Protocol):
         scope: str | None = None,
     ) -> dict: ...
     async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
+    async def kv_recall(
+        self,
+        key: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+    ) -> dict | None: ...
+    async def recall(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+        topic: str | None = None,
+        top_k: int = 5,
+    ) -> dict: ...
 
     # Temporal facts
     async def fact_get(

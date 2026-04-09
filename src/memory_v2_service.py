@@ -614,6 +614,139 @@ class MemoryV2Service:
         store = self._get_store(project_id)
         return await asyncio.to_thread(store.list_kv, namespace=namespace)
 
+    async def kv_recall(
+        self,
+        key: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+    ) -> dict[str, Any] | None:
+        """KV lookup with scope resolution.  First match wins (most specific).
+
+        Per spec ``docs/specs/design/memory-scoping.md`` §6, scopes are
+        searched in order of decreasing specificity:
+
+        1. **project** — ``aq_project_{project_id}``
+        2. **agent-type** — ``aq_agenttype_{agent_type}``
+        3. **system** — ``aq_system``
+
+        The first scope that contains a matching entry wins.  This means
+        project-level overrides always take precedence over agent-type
+        defaults, which in turn override system-wide values.
+
+        Parameters
+        ----------
+        key:
+            The key to look up.
+        project_id:
+            Project identifier.  When set, the project scope is searched
+            first.
+        agent_type:
+            Agent type name (e.g. ``"coding"``).  When set, the
+            agent-type scope is searched second.
+        namespace:
+            Optional KV namespace filter (e.g. ``"project"``,
+            ``"conventions"``).
+
+        Returns
+        -------
+        dict | None
+            The first matching KV entry (annotated with ``_scope``,
+            ``_scope_id``, and ``_collection``), or ``None`` if no scope
+            contains the key.
+        """
+        if not self.available:
+            return None
+
+        # Build scope search order: most specific first
+        scopes: list[str | None] = []
+        if project_id:
+            scopes.append(f"project_{project_id}")
+        if agent_type:
+            scopes.append(f"agenttype_{agent_type}")
+        scopes.append("system")
+
+        ns = namespace or ""
+
+        for scope in scopes:
+            # Use project_id as fallback for _get_store (it's the default
+            # when scope is None, but here scope is always explicit).
+            store = self._get_store(project_id or "", scope)
+            result = await asyncio.to_thread(store.get_kv, key, namespace=ns)
+            if result is not None:
+                mem_scope, scope_id = self._resolve_scope(project_id or "", scope)
+                coll_name = collection_name(mem_scope, scope_id)
+                result["_collection"] = coll_name
+                result["_scope"] = mem_scope.value
+                result["_scope_id"] = scope_id
+                return result
+
+        return None
+
+    async def recall(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+        topic: str | None = None,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        """Smart retrieval: KV exact match first, then semantic search.
+
+        Per spec §7 (``memory_recall`` tool): agents use this when they
+        are not sure whether the information is a structured fact or an
+        unstructured insight.
+
+        1. Try :meth:`kv_recall` with the *query* as the key.
+        2. If a KV match is found, return it immediately.
+        3. Otherwise fall back to :meth:`search` (multi-scope semantic).
+
+        Parameters
+        ----------
+        query:
+            The search query.  Used as the KV key for the exact-match
+            attempt, and as the semantic search query for the fallback.
+        project_id:
+            Project identifier.
+        agent_type:
+            Agent type name for scope resolution.
+        namespace:
+            KV namespace for the exact-match attempt.
+        topic:
+            Topic pre-filter for semantic search fallback.
+        top_k:
+            Maximum semantic search results.
+
+        Returns
+        -------
+        dict
+            ``{"source": "kv"|"semantic"|"unavailable", "results": [...]}``
+        """
+        if not self.available:
+            return {"source": "unavailable", "results": []}
+
+        # Step 1: Try KV exact match with scope resolution
+        kv_result = await self.kv_recall(
+            query,
+            project_id=project_id,
+            agent_type=agent_type,
+            namespace=namespace,
+        )
+        if kv_result is not None:
+            return {"source": "kv", "results": [kv_result]}
+
+        # Step 2: Fall back to semantic search
+        results = await self.search(
+            project_id or "",
+            query,
+            topic=topic,
+            top_k=top_k,
+        )
+        return {"source": "semantic", "results": results}
+
     # ------------------------------------------------------------------
     # Temporal Facts
     # ------------------------------------------------------------------
