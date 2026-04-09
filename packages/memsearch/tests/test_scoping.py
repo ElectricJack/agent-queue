@@ -209,11 +209,17 @@ class TestVaultPaths:
         assert "vault/projects/my_app/memory/" in paths
         assert "vault/projects/my_app/notes/" in paths
         assert "vault/projects/my_app/references/" in paths
+        assert "vault/projects/my_app/overrides/" in paths
         assert "vault/projects/my_app/facts.md" in paths
 
-    def test_project_has_four_paths(self):
+    def test_project_has_five_paths(self):
         paths = vault_paths(MemoryScope.PROJECT, "test")
-        assert len(paths) == 4
+        assert len(paths) == 5
+
+    def test_project_overrides_path_included(self):
+        """Override directory is included in project vault paths (spec §5)."""
+        paths = vault_paths(MemoryScope.PROJECT, "mech-fighters")
+        assert "vault/projects/mech_fighters/overrides/" in paths
 
 
 # ---- Integration tests (require Milvus Lite / non-Windows) ----------------

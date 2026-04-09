@@ -84,6 +84,7 @@ VAULT_PATHS: ClassVar[dict[MemoryScope, list[str]]] = {
         "vault/projects/{id}/memory/",
         "vault/projects/{id}/notes/",
         "vault/projects/{id}/references/",
+        "vault/projects/{id}/overrides/",
         "vault/projects/{id}/facts.md",
     ],
 }

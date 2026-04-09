@@ -88,6 +88,8 @@ class MemoryManager:
         # Multi-scope search (spec §6): shared router and embedder, lazily initialised.
         self._router: Any | None = None  # CollectionRouter
         self._embedder: Any | None = None  # EmbeddingProvider
+        # Override indexer (spec §5): indexes override .md files into project collections.
+        self._override_indexer: Any | None = None  # OverrideIndexer
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -522,6 +524,105 @@ class MemoryManager:
         except Exception as e:
             logger.warning("Legacy collection migration failed: %s", e)
             return []
+
+    # ------------------------------------------------------------------
+    # Override indexer (spec §5)
+    # ------------------------------------------------------------------
+
+    async def get_override_indexer(self) -> Any | None:
+        """Get or create the :class:`~src.override_handler.OverrideIndexer`.
+
+        Returns ``None`` when memsearch is unavailable, memory is disabled,
+        or the router/embedder cannot be initialised.  The indexer is created
+        once and reused for all override file operations.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            return None
+        if self._override_indexer is not None:
+            return self._override_indexer
+
+        router = await self._get_router()
+        embedder = await self._get_embedder()
+        if router is None or embedder is None:
+            logger.debug("Cannot create OverrideIndexer — router or embedder unavailable")
+            return None
+
+        try:
+            from src.override_handler import OverrideIndexer
+
+            self._override_indexer = OverrideIndexer(
+                router,
+                embedder,
+                max_chunk_size=self.config.max_chunk_size,
+                overlap_lines=self.config.overlap_lines,
+            )
+            logger.info("Created OverrideIndexer for override file indexing")
+            return self._override_indexer
+        except Exception as e:
+            logger.warning("Failed to create OverrideIndexer: %s", e)
+            return None
+
+    async def index_project_overrides(self, vault_root: str | None = None) -> int:
+        """Index all existing override files in the vault.
+
+        Scans ``vault/projects/*/overrides/*.md`` and indexes each file
+        into the corresponding project collection.  Called during startup
+        to catch any overrides created while the daemon was stopped.
+
+        Parameters
+        ----------
+        vault_root:
+            Absolute path to the vault root.  Defaults to
+            ``{storage_root}/vault``.
+
+        Returns
+        -------
+        int
+            Total number of chunks indexed across all override files.
+        """
+        indexer = await self.get_override_indexer()
+        if indexer is None:
+            return 0
+
+        root = vault_root or os.path.join(self._storage_root, "vault")
+        if not os.path.isdir(root):
+            return 0
+
+        try:
+            total = await indexer.index_all_overrides(root)
+            if total > 0:
+                logger.info("Indexed %d override chunks from vault at startup", total)
+            return total
+        except Exception as e:
+            logger.warning("Failed to index override files at startup: %s", e)
+            return 0
+
+    async def setup_override_watcher(self) -> bool:
+        """Wire the override indexer into the watcher handler callback.
+
+        Sets the module-level indexer in :mod:`src.override_handler` so
+        the vault watcher callback can index override files when they
+        change.
+
+        Returns
+        -------
+        bool
+            ``True`` if the indexer was successfully configured, ``False``
+            if memsearch is unavailable or initialization failed.
+        """
+        indexer = await self.get_override_indexer()
+        if indexer is None:
+            return False
+
+        try:
+            from src.override_handler import set_indexer
+
+            set_indexer(indexer)
+            logger.info("Override watcher handler connected to OverrideIndexer")
+            return True
+        except Exception as e:
+            logger.warning("Failed to setup override watcher: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # Instance management
