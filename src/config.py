@@ -757,6 +757,44 @@ class AppConfig:
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     _config_path: str = field(default="", repr=False)
 
+    # -- Vault path properties (derived from data_dir) -----------------------
+    # See docs/specs/design/vault.md Section 2 for the full directory layout.
+
+    @property
+    def vault_root(self) -> str:
+        """Root of the Obsidian-compatible vault: ``{data_dir}/vault/``."""
+        return os.path.join(self.data_dir, "vault")
+
+    @property
+    def vault_system(self) -> str:
+        """System-scoped vault directory: ``{vault_root}/system/``."""
+        return os.path.join(self.vault_root, "system")
+
+    @property
+    def vault_orchestrator(self) -> str:
+        """Orchestrator vault directory: ``{vault_root}/orchestrator/``."""
+        return os.path.join(self.vault_root, "orchestrator")
+
+    @property
+    def vault_agent_types(self) -> str:
+        """Agent-type profiles and memory: ``{vault_root}/agent-types/``."""
+        return os.path.join(self.vault_root, "agent-types")
+
+    @property
+    def vault_projects(self) -> str:
+        """Per-project vault directories: ``{vault_root}/projects/``."""
+        return os.path.join(self.vault_root, "projects")
+
+    @property
+    def vault_templates(self) -> str:
+        """Templates for new profiles, playbooks: ``{vault_root}/templates/``."""
+        return os.path.join(self.vault_root, "templates")
+
+    @property
+    def compiled_root(self) -> str:
+        """Compiled playbook JSON (runtime artifacts): ``{data_dir}/compiled/``."""
+        return os.path.join(self.data_dir, "compiled")
+
     def validate(self) -> list[ConfigError]:
         """Validate all configuration settings, delegating to per-section validators.
 
