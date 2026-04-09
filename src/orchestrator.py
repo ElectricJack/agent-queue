@@ -802,6 +802,11 @@ class Orchestrator:
         await self._sync_profiles_from_config()
         await self._recover_stale_state()
 
+        # Ensure per-project task directories exist under {data_dir}/tasks/.
+        # Part of the vault migration (Phase 1) — task records live outside
+        # the vault at ~/.agent-queue/tasks/{project_id}/.
+        await self._ensure_task_directories()
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
@@ -928,6 +933,33 @@ class Orchestrator:
             )
             await self.db.transition_task(
                 t.id, TaskStatus.READY, context="recovery", assigned_agent_id=None
+            )
+
+    async def _ensure_task_directories(self) -> None:
+        """Create per-project task directories under ``{data_dir}/tasks/``.
+
+        Part of vault migration Phase 1 (see ``docs/specs/design/vault.md``
+        §6).  Task records live outside the vault at
+        ``~/.agent-queue/tasks/{project_id}/``.
+
+        Called during ``initialize()`` after the database is ready, so we can
+        query for all existing projects and create a subdirectory for each.
+        New projects also get their directory created at creation time
+        (see ``CommandHandler._cmd_create_project``).
+        """
+        tasks_root = os.path.join(self.config.data_dir, "tasks")
+        os.makedirs(tasks_root, exist_ok=True)
+
+        all_projects = await self.db.list_projects()
+        for project in all_projects:
+            project_tasks_dir = os.path.join(tasks_root, project.id)
+            os.makedirs(project_tasks_dir, exist_ok=True)
+
+        if all_projects:
+            logger.info(
+                "Ensured task directories for %d projects under %s",
+                len(all_projects),
+                tasks_root,
             )
 
     async def wait_for_running_tasks(self, timeout: float | None = None) -> None:

@@ -1325,6 +1325,10 @@ class CommandHandler:
         )
         await self.db.create_project(project)
 
+        # Ensure the per-project task directory exists (vault migration Phase 1).
+        project_tasks_dir = os.path.join(self.config.data_dir, "tasks", project_id)
+        os.makedirs(project_tasks_dir, exist_ok=True)
+
         # Determine whether auto-channel creation should happen.
         # An explicit ``auto_create_channels`` arg takes precedence;
         # otherwise fall back to the per-project-channels config flag.
