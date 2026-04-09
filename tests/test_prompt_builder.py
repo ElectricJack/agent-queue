@@ -598,3 +598,122 @@ def test_l0_role_ordering_in_full_assembly(prompts_dir):
     sys_pos = prompt.index("System Context")
     task_pos = prompt.index("Run tests.")
     assert role_pos < sys_pos < task_pos
+
+
+# ------------------------------------------------------------------
+# Override content — project-specific overrides (§5)
+# ------------------------------------------------------------------
+
+
+def test_set_override_content(prompts_dir):
+    """set_override_content injects override text after L0 role."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_override_content("Use composition over inheritance.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    assert "Use composition over inheritance." in prompt
+    # Override appears between L0 role and identity
+    role_pos = prompt.index("You are a coding agent.")
+    override_pos = prompt.index("Use composition over inheritance.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < override_pos < identity_pos < task_pos
+
+
+def test_set_override_content_strips_frontmatter(prompts_dir):
+    """set_override_content strips YAML frontmatter from override files."""
+    from src.prompt_builder import PromptBuilder
+
+    override_md = textwrap.dedent("""\
+        ---
+        tags: [override, coding, mech-fighters]
+        agent_type: coding
+        ---
+
+        # Coding Agent Overrides — Mech Fighters
+
+        Use composition over inheritance.
+    """)
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content(override_md)
+
+    prompt = builder.build_task_prompt()
+
+    assert "Coding Agent Overrides" in prompt
+    assert "Use composition over inheritance." in prompt
+    # Frontmatter should be stripped
+    assert "tags:" not in prompt
+    assert "agent_type: coding" not in prompt
+
+
+def test_set_override_content_empty_noop(prompts_dir):
+    """set_override_content with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content("")
+    builder.set_override_content("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_override_content_without_l0_role(prompts_dir):
+    """set_override_content works even without L0 role set."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content("Use ECS framework only.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Add a feature.")
+
+    prompt = builder.build_task_prompt()
+
+    assert "Use ECS framework only." in prompt
+    # Override appears before identity and context
+    override_pos = prompt.index("Use ECS framework only.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Add a feature.")
+    assert override_pos < identity_pos < task_pos
+
+
+def test_override_content_full_assembly_ordering(prompts_dir):
+    """Override content sits between L0 role and identity in full assembly."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_override_content("# Project Overrides\nPrefer integration tests.")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    override_pos = prompt.index("Prefer integration tests.")
+    identity_pos = prompt.index("No variables here.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < override_pos < identity_pos < sys_pos < task_pos
+
+
+def test_set_override_content_frontmatter_only(prompts_dir):
+    """Override file with only frontmatter and no body is treated as empty."""
+    from src.prompt_builder import PromptBuilder
+
+    override_md = "---\ntags: [override]\n---\n"
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content(override_md)
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."

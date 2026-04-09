@@ -126,6 +126,7 @@ class PromptBuilder:
 
         # Layer state
         self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
+        self._override_content: str = ""  # Project-specific override (after L0 role)
         self._identity: str = ""
         self._project_context: str = ""
         self._rules: str = ""
@@ -284,6 +285,30 @@ class PromptBuilder:
             return True
         return False
 
+    def set_override_content(self, content: str) -> None:
+        """Set project-specific override content (injected after L0 role).
+
+        Override content supplements or tweaks the agent's base profile for
+        a specific project.  The LLM resolves any tension between the base
+        profile (L0 role) and the override naturally, with the override
+        taking precedence as the more specific guidance.
+
+        YAML frontmatter (``---`` delimited) is automatically stripped.
+
+        See ``docs/specs/design/memory-scoping.md`` §5 (Override Model).
+
+        Args:
+            content: Raw markdown content of the override file.  May
+                include YAML frontmatter which will be stripped.
+        """
+        if not content or not content.strip():
+            return
+        # Strip YAML frontmatter if present
+        _, body = self._split_frontmatter(content)
+        text = body.strip()
+        if text:
+            self._override_content = text
+
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
         """Layer 1: Set the identity from a prompt template."""
         rendered = self.render_template(name, variables)
@@ -383,7 +408,8 @@ class PromptBuilder:
         """Assemble all layers into a system prompt and tool list.
 
         Layer order:
-            L0 role → Identity template → Project context → Rules → Context blocks
+            L0 role → Override → Identity template → Project context →
+            Rules → Context blocks
 
         Returns:
             Tuple of ``(system_prompt, tools)`` where *system_prompt*
@@ -394,6 +420,8 @@ class PromptBuilder:
 
         if self._l0_role:
             sections.append(self._l0_role)
+        if self._override_content:
+            sections.append(self._override_content)
         if self._identity:
             sections.append(self._identity)
         if self._project_context:

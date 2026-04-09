@@ -4283,6 +4283,15 @@ class Orchestrator:
         if profile and profile.system_prompt_suffix:
             builder.set_l0_role(profile.system_prompt_suffix)
 
+        # Project-specific override — freeform English that supplements or tweaks
+        # the base profile for this project.  Injected right after L0 role so the
+        # LLM sees base profile + override together.
+        # See docs/specs/design/memory-scoping.md §5.
+        if profile and task.project_id:
+            override_text = await self._load_project_override(task.project_id, profile.id)
+            if override_text:
+                builder.set_override_content(override_text)
+
         # Task description
         builder.add_context("task", f"## Task\n{task.description}")
 
@@ -4305,6 +4314,49 @@ class Orchestrator:
             pass  # Non-fatal — proceed without conversation context
 
         return builder.build_task_prompt()
+
+    async def _load_project_override(
+        self,
+        project_id: str,
+        agent_type: str,
+    ) -> str | None:
+        """Load override ``.md`` file content for a project + agent type.
+
+        Override files live at
+        ``vault/projects/{project_id}/overrides/{agent_type}.md``.
+        Returns the raw file content (including frontmatter — the caller
+        is responsible for stripping it), or ``None`` if no override exists.
+
+        See ``docs/specs/design/memory-scoping.md`` §5 for the override model.
+        """
+        override_path = os.path.join(
+            self.config.vault_root,
+            "projects",
+            project_id,
+            "overrides",
+            f"{agent_type}.md",
+        )
+        if not os.path.isfile(override_path):
+            return None
+        try:
+            with open(override_path, encoding="utf-8") as f:
+                content = f.read()
+            if content.strip():
+                logger.info(
+                    "Loaded override for project=%s agent_type=%s from %s",
+                    project_id,
+                    agent_type,
+                    override_path,
+                )
+                return content
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "Failed to load override for project=%s agent_type=%s: %s",
+                project_id,
+                agent_type,
+                exc,
+            )
+        return None
 
     # ------------------------------------------------------------------ #
     # Sync Workflow — orchestrator-managed workspace synchronization
