@@ -184,6 +184,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_active_tasks_all_projects": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
+    "show_playbook_graph": "playbook",
     "list_playbooks": "playbook",
     "list_playbook_runs": "playbook",
     "inspect_playbook_run": "playbook",
@@ -2156,6 +2157,52 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": True,
                 },
             },
+        },
+    },
+    {
+        "name": "show_playbook_graph",
+        "description": (
+            "Render a compiled playbook graph as an ASCII diagram or Mermaid "
+            "flowchart syntax. Shows nodes (with type badges), edges, and "
+            "transition conditions. Useful for understanding playbook structure "
+            "and sharing visual documentation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier to render",
+                },
+                "format": {
+                    "type": "string",
+                    "description": (
+                        "Output format: 'ascii' for terminal/text output, "
+                        "'mermaid' for Mermaid flowchart syntax. Default: ascii."
+                    ),
+                    "enum": ["ascii", "mermaid"],
+                    "default": "ascii",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "Mermaid flowchart direction: 'TD' (top-down) or "
+                        "'LR' (left-right). Only used with mermaid format. "
+                        "Default: TD."
+                    ),
+                    "enum": ["TD", "LR"],
+                    "default": "TD",
+                },
+                "show_prompts": {
+                    "type": "boolean",
+                    "description": (
+                        "Include truncated prompt previews in node labels. "
+                        "Default: true."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
     {

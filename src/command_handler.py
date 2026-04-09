@@ -7043,6 +7043,75 @@ feature work stuck on feature branches across multiple workspaces.
             resp["scope"] = pb.scope
         return resp
 
+    async def _cmd_show_playbook_graph(self, args: dict) -> dict:
+        """Render a compiled playbook graph as ASCII or Mermaid diagram.
+
+        Loads the compiled playbook from the active playbook set (or from
+        the compiled store by scope) and renders it in the requested format.
+
+        This is the ``show_playbook_graph`` command from spec §15,
+        roadmap 5.5.3.
+
+        Args:
+            playbook_id: The playbook identifier to render.
+            format: Output format — ``"ascii"`` (default) or ``"mermaid"``.
+            direction: Mermaid flowchart direction — ``"TD"`` (default) or ``"LR"``.
+                Only used when format is ``"mermaid"``.
+            show_prompts: Include truncated prompt previews (default ``True``).
+        """
+        from src.playbook_graph import render_ascii, render_mermaid
+
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        fmt = args.get("format", "ascii").strip().lower()
+        if fmt not in ("ascii", "mermaid"):
+            return {"error": f"Invalid format '{fmt}'. Valid: ascii, mermaid"}
+
+        direction = args.get("direction", "TD").strip().upper()
+        if direction not in ("TD", "LR"):
+            return {"error": f"Invalid direction '{direction}'. Valid: TD, LR"}
+
+        show_prompts = args.get("show_prompts", True)
+        if isinstance(show_prompts, str):
+            show_prompts = show_prompts.lower() in ("true", "1", "yes")
+
+        # Resolve the compiled playbook — check active set first
+        playbook = None
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is not None:
+            playbook = pm.get_playbook(playbook_id)
+
+        if playbook is None:
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' not found. "
+                    "Make sure it has been compiled (use compile_playbook first)."
+                ),
+            }
+
+        # Render
+        if fmt == "mermaid":
+            output = render_mermaid(
+                playbook,
+                direction=direction,
+                show_prompts=show_prompts,
+            )
+        else:
+            output = render_ascii(
+                playbook,
+                show_prompts=show_prompts,
+            )
+
+        return {
+            "playbook_id": playbook.id,
+            "format": fmt,
+            "graph": output,
+            "node_count": len(playbook.nodes),
+            "version": playbook.version,
+        }
+
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.
