@@ -29,11 +29,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.models import PlaybookRun
 
@@ -88,6 +89,98 @@ def _estimate_tokens(*texts: str) -> int:
     """
     total_chars = sum(len(t) for t in texts if t)
     return max(1, total_chars // 4)
+
+
+# ---------------------------------------------------------------------------
+# Expression evaluation helpers (structured transitions §6, roadmap 5.2.5)
+# ---------------------------------------------------------------------------
+
+# Pattern for comparison expressions: variable op literal
+# Supports: task.status == "completed", output.count > 0, response != "error"
+_EXPR_PATTERN = re.compile(
+    r"^\s*"
+    r"(?P<var>[a-zA-Z_][a-zA-Z0-9_.]*)"  # dotted variable path
+    r"\s*"
+    r"(?P<op>==|!=|>=|<=|>|<)"  # comparison operator
+    r"\s*"
+    r'(?P<literal>"(?:[^"\\]|\\.)*"'  # double-quoted string
+    r"|'(?:[^'\\]|\\.)*'"  # single-quoted string
+    r"|-?\d+(?:\.\d+)?"  # number (int or float)
+    r"|true|false|null)"  # boolean / null
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+def _dot_get(data: dict, path: str) -> tuple[Any, bool]:
+    """Resolve a dot-separated path against a nested dict.
+
+    Returns ``(value, True)`` on success, ``(None, False)`` if any
+    segment is missing or the data is not traversable.
+    """
+    current: Any = data
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None, False
+    return current, True
+
+
+def _parse_literal(raw: str) -> str | int | float | bool | None:
+    """Parse a literal token from an expression string.
+
+    Handles double-quoted strings, single-quoted strings, integers,
+    floats, booleans (``true``/``false``), and ``null``.
+    """
+    if (raw.startswith('"') and raw.endswith('"')) or (
+        raw.startswith("'") and raw.endswith("'")
+    ):
+        inner = raw[1:-1]
+        return inner.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
+
+    low = raw.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low == "null":
+        return None
+
+    try:
+        return float(raw) if "." in raw else int(raw)
+    except ValueError:
+        return raw
+
+
+def _compare(left: Any, op: str, right: Any) -> bool:
+    """Apply a comparison operator, with numeric coercion for ordering ops."""
+    # For ordering operators, attempt numeric conversion on type mismatch
+    if op in (">", "<", ">=", "<="):
+        try:
+            if isinstance(left, str) and isinstance(right, (int, float)):
+                left = type(right)(left)
+            elif isinstance(right, str) and isinstance(left, (int, float)):
+                right = type(left)(right)
+        except (ValueError, TypeError):
+            pass
+
+    try:
+        if op == "==":
+            return left == right
+        if op == "!=":
+            return left != right
+        if op == ">":
+            return left > right
+        if op == "<":
+            return left < right
+        if op == ">=":
+            return left >= right
+        if op == "<=":
+            return left <= right
+    except TypeError:
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -740,15 +833,16 @@ class PlaybookRunner:
     # Internal: structured transition evaluation
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _evaluate_structured_condition(condition: dict, response: str) -> bool:
+    def _evaluate_structured_condition(self, condition: dict, response: str) -> bool:
         """Evaluate a structured (dict-based) transition condition locally.
 
         Structured conditions allow deterministic evaluation without an
         LLM call, per spec §6.  The compiler emits these for simple,
         unambiguous conditionals.
 
-        Supported condition functions:
+        Supported condition formats:
+
+        **Function-based conditions** (roadmap 5.2.4):
 
         - ``{"function": "response_contains", "value": "text"}``
           → ``True`` if *value* appears in *response* (case-insensitive).
@@ -759,6 +853,26 @@ class PlaybookRunner:
         - ``{"function": "has_tool_output", "contains": "text"}``
           → Alias for ``response_contains`` — the node's final response
           summarises tool output, so checking the response suffices.
+
+        **Expression conditions** (roadmap 5.2.5):
+
+        - ``{"expression": "task.status == \\"completed\\""}``
+          → Parses and evaluates a comparison expression deterministically.
+
+        - ``{"function": "expression", "expression": "..."}``
+          → Alternative format using the ``function`` key.
+
+        - ``{"function": "compare", "variable": "task.status",
+          "operator": "==", "value": "completed"}``
+          → Pre-parsed structured comparison (no string parsing needed).
+
+        Expression variable namespaces:
+
+        - ``task.*`` / ``event.*`` → trigger event data (``self.event``)
+        - ``output.*`` → JSON-parsed fields from the node response
+        - ``response`` → the raw response text
+
+        Supported operators: ``==``, ``!=``, ``>``, ``<``, ``>=``, ``<=``
 
         Unrecognised function names log a warning and return ``False``
         (falling through to LLM evaluation or the ``otherwise`` branch).
@@ -775,7 +889,26 @@ class PlaybookRunner:
         bool
             Whether the condition is satisfied.
         """
+        # --- Expression conditions (5.2.5) ---
+
+        # Top-level expression key (no function required)
+        expression = condition.get("expression")
+        if expression is not None and "function" not in condition:
+            return self._evaluate_expression(expression, response)
+
         func = condition.get("function", "")
+
+        # Expression via function key
+        if func == "expression":
+            expr_str = condition.get("expression", "")
+            return self._evaluate_expression(expr_str, response)
+
+        # Pre-parsed structured comparison
+        if func == "compare":
+            return self._evaluate_compare(condition, response)
+
+        # --- Function-based conditions (5.2.4) ---
+
         response_lower = response.lower()
 
         if func in ("response_contains", "has_tool_output"):
@@ -788,6 +921,169 @@ class PlaybookRunner:
 
         logger.warning("Unknown structured condition function: '%s'", func)
         return False
+
+    def _evaluate_expression(self, expression: str, response: str) -> bool:
+        """Parse and evaluate a comparison expression string.
+
+        Supported syntax::
+
+            variable op literal
+
+        Where *variable* is a dotted path (e.g. ``task.status``,
+        ``output.approval``), *op* is a comparison operator
+        (``==``, ``!=``, ``>``, ``<``, ``>=``, ``<=``), and *literal*
+        is a quoted string, number, boolean, or null.
+
+        Parameters
+        ----------
+        expression:
+            The expression string to evaluate.
+        response:
+            The current node's response text (used for ``output.*``
+            and ``response`` variable resolution).
+
+        Returns
+        -------
+        bool
+            Whether the expression evaluates to true.  Returns ``False``
+            for invalid syntax or undefined variables (with a warning log).
+        """
+        match = _EXPR_PATTERN.match(expression)
+        if not match:
+            logger.warning(
+                "Invalid expression syntax: '%s' — expected 'variable op literal'",
+                expression,
+            )
+            return False
+
+        var_path = match.group("var")
+        op = match.group("op")
+        literal_raw = match.group("literal")
+
+        # Resolve the variable
+        value, resolved = self._resolve_variable(var_path, response)
+        if not resolved:
+            logger.warning(
+                "Undefined variable '%s' in expression: '%s'",
+                var_path,
+                expression,
+            )
+            return False
+
+        # Parse the literal
+        literal = _parse_literal(literal_raw)
+
+        return _compare(value, op, literal)
+
+    def _evaluate_compare(self, condition: dict, response: str) -> bool:
+        """Evaluate a pre-parsed structured comparison condition.
+
+        Expected format::
+
+            {"function": "compare", "variable": "task.status",
+             "operator": "==", "value": "completed"}
+
+        This is an alternative to expression strings — the compiler can
+        emit either format.
+
+        Parameters
+        ----------
+        condition:
+            The condition dict with ``variable``, ``operator``, ``value`` keys.
+        response:
+            The current node's response text.
+
+        Returns
+        -------
+        bool
+            Whether the comparison is satisfied.
+        """
+        var_path = condition.get("variable", "")
+        op = condition.get("operator", "")
+        literal_value = condition.get("value")
+
+        if not var_path or not op:
+            logger.warning(
+                "Incomplete compare condition — missing 'variable' or 'operator': %s",
+                condition,
+            )
+            return False
+
+        if op not in ("==", "!=", ">", "<", ">=", "<="):
+            logger.warning("Unsupported operator '%s' in compare condition", op)
+            return False
+
+        value, resolved = self._resolve_variable(var_path, response)
+        if not resolved:
+            logger.warning(
+                "Undefined variable '%s' in compare condition: %s",
+                var_path,
+                condition,
+            )
+            return False
+
+        return _compare(value, op, literal_value)
+
+    def _resolve_variable(self, var_path: str, response: str) -> tuple[Any, bool]:
+        """Resolve a dotted variable path to a value.
+
+        Variable namespaces:
+
+        - ``task.*`` / ``event.*`` — fields from ``self.event`` (trigger data)
+        - ``output.*`` — fields from the JSON-parsed node response
+        - ``response`` — the raw response text (no sub-fields)
+
+        Parameters
+        ----------
+        var_path:
+            Dot-separated variable path (e.g. ``task.status``).
+        response:
+            The current node's response text.
+
+        Returns
+        -------
+        tuple[Any, bool]
+            ``(value, True)`` on success, ``(None, False)`` if the
+            variable cannot be resolved.
+        """
+        parts = var_path.split(".", 1)
+        namespace = parts[0]
+        field = parts[1] if len(parts) > 1 else None
+
+        if namespace in ("task", "event"):
+            if field is None:
+                return self.event, True
+            return _dot_get(self.event, field)
+
+        if namespace == "output":
+            # Try to parse the response as JSON for structured field access
+            try:
+                data = json.loads(response)
+            except (json.JSONDecodeError, TypeError):
+                logger.debug(
+                    "Cannot resolve output.* — response is not valid JSON "
+                    "(var_path=%s)",
+                    var_path,
+                )
+                return None, False
+
+            if not isinstance(data, dict):
+                logger.debug(
+                    "Cannot resolve output.* — JSON response is not a dict "
+                    "(var_path=%s, type=%s)",
+                    var_path,
+                    type(data).__name__,
+                )
+                return None, False
+
+            if field is None:
+                return data, True
+            return _dot_get(data, field)
+
+        if var_path == "response":
+            return response, True
+
+        return None, False
 
     # ------------------------------------------------------------------
     # Internal: LLM-based transition classification

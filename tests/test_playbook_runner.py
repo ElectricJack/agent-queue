@@ -28,7 +28,10 @@ from src.models import PlaybookRun
 from src.playbook_runner import (
     NodeTraceEntry,
     PlaybookRunner,
+    _compare,
+    _dot_get,
     _estimate_tokens,
+    _parse_literal,
 )
 
 
@@ -1858,52 +1861,718 @@ class TestStructuredTransitions:
 
 
 class TestStructuredConditionEvaluation:
-    """Unit tests for _evaluate_structured_condition static method."""
+    """Unit tests for _evaluate_structured_condition instance method."""
 
-    def test_response_contains_true(self):
+    @pytest.fixture
+    def runner(self, mock_supervisor, event_data):
+        """Minimal runner for unit-testing condition evaluation."""
+        graph = {"id": "test", "version": 1, "nodes": {}}
+        return PlaybookRunner(graph, event_data, mock_supervisor)
+
+    def test_response_contains_true(self, runner):
         cond = {"function": "response_contains", "value": "error found"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "An error found in line 5")
+        assert runner._evaluate_structured_condition(cond, "An error found in line 5")
 
-    def test_response_contains_false(self):
+    def test_response_contains_false(self, runner):
         cond = {"function": "response_contains", "value": "error found"}
-        assert not PlaybookRunner._evaluate_structured_condition(cond, "Everything is fine")
+        assert not runner._evaluate_structured_condition(cond, "Everything is fine")
 
-    def test_response_contains_case_insensitive(self):
+    def test_response_contains_case_insensitive(self, runner):
         cond = {"function": "response_contains", "value": "ERROR"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "Found an error in the code")
+        assert runner._evaluate_structured_condition(cond, "Found an error in the code")
 
-    def test_response_not_contains_true(self):
+    def test_response_not_contains_true(self, runner):
         cond = {"function": "response_not_contains", "value": "error"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "All tests passed.")
+        assert runner._evaluate_structured_condition(cond, "All tests passed.")
 
-    def test_response_not_contains_false(self):
+    def test_response_not_contains_false(self, runner):
         cond = {"function": "response_not_contains", "value": "error"}
-        assert not PlaybookRunner._evaluate_structured_condition(cond, "Got an error!")
+        assert not runner._evaluate_structured_condition(cond, "Got an error!")
 
-    def test_has_tool_output_contains(self):
+    def test_has_tool_output_contains(self, runner):
         cond = {"function": "has_tool_output", "contains": "no findings"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "Scan: no findings detected.")
+        assert runner._evaluate_structured_condition(cond, "Scan: no findings detected.")
 
-    def test_has_tool_output_value_key(self):
+    def test_has_tool_output_value_key(self, runner):
         """has_tool_output should also accept 'value' key."""
         cond = {"function": "has_tool_output", "value": "clean"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "Code is clean.")
+        assert runner._evaluate_structured_condition(cond, "Code is clean.")
 
-    def test_unknown_function_returns_false(self):
+    def test_unknown_function_returns_false(self, runner):
         cond = {"function": "never_heard_of_this", "value": "x"}
-        assert not PlaybookRunner._evaluate_structured_condition(cond, "anything")
+        assert not runner._evaluate_structured_condition(cond, "anything")
 
-    def test_empty_value_always_contains(self):
+    def test_empty_value_always_contains(self, runner):
         cond = {"function": "response_contains", "value": ""}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "anything at all")
+        assert runner._evaluate_structured_condition(cond, "anything at all")
 
-    def test_missing_value_key(self):
+    def test_missing_value_key(self, runner):
         cond = {"function": "response_contains"}
-        assert PlaybookRunner._evaluate_structured_condition(cond, "anything")
+        assert runner._evaluate_structured_condition(cond, "anything")
 
-    def test_missing_function_key(self):
+    def test_missing_function_key(self, runner):
         cond = {"value": "test"}
-        assert not PlaybookRunner._evaluate_structured_condition(cond, "test something")
+        assert not runner._evaluate_structured_condition(cond, "test something")
+
+
+# ---------------------------------------------------------------------------
+# 5.2.5: Function-call expression evaluation (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+
+
+class TestExpressionHelpers:
+    """Unit tests for module-level expression helpers."""
+
+    # -- _dot_get --------------------------------------------------------
+
+    def test_dot_get_simple(self):
+        assert _dot_get({"status": "ok"}, "status") == ("ok", True)
+
+    def test_dot_get_nested(self):
+        data = {"task": {"meta": {"priority": "high"}}}
+        assert _dot_get(data, "task.meta.priority") == ("high", True)
+
+    def test_dot_get_missing(self):
+        assert _dot_get({"a": 1}, "b") == (None, False)
+
+    def test_dot_get_missing_nested(self):
+        assert _dot_get({"a": {"b": 1}}, "a.c") == (None, False)
+
+    def test_dot_get_non_dict_traversal(self):
+        """Traversing through a non-dict value should fail."""
+        assert _dot_get({"a": "string"}, "a.b") == (None, False)
+
+    # -- _parse_literal --------------------------------------------------
+
+    def test_parse_double_quoted_string(self):
+        assert _parse_literal('"hello"') == "hello"
+
+    def test_parse_single_quoted_string(self):
+        assert _parse_literal("'world'") == "world"
+
+    def test_parse_escaped_quotes(self):
+        assert _parse_literal('"say \\"hi\\""') == 'say "hi"'
+
+    def test_parse_integer(self):
+        assert _parse_literal("42") == 42
+
+    def test_parse_negative_integer(self):
+        assert _parse_literal("-5") == -5
+
+    def test_parse_float(self):
+        assert _parse_literal("3.14") == 3.14
+
+    def test_parse_true(self):
+        assert _parse_literal("true") is True
+
+    def test_parse_True_case(self):
+        assert _parse_literal("True") is True
+
+    def test_parse_false(self):
+        assert _parse_literal("false") is False
+
+    def test_parse_null(self):
+        assert _parse_literal("null") is None
+
+    # -- _compare --------------------------------------------------------
+
+    def test_compare_eq_true(self):
+        assert _compare("completed", "==", "completed") is True
+
+    def test_compare_eq_false(self):
+        assert _compare("running", "==", "completed") is False
+
+    def test_compare_ne_true(self):
+        assert _compare("running", "!=", "completed") is True
+
+    def test_compare_ne_false(self):
+        assert _compare("completed", "!=", "completed") is False
+
+    def test_compare_gt_numeric(self):
+        assert _compare(5, ">", 3) is True
+        assert _compare(3, ">", 5) is False
+
+    def test_compare_lt_numeric(self):
+        assert _compare(3, "<", 5) is True
+
+    def test_compare_gte(self):
+        assert _compare(5, ">=", 5) is True
+        assert _compare(4, ">=", 5) is False
+
+    def test_compare_lte(self):
+        assert _compare(5, "<=", 5) is True
+        assert _compare(6, "<=", 5) is False
+
+    def test_compare_numeric_coercion_string_vs_int(self):
+        """String '5' should be coerced for ordering operators."""
+        assert _compare("5", ">", 3) is True
+        assert _compare("2", "<", 3) is True
+
+    def test_compare_type_mismatch_no_coerce(self):
+        """Type mismatch that can't be coerced returns False."""
+        assert _compare("abc", ">", 3) is False
+
+    def test_compare_eq_no_coercion(self):
+        """Equality is strict — no type coercion."""
+        assert _compare("5", "==", 5) is False
+        assert _compare(5, "==", 5) is True
+
+
+class TestExpressionEvaluation:
+    """Unit tests for _evaluate_expression and expression-based conditions."""
+
+    @pytest.fixture
+    def runner(self, mock_supervisor):
+        """Runner with a rich event for variable resolution testing."""
+        event = {
+            "type": "task.completed",
+            "project_id": "my-app",
+            "status": "completed",
+            "task_id": "t-123",
+            "meta": {"priority": "high", "count": 5},
+        }
+        graph = {"id": "expr-test", "version": 1, "nodes": {}}
+        return PlaybookRunner(graph, event, mock_supervisor)
+
+    # -- task.* variable resolution --------------------------------------
+
+    def test_task_status_equals(self, runner):
+        """task.status == 'completed' evaluates against event data."""
+        cond = {"expression": 'task.status == "completed"'}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    def test_task_status_not_equals(self, runner):
+        cond = {"expression": 'task.status != "running"'}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    def test_task_status_false(self, runner):
+        cond = {"expression": 'task.status == "running"'}
+        assert not runner._evaluate_structured_condition(cond, "any response")
+
+    def test_task_nested_field(self, runner):
+        """task.meta.priority accesses nested event fields."""
+        cond = {"expression": 'task.meta.priority == "high"'}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    def test_task_nested_numeric(self, runner):
+        """task.meta.count > 0 evaluates numeric comparisons."""
+        cond = {"expression": "task.meta.count > 0"}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    def test_task_project_id(self, runner):
+        cond = {"expression": 'task.project_id == "my-app"'}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    # -- event.* alias ---------------------------------------------------
+
+    def test_event_alias(self, runner):
+        """event.* is an alias for task.*."""
+        cond = {"expression": 'event.status == "completed"'}
+        assert runner._evaluate_structured_condition(cond, "any response")
+
+    # -- output.* variable resolution (JSON response) --------------------
+
+    def test_output_field_from_json_response(self, runner):
+        """output.approval accesses JSON-parsed response fields."""
+        response = json.dumps({"approval": "yes", "score": 95})
+        cond = {"expression": 'output.approval == "yes"'}
+        assert runner._evaluate_structured_condition(cond, response)
+
+    def test_output_numeric_field(self, runner):
+        response = json.dumps({"count": 10, "status": "done"})
+        cond = {"expression": "output.count > 5"}
+        assert runner._evaluate_structured_condition(cond, response)
+
+    def test_output_nested_field(self, runner):
+        response = json.dumps({"result": {"verdict": "pass"}})
+        cond = {"expression": 'output.result.verdict == "pass"'}
+        assert runner._evaluate_structured_condition(cond, response)
+
+    def test_output_non_json_response_fails(self, runner):
+        """output.* on a non-JSON response returns False (undefined)."""
+        cond = {"expression": 'output.field == "value"'}
+        assert not runner._evaluate_structured_condition(cond, "plain text response")
+
+    def test_output_non_dict_json_fails(self, runner):
+        """output.* on a JSON array response returns False."""
+        cond = {"expression": 'output.field == "value"'}
+        assert not runner._evaluate_structured_condition(cond, "[1, 2, 3]")
+
+    # -- response variable -----------------------------------------------
+
+    def test_response_equality(self, runner):
+        """Bare 'response' variable is the raw response text."""
+        cond = {"expression": 'response == "yes"'}
+        assert runner._evaluate_structured_condition(cond, "yes")
+
+    def test_response_not_equals(self, runner):
+        cond = {"expression": 'response != "no"'}
+        assert runner._evaluate_structured_condition(cond, "yes")
+
+    # -- Condition format variants ---------------------------------------
+
+    def test_expression_via_function_key(self, runner):
+        """function: 'expression' with expression key should work."""
+        cond = {"function": "expression", "expression": 'task.status == "completed"'}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_compare_function_structured(self, runner):
+        """function: 'compare' with variable/operator/value keys."""
+        cond = {
+            "function": "compare",
+            "variable": "task.status",
+            "operator": "==",
+            "value": "completed",
+        }
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_compare_function_numeric(self, runner):
+        cond = {
+            "function": "compare",
+            "variable": "task.meta.count",
+            "operator": ">",
+            "value": 3,
+        }
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    # -- Error handling (roadmap 5.2.15c, 5.2.15d) -----------------------
+
+    def test_invalid_expression_syntax(self, runner):
+        """Invalid syntax returns False with warning (not exception)."""
+        cond = {"expression": "this is not valid at all"}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_invalid_expression_missing_operator(self, runner):
+        cond = {"expression": 'task.status "completed"'}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_invalid_expression_empty(self, runner):
+        cond = {"expression": ""}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_undefined_variable(self, runner):
+        """Referencing a nonexistent variable returns False gracefully."""
+        cond = {"expression": 'undefined_var == "x"'}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_undefined_nested_variable(self, runner):
+        """Undefined nested path returns False."""
+        cond = {"expression": 'task.nonexistent.deep == "x"'}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_compare_missing_variable_key(self, runner):
+        cond = {"function": "compare", "operator": "==", "value": "x"}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_compare_missing_operator_key(self, runner):
+        cond = {"function": "compare", "variable": "task.status", "value": "x"}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    def test_compare_invalid_operator(self, runner):
+        cond = {
+            "function": "compare",
+            "variable": "task.status",
+            "operator": "~=",
+            "value": "x",
+        }
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    # -- Operator coverage -----------------------------------------------
+
+    def test_expression_lte(self, runner):
+        cond = {"expression": "task.meta.count <= 5"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_gte(self, runner):
+        cond = {"expression": "task.meta.count >= 5"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_lt_false(self, runner):
+        cond = {"expression": "task.meta.count < 5"}
+        assert not runner._evaluate_structured_condition(cond, "any")
+
+    # -- Literal types ---------------------------------------------------
+
+    def test_expression_boolean_literal(self, mock_supervisor):
+        event = {"type": "test", "active": True}
+        graph = {"id": "t", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        cond = {"expression": "task.active == true"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_null_literal(self, mock_supervisor):
+        event = {"type": "test", "label": None}
+        graph = {"id": "t", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        cond = {"expression": "task.label == null"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_float_literal(self, mock_supervisor):
+        event = {"type": "test", "score": 3.14}
+        graph = {"id": "t", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        cond = {"expression": "task.score > 3.0"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_single_quoted_string(self, runner):
+        cond = {"expression": "task.status == 'completed'"}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    # -- Whitespace tolerance --------------------------------------------
+
+    def test_expression_no_spaces(self, runner):
+        cond = {"expression": 'task.status=="completed"'}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+    def test_expression_extra_spaces(self, runner):
+        cond = {"expression": '  task.status  ==  "completed"  '}
+        assert runner._evaluate_structured_condition(cond, "any")
+
+
+class TestExpressionTransitions:
+    """Integration tests: expression-based transitions in full playbook runs."""
+
+    async def test_task_status_expression_no_llm_call(self, mock_supervisor):
+        """5.2.15a: task.status expression evaluates without LLM call."""
+        event = {
+            "type": "task.completed",
+            "project_id": "proj",
+            "status": "completed",
+        }
+        graph = {
+            "id": "expr-transition",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check task status.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'task.status == "completed"'},
+                            "goto": "done",
+                        },
+                        {
+                            "when": {"expression": 'task.status == "failed"'},
+                            "goto": "retry",
+                        },
+                    ],
+                },
+                "retry": {"prompt": "Retry.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Status checked."
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["node_id"] == "check"
+        assert result.node_trace[0]["transition_to"] == "done"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        # Only 1 supervisor.chat call (for the check node) — no LLM transition!
+        assert mock_supervisor.chat.call_count == 1
+
+    async def test_output_field_expression(self, mock_supervisor):
+        """5.2.15b: output.approval expression evaluates against JSON response."""
+        event = {"type": "review", "project_id": "proj"}
+        graph = {
+            "id": "output-expr",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review the changes.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'output.approval == "yes"'},
+                            "goto": "merge",
+                        },
+                        {
+                            "when": {"expression": 'output.approval == "no"'},
+                            "goto": "reject",
+                        },
+                        {"otherwise": True, "goto": "manual"},
+                    ],
+                },
+                "merge": {"prompt": "Merge.", "goto": "done"},
+                "reject": {"prompt": "Reject.", "goto": "done"},
+                "manual": {"prompt": "Manual review.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = json.dumps(
+            {"approval": "yes", "comment": "Looks good"}
+        )
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "merge"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        # Only 2 calls: review node + merge node (no LLM transition call)
+        assert mock_supervisor.chat.call_count == 2
+
+    async def test_output_field_no_match_falls_through(self, mock_supervisor):
+        """When output expression doesn't match, falls to otherwise."""
+        event = {"type": "review", "project_id": "proj"}
+        graph = {
+            "id": "output-fallback",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'output.approval == "yes"'},
+                            "goto": "merge",
+                        },
+                        {"otherwise": True, "goto": "manual"},
+                    ],
+                },
+                "merge": {"prompt": "Merge.", "goto": "done"},
+                "manual": {"prompt": "Manual.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Response is not JSON → output.* can't resolve → falls to otherwise
+        mock_supervisor.chat.return_value = "I'm not sure about this."
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "manual"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+
+    async def test_mixed_expression_and_llm_transitions(self, mock_supervisor):
+        """5.2.15f: structured expressions checked first, LLM only if no match."""
+        event = {"type": "task.completed", "status": "running", "project_id": "proj"}
+        graph = {
+            "id": "mixed-expr-llm",
+            "version": 1,
+            "nodes": {
+                "assess": {
+                    "entry": True,
+                    "prompt": "Assess.",
+                    "transitions": [
+                        # Structured expression — won't match (status is "running")
+                        {
+                            "when": {"expression": 'task.status == "completed"'},
+                            "goto": "celebrate",
+                        },
+                        # Natural language — LLM decides
+                        {"when": "assessment found critical issues", "goto": "fix"},
+                        {"when": "assessment found minor issues", "goto": "backlog"},
+                    ],
+                },
+                "celebrate": {"prompt": "Celebrate!", "goto": "done"},
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "backlog": {"prompt": "Backlog.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Expression doesn't match → falls to LLM classification
+        # LLM picks "1" (first NL condition = "critical issues")
+        responses = iter(["Critical problems detected.", "1", "Fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "fix"
+        assert result.node_trace[0]["transition_method"] == "llm"
+        # 3 calls: assess node, LLM transition, fix node
+        assert mock_supervisor.chat.call_count == 3
+
+    async def test_expression_match_skips_llm(self, mock_supervisor):
+        """When expression matches, NL conditions are not evaluated."""
+        event = {"type": "task.completed", "status": "completed", "project_id": "proj"}
+        graph = {
+            "id": "expr-skip-llm",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'task.status == "completed"'},
+                            "goto": "done",
+                        },
+                        {"when": "has issues", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Checked."
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Only 1 call: check node. No LLM transition, no fix node.
+        assert mock_supervisor.chat.call_count == 1
+        assert result.node_trace[0]["transition_method"] == "structured"
+
+    async def test_compare_function_in_transition(self, mock_supervisor):
+        """Pre-parsed compare function works in full playbook run."""
+        event = {"type": "check", "count": 5, "project_id": "proj"}
+        graph = {
+            "id": "compare-transition",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Start.",
+                    "transitions": [
+                        {
+                            "when": {
+                                "function": "compare",
+                                "variable": "task.count",
+                                "operator": ">",
+                                "value": 0,
+                            },
+                            "goto": "process",
+                        },
+                        {"otherwise": True, "goto": "done"},
+                    ],
+                },
+                "process": {"prompt": "Process.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Started.", "Processed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "process"
+        assert result.node_trace[0]["transition_method"] == "structured"
+
+    async def test_expression_performance_no_network(self, mock_supervisor):
+        """5.2.15e: structured expressions are fast (no awaited calls for transitions)."""
+        import time
+
+        event = {"type": "perf-test", "status": "ok", "project_id": "proj"}
+        graph = {
+            "id": "perf-test",
+            "version": 1,
+            "nodes": {
+                "node1": {
+                    "entry": True,
+                    "prompt": "Step 1.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'task.status == "ok"'},
+                            "goto": "node2",
+                        },
+                    ],
+                },
+                "node2": {
+                    "prompt": "Step 2.",
+                    "transitions": [
+                        {
+                            "when": {"expression": 'task.status == "ok"'},
+                            "goto": "node3",
+                        },
+                    ],
+                },
+                "node3": {
+                    "prompt": "Step 3.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Result 1.", "Result 2.", "Result 3."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event, mock_supervisor)
+        start = time.monotonic()
+        result = await runner.run()
+        elapsed = time.monotonic() - start
+
+        assert result.status == "completed"
+        # Only 3 chat calls (one per node) — zero LLM transition calls
+        assert mock_supervisor.chat.call_count == 3
+        # Verify the transitions were all structured (no LLM)
+        assert result.node_trace[0]["transition_method"] == "structured"
+        assert result.node_trace[1]["transition_method"] == "structured"
+        # With mocked supervisor, entire run should be very fast
+        assert elapsed < 1.0, f"Expression transitions took too long: {elapsed:.3f}s"
+
+
+class TestResolveVariable:
+    """Unit tests for the _resolve_variable method."""
+
+    @pytest.fixture
+    def runner(self, mock_supervisor):
+        event = {
+            "type": "task.completed",
+            "status": "completed",
+            "nested": {"deep": {"value": 42}},
+        }
+        graph = {"id": "t", "version": 1, "nodes": {}}
+        return PlaybookRunner(graph, event, mock_supervisor)
+
+    def test_task_top_level(self, runner):
+        val, ok = runner._resolve_variable("task.status", "resp")
+        assert ok is True
+        assert val == "completed"
+
+    def test_task_bare_namespace(self, runner):
+        """task without field returns entire event dict."""
+        val, ok = runner._resolve_variable("task", "resp")
+        assert ok is True
+        assert isinstance(val, dict)
+
+    def test_task_nested(self, runner):
+        val, ok = runner._resolve_variable("task.nested.deep.value", "resp")
+        assert ok is True
+        assert val == 42
+
+    def test_event_alias(self, runner):
+        val, ok = runner._resolve_variable("event.status", "resp")
+        assert ok is True
+        assert val == "completed"
+
+    def test_output_json(self, runner):
+        resp = json.dumps({"approval": "yes"})
+        val, ok = runner._resolve_variable("output.approval", resp)
+        assert ok is True
+        assert val == "yes"
+
+    def test_output_non_json(self, runner):
+        val, ok = runner._resolve_variable("output.field", "not json")
+        assert ok is False
+
+    def test_output_json_array(self, runner):
+        val, ok = runner._resolve_variable("output.field", "[1,2]")
+        assert ok is False
+
+    def test_response_variable(self, runner):
+        val, ok = runner._resolve_variable("response", "hello world")
+        assert ok is True
+        assert val == "hello world"
+
+    def test_unknown_namespace(self, runner):
+        val, ok = runner._resolve_variable("unknown.field", "resp")
+        assert ok is False
+
+    def test_undefined_field(self, runner):
+        val, ok = runner._resolve_variable("task.nonexistent", "resp")
+        assert ok is False
 
 
 # ---------------------------------------------------------------------------
