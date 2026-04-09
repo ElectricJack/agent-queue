@@ -795,12 +795,20 @@ class Orchestrator:
         4. **Vault manager** — create ``VaultManager`` and ensure the vault
            directory structure exists.  Must run before plugins, hooks,
            rules, memory, or any file watchers that depend on vault paths.
+        4b. **Vault watcher** — create the ``VaultWatcher`` (playbooks spec
+           §17) after the vault structure exists but before subsystems that
+           register handlers.  The watcher is NOT started here — it uses
+           tick-driven polling via ``check()`` in ``run_one_cycle()``.
+           An initial snapshot is taken at the end of ``initialize()``
+           after all handlers have been registered.
         5. **Plugins** — discover and load plugin modules.
         6. **Hook engine** — subscribe to EventBus events and pre-populate
            last-run timestamps so periodic hooks don't all fire simultaneously
            on startup.  Depends on DB for reading last-run times.
         7. **Rule manager** — install default rules and start file watcher.
         8. **Config watcher** — hot-reload support for config.yaml.
+        9. **Vault watcher snapshot** — take the initial filesystem snapshot
+           so ``check()`` in the tick loop only detects changes after init.
 
         This method must be called (and awaited) before ``run_one_cycle``.
         Called by ``main.py`` during startup, after ``load_config()`` but
@@ -824,9 +832,12 @@ class Orchestrator:
         # Static dirs first, then per-profile and per-project subdirs.
         await self._ensure_vault_structure()
 
-        # Start the unified vault file watcher (playbooks spec §17).
+        # Create the unified vault file watcher (playbooks spec §17).
         # One watcher for the entire vault tree — specific path handlers
         # are registered by subsystems in subsequent initialization steps.
+        # The watcher is NOT started here — it uses tick-driven polling
+        # (like HookEngine's FileWatcher) via check() in run_one_cycle().
+        # This ensures all handlers are registered before detection begins.
         from src.vault_watcher import VaultWatcher
 
         self.vault_watcher = VaultWatcher(
@@ -834,7 +845,6 @@ class Orchestrator:
             poll_interval=5.0,
             debounce_seconds=2.0,
         )
-        await self.vault_watcher.start()
 
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
@@ -911,6 +921,13 @@ class Orchestrator:
             )
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
+
+        # Take the vault watcher's initial snapshot now that all subsystems
+        # have had a chance to register their path handlers.  The first
+        # check() call in run_one_cycle() will detect only changes that
+        # occur *after* this point.
+        if self.vault_watcher:
+            await self.vault_watcher.check()
 
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
@@ -1213,10 +1230,13 @@ class Orchestrator:
         6. **Launch** — fire off background asyncio tasks for each new
            assignment.  These run concurrently with future cycles.
 
-        **Phase 3 — Housekeeping** (steps 7-10):
+        **Phase 3 — Housekeeping** (steps 7-11):
 
         7. **Hook engine tick** — process periodic hooks; event-driven hooks
            fire asynchronously via the EventBus.
+        7c. **Vault watcher tick** — poll the vault directory tree for file
+            changes and dispatch to registered handlers (playbooks spec §17).
+            Uses the same tick-driven pattern as HookEngine's FileWatcher.
         8. **Config hot-reload** — periodically re-read non-critical settings
            from disk (scheduling, archive, monitoring, etc.) without restart.
         9. **Log cleanup** — prune old LLM interaction logs and flush
@@ -1299,6 +1319,16 @@ class Orchestrator:
             # 7b. Run plugin cron jobs (plain async functions, not LLM prompts).
             if hasattr(self, "plugin_registry") and self.plugin_registry:
                 await self.plugin_registry.tick_cron()
+
+            # 7c. Poll vault watcher for filesystem changes (playbooks spec §17).
+            # Uses tick-driven polling (like HookEngine's FileWatcher) rather
+            # than a background loop — check() has built-in rate limiting via
+            # poll_interval and debounce, so calling it each cycle is cheap.
+            if self.vault_watcher:
+                try:
+                    await self.vault_watcher.check()
+                except Exception as e:
+                    logger.warning("VaultWatcher check failed: %s", e)
 
             # 8. Config hot-reload is handled by ConfigWatcher (background task).
 
