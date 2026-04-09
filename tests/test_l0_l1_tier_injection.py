@@ -136,6 +136,7 @@ async def _setup_project_and_agent(
 async def orch_env(tmp_path):
     """Create orchestrator with capturing adapter factory."""
     config = AppConfig(
+        data_dir=str(tmp_path / "data"),
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
     )

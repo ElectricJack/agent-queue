@@ -490,20 +490,19 @@ class TestMemorySaveTopicIntegration:
 
         wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
 
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "OAuth needs scope on refresh",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "authentication",
-                    "tags": '["insight"]',
-                    "_scope": "project",
-                    "_scope_id": "test",
-                }
-            ]
-        )
+        store = mock_router.get_store.return_value
+        store.search.return_value = [
+            {
+                "content": "OAuth needs scope on refresh",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "authentication",
+                "tags": '["insight"]',
+                "_scope": "project",
+                "_scope_id": "test",
+            }
+        ]
 
         result = await wired_plugin.cmd_memory_save(
             {

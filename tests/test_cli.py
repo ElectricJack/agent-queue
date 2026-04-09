@@ -546,7 +546,7 @@ class TestAutoCommands:
             "file",
             "system",
             "task",
-            "hook",
+            "rules",
             "agent",
             "project",
             "plugin",

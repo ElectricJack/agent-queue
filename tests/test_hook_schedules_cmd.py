@@ -1,4 +1,8 @@
-"""Tests for hook_schedules and fire_all_scheduled_hooks commands."""
+"""Tests for hook_schedules and fire_all_scheduled_hooks commands.
+
+These commands were removed when hooks were replaced by the rules abstraction.
+All tests are skipped until equivalent rule-based tests are added.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,10 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Hook schedule commands removed — replaced by rules abstraction"
+)
 
 from src.command_handler import CommandHandler, _format_interval
 from src.config import AppConfig, HookEngineConfig

@@ -16,6 +16,15 @@ from src.chat_providers.types import ChatResponse, TextBlock
 from src.supervisor import Supervisor, _hook_provider_override
 
 
+def _make_mock_supervisor(default_provider):
+    """Create a MagicMock supervisor with required async attributes."""
+    supervisor = MagicMock(spec=Supervisor)
+    supervisor._provider = default_provider
+    supervisor._llm_lock = asyncio.Lock()
+    supervisor.set_active_project = MagicMock()
+    return supervisor
+
+
 class RecordingProvider(ChatProvider):
     """A provider that records which instance handled each call."""
 
@@ -44,17 +53,15 @@ class TestProviderContextVar:
         provider_a = RecordingProvider("hook-a", calls)
         provider_b = RecordingProvider("hook-b", calls)
 
-        supervisor = MagicMock(spec=Supervisor)
-        supervisor._provider = default_provider
+        supervisor = _make_mock_supervisor(default_provider)
 
-        # Use the real process_hook_llm but mock chat() to just call the provider
+        # Use the real process_hook_llm but mock _chat_unlocked to just call the provider
         async def fake_chat(text, user_name, on_progress=None, _reflection_trigger=None):
             active = _hook_provider_override.get() or supervisor._provider
             resp = await active.create_message(messages=[], system="", tools=[], max_tokens=1024)
             return resp.text_parts[0]
 
-        supervisor.chat = fake_chat
-        supervisor.set_active_project = MagicMock()
+        supervisor._chat_unlocked = fake_chat
         supervisor.process_hook_llm = Supervisor.process_hook_llm.__get__(supervisor)
 
         # Launch both concurrently
@@ -88,16 +95,14 @@ class TestProviderContextVar:
         calls = []
         default_provider = RecordingProvider("default", calls)
 
-        supervisor = MagicMock(spec=Supervisor)
-        supervisor._provider = default_provider
+        supervisor = _make_mock_supervisor(default_provider)
 
         async def fake_chat(text, user_name, on_progress=None, _reflection_trigger=None):
             active = _hook_provider_override.get() or supervisor._provider
             resp = await active.create_message(messages=[], system="", tools=[], max_tokens=1024)
             return resp.text_parts[0]
 
-        supervisor.chat = fake_chat
-        supervisor.set_active_project = MagicMock()
+        supervisor._chat_unlocked = fake_chat
         supervisor.process_hook_llm = Supervisor.process_hook_llm.__get__(supervisor)
 
         result = await supervisor.process_hook_llm(
@@ -115,14 +120,12 @@ class TestProviderContextVar:
         calls = []
         provider = RecordingProvider("custom", calls)
 
-        supervisor = MagicMock(spec=Supervisor)
-        supervisor._provider = RecordingProvider("default", calls)
+        supervisor = _make_mock_supervisor(RecordingProvider("default", calls))
 
         async def fake_chat(text, user_name, on_progress=None, _reflection_trigger=None):
             return "ok"
 
-        supervisor.chat = fake_chat
-        supervisor.set_active_project = MagicMock()
+        supervisor._chat_unlocked = fake_chat
         supervisor.process_hook_llm = Supervisor.process_hook_llm.__get__(supervisor)
 
         await supervisor.process_hook_llm(

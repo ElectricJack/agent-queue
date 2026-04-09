@@ -323,10 +323,9 @@ class TestCommitChanges:
         assert result["project_id"] == project_id
         assert result["commit_message"] == "feat: add new feature"
         assert result["status"] == "committed"
-        mock_git.acommit_all.assert_called_once_with(
-            checkout_path,
-            "feat: add new feature",
-        )
+        mock_git.acommit_all.assert_called_once()
+        call_args = mock_git.acommit_all.call_args
+        assert call_args[0] == (checkout_path, "feat: add new feature")
 
     async def test_nothing_to_commit(self, handler, mock_git, project_with_repo):
         project_id, _, _ = project_with_repo
@@ -435,10 +434,9 @@ class TestPushBranch:
         assert result["project_id"] == project_id
         assert result["branch"] == "feature/push-me"
         assert result["status"] == "pushed"
-        mock_git.apush_branch.assert_called_once_with(
-            checkout_path,
-            "feature/push-me",
-        )
+        mock_git.apush_branch.assert_called_once()
+        call_args = mock_git.apush_branch.call_args
+        assert call_args[0] == (checkout_path, "feature/push-me")
 
     async def test_success_with_current_branch(self, handler, mock_git, project_with_repo):
         """When branch_name is not provided, uses current branch."""
@@ -456,10 +454,9 @@ class TestPushBranch:
         assert result["branch"] == "feature/auto-detect"
         assert result["status"] == "pushed"
         mock_git.aget_current_branch.assert_called_with(checkout_path)
-        mock_git.apush_branch.assert_called_once_with(
-            checkout_path,
-            "feature/auto-detect",
-        )
+        mock_git.apush_branch.assert_called_once()
+        call_args = mock_git.apush_branch.call_args
+        assert call_args[0] == (checkout_path, "feature/auto-detect")
 
     async def test_push_failure(self, handler, mock_git, project_with_repo):
         project_id, _, _ = project_with_repo
@@ -926,10 +923,9 @@ class TestActiveProjectFallback:
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["status"] == "committed"
-        mock_git.acommit_all.assert_called_once_with(
-            checkout_path,
-            "feat: auto-inferred project",
-        )
+        mock_git.acommit_all.assert_called_once()
+        call_args = mock_git.acommit_all.call_args
+        assert call_args[0] == (checkout_path, "feat: auto-inferred project")
 
     async def test_push_branch_infers_active_project(self, handler, mock_git, project_with_repo):
         """push_branch should work without project_id when active project is set."""
@@ -942,10 +938,9 @@ class TestActiveProjectFallback:
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["status"] == "pushed"
-        mock_git.apush_branch.assert_called_once_with(
-            checkout_path,
-            "feature/auto",
-        )
+        mock_git.apush_branch.assert_called_once()
+        call_args = mock_git.apush_branch.call_args
+        assert call_args[0] == (checkout_path, "feature/auto")
 
     async def test_checkout_branch_infers_active_project(
         self, handler, mock_git, project_with_repo
@@ -1021,10 +1016,9 @@ class TestActiveProjectFallback:
         assert "error" not in result
         assert result["committed"] is True
         assert result["project_id"] == project_id
-        mock_git.acommit_all.assert_called_once_with(
-            checkout_path,
-            "feat: inferred commit",
-        )
+        mock_git.acommit_all.assert_called_once()
+        call_args = mock_git.acommit_all.call_args
+        assert call_args[0] == (checkout_path, "feat: inferred commit")
 
     async def test_git_pull_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_pull should work without repo_id when active project is set."""
@@ -1334,10 +1328,9 @@ class TestGenerateReadme:
         assert "- FastAPI" in content
         assert "- PostgreSQL" in content
 
-        mock_git.acommit_all.assert_called_once_with(
-            checkout_path,
-            "Add generated README.md",
-        )
+        mock_git.acommit_all.assert_called_once()
+        call_args = mock_git.acommit_all.call_args
+        assert call_args[0] == (checkout_path, "Add generated README.md")
         mock_git.apush_branch.assert_called_once()
 
     async def test_success_minimal(self, handler, mock_git, project_with_repo):

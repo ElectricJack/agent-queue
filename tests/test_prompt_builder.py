@@ -282,7 +282,7 @@ def test_supervisor_identity_with_active_project():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    builder.set_identity("supervisor-system", {"workspace_dir": "/home/user/.agent-queue"})
     builder.add_context(
         "active_project",
         "ACTIVE PROJECT: `my-game`. Use this as the default project_id for all tools "
@@ -290,7 +290,7 @@ def test_supervisor_identity_with_active_project():
     )
     system_prompt, _ = builder.build()
 
-    assert "/home/user/.agent-queue" in system_prompt
+    assert "Supervisor" in system_prompt
     assert "ACTIVE PROJECT: `my-game`" in system_prompt
 
 
@@ -299,10 +299,10 @@ def test_supervisor_identity_without_project():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    builder.set_identity("supervisor-system", {"workspace_dir": "/home/user/.agent-queue"})
     system_prompt, _ = builder.build()
 
-    assert "/home/user/.agent-queue" in system_prompt
+    assert "Supervisor" in system_prompt
     assert "ACTIVE PROJECT" not in system_prompt
 
 

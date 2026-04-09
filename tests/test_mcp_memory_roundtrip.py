@@ -587,10 +587,10 @@ class TestSaveDedup:
     """(e) memory_save with duplicate content does not create a second entry."""
 
     @pytest.mark.asyncio
-    async def test_save_near_identical_deduplicates(self, wired_plugin, mock_router):
+    async def test_save_near_identical_deduplicates(self, wired_plugin, mock_router, mock_store):
         """Saving content with > 0.95 similarity triggers dedup (timestamp update)."""
         # First save — no duplicates
-        mock_router.search = AsyncMock(return_value=[])
+        mock_store.search.return_value = []
         first_result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
@@ -601,22 +601,20 @@ class TestSaveDedup:
         assert first_result.get("success") is True
         assert first_result.get("action") == "created"
 
-        # Second save — router returns the first entry as near-identical
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Always use async database sessions for SQLite.",
-                    "score": 0.98,
-                    "chunk_hash": first_result.get("chunk_hash", "hash_1"),
-                    "entry_type": "document",
-                    "topic": "database",
-                    "tags": '["insight", "auto-generated"]',
-                    "_scope": "project",
-                    "_scope_id": "test-project",
-                    "_collection": "aq_project_test-project",
-                }
-            ]
-        )
+        # Second save — store returns the first entry as near-identical
+        mock_store.search.return_value = [
+            {
+                "content": "Always use async database sessions for SQLite.",
+                "score": 0.98,
+                "chunk_hash": first_result.get("chunk_hash", "hash_1"),
+                "entry_type": "document",
+                "topic": "database",
+                "tags": '["insight", "auto-generated"]',
+                "_scope": "project",
+                "_scope_id": "test-project",
+                "_collection": "aq_project_test-project",
+            }
+        ]
         second_result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
@@ -629,23 +627,21 @@ class TestSaveDedup:
         assert second_result.get("similarity_score") == 0.98
 
     @pytest.mark.asyncio
-    async def test_save_merge_related_content(self, wired_plugin, mock_router):
+    async def test_save_merge_related_content(self, wired_plugin, mock_router, mock_store):
         """Saving content with 0.8–0.95 similarity triggers merge."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "OAuth needs scope on refresh.",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "authentication",
-                    "tags": '["insight"]',
-                    "_scope": "project",
-                    "_scope_id": "test-project",
-                    "_collection": "aq_project_test-project",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth needs scope on refresh.",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "authentication",
+                "tags": '["insight"]',
+                "_scope": "project",
+                "_scope_id": "test-project",
+                "_collection": "aq_project_test-project",
+            }
+        ]
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
@@ -658,24 +654,22 @@ class TestSaveDedup:
         assert result.get("merged_with") == "existing_hash"
 
     @pytest.mark.asyncio
-    async def test_dedup_filters_non_document_entries(self, wired_plugin, mock_router):
+    async def test_dedup_filters_non_document_entries(self, wired_plugin, mock_router, mock_store):
         """Dedup check should only consider document entries, not KV or temporal."""
-        # Router returns a high-similarity KV entry — should be ignored
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "deploy_branch=main",
-                    "score": 0.99,
-                    "chunk_hash": "kv_hash",
-                    "entry_type": "kv",
-                    "topic": "",
-                    "tags": "[]",
-                    "_scope": "project",
-                    "_scope_id": "test-project",
-                    "_collection": "aq_project_test-project",
-                }
-            ]
-        )
+        # Store returns a high-similarity KV entry — should be ignored
+        mock_store.search.return_value = [
+            {
+                "content": "deploy_branch=main",
+                "score": 0.99,
+                "chunk_hash": "kv_hash",
+                "entry_type": "kv",
+                "topic": "",
+                "tags": "[]",
+                "_scope": "project",
+                "_scope_id": "test-project",
+                "_collection": "aq_project_test-project",
+            }
+        ]
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",

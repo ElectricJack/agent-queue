@@ -889,6 +889,9 @@ class TestDeepConsolidation:
             "# Architecture Knowledge\n\n## Core Architecture\n- Uses async Python (from task: task-1)",
         )
 
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
+
         # Deep consolidation will try to call LLM — mock it out
         # For this test, we just verify it reads the data correctly
         # (the LLM call will fail, returning an error)
@@ -916,6 +919,9 @@ class TestDeepConsolidation:
         for i in range(3):
             with open(os.path.join(processed_dir, f"task-{i}.json"), "w") as f:
                 f.write("{}")
+
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
 
         result = await self.mgr.run_deep_consolidation(project_id)
         # Will fail at LLM call, but should have counted processed files
@@ -971,8 +977,8 @@ class TestBootstrapConsolidation:
         """Bootstrap should read task memory files."""
         project_id = "boot-test"
 
-        # Create task memory files
-        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        # Create task memory files in the new tasks/{project_id}/ location
+        tasks_dir = os.path.join(str(self.tmp_path), "tasks", project_id)
         os.makedirs(tasks_dir, exist_ok=True)
         for i in range(3):
             with open(os.path.join(tasks_dir, f"task-{i}.md"), "w") as f:
@@ -981,6 +987,9 @@ class TestBootstrapConsolidation:
                     f"**Project:** {project_id}\n\n"
                     f"## Summary\nDid something interesting for task {i}.\n"
                 )
+
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
 
         # Bootstrap will try to call LLM — will fail without provider
         result = await self.mgr.bootstrap_consolidation(
@@ -997,8 +1006,8 @@ class TestBootstrapConsolidation:
         """Bootstrap should also read digest files alongside task memories."""
         project_id = "digest-boot"
 
-        # Create task memories and digests
-        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        # Create task memories in the new tasks/{project_id}/ location
+        tasks_dir = os.path.join(str(self.tmp_path), "tasks", project_id)
         digests_dir = os.path.join(str(self.tmp_path), "memory", project_id, "digests")
         os.makedirs(tasks_dir, exist_ok=True)
         os.makedirs(digests_dir, exist_ok=True)
@@ -1008,6 +1017,9 @@ class TestBootstrapConsolidation:
 
         with open(os.path.join(digests_dir, "week-2026-W10.md"), "w") as f:
             f.write("# Week 2026-W10 Digest\n\nSummary of older tasks.\n")
+
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
 
         result = await self.mgr.bootstrap_consolidation(project_id)
         assert result["status"] == "error"
@@ -1027,11 +1039,14 @@ class TestBootstrapConsolidation:
         )
         await self.mgr.write_factsheet(project_id, fs)
 
-        # Create task memories
-        tasks_dir = os.path.join(str(self.tmp_path), "memory", project_id, "tasks")
+        # Create task memories in the new tasks/{project_id}/ location
+        tasks_dir = os.path.join(str(self.tmp_path), "tasks", project_id)
         os.makedirs(tasks_dir, exist_ok=True)
         with open(os.path.join(tasks_dir, "task-1.md"), "w") as f:
             f.write("# Task: task-1\n\n## Summary\nDid a thing.\n")
+
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
 
         result = await self.mgr.bootstrap_consolidation(project_id)
         # Should proceed (not "already_exists") since no knowledge topics exist
@@ -1128,6 +1143,9 @@ class TestStaleFactPruning:
             "decisions",
             "# Decisions\n\n## Technology Choices\n- FastAPI chosen\n",
         )
+
+        # Mock the consolidation provider to return None (no provider available)
+        self.mgr._get_consolidation_provider = lambda: None
 
         # Run deep consolidation — will fail at LLM call
         result = await self.mgr.run_deep_consolidation(project_id)

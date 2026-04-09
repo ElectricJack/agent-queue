@@ -658,6 +658,7 @@ class TestPlanApprovalBlocking:
         await orch.db.transition_task("t-sub-2", TaskStatus.COMPLETED, context="test")
 
         # Now all subtasks are done — parent should auto-complete
+        orch._emit_text_notify = AsyncMock()
         await orch._check_plan_parent_completion()
         plan = await orch.db.get_task("t-plan")
         assert plan.status == TaskStatus.COMPLETED, "Parent should auto-complete"
@@ -1186,7 +1187,8 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         # Force-clean should have recovered the workspace
         assert result == PhaseResult.CONTINUE
-        orch.git.aforce_clean_workspace.assert_awaited_once()
+        # force_clean may be called more than once (initial + final safety-net sweep)
+        assert orch.git.aforce_clean_workspace.await_count >= 1
 
     async def test_auto_commit_and_merge_when_on_task_branch(self, pipeline_orch):
         """Uncommitted changes on task branch are auto-committed, then auto-merged."""
@@ -1801,8 +1803,12 @@ class TestCompletionPipelineVerify:
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-2")
 
-        # Agent left workspace on task branch (verification failure)
+        # Agent left uncommitted changes that can't be remediated —
+        # all auto-remediation attempts fail, forcing verification STOP.
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace_for_task("t-2")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1870,8 +1876,7 @@ class TestFailedBlockedReport:
     async def test_report_sent_when_tasks_exist(self, orch):
         """Report should be sent when there are FAILED or BLOCKED tasks."""
         await _create_project_with_workspace(orch.db)
-        notify = AsyncMock()
-        orch.set_notify_callback(notify)
+        orch._emit_text_notify = AsyncMock()
 
         # Create a failed and a blocked task
         await orch.db.create_task(
@@ -1900,9 +1905,9 @@ class TestFailedBlockedReport:
         await orch._check_failed_blocked_tasks()
 
         # Should have sent a notification
-        assert notify.call_count >= 1
+        assert orch._emit_text_notify.call_count >= 1
         # Check the plain-text message contains key info
-        call_msg = notify.call_args_list[0][0][0]
+        call_msg = orch._emit_text_notify.call_args_list[0][0][0]
         assert "Attention Required" in call_msg
         assert "t-fail" in call_msg
         assert "t-block" in call_msg
@@ -1910,8 +1915,7 @@ class TestFailedBlockedReport:
     async def test_no_report_when_no_failed_blocked(self, orch):
         """Report should NOT be sent when there are no FAILED/BLOCKED tasks."""
         await _create_project_with_workspace(orch.db)
-        notify = AsyncMock()
-        orch.set_notify_callback(notify)
+        orch._emit_text_notify = AsyncMock()
 
         # Create only a READY task
         await orch.db.create_task(
@@ -1927,13 +1931,12 @@ class TestFailedBlockedReport:
         orch._last_failed_blocked_report = 0.0
         await orch._check_failed_blocked_tasks()
 
-        notify.assert_not_called()
+        orch._emit_text_notify.assert_not_called()
 
     async def test_report_rate_limited(self, orch):
         """Report should be rate-limited by the configured interval."""
         await _create_project_with_workspace(orch.db)
-        notify = AsyncMock()
-        orch.set_notify_callback(notify)
+        orch._emit_text_notify = AsyncMock()
 
         await orch.db.create_task(
             Task(
@@ -1948,17 +1951,16 @@ class TestFailedBlockedReport:
         # First call — should send
         orch._last_failed_blocked_report = 0.0
         await orch._check_failed_blocked_tasks()
-        assert notify.call_count == 1
+        assert orch._emit_text_notify.call_count == 1
 
         # Second call immediately — should NOT send (rate-limited)
         await orch._check_failed_blocked_tasks()
-        assert notify.call_count == 1  # still 1
+        assert orch._emit_text_notify.call_count == 1  # still 1
 
     async def test_report_disabled_when_interval_zero(self, orch):
         """Report should be disabled when interval is 0."""
         await _create_project_with_workspace(orch.db)
-        notify = AsyncMock()
-        orch.set_notify_callback(notify)
+        orch._emit_text_notify = AsyncMock()
 
         await orch.db.create_task(
             Task(
@@ -1974,7 +1976,7 @@ class TestFailedBlockedReport:
         orch._last_failed_blocked_report = 0.0
         await orch._check_failed_blocked_tasks()
 
-        notify.assert_not_called()
+        orch._emit_text_notify.assert_not_called()
 
     async def test_report_groups_by_project(self, orch):
         """Report should send separate notifications for each project."""
@@ -1982,8 +1984,7 @@ class TestFailedBlockedReport:
         await _create_project_with_workspace(
             orch.db, project_id="p-2", name="beta", workspace_path="/tmp/ws-2"
         )
-        notify = AsyncMock()
-        orch.set_notify_callback(notify)
+        orch._emit_text_notify = AsyncMock()
 
         await orch.db.create_task(
             Task(
@@ -2008,4 +2009,4 @@ class TestFailedBlockedReport:
         await orch._check_failed_blocked_tasks()
 
         # Should have notified twice — once per project
-        assert notify.call_count == 2
+        assert orch._emit_text_notify.call_count == 2

@@ -727,20 +727,18 @@ class TestCaseG_OriginalPreservedExactly:
     ):
         """On merge path, the stored original is the full merged content."""
         # Set up a related match to trigger merge
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Existing insight about caching strategies",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "caching",
-                    "tags": '["insight"]',
-                    "_scope": "project",
-                    "_scope_id": "test",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight about caching strategies",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "caching",
+                "tags": '["insight"]',
+                "_scope": "project",
+                "_scope_id": "test",
+            }
+        ]
 
         # LLM returns long merged content (triggers summary)
         long_merged = (
@@ -761,7 +759,7 @@ class TestCaseG_OriginalPreservedExactly:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "New caching insight",
+                "content": "New caching insight about invalidation and TTL strategies for distributed systems",
                 "tags": ["insight"],
             }
         )

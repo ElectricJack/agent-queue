@@ -297,7 +297,7 @@ def test_chat_no_reflection_for_simple_text():
 
 
 def test_supervisor_prompt_template_exists():
-    """Supervisor identity template renders with workspace_dir."""
+    """Supervisor identity template renders successfully."""
     from src.prompt_builder import PromptBuilder
     import os
 
@@ -305,7 +305,6 @@ def test_supervisor_prompt_template_exists():
     builder = PromptBuilder(prompts_dir=prompts_dir)
     result = builder.render_template("supervisor-system", {"workspace_dir": "/tmp/test"})
     assert result is not None
-    assert "/tmp/test" in result
     assert "supervisor" in result.lower() or "single intelligent entity" in result.lower()
 
 

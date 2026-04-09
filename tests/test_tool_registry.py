@@ -113,7 +113,7 @@ def test_registry_has_categories(registry):
         "git",
         "project",
         "agent",
-        "hooks",
+        "rules",
         "memory",
         "notes",
         "system",
@@ -446,11 +446,11 @@ def test_search_relevant_categories_files_query():
     assert "files" in cats
 
 
-def test_search_relevant_categories_hooks_query():
-    """Hook-related queries should return the hooks category."""
+def test_search_relevant_categories_rules_query():
+    """Rule-related queries should return the rules category."""
     registry = _real_registry()
-    cats = registry.search_relevant_categories("create a hook that fires on schedule")
-    assert "hooks" in cats
+    cats = registry.search_relevant_categories("create a rule that fires on schedule")
+    assert "rules" in cats
 
 
 def test_search_relevant_categories_memory_query():

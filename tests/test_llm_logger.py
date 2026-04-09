@@ -79,8 +79,8 @@ class TestLLMLoggerChatProvider:
 
         assert "timestamp" in entry
         assert entry["caller"] == "chat_agent.chat"
-        assert entry["input"]["message_count"] == 2
-        assert entry["input"]["system_prompt_length"] == len("Be helpful.")
+        assert len(entry["input"]["messages"]) == 2
+        assert entry["input"]["system"] == "Be helpful."
         assert entry["input"]["max_tokens"] == 1024
         assert entry["duration_ms"] == 500
         assert entry["error"] is None

@@ -1,4 +1,9 @@
-"""Tests for scheduled (one-shot) hooks."""
+"""Tests for scheduled (one-shot) hooks.
+
+The schedule_hook, list_scheduled, cancel_scheduled, and hook_schedules
+commands were removed when hooks were replaced by the rules abstraction.
+Tests that depend on those commands are skipped.
+"""
 
 from __future__ import annotations
 
@@ -236,6 +241,7 @@ class TestParseDelay:
 # --- Command handler: schedule_hook ---
 
 
+@pytest.mark.skip(reason="Hook schedule commands removed — replaced by rules abstraction")
 class TestScheduleHookCommand:
     @pytest.fixture
     async def handler(self, db):
@@ -358,6 +364,7 @@ class TestScheduleHookCommand:
 # --- Command handler: list_scheduled ---
 
 
+@pytest.mark.skip(reason="Hook schedule commands removed — replaced by rules abstraction")
 class TestListScheduledCommand:
     @pytest.fixture
     async def handler(self, db):
@@ -417,6 +424,7 @@ class TestListScheduledCommand:
 # --- Command handler: cancel_scheduled ---
 
 
+@pytest.mark.skip(reason="Hook schedule commands removed — replaced by rules abstraction")
 class TestCancelScheduledCommand:
     @pytest.fixture
     async def handler(self, db):
@@ -465,6 +473,7 @@ class TestCancelScheduledCommand:
 # --- hook_schedules includes scheduled hooks ---
 
 
+@pytest.mark.skip(reason="Hook schedule commands removed — replaced by rules abstraction")
 class TestHookSchedulesIncludesScheduled:
     @pytest.fixture
     async def handler(self, db):

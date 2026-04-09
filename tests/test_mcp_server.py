@@ -485,6 +485,7 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
+            "fire_hook",
             "plugin_config",
             "plugin_disable",
             "plugin_enable",
@@ -529,6 +530,7 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
+            "fire_hook",
             "plugin_config",
             "plugin_disable",
             "plugin_enable",

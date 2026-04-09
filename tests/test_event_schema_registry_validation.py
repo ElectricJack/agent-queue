@@ -319,6 +319,11 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "severity": "info",
         "category": "system",
     },
+    "notify.profile_sync_failed": {
+        "event_type": "notify.profile_sync_failed",
+        "severity": "error",
+        "category": "system",
+    },
 }
 
 # Timer schemas are dynamically generated; add common intervals

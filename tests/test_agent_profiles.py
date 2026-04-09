@@ -479,6 +479,7 @@ agent_profiles:
 class TestProfileSyncFromConfig:
     async def test_sync_creates_profiles(self, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
@@ -500,6 +501,7 @@ class TestProfileSyncFromConfig:
 
     async def test_sync_updates_existing_profiles(self, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
@@ -512,6 +514,7 @@ class TestProfileSyncFromConfig:
 
         # Second startup with updated profile
         config2 = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
