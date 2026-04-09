@@ -8,19 +8,22 @@ Tests cover:
 - Full compilation pipeline (with mocked LLM)
 - Retry logic on validation failures
 - Error handling (LLM failures, malformed output)
+- Compilation happy-path per roadmap 5.1.8 (a)-(g)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.chat_providers.types import ChatResponse, TextBlock
 from src.playbook_compiler import CompilationResult, PlaybookCompiler
-from src.playbook_models import CompiledPlaybook
+from src.playbook_models import CompiledPlaybook, generate_json_schema
+from src.playbook_store import CompiledPlaybookStore
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +137,9 @@ class TestParseFrontmatter:
         assert "Body" in body
 
     def test_frontmatter_with_agent_type_scope(self):
-        content = "---\nid: test\ntriggers:\n  - task.completed\nscope: agent-type:coding\n---\nBody"
+        content = (
+            "---\nid: test\ntriggers:\n  - task.completed\nscope: agent-type:coding\n---\nBody"
+        )
         fm, body = PlaybookCompiler._parse_frontmatter(content)
         assert fm["scope"] == "agent-type:coding"
 
@@ -271,13 +276,18 @@ class TestExtractJson:
         assert result is None
 
     def test_invalid_json_in_fence(self):
-        text = '```json\n{invalid json\n```'
+        text = "```json\n{invalid json\n```"
         # Falls through to bare JSON strategy
         result = PlaybookCompiler._extract_json(text)
         assert result is None
 
     def test_nested_braces_bare(self):
-        data = {"nodes": {"a": {"prompt": "test {value}", "entry": True, "goto": "b"}, "b": {"terminal": True}}}
+        data = {
+            "nodes": {
+                "a": {"prompt": "test {value}", "entry": True, "goto": "b"},
+                "b": {"terminal": True},
+            }
+        }
         text = f"Output: {json.dumps(data)}"
         result = PlaybookCompiler._extract_json(text)
         assert result == data
@@ -286,7 +296,7 @@ class TestExtractJson:
         """Fenced block takes priority even if bare JSON would also match."""
         fenced = {"source": "fenced"}
         bare = {"source": "bare"}
-        text = f'{json.dumps(bare)}\n```json\n{json.dumps(fenced)}\n```'
+        text = f"{json.dumps(bare)}\n```json\n{json.dumps(fenced)}\n```"
         result = PlaybookCompiler._extract_json(text)
         assert result == fenced
 
@@ -298,7 +308,9 @@ class TestExtractJson:
 
 class TestMergeFrontmatter:
     def test_injects_required_fields(self):
-        compiled = {"nodes": {"a": {"entry": True, "prompt": "x", "goto": "b"}, "b": {"terminal": True}}}
+        compiled = {
+            "nodes": {"a": {"entry": True, "prompt": "x", "goto": "b"}, "b": {"terminal": True}}
+        }
         fm = {"id": "my-pb", "triggers": ["e1"], "scope": "system"}
         result = PlaybookCompiler._merge_frontmatter(compiled, fm, "abc123", 3)
 
@@ -567,10 +579,12 @@ class TestCompileRetry:
     @pytest.mark.asyncio
     async def test_retry_on_no_json(self):
         """First response has no JSON; second attempt includes it."""
-        provider = _make_provider([
-            "I'll think about this...",
-            _wrap_json(VALID_COMPILED_NODES),
-        ])
+        provider = _make_provider(
+            [
+                "I'll think about this...",
+                _wrap_json(VALID_COMPILED_NODES),
+            ]
+        )
         compiler = PlaybookCompiler(provider, max_retries=1)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
@@ -711,9 +725,7 @@ class TestSpecExampleRoundTrip:
                     ],
                 },
                 "triage": {
-                    "prompt": (
-                        "Group the scan findings by severity (error, warning, info)."
-                    ),
+                    "prompt": ("Group the scan findings by severity (error, warning, info)."),
                     "transitions": [
                         {"when": "has errors", "goto": "create_error_tasks"},
                         {"when": "warnings only", "goto": "create_warning_task"},
@@ -845,3 +857,442 @@ class TestEdgeCases:
 
         result = await compiler.compile(md)
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Compilation happy-path — roadmap 5.1.8 (a)-(g)
+# ---------------------------------------------------------------------------
+
+# A richer 3-node playbook markdown used throughout this section.
+# Describes a code-quality-gate with scan → create_tasks → done.
+HAPPY_PATH_MD = """\
+---
+id: code-quality-gate
+triggers:
+  - git.commit
+  - git.push
+scope: project
+cooldown: 60
+---
+
+# Code Quality Gate
+
+When code is committed, run vibecop on the changed files.
+If issues are found, create tasks to fix them. Otherwise, we're done.
+"""
+
+# The LLM response for the happy-path 3-node playbook.  Includes a rich
+# set of node/transition fields exercised by tests (c) and (d).
+HAPPY_PATH_LLM_NODES: dict = {
+    "nodes": {
+        "scan": {
+            "entry": True,
+            "prompt": (
+                "Run vibecop_check on the files changed in this commit. "
+                "Scope the scan to only the changed files."
+            ),
+            "summarize_before": True,
+            "llm_config": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
+            "transitions": [
+                {"when": "no findings", "goto": "done"},
+                {"when": "findings exist", "goto": "create_tasks"},
+                {
+                    "when": {
+                        "function": "has_tool_output",
+                        "contains": "critical",
+                    },
+                    "goto": "create_tasks",
+                },
+                {"otherwise": True, "goto": "done"},
+            ],
+        },
+        "create_tasks": {
+            "prompt": "Create one task per finding from the scan.",
+            "timeout_seconds": 120,
+            "goto": "done",
+        },
+        "done": {"terminal": True},
+    },
+    "max_tokens": 50000,
+}
+
+
+class _FakeVaultManager:
+    """Minimal VaultManager stub — only ``compiled_root`` is needed."""
+
+    def __init__(self, compiled_root: str) -> None:
+        self._compiled_root = compiled_root
+
+    @property
+    def compiled_root(self) -> str:
+        return self._compiled_root
+
+
+class TestCompilationHappyPath:
+    """Roadmap 5.1.8 — compilation happy-path tests (a)-(g).
+
+    All tests use a sample 3-node playbook markdown that is compiled via a
+    mocked LLM provider and then verified against the spec expectations from
+    playbooks.md §4 (Authoring Model) and §5 (Compiled Format).
+    """
+
+    # -- (a) Schema validation ------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_three_node_playbook_validates_against_schema(self):
+        """(a) Sample 3-node playbook compiles to JSON validating against the schema."""
+        import jsonschema
+
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        assert result.success is True
+        assert result.playbook is not None
+
+        # Serialize to dict and validate against the generated JSON Schema
+        compiled_dict = result.playbook.to_dict()
+        schema = generate_json_schema()
+        jsonschema.validate(instance=compiled_dict, schema=schema)
+
+        # Additional: CompiledPlaybook's own structural validation passes
+        assert result.playbook.validate() == []
+
+    # -- (b) Entry node, node definitions, transitions -----------------------
+
+    @pytest.mark.asyncio
+    async def test_b_entry_node_all_nodes_and_transitions(self):
+        """(b) Compiled JSON has correct entry_node, all node defs, all transitions."""
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        pb = result.playbook
+        assert pb is not None
+
+        # Correct entry node
+        assert pb.entry_node_id() == "scan"
+
+        # All three node definitions present
+        assert set(pb.nodes.keys()) == {"scan", "create_tasks", "done"}
+
+        # Terminal nodes
+        assert pb.terminal_node_ids() == ["done"]
+
+        # Scan node transitions
+        scan = pb.nodes["scan"]
+        assert len(scan.transitions) == 4
+        assert scan.transitions[0].goto == "done"
+        assert scan.transitions[0].when == "no findings"
+        assert scan.transitions[1].goto == "create_tasks"
+        assert scan.transitions[1].when == "findings exist"
+        # Structured transition
+        assert isinstance(scan.transitions[2].when, dict)
+        assert scan.transitions[2].goto == "create_tasks"
+        # Otherwise fallback
+        assert scan.transitions[3].otherwise is True
+        assert scan.transitions[3].goto == "done"
+
+        # create_tasks node uses unconditional goto (not transitions)
+        ct = pb.nodes["create_tasks"]
+        assert ct.goto == "done"
+        assert ct.transitions == []
+
+        # done is a bare terminal
+        done = pb.nodes["done"]
+        assert done.terminal is True
+        assert done.transitions == []
+        assert done.goto is None
+
+        # All nodes reachable, all reach terminal
+        assert pb.reachable_node_ids() == {"scan", "create_tasks", "done"}
+
+    # -- (c) Node fields -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_c_node_fields_correctly_extracted(self):
+        """(c) Node fields (prompt, llm_config, summarize_before) extracted correctly.
+
+        Note: ``tools`` is listed in the roadmap but is not yet a PlaybookNode
+        field — it is expected to be added in a future spec revision.  All
+        currently-defined node fields are tested here.
+        """
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        pb = result.playbook
+        assert pb is not None
+
+        # scan node: prompt, llm_config, summarize_before
+        scan = pb.nodes["scan"]
+        assert scan.prompt.startswith("Run vibecop_check")
+        assert scan.entry is True
+        assert scan.terminal is False
+        assert scan.summarize_before is True
+        assert scan.llm_config is not None
+        assert scan.llm_config.provider == "anthropic"
+        assert scan.llm_config.model == "claude-sonnet-4-20250514"
+
+        # create_tasks node: prompt, timeout_seconds
+        ct = pb.nodes["create_tasks"]
+        assert ct.prompt == "Create one task per finding from the scan."
+        assert ct.timeout_seconds == 120
+        assert ct.entry is False
+        assert ct.terminal is False
+        assert ct.summarize_before is False
+        assert ct.llm_config is None
+
+        # done node: terminal, no prompt required
+        done = pb.nodes["done"]
+        assert done.terminal is True
+        assert done.prompt == ""
+        assert done.wait_for_human is False
+        assert done.llm_config is None
+        assert done.summarize_before is False
+
+    # -- (d) Transition fields -----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_d_transition_fields_correctly_extracted(self):
+        """(d) Transition fields (condition, target, structured expr) extracted correctly."""
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        pb = result.playbook
+        assert pb is not None
+        transitions = pb.nodes["scan"].transitions
+
+        # Natural-language condition + target
+        t0 = transitions[0]
+        assert t0.when == "no findings"
+        assert t0.goto == "done"
+        assert t0.otherwise is False
+
+        t1 = transitions[1]
+        assert t1.when == "findings exist"
+        assert t1.goto == "create_tasks"
+        assert t1.otherwise is False
+
+        # Structured expression (dict-based condition)
+        t2 = transitions[2]
+        assert isinstance(t2.when, dict)
+        assert t2.when["function"] == "has_tool_output"
+        assert t2.when["contains"] == "critical"
+        assert t2.goto == "create_tasks"
+        assert t2.otherwise is False
+
+        # Otherwise fallback
+        t3 = transitions[3]
+        assert t3.when is None
+        assert t3.otherwise is True
+        assert t3.goto == "done"
+
+        # Unconditional goto (create_tasks → done)
+        assert pb.nodes["create_tasks"].goto == "done"
+        assert pb.nodes["create_tasks"].transitions == []
+
+    # -- (e) Frontmatter fields preserved ------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_e_frontmatter_fields_preserved(self):
+        """(e) Frontmatter fields (trigger, scope, cooldown) preserved in compiled output."""
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        pb = result.playbook
+        assert pb is not None
+
+        # triggers from frontmatter
+        assert pb.triggers == ["git.commit", "git.push"]
+
+        # scope from frontmatter
+        assert pb.scope == "project"
+
+        # cooldown from frontmatter (mapped to cooldown_seconds)
+        assert pb.cooldown_seconds == 60
+
+        # id from frontmatter
+        assert pb.id == "code-quality-gate"
+
+        # version defaults to 1 (existing_version=0 + 1)
+        assert pb.version == 1
+
+        # source_hash comes from the compiler, not frontmatter
+        expected_hash = PlaybookCompiler._compute_source_hash(HAPPY_PATH_MD)
+        assert pb.source_hash == expected_hash
+
+    @pytest.mark.asyncio
+    async def test_e_frontmatter_overrides_llm_duplicates(self):
+        """(e) Even if the LLM echoes frontmatter fields, they are overwritten."""
+        nodes_with_llm_metadata = {
+            "id": "wrong-id",
+            "triggers": ["wrong.event"],
+            "scope": "system",
+            "source_hash": "0000000000000000",
+            "version": 999,
+            **HAPPY_PATH_LLM_NODES,
+        }
+        provider = _make_provider([_wrap_json(nodes_with_llm_metadata)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        pb = result.playbook
+        assert pb is not None
+        # Frontmatter always wins
+        assert pb.id == "code-quality-gate"
+        assert pb.triggers == ["git.commit", "git.push"]
+        assert pb.scope == "project"
+        assert pb.cooldown_seconds == 60
+        assert pb.version == 1
+        assert pb.source_hash != "0000000000000000"
+
+    # -- (f) Idempotency ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_f_compilation_idempotent(self):
+        """(f) Compiling the same markdown twice produces identical JSON."""
+        # Create two independent providers that return the same response
+        response_text = _wrap_json(HAPPY_PATH_LLM_NODES)
+
+        provider1 = _make_provider([response_text])
+        compiler1 = PlaybookCompiler(provider1)
+        result1 = await compiler1.compile(HAPPY_PATH_MD)
+
+        provider2 = _make_provider([response_text])
+        compiler2 = PlaybookCompiler(provider2)
+        result2 = await compiler2.compile(HAPPY_PATH_MD)
+
+        assert result1.success is True
+        assert result2.success is True
+
+        # Serialize both to dicts and compare
+        dict1 = result1.playbook.to_dict()
+        dict2 = result2.playbook.to_dict()
+        assert dict1 == dict2
+
+        # Also compare source hashes
+        assert result1.source_hash == result2.source_hash
+
+        # And JSON serializations are byte-identical
+        json1 = json.dumps(dict1, sort_keys=True)
+        json2 = json.dumps(dict2, sort_keys=True)
+        assert json1 == json2
+
+    @pytest.mark.asyncio
+    async def test_f_idempotent_with_same_existing_version(self):
+        """(f) Same markdown + same existing_version → identical output."""
+        response_text = _wrap_json(HAPPY_PATH_LLM_NODES)
+
+        provider1 = _make_provider([response_text])
+        compiler1 = PlaybookCompiler(provider1)
+        result1 = await compiler1.compile(HAPPY_PATH_MD, existing_version=3)
+
+        provider2 = _make_provider([response_text])
+        compiler2 = PlaybookCompiler(provider2)
+        result2 = await compiler2.compile(HAPPY_PATH_MD, existing_version=3)
+
+        assert result1.playbook.version == 4
+        assert result2.playbook.version == 4
+        assert result1.playbook.to_dict() == result2.playbook.to_dict()
+
+    # -- (g) Storage at correct path ----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_g_stored_at_correct_system_scope_path(self, tmp_path):
+        """(g) Compiled JSON stored at correct path for system scope."""
+        provider = _make_provider([_wrap_json(VALID_COMPILED_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
+
+        assert result.success is True
+
+        # Store via CompiledPlaybookStore
+        compiled_root = str(tmp_path / "compiled")
+        vm = _FakeVaultManager(compiled_root)
+        store = CompiledPlaybookStore(vm)
+
+        path = store.save(result.playbook, "system")
+
+        # Path mirrors scope: compiled/system/{id}.compiled.json
+        expected = os.path.join(compiled_root, "system", "code-quality-gate.compiled.json")
+        assert path == expected
+        assert os.path.isfile(path)
+
+        # Round-trip: load and verify
+        loaded = store.load("code-quality-gate", "system")
+        assert loaded is not None
+        assert loaded.id == result.playbook.id
+        assert loaded.source_hash == result.playbook.source_hash
+
+    @pytest.mark.asyncio
+    async def test_g_stored_at_correct_project_scope_path(self, tmp_path):
+        """(g) Compiled JSON stored at correct path for project scope."""
+        provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(HAPPY_PATH_MD)
+
+        assert result.success is True
+        assert result.playbook.scope == "project"
+
+        compiled_root = str(tmp_path / "compiled")
+        vm = _FakeVaultManager(compiled_root)
+        store = CompiledPlaybookStore(vm)
+
+        path = store.save(result.playbook, "project", "my-app")
+
+        expected = os.path.join(
+            compiled_root, "projects", "my-app", "code-quality-gate.compiled.json"
+        )
+        assert path == expected
+        assert os.path.isfile(path)
+
+        # Verify the stored JSON content
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["id"] == "code-quality-gate"
+        assert data["scope"] == "project"
+        assert data["triggers"] == ["git.commit", "git.push"]
+        assert data["cooldown_seconds"] == 60
+        assert "scan" in data["nodes"]
+        assert "create_tasks" in data["nodes"]
+        assert "done" in data["nodes"]
+
+    @pytest.mark.asyncio
+    async def test_g_stored_at_correct_agent_type_scope_path(self, tmp_path):
+        """(g) Compiled JSON stored at correct path for agent-type scope."""
+        md = """\
+---
+id: lint-check
+triggers:
+  - task.started
+scope: agent-type:coding
+---
+
+# Lint Check
+
+Run lint on all changed files when a coding agent starts a task.
+"""
+        provider = _make_provider([_wrap_json(VALID_COMPILED_NODES)])
+        compiler = PlaybookCompiler(provider)
+        result = await compiler.compile(md)
+
+        assert result.success is True
+        assert result.playbook.scope == "agent-type:coding"
+
+        compiled_root = str(tmp_path / "compiled")
+        vm = _FakeVaultManager(compiled_root)
+        store = CompiledPlaybookStore(vm)
+
+        path = store.save(result.playbook, "agent_type", "coding")
+
+        expected = os.path.join(compiled_root, "agent-types", "coding", "lint-check.compiled.json")
+        assert path == expected
+        assert os.path.isfile(path)
+
+        loaded = store.load("lint-check", "agent_type", "coding")
+        assert loaded is not None
+        assert loaded.scope == "agent-type:coding"
+        assert loaded.triggers == ["task.started"]
