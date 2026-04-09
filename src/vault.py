@@ -1390,6 +1390,27 @@ def vault_has_content(data_dir: str) -> bool:
     return False
 
 
+def vault_has_profile_markdown(data_dir: str) -> bool:
+    """Check whether the vault already has any agent-type profile markdown files.
+
+    Returns ``True`` if at least one ``vault/agent-types/*/profile.md`` file
+    exists.  This is used at startup to decide whether to auto-migrate DB
+    profiles to vault markdown (roadmap 4.2.4).  If any profile markdown
+    already exists, we skip auto-migration to avoid interfering with
+    user-managed vault content.
+    """
+    agent_types_dir = os.path.join(data_dir, "vault", "agent-types")
+    if not os.path.isdir(agent_types_dir):
+        return False
+
+    for entry in os.listdir(agent_types_dir):
+        profile_md = os.path.join(agent_types_dir, entry, "profile.md")
+        if os.path.isfile(profile_md):
+            return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Consolidated vault migration (spec §6)
 # ---------------------------------------------------------------------------

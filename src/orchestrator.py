@@ -1154,7 +1154,12 @@ class Orchestrator:
         Called during ``initialize()`` after the database is ready and
         ``self.vault_manager`` has been created.
         """
-        from src.vault import has_legacy_data, run_vault_migration, vault_has_content
+        from src.vault import (
+            has_legacy_data,
+            run_vault_migration,
+            vault_has_content,
+            vault_has_profile_markdown,
+        )
 
         # Ensure the vault manager layout is created first (static dirs).
         # This must happen before checking vault_has_content so the
@@ -1198,6 +1203,44 @@ class Orchestrator:
             )
         else:
             logger.debug("No legacy data detected — no auto-migration needed")
+
+        # Auto-migrate DB profiles to vault markdown (roadmap 4.2.4):
+        # If DB profiles exist but no vault profile markdown files exist,
+        # generate the markdown files automatically.  This is idempotent —
+        # profiles that already have vault files are skipped inside the
+        # migration function.  We only trigger when vault has NO profile
+        # markdowns at all, to avoid interfering with user-managed content.
+        if all_profiles and not vault_has_profile_markdown(data_dir):
+            from src.profile_migration import migrate_db_profiles_to_vault
+
+            logger.info(
+                "Profile auto-migration triggered: %d DB profile(s) found, "
+                "no vault markdown files — generating vault profile markdown",
+                len(all_profiles),
+            )
+            try:
+                profile_report = await migrate_db_profiles_to_vault(self.db, data_dir, verify=True)
+                logger.info(
+                    "Profile auto-migration complete: %d written, %d skipped, %d errors "
+                    "(of %d total)",
+                    profile_report.written,
+                    profile_report.skipped,
+                    profile_report.errors,
+                    profile_report.total,
+                )
+                if profile_report.errors > 0:
+                    logger.warning(
+                        "Profile auto-migration had %d error(s) — "
+                        "run 'migrate_profiles' command to retry",
+                        profile_report.errors,
+                    )
+            except Exception:
+                logger.exception(
+                    "Profile auto-migration failed — "
+                    "run 'migrate_profiles' command manually to retry"
+                )
+        elif all_profiles:
+            logger.debug("Vault already has profile markdown — skipping profile auto-migration")
 
         # Per-profile directories (vault/agent-types/{profile_id}/)
         for profile in all_profiles:
