@@ -1602,7 +1602,10 @@ class MemoryV2Plugin(InternalPlugin):
         """Handle related dedup (similarity 0.8–0.95) — merge via LLM.
 
         Invokes the LLM to combine old + new content, then updates the
-        existing entry with the merged result.
+        existing entry with the merged result.  If the merged content
+        exceeds ~200 tokens, a summary is generated per spec §9 —
+        the summary is embedded/indexed and the full merged content
+        is preserved as ``original``.
         """
         chunk_hash = existing.get("chunk_hash", "")
         old_content = existing.get("content", "")
@@ -1626,10 +1629,18 @@ class MemoryV2Plugin(InternalPlugin):
                 scope=scope,
             )
 
+        # Generate summary for long merged content (spec §9)
+        summary: str | None = None
+        original: str | None = None
+        if len(merged_content) > self._SUMMARY_CHAR_THRESHOLD:
+            summary = await self._generate_summary(merged_content)
+            original = merged_content
+
         result = await self._service.update_document_content(
             project_id,
             chunk_hash,
-            merged_content,
+            summary or merged_content,
+            original=original,
             tags=merged_tags,
             scope=scope,
         )
@@ -1639,6 +1650,7 @@ class MemoryV2Plugin(InternalPlugin):
             "project_id": project_id,
             "similarity_score": round(similarity, 4),
             "merged_with": chunk_hash,
+            "has_summary": summary is not None,
             **result,
         }
 

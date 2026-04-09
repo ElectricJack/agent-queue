@@ -1071,6 +1071,7 @@ class MemoryV2Service:
         filepath: Path,
         *,
         content: str | None = None,
+        original: str | None = None,
         tags: list[str] | None = None,
         source_task: str | None = None,
     ) -> None:
@@ -1078,7 +1079,9 @@ class MemoryV2Service:
 
         Only modifies the ``updated`` timestamp and optionally appends a
         ``source_task`` to the frontmatter.  If *content* is provided the
-        file body is replaced.
+        file body is replaced.  If *original* is also provided, the body
+        includes both the summary content and the original text under an
+        ``## Original`` heading (per spec §9).
         """
         import json as _json
 
@@ -1121,7 +1124,11 @@ class MemoryV2Service:
         if content:
             parts = text.split("---", 2)
             if len(parts) >= 3:
-                text = f"---{parts[1]}---\n\n{content}\n"
+                body_parts = [content]
+                if original and original != content:
+                    body_parts.append("\n\n## Original\n")
+                    body_parts.append(original)
+                text = f"---{parts[1]}---\n\n" + "\n".join(body_parts) + "\n"
 
         filepath.write_text(text, encoding="utf-8")
 
@@ -1365,7 +1372,7 @@ class MemoryV2Service:
         if source:
             vault_file = Path(source)
             if vault_file.exists():
-                self._update_vault_file(vault_file, content=content, tags=tags)
+                self._update_vault_file(vault_file, content=content, original=original, tags=tags)
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)

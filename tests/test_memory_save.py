@@ -691,6 +691,207 @@ class TestPluginMemorySave:
         assert "error" in result
         assert "Save failed" in result["error"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_generates_summary_for_long_merged_content(self, wired_plugin, mock_router):
+        """When merged content exceeds ~200 tokens, a summary should be generated.
+
+        Per spec §9: summary is embedded/indexed; original is preserved.
+        """
+        # Return a related match (0.8-0.95 similarity) to trigger merge
+        mock_router.search = AsyncMock(
+            return_value=[
+                {
+                    "content": "Original short insight about caching",
+                    "score": 0.88,
+                    "chunk_hash": "existing_hash",
+                    "entry_type": "document",
+                    "topic": "caching",
+                    "tags": '["insight", "caching"]',
+                    "_scope": "project",
+                    "_scope_id": "test",
+                }
+            ]
+        )
+
+        # Make LLM return different things for merge vs summary calls
+        call_count = {"n": 0}
+        long_merged = "M" * 900  # Exceeds _SUMMARY_CHAR_THRESHOLD
+
+        async def mock_llm(prompt, **kwargs):
+            call_count["n"] += 1
+            if "merging two related" in prompt.lower():
+                return long_merged  # Merge produces long content
+            elif "summarize" in prompt.lower():
+                return "Concise summary of merged caching insight"
+            return "topic-result"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Detailed new insight about caching strategies and invalidation",
+                "tags": ["insight", "performance"],
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        assert result["has_summary"] is True
+
+        # Verify summary LLM call was made (in addition to merge call)
+        summary_calls = [
+            c for c in wired_plugin._ctx.invoke_llm.call_args_list if "summarize" in c[0][0].lower()
+        ]
+        assert len(summary_calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_no_summary_for_short_merged_content(self, wired_plugin, mock_router):
+        """When merged content is short (< ~200 tokens), no summary is generated."""
+        mock_router.search = AsyncMock(
+            return_value=[
+                {
+                    "content": "Short insight",
+                    "score": 0.88,
+                    "chunk_hash": "existing_hash",
+                    "entry_type": "document",
+                    "tags": '["insight"]',
+                }
+            ]
+        )
+
+        async def mock_llm(prompt, **kwargs):
+            if "merging two related" in prompt.lower():
+                return "Short merged result"  # Under threshold
+            return "topic-result"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Short new insight",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        assert result["has_summary"] is False
+
+        # No summary LLM call (only merge + possibly topic)
+        summary_calls = [
+            c for c in wired_plugin._ctx.invoke_llm.call_args_list if "summarize" in c[0][0].lower()
+        ]
+        assert len(summary_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Service-layer: vault file update with original
+# ---------------------------------------------------------------------------
+
+
+class TestVaultFileOriginal:
+    """Test vault file handling of summary + original content."""
+
+    @pytest.fixture
+    def service_with_tmpdir(self, mock_embedder, mock_router, tmp_data_dir):
+        svc = MemoryV2Service(
+            milvus_uri="/tmp/test.db",
+            embedding_provider="openai",
+            data_dir=tmp_data_dir,
+        )
+        svc._embedder = mock_embedder
+        svc._router = mock_router
+        svc._initialized = True
+        return svc
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_update_vault_file_with_original(self, service_with_tmpdir, tmp_data_dir):
+        """When content is updated with an original, the vault file should include
+        both the summary and the original under ## Original."""
+        vault_dir = Path(tmp_data_dir) / "vault" / "projects" / "test" / "memory" / "insights"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create initial vault file
+        filepath = vault_dir / "test-insight.md"
+        filepath.write_text(
+            "---\n"
+            'tags: ["insight"]\n'
+            "created: 2026-04-01\n"
+            "updated: 2026-04-01\n"
+            "---\n\n"
+            "Original short insight\n",
+            encoding="utf-8",
+        )
+
+        # Update with summary + original (simulating merge with long content)
+        service_with_tmpdir._update_vault_file(
+            filepath,
+            content="Concise summary of merged insight",
+            original="This is the full merged content that is much longer "
+            "and contains all the details that were in both the old and new memories. "
+            "It includes information about caching strategies, invalidation patterns, "
+            "and performance considerations.",
+        )
+
+        text = filepath.read_text(encoding="utf-8")
+        assert "Concise summary of merged insight" in text
+        assert "## Original" in text
+        assert "caching strategies" in text
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_update_vault_file_no_original_when_same(self, service_with_tmpdir, tmp_data_dir):
+        """When original equals content, no ## Original section is added."""
+        vault_dir = Path(tmp_data_dir) / "vault" / "projects" / "test" / "memory" / "insights"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = vault_dir / "test-insight.md"
+        filepath.write_text(
+            "---\n"
+            'tags: ["insight"]\n'
+            "created: 2026-04-01\n"
+            "updated: 2026-04-01\n"
+            "---\n\n"
+            "Old content\n",
+            encoding="utf-8",
+        )
+
+        service_with_tmpdir._update_vault_file(
+            filepath,
+            content="Updated short content",
+            original="Updated short content",  # Same as content
+        )
+
+        text = filepath.read_text(encoding="utf-8")
+        assert "Updated short content" in text
+        assert "## Original" not in text
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_update_vault_file_no_original_param(self, service_with_tmpdir, tmp_data_dir):
+        """When original is None, no ## Original section is added."""
+        vault_dir = Path(tmp_data_dir) / "vault" / "projects" / "test" / "memory" / "insights"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = vault_dir / "test-insight.md"
+        filepath.write_text(
+            "---\n"
+            'tags: ["insight"]\n'
+            "created: 2026-04-01\n"
+            "updated: 2026-04-01\n"
+            "---\n\n"
+            "Old content\n",
+            encoding="utf-8",
+        )
+
+        service_with_tmpdir._update_vault_file(
+            filepath,
+            content="Short merged content",
+        )
+
+        text = filepath.read_text(encoding="utf-8")
+        assert "Short merged content" in text
+        assert "## Original" not in text
+
 
 # ---------------------------------------------------------------------------
 # Tool definition
