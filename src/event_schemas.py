@@ -278,6 +278,25 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "profile_id", "source_path", "errors", "warnings"],
     },
+    # -- Playbook run lifecycle notifications --
+    "notify.playbook_run_completed": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "final_context",
+            "tokens_used",
+            "duration_seconds",
+        ],
+    },
+    "notify.playbook_run_failed": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id", "failed_at_node"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "error",
+            "tokens_used",
+            "duration_seconds",
+        ],
+    },
     # -- Generic text notification --
     "notify.text": {
         "required": [*_NOTIFY_BASE_FIELDS],
@@ -326,11 +345,11 @@ _GIT_SCHEMAS: dict[str, EventSchema] = {
 _PLAYBOOK_SCHEMAS: dict[str, EventSchema] = {
     "playbook.run.completed": {
         "required": ["playbook_id", "run_id"],
-        "optional": ["final_context"],
+        "optional": ["final_context", "project_id", "tokens_used", "duration_seconds"],
     },
     "playbook.run.failed": {
         "required": ["playbook_id", "run_id", "failed_at_node"],
-        "optional": ["error"],
+        "optional": ["error", "project_id", "tokens_used", "duration_seconds"],
     },
 }
 
