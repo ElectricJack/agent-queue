@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -2319,3 +2320,117 @@ def test_set_kv_deterministic_hash(store: MilvusStore):
     # Different key should have a different hash
     r3 = store.set_kv("otherkey", "val3", namespace="myns")
     assert r3["chunk_hash"] != expected_hash
+
+
+# ---- Roadmap 2.1.15 — KV insert/query round-trip tests (a)-(g) -----------
+#
+# The following tests explicitly cover every roadmap case. Cases (a), (c), (d),
+# and (f) are already exercised by the tests above; these complement the suite
+# with the remaining gaps: (b) multi-key independent query, (e) scalar-only
+# verification via mock, and (g) complex string values.
+
+
+def test_kv_roundtrip_multiple_keys_query_independently(store: MilvusStore):
+    """Roadmap 2.1.15(b): Insert multiple KV pairs with different keys and
+    query each independently via get_kv."""
+    pairs = {
+        "db_host": "localhost",
+        "db_port": 5432,
+        "db_name": "myapp",
+        "log_level": "debug",
+        "feature_flags": {"dark_mode": True, "beta": False},
+    }
+    for key, value in pairs.items():
+        store.set_kv(key, value, namespace="config")
+
+    # Query each independently and verify round-trip fidelity
+    for key, expected_value in pairs.items():
+        result = store.get_kv(key, namespace="config")
+        assert result is not None, f"get_kv returned None for key={key!r}"
+        assert result["kv_key"] == key
+        assert json.loads(result["kv_value"]) == expected_value
+
+    # Verify all keys exist
+    all_keys = store.list_kv_keys(namespace="config")
+    assert sorted(all_keys) == sorted(pairs.keys())
+
+
+def test_kv_scalar_only_no_vector_search(store: MilvusStore):
+    """Roadmap 2.1.15(e): KV operations use scalar-only path — no vector
+    search (hybrid_search) is invoked. Verified via mock."""
+    # Insert a KV pair first
+    store.set_kv("colour", "blue", namespace="prefs")
+
+    # Patch the Milvus client's hybrid_search and the store's search method to
+    # detect if vector search is ever called during KV operations.
+    with (
+        patch.object(store._client, "hybrid_search", wraps=store._client.hybrid_search)
+            as mock_hybrid,
+        patch.object(store, "search", wraps=store.search) as mock_search,
+    ):
+        # get_kv — scalar primary-key lookup
+        result = store.get_kv("colour", namespace="prefs")
+        assert result is not None
+        assert json.loads(result["kv_value"]) == "blue"
+
+        # list_kv — scalar filter query
+        entries = store.list_kv(namespace="prefs")
+        assert len(entries) == 1
+
+        # list_kv_keys — scalar filter query
+        keys = store.list_kv_keys(namespace="prefs")
+        assert keys == ["colour"]
+
+        # delete_kv — scalar lookup + delete
+        store.set_kv("temp", "discard", namespace="prefs")
+        store.delete_kv("temp", namespace="prefs")
+
+        # None of the above should have triggered vector search
+        mock_hybrid.assert_not_called()
+        mock_search.assert_not_called()
+
+
+def test_kv_complex_string_values(store: MilvusStore):
+    """Roadmap 2.1.15(g): KV values can store complex strings — multi-line,
+    unicode, and special characters survive the round-trip."""
+
+    # Multi-line string with indentation
+    multiline = "line one\nline two\n  indented line\n\ttab-indented\n"
+    store.set_kv("multiline", multiline, namespace="strings")
+    r = store.get_kv("multiline", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == multiline
+
+    # Unicode: CJK, emoji, combining characters, RTL
+    unicode_str = "日本語テスト 🚀🎉 café résumé naïve Ω≈ç√∫ مرحبا"
+    store.set_kv("unicode", unicode_str, namespace="strings")
+    r = store.get_kv("unicode", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == unicode_str
+
+    # Special / control characters: quotes, backslashes, null-like
+    special = 'he said "hello" and she said \'hi\' \\ /path/to/file \t\nnewline'
+    store.set_kv("special", special, namespace="strings")
+    r = store.get_kv("special", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == special
+
+    # Empty string
+    store.set_kv("empty", "", namespace="strings")
+    r = store.get_kv("empty", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == ""
+
+    # Very long string (1 KB)
+    long_str = "x" * 1024
+    store.set_kv("long", long_str, namespace="strings")
+    r = store.get_kv("long", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == long_str
+
+    # JSON-like string (must survive double-encoding)
+    json_like = '{"nested": "json", "count": 42}'
+    store.set_kv("json_like", json_like, namespace="strings")
+    r = store.get_kv("json_like", namespace="strings")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == json_like
