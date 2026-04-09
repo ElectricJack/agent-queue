@@ -1384,7 +1384,7 @@ class Orchestrator:
             # 2. Promote PAUSED tasks whose backoff timer has expired → READY.
             await self._resume_paused_tasks()
 
-            # 3. Promote DEFINED tasks whose dependencies are all met → READY.
+            # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
             #    Runs after step 1 so freshly-completed approvals can unblock
             #    dependents within the same cycle.
             await self._check_defined_tasks()
@@ -1627,12 +1627,16 @@ class Orchestrator:
                 )
 
     async def _check_defined_tasks(self) -> None:
-        """Promote DEFINED tasks to READY when all dependencies are satisfied.
+        """Promote DEFINED/BLOCKED tasks to READY when all dependencies are satisfied.
 
         Scans all DEFINED tasks and checks their dependency list:
         - Tasks with no dependencies are immediately promoted to READY.
         - Tasks with dependencies are promoted only when every upstream
           dependency has reached COMPLETED status.
+
+        Also scans BLOCKED tasks that have dependencies — if all deps are now
+        COMPLETED, the task is promoted to READY (e.g. a task that was blocked
+        on a dependency chain and the upstream has since completed).
 
         Special handling for plan subtasks:
         - Skipped if the parent plan is still in AWAITING_PLAN_APPROVAL.
@@ -1644,7 +1648,10 @@ class Orchestrator:
         PRs can unblock their dependents in the same cycle.
         """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
-        for task in defined:
+        # Also check BLOCKED tasks — their dependencies may have been
+        # satisfied since they were blocked, allowing them to proceed.
+        blocked = await self.db.list_tasks(status=TaskStatus.BLOCKED)
+        for task in [*defined, *blocked]:
             # Plan subtask special handling: the parent plan transitions to
             # IN_PROGRESS (not COMPLETED) when approved, so standard
             # are_dependencies_met() would block forever.  We treat the
@@ -1678,8 +1685,13 @@ class Orchestrator:
 
             deps = await self.db.get_dependencies(task.id)
             if not deps:
-                # No dependencies — promote to READY
-                await self.db.transition_task(task.id, TaskStatus.READY, context="deps_met_no_deps")
+                if task.status == TaskStatus.DEFINED:
+                    # No dependencies — promote DEFINED to READY.
+                    # (BLOCKED tasks with no deps stay blocked — they were
+                    # blocked for other reasons like verification failure.)
+                    await self.db.transition_task(
+                        task.id, TaskStatus.READY, context="deps_met_no_deps"
+                    )
             else:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
@@ -1711,7 +1723,7 @@ class Orchestrator:
                     task_id=task.id,
                     payload=f"All {len(subtasks)} subtask(s) completed",
                 )
-                await self._notify_channel(
+                await self._emit_text_notify(
                     f"**Plan Completed:** `{task.id}` — {task.title} "
                     f"(all {len(subtasks)} subtask(s) finished).",
                     project_id=task.project_id,
@@ -1843,7 +1855,7 @@ class Orchestrator:
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
             embed = format_failed_blocked_report_embed(proj_failed, proj_blocked)
-            await self._notify_channel(msg, project_id=project_id, embed=embed)
+            await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:
         """Automatically archive terminal tasks older than the configured threshold.
@@ -3357,14 +3369,46 @@ class Orchestrator:
                             cwd=workspace,
                         )
                         if behind.strip() != "0":
-                            failures.append(
-                                (
-                                    f"Local `{default_branch}` is behind "
-                                    f"`origin/{default_branch}`. "
-                                    f"Please `git pull origin {default_branch}`.",
-                                    False,  # unfixable — external changes
+                            # Auto-pull when the agent made no changes (no-op task).
+                            # Being behind origin is not the agent's fault — other
+                            # agents may have pushed while this task ran.
+                            if not has_uncommitted:
+                                try:
+                                    await self.git._arun(
+                                        ["pull", "--ff-only", "origin", default_branch],
+                                        cwd=workspace,
+                                    )
+                                    logger.info(
+                                        "Task %s: auto-pulled %s commit(s) on '%s' "
+                                        "(no-change task was behind origin)",
+                                        task.id,
+                                        behind.strip(),
+                                        default_branch,
+                                    )
+                                except Exception as pull_err:
+                                    logger.warning(
+                                        "Task %s: auto-pull failed: %s",
+                                        task.id,
+                                        pull_err,
+                                    )
+                                    failures.append(
+                                        (
+                                            f"Local `{default_branch}` is behind "
+                                            f"`origin/{default_branch}` and auto-pull "
+                                            f"failed. Please `git pull origin "
+                                            f"{default_branch}`.",
+                                            False,  # unfixable
+                                        )
+                                    )
+                            else:
+                                failures.append(
+                                    (
+                                        f"Local `{default_branch}` is behind "
+                                        f"`origin/{default_branch}`. "
+                                        f"Please `git pull origin {default_branch}`.",
+                                        False,  # unfixable — external changes
+                                    )
                                 )
-                            )
                     except GitError:
                         pass
                     try:
