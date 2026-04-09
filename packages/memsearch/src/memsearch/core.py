@@ -263,6 +263,9 @@ class MemSearch:
                 escaped = _escape_filter_value(prefix)
                 base_filter = f'source like "{escaped}%"'
             results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=base_filter)
+            # Mark results so callers can distinguish fallback from direct matches
+            for r in results:
+                r["topic_fallback"] = True
 
         if self._reranker_model and results:
             from .reranker import rerank
