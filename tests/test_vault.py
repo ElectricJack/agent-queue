@@ -7,7 +7,11 @@ from __future__ import annotations
 import time
 
 from src.vault import (
+    PLAYBOOK_TEMPLATE,
+    PROFILE_TEMPLATE,
+    _STARTER_KNOWLEDGE,
     copy_project_memory_to_vault,
+    ensure_default_templates,
     ensure_vault_layout,
     ensure_vault_profile_dirs,
     ensure_vault_project_dirs,
@@ -738,3 +742,176 @@ def test_migrate_rule_files_logs_details(tmp_path):
     details_text = "\n".join(result["details"])
     assert "MOVE" in details_text
     assert "SKIP" in details_text
+
+
+# ---------------------------------------------------------------------------
+# Default template tests (roadmap §4.2.2)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_default_templates_creates_all_files(tmp_path):
+    """ensure_default_templates creates profile, playbook, and starter knowledge files."""
+    result = ensure_default_templates(str(tmp_path))
+
+    # Profile and playbook templates
+    assert (tmp_path / "vault" / "templates" / "profile-template.md").is_file()
+    assert (tmp_path / "vault" / "templates" / "playbook-template.md").is_file()
+
+    # Starter knowledge packs
+    for agent_type, files in _STARTER_KNOWLEDGE.items():
+        for filename in files:
+            path = tmp_path / "vault" / "templates" / "knowledge" / agent_type / filename
+            assert path.is_file(), f"Missing starter knowledge: {path}"
+
+    # All files should be in the created list
+    assert "profile-template.md" in result["created"]
+    assert "playbook-template.md" in result["created"]
+    assert len(result["skipped"]) == 0
+
+
+def test_ensure_default_templates_idempotent(tmp_path):
+    """Calling ensure_default_templates twice does not overwrite existing files."""
+    ensure_default_templates(str(tmp_path))
+
+    # Modify a template to verify it's not overwritten
+    profile_path = tmp_path / "vault" / "templates" / "profile-template.md"
+    custom_content = "# My Custom Profile Template\n"
+    profile_path.write_text(custom_content)
+
+    result = ensure_default_templates(str(tmp_path))
+
+    # The customized file should be preserved
+    assert profile_path.read_text() == custom_content
+    assert "profile-template.md" in result["skipped"]
+
+
+def test_ensure_default_templates_partial_existing(tmp_path):
+    """Only missing templates are created; existing ones are skipped."""
+    templates_dir = tmp_path / "vault" / "templates"
+    templates_dir.mkdir(parents=True)
+
+    # Pre-create just the profile template
+    profile_path = templates_dir / "profile-template.md"
+    profile_path.write_text("# existing\n")
+
+    result = ensure_default_templates(str(tmp_path))
+
+    # Profile should be skipped, playbook should be created
+    assert "profile-template.md" in result["skipped"]
+    assert "playbook-template.md" in result["created"]
+    assert profile_path.read_text() == "# existing\n"
+    assert (templates_dir / "playbook-template.md").is_file()
+
+
+def test_ensure_vault_layout_creates_templates(tmp_path):
+    """ensure_vault_layout creates default templates as part of the layout."""
+    ensure_vault_layout(str(tmp_path))
+
+    assert (tmp_path / "vault" / "templates" / "profile-template.md").is_file()
+    assert (tmp_path / "vault" / "templates" / "playbook-template.md").is_file()
+    # Starter knowledge packs are also created
+    assert (tmp_path / "vault" / "templates" / "knowledge" / "coding").is_dir()
+    assert (tmp_path / "vault" / "templates" / "knowledge" / "code-review").is_dir()
+    assert (tmp_path / "vault" / "templates" / "knowledge" / "qa").is_dir()
+
+
+def test_ensure_vault_layout_preserves_custom_templates(tmp_path):
+    """ensure_vault_layout does not overwrite user-customised templates."""
+    # First call creates defaults
+    ensure_vault_layout(str(tmp_path))
+
+    # User customises a template
+    profile_path = tmp_path / "vault" / "templates" / "profile-template.md"
+    custom = "# User's custom template\n"
+    profile_path.write_text(custom)
+
+    # Second call should not overwrite
+    ensure_vault_layout(str(tmp_path))
+    assert profile_path.read_text() == custom
+
+
+def test_profile_template_content_is_valid():
+    """The default profile template parses without errors."""
+    from src.profile_parser import parse_profile
+
+    result = parse_profile(PROFILE_TEMPLATE)
+    assert result.is_valid, f"Profile template has parse errors: {result.errors}"
+    assert result.frontmatter.id == "my-agent"
+    assert result.frontmatter.name == "My Agent"
+    assert "profile" in result.frontmatter.tags
+    assert "agent-type" in result.frontmatter.tags
+
+
+def test_profile_template_has_all_sections():
+    """The default profile template includes all documented sections."""
+    from src.profile_parser import parse_profile
+
+    result = parse_profile(PROFILE_TEMPLATE)
+    assert result.is_valid
+
+    # Structured sections
+    assert "config" in result.sections
+    assert "tools" in result.sections
+    assert "mcp servers" in result.sections
+    assert "install" in result.sections
+
+    # Prompt sections
+    assert "role" in result.sections
+    assert "rules" in result.sections
+    assert "reflection" in result.sections
+
+
+def test_playbook_template_has_frontmatter():
+    """The default playbook template has valid YAML frontmatter with id and triggers."""
+    import yaml
+
+    # Extract frontmatter
+    lines = PLAYBOOK_TEMPLATE.strip().splitlines()
+    assert lines[0] == "---"
+    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+    fm_text = "\n".join(lines[1:end_idx])
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["id"] == "my-playbook"
+    assert isinstance(fm["triggers"], list)
+    assert len(fm["triggers"]) > 0
+    assert "scope" in fm
+
+
+def test_starter_knowledge_files_have_frontmatter(tmp_path):
+    """All starter knowledge files have valid YAML frontmatter with tags."""
+    import yaml
+
+    ensure_default_templates(str(tmp_path))
+
+    for agent_type, files in _STARTER_KNOWLEDGE.items():
+        for filename in files:
+            path = tmp_path / "vault" / "templates" / "knowledge" / agent_type / filename
+            content = path.read_text()
+
+            # Must start with YAML frontmatter
+            assert content.startswith("---"), f"{agent_type}/{filename} missing frontmatter"
+            # Extract and parse frontmatter
+            lines = content.strip().splitlines()
+            end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+            fm_text = "\n".join(lines[1:end_idx])
+            fm = yaml.safe_load(fm_text)
+            assert "tags" in fm, f"{agent_type}/{filename} missing tags"
+            assert "starter" in fm["tags"], f"{agent_type}/{filename} missing 'starter' tag"
+
+
+def test_starter_knowledge_covers_expected_types():
+    """Starter knowledge packs exist for coding, code-review, and qa agent types."""
+    assert "coding" in _STARTER_KNOWLEDGE
+    assert "code-review" in _STARTER_KNOWLEDGE
+    assert "qa" in _STARTER_KNOWLEDGE
+
+    # Coding has two files per profiles spec §4
+    assert "common-pitfalls.md" in _STARTER_KNOWLEDGE["coding"]
+    assert "git-conventions.md" in _STARTER_KNOWLEDGE["coding"]
+
+    # Code-review has review checklist
+    assert "review-checklist.md" in _STARTER_KNOWLEDGE["code-review"]
+
+    # QA has testing patterns
+    assert "testing-patterns.md" in _STARTER_KNOWLEDGE["qa"]

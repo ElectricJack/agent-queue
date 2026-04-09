@@ -236,6 +236,236 @@ def migrate_obsidian_config(data_dir: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Default template content (vault spec §2, profiles spec §2 & §4)
+# ---------------------------------------------------------------------------
+
+PROFILE_TEMPLATE = """\
+---
+id: my-agent
+name: My Agent
+tags: [profile, agent-type]
+---
+
+# My Agent
+
+## Role
+You are a software engineering agent. Describe your agent's role, expertise,
+and behavioral expectations here. This section is injected into the agent's
+system prompt as-is.
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- List behavioral rules for this agent type
+- These are injected into the agent's system prompt
+- Example: Always run existing tests before committing
+- Example: Never commit secrets, .env files, or credentials
+
+## Reflection
+After completing a task, consider:
+- Did I encounter any surprising behavior worth remembering?
+- Did I resolve an error that might recur? If so, save the pattern.
+- Is there a convention in this project I should note for next time?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
+PLAYBOOK_TEMPLATE = """\
+---
+id: my-playbook
+triggers:
+  - task.completed
+scope: system
+enabled: true
+---
+
+# My Playbook
+
+Describe what this playbook does in plain English. Playbooks are directed
+graphs of LLM decision points — each step is a focused prompt, and the
+LLM decides which path to take based on accumulated context.
+
+Write your process as you would explain it to a colleague. The system
+compiles this natural language into an executable workflow graph.
+
+## Example Flow
+
+On receiving the trigger event, first analyze the event data to understand
+what happened.
+
+If the analysis reveals issues that need attention, create follow-up tasks
+with appropriate priority.
+
+If everything looks good, log the outcome to project memory and finish.
+"""
+
+# Starter knowledge packs (profiles spec §4)
+_STARTER_KNOWLEDGE: dict[str, dict[str, str]] = {
+    "coding": {
+        "common-pitfalls.md": """\
+---
+tags: [starter, coding, pitfalls]
+---
+
+# Common Pitfalls
+
+Known patterns that cause problems in software engineering tasks.
+This file is seeded from a starter template — update it as you
+accumulate real experience.
+
+## Async / Sync Mismatches
+- Never use synchronous I/O (e.g. `subprocess.run()`, `open().read()`)
+  in async code paths — it blocks the event loop
+- When calling async APIs from sync contexts, use an event loop bridge
+  (not `asyncio.run()` inside an existing loop)
+
+## Import Cycles
+- Circular imports often manifest as `AttributeError` at runtime, not
+  at import time
+- Use local imports inside functions to break cycles when needed
+
+## Silent Failures
+- Bare `except: pass` swallows errors that could help debug later issues
+- Always log caught exceptions, even if you choose not to re-raise
+
+## Type Mismatches
+- JSON `null` becomes Python `None` — check before accessing attributes
+- Dict `.get()` returns `None` by default, which may not be falsy enough
+  (e.g. `0` and `""` are falsy but valid values)
+""",
+        "git-conventions.md": """\
+---
+tags: [starter, coding, git]
+---
+
+# Git Conventions
+
+Guidelines for clean, reviewable version control. This file is seeded
+from a starter template — update it as you learn project-specific
+conventions.
+
+## Commit Messages
+- Write concise messages that explain *why*, not just *what*
+- Use imperative mood: "Add rate limiting" not "Added rate limiting"
+- Keep the first line under 72 characters
+
+## Commit Scope
+- Prefer small, focused commits over large ones
+- Each commit should be a single logical change that passes tests
+- Don't mix refactoring with feature changes in the same commit
+
+## Branch Hygiene
+- Work on feature branches, not directly on main/master
+- Rebase or merge from the base branch before creating a PR
+- Delete branches after merging
+
+## What Not to Commit
+- Never commit secrets, API keys, .env files, or credentials
+- Avoid committing generated files, build artifacts, or large binaries
+- Keep `.gitignore` up to date
+""",
+    },
+    "code-review": {
+        "review-checklist.md": """\
+---
+tags: [starter, code-review, checklist]
+---
+
+# Review Checklist
+
+Structured checklist for code review tasks. This file is seeded from
+a starter template — update it as you refine your review process.
+
+## Correctness
+- Does the code do what the PR description claims?
+- Are edge cases handled (empty inputs, nulls, boundary values)?
+- Are error paths handled gracefully (no silent swallowing)?
+
+## Security
+- No hardcoded secrets, tokens, or credentials?
+- Input validation present for external data?
+- SQL queries parameterized (no string interpolation)?
+
+## Performance
+- No unnecessary database queries in loops (N+1 problem)?
+- Large collections handled with pagination or streaming?
+- Async operations used where appropriate?
+
+## Maintainability
+- Code is readable without requiring author explanation?
+- Functions and variables have clear, descriptive names?
+- No dead code, commented-out blocks, or TODO items left behind?
+
+## Testing
+- New functionality has corresponding tests?
+- Tests cover both happy path and error cases?
+- Existing tests still pass (no regressions)?
+""",
+    },
+    "qa": {
+        "testing-patterns.md": """\
+---
+tags: [starter, qa, testing]
+---
+
+# Testing Patterns
+
+Guidelines for effective testing strategies. This file is seeded from
+a starter template — update it as you discover project-specific patterns.
+
+## Test Pyramid
+- Prefer unit tests for pure logic and data transformations
+- Use integration tests for critical paths (API endpoints, DB queries)
+- Reserve end-to-end tests for key user workflows only
+
+## Test Design
+- Each test should verify one behavior (single assertion principle)
+- Use descriptive test names that explain the scenario and expected outcome
+- Arrange-Act-Assert: set up state, perform action, check result
+
+## Fixtures and Mocking
+- Use fixtures for shared setup (database connections, temp directories)
+- Mock external services (APIs, file systems) to avoid flaky tests
+- Prefer dependency injection over monkey-patching for testability
+
+## Common Pitfalls
+- Tests that depend on execution order are fragile — each test should
+  be independent
+- Tests that sleep for fixed durations are slow and flaky — use polling
+  or event-based waits
+- Over-mocking hides bugs — mock boundaries, not internals
+""",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Static vault subdirectories (always created at startup)
 # ---------------------------------------------------------------------------
 
@@ -272,6 +502,10 @@ def ensure_vault_layout(data_dir: str) -> None:
     - ``vault/templates/``
     - ``vault/.obsidian/``
 
+    Also writes default template files (profile, playbook, starter knowledge
+    packs) into ``vault/templates/`` if they don't already exist.  See
+    :func:`ensure_default_templates` for details.
+
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
     """
@@ -279,7 +513,70 @@ def ensure_vault_layout(data_dir: str) -> None:
         path = os.path.join(data_dir, subdir)
         os.makedirs(path, exist_ok=True)
 
+    ensure_default_templates(data_dir)
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
+
+
+def ensure_default_templates(data_dir: str) -> dict:
+    """Write default template files into ``vault/templates/`` if they don't exist.
+
+    Creates the following template files (roadmap §4.2.2):
+
+    - ``vault/templates/profile-template.md`` — starter template for new
+      agent profiles following the hybrid markdown format (profiles spec §2).
+    - ``vault/templates/playbook-template.md`` — starter template for new
+      playbooks (playbook spec §4).
+    - ``vault/templates/knowledge/{type}/*.md`` — starter knowledge packs
+      for common agent types: ``coding``, ``code-review``, ``qa``
+      (profiles spec §4).
+
+    The operation is **idempotent**: existing files are never overwritten.
+    This allows users to customise templates without losing their changes
+    on the next startup.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` (list of relative paths written) and
+        ``skipped`` (list of relative paths that already existed).
+    """
+    templates_dir = os.path.join(data_dir, "vault", "templates")
+    os.makedirs(templates_dir, exist_ok=True)
+
+    result: dict = {"created": [], "skipped": []}
+
+    def _write_if_missing(rel_path: str, content: str) -> None:
+        """Write *content* to *rel_path* under templates_dir if it doesn't exist."""
+        full_path = os.path.join(templates_dir, rel_path)
+        if os.path.exists(full_path):
+            result["skipped"].append(rel_path)
+            logger.debug("Template already exists, skipping: %s", rel_path)
+            return
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        result["created"].append(rel_path)
+        logger.debug("Created default template: %s", rel_path)
+
+    # Profile and playbook templates
+    _write_if_missing("profile-template.md", PROFILE_TEMPLATE)
+    _write_if_missing("playbook-template.md", PLAYBOOK_TEMPLATE)
+
+    # Starter knowledge packs (profiles spec §4)
+    for agent_type, files in _STARTER_KNOWLEDGE.items():
+        for filename, content in files.items():
+            rel_path = os.path.join("knowledge", agent_type, filename)
+            _write_if_missing(rel_path, content)
+
+    if result["created"]:
+        logger.info(
+            "Created %d default template(s) in %s",
+            len(result["created"]),
+            templates_dir,
+        )
+
+    return result
 
 
 def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
