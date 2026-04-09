@@ -228,7 +228,7 @@ def test_upsert_defaults_applied(store: MilvusStore):
         "end_line": 5,
     }
     store.upsert([chunk])
-    results = store.query(filter_expr='chunk_hash == "defaults_test"')
+    results = store.query(filter_expr='chunk_hash == "defaults_test"', full=True)
     assert len(results) == 1
     r = results[0]
     assert r["entry_type"] == "document"
@@ -1910,3 +1910,133 @@ def test_same_second_updates_preserve_history(store: MilvusStore):
     assert len(closed) == 1
     assert len(open_entries) == 1
     assert open_entries[0]["kv_value"] == '"second"'
+
+
+# ---- Summary + Original pattern (spec §9) -----------------------------------
+
+
+def test_search_excludes_original_by_default(store: MilvusStore):
+    """Default search returns summary (content) but not original."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Summary of the document",
+                "original": "This is the full original text of the document with all the details",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "orig1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 10,
+            }
+        ]
+    )
+    results = store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    assert len(results) >= 1
+    assert results[0]["content"] == "Summary of the document"
+    assert "original" not in results[0]
+
+
+def test_search_includes_original_when_full(store: MilvusStore):
+    """search(full=True) returns both summary and original."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Summary of the document",
+                "original": "This is the full original text of the document with all the details",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "orig2",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 10,
+            }
+        ]
+    )
+    results = store.search([1.0, 0.0, 0.0, 0.0], top_k=1, full=True)
+    assert len(results) >= 1
+    assert results[0]["content"] == "Summary of the document"
+    assert results[0]["original"] == ("This is the full original text of the document with all the details")
+
+
+def test_get_returns_full_entry_with_original(store: MilvusStore):
+    """get() always returns original content (full retrieval path)."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Summary text",
+                "original": "Full original text with all the verbose details",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "get_test_1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            }
+        ]
+    )
+    entry = store.get("get_test_1")
+    assert entry is not None
+    assert entry["content"] == "Summary text"
+    assert entry["original"] == "Full original text with all the verbose details"
+    assert entry["chunk_hash"] == "get_test_1"
+    assert entry["source"] == "test.md"
+
+
+def test_get_returns_none_for_missing_hash(store: MilvusStore):
+    """get() returns None when chunk_hash doesn't exist."""
+    result = store.get("nonexistent_hash")
+    assert result is None
+
+
+def test_query_excludes_original_by_default(store: MilvusStore):
+    """Default query() returns summary but not original."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Query summary",
+                "original": "Query original full text",
+                "source": "test.md",
+                "heading": "",
+                "chunk_hash": "query_test_1",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+            }
+        ]
+    )
+    results = store.query()
+    assert len(results) >= 1
+    match = [r for r in results if r["chunk_hash"] == "query_test_1"]
+    assert len(match) == 1
+    assert match[0]["content"] == "Query summary"
+    assert "original" not in match[0]
+
+
+def test_query_includes_original_when_full(store: MilvusStore):
+    """query(full=True) returns both summary and original."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Query summary",
+                "original": "Query original full text",
+                "source": "test.md",
+                "heading": "",
+                "chunk_hash": "query_test_2",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+            }
+        ]
+    )
+    results = store.query(full=True)
+    assert len(results) >= 1
+    match = [r for r in results if r["chunk_hash"] == "query_test_2"]
+    assert len(match) == 1
+    assert match[0]["content"] == "Query summary"
+    assert match[0]["original"] == "Query original full text"

@@ -394,9 +394,30 @@ class MilvusStore:
         query_text: str = "",
         top_k: int = 10,
         filter_expr: str = "",
+        full: bool = False,
     ) -> list[dict[str, Any]]:
-        """Hybrid search: dense vector + BM25 full-text with RRF reranking."""
+        """Hybrid search: dense vector + BM25 full-text with RRF reranking.
+
+        Parameters
+        ----------
+        query_embedding:
+            Dense vector for the query.
+        query_text:
+            Raw query text for BM25 sparse search.
+        top_k:
+            Maximum results.
+        filter_expr:
+            Milvus filter expression.
+        full:
+            When ``True``, include the ``original`` field in results
+            (full content alongside the summary).  When ``False``
+            (default), only the summary ``content`` field is returned.
+            Per spec §9: "Search returns summary, full retrieval
+            returns original."
+        """
         from pymilvus import AnnSearchRequest, RRFRanker
+
+        output_fields = self._FULL_FIELDS if full else self._SUMMARY_FIELDS
 
         req_kwargs: dict[str, Any] = {}
         if filter_expr:
@@ -423,14 +444,38 @@ class MilvusStore:
             reqs=[dense_req, bm25_req],
             ranker=RRFRanker(k=60),
             limit=top_k,
-            output_fields=self._QUERY_FIELDS,
+            output_fields=output_fields,
         )
 
         if not results or not results[0]:
             return []
         return [{**hit["entity"], "score": hit["distance"]} for hit in results[0]]
 
-    _QUERY_FIELDS: ClassVar[list[str]] = [
+    # Fields returned by search (summary mode) — excludes ``original`` to
+    # keep results compact.  Per spec §9: "Search returns summary, full
+    # retrieval returns original."
+    _SUMMARY_FIELDS: ClassVar[list[str]] = [
+        "content",
+        "source",
+        "heading",
+        "chunk_hash",
+        "heading_level",
+        "start_line",
+        "end_line",
+        "entry_type",
+        "kv_namespace",
+        "kv_key",
+        "kv_value",
+        "valid_from",
+        "valid_to",
+        "topic",
+        "tags",
+        "updated_at",
+    ]
+
+    # All queryable fields including ``original`` — used by ``get()`` and
+    # ``search(full=True)`` when the caller needs the full original content.
+    _FULL_FIELDS: ClassVar[list[str]] = [
         "content",
         "source",
         "heading",
@@ -450,14 +495,52 @@ class MilvusStore:
         "updated_at",
     ]
 
-    def query(self, *, filter_expr: str = "") -> list[dict[str, Any]]:
-        """Retrieve chunks by scalar filter (no vector needed)."""
+    # Backward-compatible alias — callers that referenced ``_QUERY_FIELDS``
+    # directly get summary fields (the non-breaking default).
+    _QUERY_FIELDS: ClassVar[list[str]] = _SUMMARY_FIELDS
+
+    def query(self, *, filter_expr: str = "", full: bool = False) -> list[dict[str, Any]]:
+        """Retrieve chunks by scalar filter (no vector needed).
+
+        Parameters
+        ----------
+        filter_expr:
+            Milvus filter expression.
+        full:
+            When ``True``, include the ``original`` field in results.
+            Defaults to ``False`` (summary-only).
+        """
+        output_fields = self._FULL_FIELDS if full else self._SUMMARY_FIELDS
         kwargs: dict[str, Any] = {
             "collection_name": self._collection,
-            "output_fields": self._QUERY_FIELDS,
+            "output_fields": output_fields,
             "filter": filter_expr if filter_expr else 'chunk_hash != ""',
         }
         return self._client.query(**kwargs)
+
+    def get(self, chunk_hash: str) -> dict[str, Any] | None:
+        """Retrieve a single entry by its ``chunk_hash``, including original content.
+
+        This is the "full retrieval" path from spec §9: returns the
+        ``original`` field alongside ``content`` (summary) and all metadata.
+
+        Parameters
+        ----------
+        chunk_hash:
+            The primary key of the entry.
+
+        Returns
+        -------
+        dict | None
+            The full entry including ``original``, or ``None`` if not found.
+        """
+        escaped = _escape_filter_value(chunk_hash)
+        results = self._client.query(
+            collection_name=self._collection,
+            filter=f'chunk_hash == "{escaped}"',
+            output_fields=self._FULL_FIELDS,
+        )
+        return results[0] if results else None
 
     # ---- Temporal fact API (spec §6) --------------------------------------
 
@@ -534,11 +617,7 @@ class MilvusStore:
         # reliably; subsequent clauses may be silently ignored.
         all_temporal = self.query(filter_expr='entry_type == "temporal"')
         open_entries = [
-            e
-            for e in all_temporal
-            if e["kv_key"] == key
-            and e["kv_namespace"] == namespace
-            and e["valid_to"] == 0
+            e for e in all_temporal if e["kv_key"] == key and e["kv_namespace"] == namespace and e["valid_to"] == 0
         ]
 
         # Close each open entry by re-upserting with valid_to = now
@@ -556,9 +635,7 @@ class MilvusStore:
         # Create new entry with a unique hash.  Random entropy prevents
         # collisions when two updates land in the same integer-second.
         nonce = os.urandom(8).hex()
-        chunk_hash = hashlib.sha256(
-            f"temporal:{namespace}:{key}:{now}:{nonce}".encode()
-        ).hexdigest()[:32]
+        chunk_hash = hashlib.sha256(f"temporal:{namespace}:{key}:{now}:{nonce}".encode()).hexdigest()[:32]
 
         new_entry: dict[str, Any] = {
             "chunk_hash": chunk_hash,
@@ -698,11 +775,7 @@ class MilvusStore:
 
         all_temporal = self.query(filter_expr='entry_type == "temporal"')
         open_entries = [
-            e
-            for e in all_temporal
-            if e["kv_key"] == key
-            and e["kv_namespace"] == namespace
-            and e["valid_to"] == 0
+            e for e in all_temporal if e["kv_key"] == key and e["kv_namespace"] == namespace and e["valid_to"] == 0
         ]
 
         closed: list[dict[str, Any]] = []

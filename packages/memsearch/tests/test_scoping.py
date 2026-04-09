@@ -1660,9 +1660,7 @@ class TestCrossCollectionTagSearchRoadmap:
 
     # -- (a) Project-scoped tagged memory found by global search ---------------
 
-    def test_a_project_tag_found_by_global_search(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_a_project_tag_found_by_global_search(self, multi_scope_router: CollectionRouter):
         """(a) Memory tagged #api-pattern in project collection is found by
         tag search from system scope (i.e., global cross-scope search)."""
         results = multi_scope_router.search_by_tag("api-pattern")
@@ -1702,27 +1700,21 @@ class TestCrossCollectionTagSearchRoadmap:
 
     # -- (b) Source attribution across multiple collections --------------------
 
-    def test_b_multi_collection_source_attribution(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_b_multi_collection_source_attribution(self, multi_scope_router: CollectionRouter):
         """(b) Tag search returns results from multiple collections with
         correct source attribution (_collection, _scope, _scope_id)."""
         results = multi_scope_router.search_by_tag("api-pattern")
 
         # Should have results from 3 different collections
         collections = {r["_collection"] for r in results}
-        assert len(collections) >= 2, (
-            f"Expected results from multiple collections, got: {collections}"
-        )
+        assert len(collections) >= 2, f"Expected results from multiple collections, got: {collections}"
 
         # Verify each result has correct source attribution
         for r in results:
             assert "_collection" in r, "Missing _collection annotation"
             assert "_scope" in r, "Missing _scope annotation"
             assert "_scope_id" in r, "Missing _scope_id annotation"
-            assert r["_collection"].startswith("aq_"), (
-                f"Collection name should start with aq_: {r['_collection']}"
-            )
+            assert r["_collection"].startswith("aq_"), f"Collection name should start with aq_: {r['_collection']}"
 
         # Verify specific scope values
         scope_map = {r["chunk_hash"]: (r["_scope"], r["_scope_id"]) for r in results}
@@ -1731,9 +1723,7 @@ class TestCrossCollectionTagSearchRoadmap:
         assert scope_map["at_api"] == ("agent_type", "coding")
         assert scope_map["sys_api"] == ("system", None)
 
-    def test_b_collection_names_are_correct(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_b_collection_names_are_correct(self, multi_scope_router: CollectionRouter):
         """(b) Extended: collection names follow aq_* naming convention."""
         results = multi_scope_router.search_by_tag("api-pattern")
 
@@ -1744,9 +1734,7 @@ class TestCrossCollectionTagSearchRoadmap:
 
     # -- (c) Non-existent tag returns empty (not error) ------------------------
 
-    def test_c_nonexistent_tag_returns_empty(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_c_nonexistent_tag_returns_empty(self, multi_scope_router: CollectionRouter):
         """(c) Tag search with non-existent tag returns empty list (not error)."""
         results = multi_scope_router.search_by_tag("completely-nonexistent-tag-xyz")
         assert results == [], f"Expected empty list, got {len(results)} results"
@@ -1761,9 +1749,7 @@ class TestCrossCollectionTagSearchRoadmap:
 
     # -- (d) Multiple tags: entry found by any single tag ----------------------
 
-    def test_d_multiple_tags_found_by_any_single_tag(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_d_multiple_tags_found_by_any_single_tag(self, multi_scope_router: CollectionRouter):
         """(d) Memory with multiple tags is found by search on any single tag."""
         # proj_api has tags: ["api-pattern", "auth"]
         # Search by "api-pattern"
@@ -1774,27 +1760,19 @@ class TestCrossCollectionTagSearchRoadmap:
         # Search by "auth" — should also find proj_api
         results_auth = multi_scope_router.search_by_tag("auth")
         hashes_auth = {r["chunk_hash"] for r in results_auth}
-        assert "proj_api" in hashes_auth, (
-            "Entry with multiple tags not found when searching by second tag"
-        )
+        assert "proj_api" in hashes_auth, "Entry with multiple tags not found when searching by second tag"
 
-    def test_d_each_tag_independently_findable(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_d_each_tag_independently_findable(self, multi_scope_router: CollectionRouter):
         """(d) Extended: every tag on a multi-tagged entry can discover it."""
         # proj_api_v2 has tags: ["api-pattern", "graphql"]
         for tag in ["api-pattern", "graphql"]:
             results = multi_scope_router.search_by_tag(tag)
             hashes = {r["chunk_hash"] for r in results}
-            assert "proj_api_v2" in hashes, (
-                f"Entry not found when searching by tag '{tag}'"
-            )
+            assert "proj_api_v2" in hashes, f"Entry not found when searching by tag '{tag}'"
 
     # -- (e) Tag search + topic filter -----------------------------------------
 
-    def test_e_tag_search_with_topic_filter(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_e_tag_search_with_topic_filter(self, multi_scope_router: CollectionRouter):
         """(e) Tag search combined with topic filter narrows results correctly."""
         # Search api-pattern without topic — should get entries from all topics
         all_results = multi_scope_router.search_by_tag("api-pattern")
@@ -1802,27 +1780,19 @@ class TestCrossCollectionTagSearchRoadmap:
 
         # Search api-pattern with topic="architecture" — should only get
         # entries with topic="architecture" or topic=""
-        filtered = multi_scope_router.search_by_tag(
-            "api-pattern", topic="architecture"
-        )
+        filtered = multi_scope_router.search_by_tag("api-pattern", topic="architecture")
         for r in filtered:
-            assert r.get("topic", "") in ("architecture", ""), (
-                f"Topic filter leaked: got topic='{r.get('topic')}'"
-            )
+            assert r.get("topic", "") in ("architecture", ""), f"Topic filter leaked: got topic='{r.get('topic')}'"
 
         # The architecture-tagged entries should be found
         hashes = {r["chunk_hash"] for r in filtered}
         assert "proj_api" in hashes  # topic="architecture"
         assert "proj_api_v2" in hashes  # topic="architecture"
 
-    def test_e_topic_filter_excludes_other_topics(
-        self, multi_scope_router: CollectionRouter
-    ):
+    def test_e_topic_filter_excludes_other_topics(self, multi_scope_router: CollectionRouter):
         """(e) Extended: topic filter correctly excludes non-matching topics."""
         # Search api-pattern with topic="conventions" — should only get at_api
-        filtered = multi_scope_router.search_by_tag(
-            "api-pattern", topic="conventions"
-        )
+        filtered = multi_scope_router.search_by_tag("api-pattern", topic="conventions")
         hashes = {r["chunk_hash"] for r in filtered}
         assert "at_api" in hashes  # topic="conventions"
         # Entries with other topics should be excluded
@@ -1878,9 +1848,7 @@ class TestCrossCollectionTagSearchRoadmap:
         for variant in ["API-PATTERN", "Api-Pattern", "api-pattern", "API-pattern"]:
             results = router.search_by_tag(variant)
             hashes = {r["chunk_hash"] for r in results}
-            assert "hash_case" in hashes, (
-                f"Case variant '{variant}' did not match tag 'api-pattern'"
-            )
+            assert "hash_case" in hashes, f"Case variant '{variant}' did not match tag 'api-pattern'"
 
     # -- (g) Special characters in tags ----------------------------------------
 

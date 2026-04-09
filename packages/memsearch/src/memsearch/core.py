@@ -212,6 +212,7 @@ class MemSearch:
         top_k: int = 10,
         source_prefix: str | Path | None = None,
         topic: str | None = None,
+        full: bool = False,
     ) -> list[dict[str, Any]]:
         """Semantic search across indexed chunks.
 
@@ -231,12 +232,19 @@ class MemSearch:
             filtered search yields fewer than ``_TOPIC_FALLBACK_THRESHOLD``
             results, an automatic fallback to unfiltered search is
             performed to avoid missing relevant cross-topic knowledge.
+        full:
+            When ``True``, include the ``original`` field in results
+            (the full original content alongside the summary).  When
+            ``False`` (default), only the summary ``content`` is returned.
+            Per spec §9: "Search returns summary, full retrieval returns
+            original."
 
         Returns
         -------
         list[dict]
             Each dict contains ``content``, ``source``, ``heading``,
-            ``score``, and other metadata.
+            ``score``, and other metadata.  When ``full=True``, also
+            includes ``original`` with the full unprocessed content.
         """
         from .store import _escape_filter_value
 
@@ -254,7 +262,7 @@ class MemSearch:
 
         embeddings = await self._embedder.embed([query])
         fetch_k = top_k * 3 if self._reranker_model else top_k
-        results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=filter_expr)
+        results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=filter_expr, full=full)
 
         # Fallback: if topic filter returned too few results, retry without
         # the topic constraint to avoid missing relevant cross-topic knowledge.
@@ -264,7 +272,9 @@ class MemSearch:
                 prefix = str(Path(source_prefix).expanduser().resolve())
                 escaped = _escape_filter_value(prefix)
                 base_filter = f'source like "{escaped}%"'
-            results = self._store.search(embeddings[0], query_text=query, top_k=fetch_k, filter_expr=base_filter)
+            results = self._store.search(
+                embeddings[0], query_text=query, top_k=fetch_k, filter_expr=base_filter, full=full
+            )
             # Mark results so callers can distinguish fallback from direct matches
             for r in results:
                 r["topic_fallback"] = True
@@ -277,6 +287,26 @@ class MemSearch:
 
     _TOPIC_FALLBACK_THRESHOLD = 3
     """Minimum results from a topic-filtered search before falling back."""
+
+    def get(self, chunk_hash: str) -> dict[str, Any] | None:
+        """Retrieve a single entry by its ``chunk_hash`` with full original content.
+
+        This is the full retrieval path from spec §9: returns the
+        ``original`` field alongside ``content`` (summary) and all metadata.
+        Use this when the agent needs the complete original text after
+        finding a relevant memory via :meth:`search`.
+
+        Parameters
+        ----------
+        chunk_hash:
+            The primary key of the entry to retrieve.
+
+        Returns
+        -------
+        dict | None
+            The full entry including ``original``, or ``None`` if not found.
+        """
+        return self._store.get(chunk_hash)
 
     # ------------------------------------------------------------------
     # Compact (compress memories)

@@ -173,6 +173,12 @@ def index(
 @_common_options
 @click.option("--reranker-model", default=None, help="Cross-encoder model for reranking (empty string disables).")
 @click.option("--json-output", "-j", is_flag=True, help="Output as JSON.")
+@click.option(
+    "--full",
+    "-f",
+    is_flag=True,
+    help="Include original content in results (spec §9: summary + original pattern).",
+)
 def search(
     query: str,
     top_k: int | None,
@@ -188,8 +194,13 @@ def search(
     milvus_token: str | None,
     reranker_model: str | None,
     json_output: bool,
+    full: bool,
 ) -> None:
-    """Search indexed memory for QUERY."""
+    """Search indexed memory for QUERY.
+
+    By default returns summaries only. Use --full to include
+    the original content alongside the summary (spec §9).
+    """
     from .core import MemSearch
 
     cfg = resolve_config(
@@ -207,7 +218,7 @@ def search(
     )
     ms = MemSearch(**_cfg_to_memsearch_kwargs(cfg))
     try:
-        results = _run(ms.search(query, top_k=top_k or 5, source_prefix=source_prefix, topic=topic))
+        results = _run(ms.search(query, top_k=top_k or 5, source_prefix=source_prefix, topic=topic, full=full))
         if json_output:
             click.echo(json.dumps(results, indent=2, ensure_ascii=False))
         else:
@@ -219,18 +230,103 @@ def search(
                 source = r.get("source", "?")
                 heading = r.get("heading", "")
                 content = r.get("content", "")
+                original = r.get("original", "") if full else ""
                 click.echo(f"\n--- Result {i} (score: {score:.4f}) ---")
                 click.echo(f"Source: {source}")
                 if heading:
                     click.echo(f"Heading: {heading}")
-                if len(content) > 500:
+                # Show summary (content)
+                if len(content) > 500 and not full:
                     click.echo(content[:500])
                     chunk_hash = r.get("chunk_hash", "")
-                    click.echo(f"  ... [truncated, run 'memsearch expand {chunk_hash}' for full content]")
+                    click.echo(
+                        f"  ... [truncated, run 'memsearch expand {chunk_hash}' or use --full for original content]"
+                    )
                 else:
                     click.echo(content)
+                # Show original when --full is set and it differs from content
+                if full and original and original != content:
+                    click.echo(f"\n  [Original ({len(original)} chars)]")
+                    click.echo(original)
     finally:
         ms.close()
+
+
+@cli.command("get")
+@click.argument("chunk_hash")
+@click.option("--json-output", "-j", is_flag=True, help="Output as JSON.")
+@_common_options
+def get_entry(
+    chunk_hash: str,
+    json_output: bool,
+    provider: str | None,
+    model: str | None,
+    batch_size: int | None,
+    base_url: str | None,
+    api_key: str | None,
+    collection: str | None,
+    milvus_uri: str | None,
+    milvus_token: str | None,
+) -> None:
+    """Retrieve a single memory entry by CHUNK_HASH with full original content.
+
+    Per spec §9: search returns summaries, this returns the original.
+    """
+    from .store import MilvusStore
+
+    cfg = resolve_config(
+        _build_cli_overrides(
+            provider=provider,
+            model=model,
+            batch_size=batch_size,
+            base_url=base_url,
+            api_key=api_key,
+            collection=collection,
+            milvus_uri=milvus_uri,
+            milvus_token=milvus_token,
+        )
+    )
+    store = MilvusStore(
+        uri=cfg.milvus.uri,
+        token=cfg.milvus.token or None,
+        collection=cfg.milvus.collection,
+        dimension=None,
+    )
+    try:
+        entry = store.get(chunk_hash)
+        if entry is None:
+            click.echo(f"Entry not found: {chunk_hash}", err=True)
+            sys.exit(1)
+
+        if json_output:
+            click.echo(json.dumps(entry, indent=2, ensure_ascii=False))
+        else:
+            source = entry.get("source", "?")
+            heading = entry.get("heading", "")
+            content = entry.get("content", "")
+            original = entry.get("original", "")
+            entry_type = entry.get("entry_type", "document")
+            topic = entry.get("topic", "")
+            tags = entry.get("tags", "[]")
+
+            click.echo(f"Hash: {chunk_hash}")
+            click.echo(f"Type: {entry_type}")
+            click.echo(f"Source: {source}")
+            if heading:
+                click.echo(f"Heading: {heading}")
+            if topic:
+                click.echo(f"Topic: {topic}")
+            if tags and tags != "[]":
+                click.echo(f"Tags: {tags}")
+            click.echo(f"\n[Summary ({len(content)} chars)]")
+            click.echo(content)
+            if original and original != content:
+                click.echo(f"\n[Original ({len(original)} chars)]")
+                click.echo(original)
+            elif not original:
+                click.echo("\n[No original content stored]")
+    finally:
+        store.close()
 
 
 # ======================================================================
@@ -294,12 +390,12 @@ def expand(
         dimension=None,
     )
     try:
-        chunks = store.query(filter_expr=f'chunk_hash == "{chunk_hash}"')
-        if not chunks:
+        # Use get() for full retrieval including original content (spec §9)
+        chunk = store.get(chunk_hash)
+        if chunk is None:
             click.echo(f"Chunk not found: {chunk_hash}", err=True)
             sys.exit(1)
 
-        chunk = chunks[0]
         source = chunk["source"]
         start_line = chunk["start_line"]
         end_line = chunk["end_line"]

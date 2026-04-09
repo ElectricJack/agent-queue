@@ -695,6 +695,7 @@ class CollectionRouter:
         topic: str | None = None,
         top_k: int = 10,
         weights: dict[MemoryScope, float] | None = None,
+        full: bool = False,
     ) -> list[dict[str, Any]]:
         """Multi-collection parallel search with weighted merging.
 
@@ -727,6 +728,10 @@ class CollectionRouter:
         weights:
             Override the default :data:`SCOPE_WEIGHTS`.  Keys are
             :class:`MemoryScope` values; missing scopes use the default.
+        full:
+            When ``True``, include the ``original`` field in results.
+            When ``False`` (default), only the summary ``content``
+            is returned.  Per spec §9.
 
         Returns
         -------
@@ -767,6 +772,7 @@ class CollectionRouter:
                 top_k=top_k,
                 filter_expr=topic_filter,
                 weight=weight,
+                full=full,
             )
             for scope, scope_id, weight in scopes_to_search
         ]
@@ -803,6 +809,7 @@ class CollectionRouter:
                     top_k=top_k,
                     filter_expr="",
                     weight=weight,
+                    full=full,
                 )
                 for scope, scope_id, weight in scopes_to_search
             ]
@@ -827,6 +834,7 @@ class CollectionRouter:
         top_k: int = 10,
         filter_expr: str = "",
         weight: float = 1.0,
+        full: bool = False,
     ) -> list[dict[str, Any]]:
         """Search a single collection, annotating results with scope metadata.
 
@@ -847,6 +855,7 @@ class CollectionRouter:
             query_text=query_text,
             top_k=top_k,
             filter_expr=filter_expr,
+            full=full,
         )
 
         # Annotate results with scope metadata and apply weight
