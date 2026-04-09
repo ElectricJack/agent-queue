@@ -1476,3 +1476,242 @@ def test_model_metadata_with_user_description(tmp_path: Path):
     assert meta["provider"] == "openai"
     assert meta["model"] == "text-embedding-3-small"
     s.close()
+
+
+# ---- Temporal fact API tests -------------------------------------------------
+
+
+def test_set_temporal_basic(store: MilvusStore):
+    """set_temporal creates a temporal entry retrievable by get_temporal."""
+    result = store.set_temporal(
+        "deploy_branch",
+        "main",
+        source="facts.md",
+        content="deploy branch is main",
+        timestamp=1700000000,
+    )
+
+    assert result["entry_type"] == "temporal"
+    assert result["kv_key"] == "deploy_branch"
+    assert result["kv_value"] == '"main"'
+    assert result["valid_from"] == 1700000000
+    assert result["valid_to"] == 0
+    assert result["source"] == "facts.md"
+    assert result["content"] == "deploy branch is main"
+    assert "embedding" not in result  # embedding excluded from return
+
+    # Retrievable via get_temporal at the same timestamp
+    current = store.get_temporal("deploy_branch", at=1700000000)
+    assert len(current) == 1
+    assert current[0]["kv_value"] == '"main"'
+    assert current[0]["valid_from"] == 1700000000
+    assert current[0]["valid_to"] == 0
+
+
+def test_set_temporal_updates_close_previous(store: MilvusStore):
+    """Setting a new value closes the old entry and opens a new one."""
+    # First value
+    store.set_temporal("deploy_branch", "main", timestamp=1700000000)
+
+    # Second value — should close the first
+    store.set_temporal("deploy_branch", "release", timestamp=1710000000)
+
+    # Full history should show both entries
+    history = store.get_temporal_history("deploy_branch")
+    assert len(history) == 2
+
+    # First entry should be closed (valid_to == 1710000000)
+    assert history[0]["kv_value"] == '"main"'
+    assert history[0]["valid_from"] == 1700000000
+    assert history[0]["valid_to"] == 1710000000
+
+    # Second entry should be open (valid_to == 0)
+    assert history[1]["kv_value"] == '"release"'
+    assert history[1]["valid_from"] == 1710000000
+    assert history[1]["valid_to"] == 0
+
+
+def test_set_temporal_multiple_updates(store: MilvusStore):
+    """Three successive updates produce correct history chain."""
+    store.set_temporal("branch", "main", timestamp=1000)
+    store.set_temporal("branch", "develop", timestamp=2000)
+    store.set_temporal("branch", "release", timestamp=3000)
+
+    history = store.get_temporal_history("branch")
+    assert len(history) == 3
+
+    assert history[0]["kv_value"] == '"main"'
+    assert history[0]["valid_from"] == 1000
+    assert history[0]["valid_to"] == 2000
+
+    assert history[1]["kv_value"] == '"develop"'
+    assert history[1]["valid_from"] == 2000
+    assert history[1]["valid_to"] == 3000
+
+    assert history[2]["kv_value"] == '"release"'
+    assert history[2]["valid_from"] == 3000
+    assert history[2]["valid_to"] == 0
+
+
+def test_get_temporal_current_value(store: MilvusStore):
+    """get_temporal with at=None returns the currently open entry."""
+    store.set_temporal("config", "v1", timestamp=1000)
+    store.set_temporal("config", "v2", timestamp=2000)
+
+    # Query at a time well after the last update
+    current = store.get_temporal("config", at=9999999999)
+    assert len(current) == 1
+    assert current[0]["kv_value"] == '"v2"'
+
+
+def test_get_temporal_as_of(store: MilvusStore):
+    """Historical 'as-of' query returns the value valid at a past timestamp."""
+    store.set_temporal("deploy_branch", "main", timestamp=1700000000)
+    store.set_temporal("deploy_branch", "release", timestamp=1710000000)
+
+    # As-of query during the first window
+    result = store.get_temporal("deploy_branch", at=1705000000)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"main"'
+
+    # As-of query during the second window
+    result = store.get_temporal("deploy_branch", at=1715000000)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"release"'
+
+
+def test_get_temporal_before_any_entry(store: MilvusStore):
+    """Querying before any entry exists returns empty list."""
+    store.set_temporal("key", "value", timestamp=1000)
+
+    result = store.get_temporal("key", at=500)
+    assert result == []
+
+
+def test_get_temporal_nonexistent_key(store: MilvusStore):
+    """Querying a key that doesn't exist returns empty list."""
+    result = store.get_temporal("nonexistent", at=1700000000)
+    assert result == []
+
+
+def test_get_temporal_history_sorted(store: MilvusStore):
+    """get_temporal_history returns entries sorted by valid_from."""
+    # Insert in reverse order to verify sorting
+    store.set_temporal("key", "third", timestamp=3000)
+    # These are independent keys so they won't close each other — use same key
+    # Actually set_temporal closes previous, so inserting in order:
+    store.set_temporal("key", "fourth", timestamp=4000)
+
+    history = store.get_temporal_history("key")
+    assert len(history) == 2
+    assert history[0]["valid_from"] <= history[1]["valid_from"]
+
+
+def test_get_temporal_history_empty(store: MilvusStore):
+    """get_temporal_history for nonexistent key returns empty list."""
+    history = store.get_temporal_history("nonexistent")
+    assert history == []
+
+
+def test_temporal_namespace_isolation(store: MilvusStore):
+    """Facts in different namespaces are independent."""
+    store.set_temporal("test_cmd", "pytest", namespace="project-a", timestamp=1000)
+    store.set_temporal("test_cmd", "cargo test", namespace="project-b", timestamp=1000)
+
+    result_a = store.get_temporal("test_cmd", namespace="project-a", at=2000)
+    assert len(result_a) == 1
+    assert result_a[0]["kv_value"] == '"pytest"'
+
+    result_b = store.get_temporal("test_cmd", namespace="project-b", at=2000)
+    assert len(result_b) == 1
+    assert result_b[0]["kv_value"] == '"cargo test"'
+
+    # Updating one namespace doesn't affect the other
+    store.set_temporal("test_cmd", "pytest -v", namespace="project-a", timestamp=2000)
+
+    history_a = store.get_temporal_history("test_cmd", namespace="project-a")
+    assert len(history_a) == 2  # old + new
+
+    history_b = store.get_temporal_history("test_cmd", namespace="project-b")
+    assert len(history_b) == 1  # unchanged
+
+
+def test_temporal_no_namespace_isolated_from_namespaced(store: MilvusStore):
+    """Empty namespace entries don't interfere with namespaced entries."""
+    store.set_temporal("key", "global", timestamp=1000)
+    store.set_temporal("key", "scoped", namespace="ns", timestamp=1000)
+
+    global_result = store.get_temporal("key", at=2000)
+    assert len(global_result) == 1
+    assert global_result[0]["kv_value"] == '"global"'
+
+    scoped_result = store.get_temporal("key", namespace="ns", at=2000)
+    assert len(scoped_result) == 1
+    assert scoped_result[0]["kv_value"] == '"scoped"'
+
+
+def test_set_temporal_json_value_types(store: MilvusStore):
+    """Various JSON value types are stored and retrieved correctly."""
+    store.set_temporal("string_val", "hello", timestamp=1000)
+    store.set_temporal("int_val", 42, timestamp=1000)
+    store.set_temporal("dict_val", {"port": 8080, "host": "localhost"}, timestamp=1000)
+    store.set_temporal("list_val", [1, 2, 3], timestamp=1000)
+    store.set_temporal("bool_val", True, timestamp=1000)
+    store.set_temporal("null_val", None, timestamp=1000)
+
+    for key, expected in [
+        ("string_val", '"hello"'),
+        ("int_val", "42"),
+        ("dict_val", json.dumps({"port": 8080, "host": "localhost"})),
+        ("list_val", "[1, 2, 3]"),
+        ("bool_val", "true"),
+        ("null_val", "null"),
+    ]:
+        result = store.get_temporal(key, at=2000)
+        assert len(result) == 1, f"Expected 1 result for {key}, got {len(result)}"
+        assert result[0]["kv_value"] == expected, f"Value mismatch for {key}: {result[0]['kv_value']!r} != {expected!r}"
+
+
+def test_set_temporal_tags(store: MilvusStore):
+    """Tags are stored as JSON array and returned correctly."""
+    store.set_temporal(
+        "deploy_branch",
+        "main",
+        tags=["infra", "deployment"],
+        timestamp=1000,
+    )
+
+    result = store.get_temporal("deploy_branch", at=2000)
+    assert len(result) == 1
+    assert json.loads(result[0]["tags"]) == ["infra", "deployment"]
+
+
+def test_set_temporal_content_searchable(store: MilvusStore):
+    """Content field is set correctly for BM25 discoverability."""
+    store.set_temporal(
+        "deploy_branch",
+        "main",
+        content="deploy branch changed to main for production release",
+        timestamp=1000,
+    )
+
+    result = store.get_temporal("deploy_branch", at=2000)
+    assert len(result) == 1
+    assert "deploy branch" in result[0]["content"]
+
+
+def test_set_temporal_returns_entry_without_embedding(store: MilvusStore):
+    """set_temporal return value matches query output (no embedding)."""
+    entry = store.set_temporal("key", "val", timestamp=1000)
+
+    # All expected fields present
+    assert "chunk_hash" in entry
+    assert "entry_type" in entry
+    assert "kv_key" in entry
+    assert "kv_value" in entry
+    assert "valid_from" in entry
+    assert "valid_to" in entry
+    assert "updated_at" in entry
+
+    # Embedding excluded
+    assert "embedding" not in entry
