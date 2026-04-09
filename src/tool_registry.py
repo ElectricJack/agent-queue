@@ -191,6 +191,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
     "playbook_health": "playbook",
+    "playbook_graph_view": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -2356,6 +2357,77 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": 200,
                 },
             },
+        },
+    },
+    {
+        "name": "playbook_graph_view",
+        "description": (
+            "Get structured graph view data for dashboard rendering of a playbook. "
+            "Returns nodes as positioned boxes (color-coded by type), transitions "
+            "as labelled arrows, with optional overlays for live state (current node "
+            "highlighting for running instances), run path highlighting, and per-node "
+            "health metrics. Suitable for interactive visualization."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier to visualize.",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "Layout direction: 'TD' (top-down) or 'LR' (left-right). Default: TD."
+                    ),
+                    "enum": ["TD", "LR"],
+                    "default": "TD",
+                },
+                "show_prompts": {
+                    "type": "boolean",
+                    "description": (
+                        "Include truncated prompt previews in node labels. Default: true."
+                    ),
+                    "default": True,
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": (
+                        "Overlay a specific run's path on the graph. Shows which nodes "
+                        "were visited, timing, and token usage per node."
+                    ),
+                },
+                "include_live_state": {
+                    "type": "boolean",
+                    "description": (
+                        "Include live state overlay for running/paused instances. "
+                        "Highlights the current node. Default: true."
+                    ),
+                    "default": True,
+                },
+                "include_metrics": {
+                    "type": "boolean",
+                    "description": (
+                        "Include per-node health metrics overlay (failure rate, avg "
+                        "duration, token usage). Default: false."
+                    ),
+                    "default": False,
+                },
+                "include_history": {
+                    "type": "boolean",
+                    "description": (
+                        "Include run history timeline showing past runs and paths "
+                        "taken. Default: false."
+                    ),
+                    "default": False,
+                },
+                "history_limit": {
+                    "type": "integer",
+                    "description": "Max runs in the history timeline (default 20).",
+                    "default": 20,
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
 ]

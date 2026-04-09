@@ -7276,6 +7276,125 @@ feature work stuck on feature branches across multiple workspaces.
 
         return compute_playbook_health(runs, playbook_id=playbook_id)
 
+    async def _cmd_playbook_graph_view(self, args: dict) -> dict:
+        """Return structured graph view data for dashboard rendering of a playbook.
+
+        Produces a complete JSON representation of the playbook graph suitable
+        for interactive dashboard visualization: nodes as positioned boxes
+        (color-coded by type), transitions as labelled arrows, with optional
+        overlays for live state, run path highlighting, and health metrics.
+
+        Implements spec §14 (Dashboard Visualization), roadmap 5.7.2.
+
+        Args:
+            playbook_id: The playbook identifier to visualize.
+            direction: Layout direction — ``"TD"`` (top-down) or ``"LR"`` (left-right).
+                Default: ``"TD"``.
+            show_prompts: Include truncated prompt previews in nodes. Default: ``True``.
+            run_id: Optional — overlay a specific run's path on the graph.
+            include_live_state: Include live state for running/paused instances.
+                Default: ``True``.
+            include_metrics: Include per-node health metrics overlay.
+                Default: ``False``.
+            include_history: Include run history timeline. Default: ``False``.
+            history_limit: Max runs in the history timeline. Default: ``20``.
+        """
+        from src.playbook_graph_view import build_graph_view
+        from src.playbook_health import compute_node_metrics
+
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        direction = args.get("direction", "TD").strip().upper()
+        if direction not in ("TD", "LR"):
+            return {"error": f"Invalid direction '{direction}'. Valid: TD, LR"}
+
+        show_prompts = args.get("show_prompts", True)
+        if isinstance(show_prompts, str):
+            show_prompts = show_prompts.lower() in ("true", "1", "yes")
+
+        include_live = args.get("include_live_state", True)
+        if isinstance(include_live, str):
+            include_live = include_live.lower() in ("true", "1", "yes")
+
+        include_metrics = args.get("include_metrics", False)
+        if isinstance(include_metrics, str):
+            include_metrics = include_metrics.lower() in ("true", "1", "yes")
+
+        include_history = args.get("include_history", False)
+        if isinstance(include_history, str):
+            include_history = include_history.lower() in ("true", "1", "yes")
+
+        history_limit = int(args.get("history_limit", 20))
+        run_id = args.get("run_id", "").strip() if args.get("run_id") else None
+
+        # Resolve the compiled playbook
+        playbook = None
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is not None:
+            playbook = pm.get_playbook(playbook_id)
+
+        if playbook is None:
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' not found. "
+                    "Make sure it has been compiled (use compile_playbook first)."
+                ),
+            }
+
+        # Fetch active runs for live state
+        active_runs = None
+        if include_live:
+            running = await self.db.list_playbook_runs(
+                playbook_id=playbook_id, status="running", limit=50,
+            )
+            paused = await self.db.list_playbook_runs(
+                playbook_id=playbook_id, status="paused", limit=50,
+            )
+            active_runs = running + paused if (running or paused) else None
+
+        # Fetch a specific run for overlay
+        run_overlay = None
+        if run_id:
+            run_overlay = await self.db.get_playbook_run(run_id)
+            if run_overlay is None:
+                return {"error": f"Run '{run_id}' not found"}
+            if run_overlay.playbook_id != playbook_id:
+                return {
+                    "error": (
+                        f"Run '{run_id}' belongs to playbook "
+                        f"'{run_overlay.playbook_id}', not '{playbook_id}'"
+                    ),
+                }
+
+        # Fetch all runs for history and/or metrics
+        all_runs = None
+        node_metrics = None
+        if include_history or include_metrics:
+            fetch_limit = max(history_limit, 200) if include_metrics else history_limit
+            all_runs = await self.db.list_playbook_runs(
+                playbook_id=playbook_id, limit=fetch_limit,
+            )
+
+        if include_metrics and all_runs:
+            node_metrics = compute_node_metrics(all_runs)
+
+        # Build the graph view
+        result = build_graph_view(
+            playbook,
+            direction=direction,
+            show_prompts=show_prompts,
+            active_runs=active_runs,
+            run_overlay=run_overlay,
+            all_runs=all_runs if include_history else None,
+            node_metrics=node_metrics,
+            history_limit=history_limit,
+        )
+
+        result["success"] = True
+        return result
+
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.
