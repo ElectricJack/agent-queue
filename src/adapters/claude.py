@@ -51,6 +51,34 @@ _ToolUseBlock = None
 _ToolResultBlock = None
 
 
+def _classify_error_result(error_msg: str) -> AgentResult:
+    """Classify a CLI error message into the appropriate AgentResult.
+
+    Detects rate limits, session limits, and token quota errors and routes
+    them to PAUSED results so the orchestrator backs off gracefully instead
+    of burning retries.
+    """
+    lower = error_msg.lower()
+
+    # Session / usage cap: "You've hit your limit · resets 2pm ..."
+    if "hit your limit" in lower or "resets " in lower:
+        return AgentResult.PAUSED_RATE_LIMIT
+
+    # Rate limit errors (HTTP 429, SDK exceptions)
+    if "rate_limit" in lower or "rate limit" in lower or "429" in lower:
+        return AgentResult.PAUSED_RATE_LIMIT
+
+    # Overloaded / capacity errors
+    if "overloaded" in lower or "503" in lower or "capacity" in lower:
+        return AgentResult.PAUSED_RATE_LIMIT
+
+    # Token / quota exhaustion
+    if "token" in lower or "quota" in lower:
+        return AgentResult.PAUSED_TOKENS
+
+    return AgentResult.FAILED
+
+
 async def _resilient_query(prompt, options, adapter=None):
     """Wrap claude_agent_sdk.query() to survive MessageParseError.
 
@@ -507,16 +535,11 @@ class ClaudeAdapter(AgentAdapter):
                         else:
                             logger.error("Claude adapter error: %s", error_msg)
                         logger.debug("Full traceback:\n%s", full_traceback)
-                        if "token" in error_msg.lower() or "quota" in error_msg.lower():
-                            output = AgentOutput(
-                                result=AgentResult.PAUSED_TOKENS,
-                                error_message=error_msg,
-                            )
-                            self._log_session(current_prompt, output, _wait_start, _time)
-                            return output
+                        full_error = f"{error_msg}\n{full_traceback}"
+                        result = _classify_error_result(full_error)
                         output = AgentOutput(
-                            result=AgentResult.FAILED,
-                            error_message=f"{error_msg}\n{full_traceback}",
+                            result=result,
+                            error_message=full_error if result == AgentResult.FAILED else error_msg,
                         )
                         self._log_session(current_prompt, output, _wait_start, _time)
                         return output
@@ -581,8 +604,9 @@ class ClaudeAdapter(AgentAdapter):
                             f"Session resume failed ({_resume_original_error}), "
                             f"and fresh session also failed: {cli_error}"
                         )
+                    result = _classify_error_result(cli_error)
                     output = AgentOutput(
-                        result=AgentResult.FAILED,
+                        result=result,
                         error_message=cli_error,
                         tokens_used=tokens_used,
                     )
