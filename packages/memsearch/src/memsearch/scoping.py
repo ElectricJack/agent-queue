@@ -568,6 +568,36 @@ class CollectionRouter:
         logger.info("Ensured aq_orchestrator collection exists")
         return store
 
+    def ensure_agent_type_collection(self, agent_type: str) -> MilvusStore:
+        """Ensure the ``aq_agenttype_{type}`` collection exists, creating it if needed.
+
+        Called when a new agent-type profile is created so the agent-type-scoped
+        memory collection is ready for writes and searches from the agent's
+        first task, rather than waiting for lazy creation on first access.
+
+        Per roadmap 3.1.2: "Create per-agent-type collections on first profile
+        creation".
+
+        Parameters
+        ----------
+        agent_type:
+            The agent type identifier (e.g. ``"coding"``, ``"code-review"``).
+            Will be sanitized for Milvus compatibility.
+
+        Returns
+        -------
+        MilvusStore
+            The (possibly cached) store for this agent-type scope.
+        """
+        cname = collection_name(MemoryScope.AGENT_TYPE, agent_type)
+        store = self.get_store(
+            MemoryScope.AGENT_TYPE,
+            agent_type,
+            description=f"agent-type/{agent_type}",
+        )
+        logger.info("Ensured %s collection exists for agent-type '%s'", cname, agent_type)
+        return store
+
     # ------------------------------------------------------------------
     # Collection listing
     # ------------------------------------------------------------------

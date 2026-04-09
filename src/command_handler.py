@@ -5633,6 +5633,20 @@ feature work stuck on feature branches across multiple workspaces.
 
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
 
+        # Ensure the agent-type memory collection exists (memory scoping spec §4).
+        # Non-blocking: if memory is unavailable, the collection will be created
+        # lazily on first access.
+        memory_mgr = getattr(self.orchestrator, "memory_manager", None)
+        if memory_mgr:
+            try:
+                await memory_mgr.ensure_agent_type_collection(profile_id)
+            except Exception:
+                logger.warning(
+                    "Failed to ensure agent-type memory collection for profile '%s'",
+                    profile_id,
+                    exc_info=True,
+                )
+
         result: dict = {"created": profile_id, "name": name}
         # Soft validation — warn about unrecognized tool names
         from src.known_tools import validate_tool_names

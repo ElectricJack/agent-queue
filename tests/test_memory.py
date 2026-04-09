@@ -2424,3 +2424,90 @@ class TestEnsureOrchestratorCollection:
             assert result1 is True
             assert result2 is True
             assert mock_router.ensure_orchestrator_collection.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# EnsureAgentTypeCollection tests (roadmap 3.1.2)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureAgentTypeCollection:
+    """Tests for MemoryManager.ensure_agent_type_collection on profile creation."""
+
+    def _make_manager(self, storage_root: str = "/tmp/aq-test", **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    async def test_returns_false_when_disabled(self):
+        """ensure_agent_type_collection returns False when memory is disabled."""
+        mgr = MemoryManager(MemoryConfig(enabled=False))
+        result = await mgr.ensure_agent_type_collection("coding")
+        assert result is False
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", False)
+    async def test_returns_false_when_memsearch_unavailable(self):
+        """ensure_agent_type_collection returns False when memsearch not installed."""
+        mgr = self._make_manager()
+        result = await mgr.ensure_agent_type_collection("coding")
+        assert result is False
+
+    async def test_returns_false_when_router_fails(self):
+        """ensure_agent_type_collection returns False when router can't be created."""
+        mgr = self._make_manager()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=None):
+            result = await mgr.ensure_agent_type_collection("coding")
+            assert result is False
+
+    async def test_returns_true_on_success(self):
+        """ensure_agent_type_collection returns True when collection is ensured."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_agent_type_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_agent_type_collection("coding")
+            assert result is True
+            mock_router.ensure_agent_type_collection.assert_called_once_with("coding")
+
+    async def test_passes_agent_type_to_router(self):
+        """ensure_agent_type_collection forwards the agent_type argument to the router."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_agent_type_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            await mgr.ensure_agent_type_collection("code-review")
+            mock_router.ensure_agent_type_collection.assert_called_once_with("code-review")
+
+    async def test_handles_exception_gracefully(self):
+        """ensure_agent_type_collection catches exceptions and returns False."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_agent_type_collection = MagicMock(
+            side_effect=RuntimeError("Milvus down")
+        )
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_agent_type_collection("coding")
+            assert result is False
+
+    async def test_idempotent(self):
+        """Calling ensure_agent_type_collection twice succeeds both times."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_agent_type_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result1 = await mgr.ensure_agent_type_collection("coding")
+            result2 = await mgr.ensure_agent_type_collection("coding")
+            assert result1 is True
+            assert result2 is True
+            assert mock_router.ensure_agent_type_collection.call_count == 2
+
+    async def test_different_agent_types(self):
+        """ensure_agent_type_collection works with different agent type names."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_agent_type_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result1 = await mgr.ensure_agent_type_collection("coding")
+            result2 = await mgr.ensure_agent_type_collection("review")
+            assert result1 is True
+            assert result2 is True
+            assert mock_router.ensure_agent_type_collection.call_count == 2

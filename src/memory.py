@@ -421,6 +421,51 @@ class MemoryManager:
             logger.warning("Failed to ensure orchestrator collection: %s", e)
             return False
 
+    async def ensure_agent_type_collection(self, agent_type: str) -> bool:
+        """Ensure the ``aq_agenttype_{agent_type}`` collection exists in Milvus.
+
+        Called when a new agent-type profile is created (roadmap 3.1.2) so
+        the agent-type-scoped memory collection is ready for writes and
+        searches from the agent's first task, rather than waiting for lazy
+        creation on first access.
+
+        Parameters
+        ----------
+        agent_type:
+            The agent type identifier (e.g. ``"coding"``, ``"code-review"``).
+            Will be sanitized for Milvus compatibility.
+
+        Returns
+        -------
+        bool
+            ``True`` if the collection was successfully ensured (created or
+            already existed), ``False`` if memsearch is unavailable or
+            initialization failed.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            logger.debug(
+                "Memory disabled or memsearch unavailable — skipping agent-type collection"
+            )
+            return False
+
+        router = await self._get_router()
+        if router is None:
+            logger.warning(
+                "Could not initialize CollectionRouter — agent-type collection not created"
+            )
+            return False
+
+        try:
+            await asyncio.to_thread(router.ensure_agent_type_collection, agent_type)
+            logger.info(
+                "Agent-type memory collection (aq_agenttype_%s) ensured on profile creation",
+                agent_type,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to ensure agent-type collection for '%s': %s", agent_type, e)
+            return False
+
     # ------------------------------------------------------------------
     # Instance management
     # ------------------------------------------------------------------

@@ -1082,6 +1082,138 @@ class TestEnsureOrchestratorCollection:
 
 
 @pytestmark_milvus
+class TestEnsureAgentTypeCollection:
+    """Tests for CollectionRouter.ensure_agent_type_collection (roadmap 3.1.2)."""
+
+    def test_creates_agent_type_collection(self, router: CollectionRouter):
+        """ensure_agent_type_collection creates the aq_agenttype_{type} collection."""
+        assert not router.has_store(MemoryScope.AGENT_TYPE, "coding")
+        store = router.ensure_agent_type_collection("coding")
+        assert store is not None
+        assert store._collection == "aq_agenttype_coding"
+        assert router.has_store(MemoryScope.AGENT_TYPE, "coding")
+
+    def test_idempotent(self, router: CollectionRouter):
+        """Calling ensure_agent_type_collection twice returns the same store."""
+        store1 = router.ensure_agent_type_collection("coding")
+        store2 = router.ensure_agent_type_collection("coding")
+        assert store1 is store2
+
+    def test_sanitizes_agent_type_name(self, router: CollectionRouter):
+        """Agent type names with special characters are sanitized."""
+        store = router.ensure_agent_type_collection("code-review")
+        assert store._collection == "aq_agenttype_code_review"
+        assert router.has_store(MemoryScope.AGENT_TYPE, "code-review")
+
+    def test_different_agent_types_different_stores(self, router: CollectionRouter):
+        """Different agent types get separate collections."""
+        s1 = router.ensure_agent_type_collection("coding")
+        s2 = router.ensure_agent_type_collection("review")
+        assert s1 is not s2
+        assert s1._collection != s2._collection
+
+    def test_collection_appears_in_list(self, router: CollectionRouter):
+        """After ensure, aq_agenttype_coding appears in list_collections."""
+        router.ensure_agent_type_collection("coding")
+        names = {name for _, _, name in router.list_collections()}
+        assert "aq_agenttype_coding" in names
+
+    def test_collection_is_writable(self, router: CollectionRouter):
+        """The ensured agent-type collection accepts upserts."""
+        store = router.ensure_agent_type_collection("coding")
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "at_ensure_test_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Cross-project coding convention",
+                    "source": "coding.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        results = store.query(filter_expr='chunk_hash == "at_ensure_test_1"')
+        assert len(results) == 1
+        assert results[0]["content"] == "Cross-project coding convention"
+
+    def test_collection_is_searchable_after_ensure(self, router: CollectionRouter):
+        """After ensure, the agent-type collection is available in multi-scope search."""
+        store = router.ensure_agent_type_collection("coding")
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "at_ensure_search_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Always use type hints in Python code",
+                    "source": "coding.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        # Verify it's discoverable via _get_store_if_exists (used by search)
+        found = router._get_store_if_exists(MemoryScope.AGENT_TYPE, "coding")
+        assert found is not None
+        assert found is store
+
+    def test_fresh_router_finds_ensured_collection(self, tmp_path: Path):
+        """A fresh router can discover the agent-type collection created by ensure."""
+        db = tmp_path / "at_ensure_persist.db"
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        store = r1.ensure_agent_type_collection("coding")
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "at_persist_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Persistent agent-type data",
+                    "source": "coding.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        r1.close()
+
+        # Fresh router — no cached stores
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0
+        found = r2._get_store_if_exists(MemoryScope.AGENT_TYPE, "coding")
+        assert found is not None
+        results = found.query(filter_expr='chunk_hash == "at_persist_1"')
+        assert len(results) == 1
+        r2.close()
+
+    def test_does_not_affect_other_scopes(self, router: CollectionRouter):
+        """ensure_agent_type_collection only creates the agent-type collection."""
+        router.ensure_agent_type_collection("coding")
+        assert router.has_store(MemoryScope.AGENT_TYPE, "coding")
+        assert not router.has_store(MemoryScope.SYSTEM)
+        assert not router.has_store(MemoryScope.ORCHESTRATOR)
+        assert not router.has_store(MemoryScope.PROJECT, "myapp")
+
+    def test_coexists_with_system_and_orchestrator(self, router: CollectionRouter):
+        """Agent-type, system, and orchestrator collections can all coexist."""
+        router.ensure_system_collection()
+        router.ensure_orchestrator_collection()
+        router.ensure_agent_type_collection("coding")
+        assert router.has_store(MemoryScope.SYSTEM)
+        assert router.has_store(MemoryScope.ORCHESTRATOR)
+        assert router.has_store(MemoryScope.AGENT_TYPE, "coding")
+        names = {name for _, _, name in router.list_collections()}
+        assert "aq_system" in names
+        assert "aq_orchestrator" in names
+        assert "aq_agenttype_coding" in names
+
+
+@pytestmark_milvus
 class TestCollectionRouterContextManager:
     def test_context_manager(self, tmp_path: Path):
         db = tmp_path / "ctx_test.db"
