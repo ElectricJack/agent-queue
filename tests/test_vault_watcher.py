@@ -455,6 +455,293 @@ class TestDebouncing:
 
 
 # ---------------------------------------------------------------------------
+# Debounce behaviour tests (roadmap 1.3.10)
+# ---------------------------------------------------------------------------
+
+
+class TestDebounceBehaviour:
+    """Detailed debounce behaviour tests per spec Section 17.
+
+    These tests verify the precise debounce semantics: batching rapid edits,
+    per-file dispatch, window expiry, final-state preservation, error
+    resilience, and configurability.
+    """
+
+    @pytest.fixture
+    def vault_dir(self, tmp_path):
+        vault = tmp_path / "vault"
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        (vault / "projects" / "app" / "playbooks").mkdir(parents=True)
+        return str(vault)
+
+    # (a) editing same file 10 times in 100ms triggers handler only once
+    @pytest.mark.asyncio
+    async def test_rapid_edits_same_file_triggers_handler_once(self, vault_dir):
+        """Editing the same file 10 times in quick succession triggers handler only once.
+
+        All edits land within the debounce window and are batched into a single
+        dispatch with one VaultChange for that file.
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=999)
+        collector = ChangeCollector()
+        watcher.register_handler("**/*.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        filepath = os.path.join(vault_dir, "system", "playbooks", "deploy.md")
+
+        # Create the file, then modify it 9 more times (10 total edits)
+        _create_file(filepath, "v1")
+        await watcher.check()
+
+        for i in range(2, 11):
+            with open(filepath, "w") as f:
+                f.write(f"v{i}")
+            _touch(filepath)
+            await watcher.check()
+
+        # All 10 edits are still pending — debounce window (999s) hasn't elapsed
+        assert collector.call_count == 0
+        assert watcher.get_pending_change_count() > 0
+
+        # Now flush — handler should be called exactly once
+        await watcher._flush_pending(force=True)
+
+        assert collector.call_count == 1
+        # Deduplication: created + 9 modified → single "created"
+        assert len(collector.all_changes) == 1
+        assert collector.all_changes[0].operation == "created"
+
+    # (b) editing two different files in same category triggers handler once per file
+    @pytest.mark.asyncio
+    async def test_two_files_same_category_triggers_handler_once_per_file(self, vault_dir):
+        """Editing two different files in the same glob category triggers the handler
+        once, with both files in the change list (one dispatch, two VaultChange items).
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=999)
+        collector = ChangeCollector()
+        watcher.register_handler("*/playbooks/*.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # Create two separate playbook files
+        file_a = os.path.join(vault_dir, "system", "playbooks", "deploy.md")
+        file_b = os.path.join(vault_dir, "system", "playbooks", "rollback.md")
+        _create_file(file_a, "deploy content")
+        _create_file(file_b, "rollback content")
+        await watcher.check()
+
+        await watcher._flush_pending(force=True)
+
+        # Handler called once with both changes batched together
+        assert collector.call_count == 1
+        rel_paths = {c.rel_path for c in collector.all_changes}
+        assert len(rel_paths) == 2
+        assert os.path.join("system", "playbooks", "deploy.md") in rel_paths
+        assert os.path.join("system", "playbooks", "rollback.md") in rel_paths
+
+    # (c) editing a file, waiting past debounce window, editing again triggers twice
+    @pytest.mark.asyncio
+    async def test_edit_wait_edit_triggers_handler_twice(self, vault_dir):
+        """Editing a file, waiting past the debounce window, then editing again
+        results in two separate handler invocations.
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=1.0)
+        collector = ChangeCollector()
+        watcher.register_handler("**/*.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        filepath = os.path.join(vault_dir, "system", "playbooks", "deploy.md")
+
+        # First edit
+        _create_file(filepath, "v1")
+        await watcher.check()
+        assert collector.call_count == 0  # Within debounce window
+
+        # Backdate pending timestamps so debounce window has "elapsed"
+        watcher._pending = [(c, t - 2.0) for c, t in watcher._pending]
+        await watcher._flush_pending()
+
+        assert collector.call_count == 1
+        assert collector.all_changes[0].operation == "created"
+
+        # Second edit (modify the same file)
+        with open(filepath, "w") as f:
+            f.write("v2")
+        _touch(filepath)
+        await watcher.check()
+
+        # Backdate again to expire debounce
+        watcher._pending = [(c, t - 2.0) for c, t in watcher._pending]
+        await watcher._flush_pending()
+
+        assert collector.call_count == 2
+        assert collector.calls[1][0].operation == "modified"
+
+    # (d) debounce does not drop the final state — handler receives latest content
+    @pytest.mark.asyncio
+    async def test_debounce_preserves_final_state(self, vault_dir):
+        """After rapid edits within the debounce window, the handler receives the
+        final state of the file — deduplication keeps the correct operation and
+        the file on disk has the latest content when the handler runs.
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=999)
+
+        # Capture what the handler sees when it runs
+        handler_snapshots: list[dict[str, str]] = []
+
+        async def snapshot_handler(changes: list[VaultChange]) -> None:
+            for change in changes:
+                if change.operation != "deleted" and os.path.exists(change.path):
+                    with open(change.path) as f:
+                        handler_snapshots.append({"rel_path": change.rel_path, "content": f.read()})
+
+        watcher.register_handler("**/*.md", snapshot_handler)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        filepath = os.path.join(vault_dir, "system", "playbooks", "deploy.md")
+
+        # Rapid edits: v1 → v2 → v3 → v4 → v5 (final)
+        for version in range(1, 6):
+            if version == 1:
+                _create_file(filepath, f"version-{version}")
+            else:
+                with open(filepath, "w") as f:
+                    f.write(f"version-{version}")
+                _touch(filepath)
+            await watcher.check()
+
+        # Flush — handler should see file with "version-5" on disk
+        await watcher._flush_pending(force=True)
+
+        assert len(handler_snapshots) == 1
+        assert handler_snapshots[0]["content"] == "version-5"
+
+    # (e) handler errors during debounced call do not prevent future triggers
+    @pytest.mark.asyncio
+    async def test_handler_error_does_not_prevent_future_triggers(self, vault_dir):
+        """If a handler raises during a debounced dispatch, subsequent debounce
+        windows still dispatch to that handler.
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=0)
+
+        call_count = 0
+        error_on_first = True
+
+        async def flaky_handler(changes: list[VaultChange]) -> None:
+            nonlocal call_count, error_on_first
+            call_count += 1
+            if error_on_first and call_count == 1:
+                raise RuntimeError("transient failure")
+
+        watcher.register_handler("**/*.md", flaky_handler)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # First edit — handler will raise
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "deploy.md"))
+        await watcher.check()
+        assert call_count == 1  # Was called (and raised)
+
+        # Second edit — handler should still be called
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "rollback.md"))
+        await watcher.check()
+        assert call_count == 2  # Still invoked despite previous error
+
+    @pytest.mark.asyncio
+    async def test_handler_error_does_not_prevent_future_triggers_with_debounce(self, vault_dir):
+        """Same as above but with a real debounce window — errors in one flush
+        don't poison the handler registration for the next flush.
+        """
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=1.0)
+
+        invocations: list[list[VaultChange]] = []
+
+        async def error_then_ok(changes: list[VaultChange]) -> None:
+            invocations.append(changes)
+            if len(invocations) == 1:
+                raise RuntimeError("boom")
+
+        watcher.register_handler("**/*.md", error_then_ok)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        # First change batch
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "a.md"))
+        await watcher.check()
+        # Expire debounce
+        watcher._pending = [(c, t - 2.0) for c, t in watcher._pending]
+        await watcher._flush_pending()
+
+        assert len(invocations) == 1  # Called and raised
+
+        # Second change batch — handler must still be active
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "b.md"))
+        await watcher.check()
+        watcher._pending = [(c, t - 2.0) for c, t in watcher._pending]
+        await watcher._flush_pending()
+
+        assert len(invocations) == 2  # Called again, succeeded
+
+    # (f) debounce window is configurable and defaults to a reasonable value
+    def test_debounce_default_value(self, vault_dir):
+        """Default debounce_seconds is 2.0 — a reasonable value for editor saves."""
+        watcher = VaultWatcher(vault_dir)
+        assert watcher.debounce_seconds == 2.0
+
+    def test_debounce_configurable(self, vault_dir):
+        """debounce_seconds can be set to a custom value."""
+        watcher = VaultWatcher(vault_dir, debounce_seconds=5.0)
+        assert watcher.debounce_seconds == 5.0
+
+    @pytest.mark.asyncio
+    async def test_debounce_zero_dispatches_immediately(self, vault_dir):
+        """Setting debounce_seconds=0 dispatches changes on the same check() cycle."""
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=0)
+        collector = ChangeCollector()
+        watcher.register_handler("**/*.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "deploy.md"))
+        await watcher.check()
+
+        # With debounce=0, dispatched immediately
+        assert collector.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_short_debounce_holds_then_releases(self, vault_dir):
+        """A short debounce window holds changes until it elapses."""
+        watcher = VaultWatcher(vault_dir, poll_interval=0, debounce_seconds=0.5)
+        collector = ChangeCollector()
+        watcher.register_handler("**/*.md", collector)
+
+        watcher._snapshot()
+        watcher._initialized = True
+
+        _create_file(os.path.join(vault_dir, "system", "playbooks", "deploy.md"))
+        await watcher.check()
+
+        # Still within 0.5s debounce — not dispatched
+        assert collector.call_count == 0
+
+        # Backdate to simulate 0.5s passing
+        watcher._pending = [(c, t - 1.0) for c, t in watcher._pending]
+        await watcher._flush_pending()
+
+        assert collector.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Deduplication tests
 # ---------------------------------------------------------------------------
 
