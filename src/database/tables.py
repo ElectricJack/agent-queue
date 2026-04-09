@@ -355,3 +355,31 @@ plugin_data = Table(
     Column("updated_at", Float, nullable=False),
     Index("idx_plugin_data_plugin_id", "plugin_id"),
 )
+
+playbook_runs = Table(
+    "playbook_runs",
+    metadata,
+    Column("run_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("playbook_version", Integer, nullable=False),
+    Column("trigger_event", Text, nullable=False, server_default="'{}'"),
+    Column(
+        "status",
+        Text,
+        nullable=False,
+        server_default="'running'",
+    ),
+    Column("current_node", Text, nullable=True),
+    Column("conversation_history", Text, nullable=False, server_default="'[]'"),
+    Column("node_trace", Text, nullable=False, server_default="'[]'"),
+    Column("tokens_used", Integer, nullable=False, server_default="0"),
+    Column("started_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    Column("error", Text, nullable=True),
+    CheckConstraint(
+        "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
+        name="ck_playbook_runs_status",
+    ),
+    Index("idx_playbook_runs_playbook_id", "playbook_id"),
+    Index("idx_playbook_runs_status", "status"),
+)
