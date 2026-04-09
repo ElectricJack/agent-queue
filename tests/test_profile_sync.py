@@ -16,6 +16,7 @@ Covers:
 - Roadmap 4.1.10 (a)-(g): Profile parser and DB sync integration tests
 - Roadmap 4.1.11 (a)-(g): Profile error handling tests
 - Roadmap 4.1.12 (a)-(f): File watcher profile sync integration tests
+- Roadmap 4.3.5 (a)-(g): Starter knowledge pack provisioning integration tests
 """
 
 from __future__ import annotations
@@ -4280,3 +4281,505 @@ name: DB
         assert profile_b is not None
         assert profile_a.model == "da-v1"
         assert profile_b.model == "db-v1"
+
+
+# ---------------------------------------------------------------------------
+# Starter knowledge pack provisioning — Roadmap §4.3.5 (a)-(g)
+# ---------------------------------------------------------------------------
+
+
+class TestStarterKnowledgeProvisioning:
+    """Integration tests for starter knowledge pack provisioning via watcher.
+
+    Roadmap 4.3.5 — verifies that creating profiles through the vault watcher
+    path correctly triggers starter knowledge pack copying.
+    """
+
+    @pytest.mark.asyncio
+    async def test_watcher_copies_starter_knowledge_on_create(self, db, tmp_path):
+        """(a) Creating first profile.md for 'coding' copies knowledge pack to memory dir.
+
+        When on_profile_changed receives a 'created' event for a new agent-type
+        profile and data_dir is provided, starter knowledge files should be copied
+        into the agent-type's memory directory.
+        """
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        # Write profile.md into the vault location
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # Verify profile synced to DB
+        profile = await db.get_profile("coding")
+        assert profile is not None
+
+        # Verify starter knowledge files were copied
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        assert (memory_dir / "common-pitfalls.md").is_file()
+        assert (memory_dir / "git-conventions.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_watcher_copied_files_have_starter_tag(self, db, tmp_path):
+        """(b) Copied files are tagged #starter in frontmatter.
+
+        Starter knowledge files copied via the watcher path must retain
+        their #starter tag so agents and users can identify them.
+        """
+        import yaml
+
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        for filename in ("common-pitfalls.md", "git-conventions.md"):
+            content = (memory_dir / filename).read_text()
+            assert content.startswith("---"), f"{filename} missing YAML frontmatter"
+            lines = content.strip().splitlines()
+            end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+            fm = yaml.safe_load("\n".join(lines[1:end_idx]))
+            assert "starter" in fm.get("tags", []), (
+                f"{filename} missing 'starter' tag in frontmatter"
+            )
+
+    @pytest.mark.asyncio
+    async def test_watcher_does_not_recopy_on_second_create(self, db, tmp_path):
+        """(c) Creating second profile.md for same type does NOT copy pack again.
+
+        Starter knowledge is only copied once.  If the memory directory already
+        contains the files (from a previous profile creation), they are NOT
+        overwritten — preserving any user customizations.
+        """
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+
+        # First creation — copies starter knowledge
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # Customize a starter file (simulates user edits)
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        (memory_dir / "common-pitfalls.md").write_text("# My custom pitfalls\nEdited by user.")
+
+        # Delete DB record and re-create to simulate second profile creation
+        await db.delete_profile("coding")
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # User customization must be preserved
+        assert (memory_dir / "common-pitfalls.md").read_text() == (
+            "# My custom pitfalls\nEdited by user."
+        )
+
+    @pytest.mark.asyncio
+    async def test_watcher_no_pack_creates_profile_without_error(self, db, tmp_path):
+        """(d) Agent-type with no matching knowledge pack creates profile without error.
+
+        Knowledge packs are optional.  An agent-type that doesn't match any
+        template (e.g. a custom type like 'devops') should still create the
+        profile successfully with no starter knowledge.
+        """
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "custom-devops")
+
+        custom_profile = """\
+---
+id: custom-devops
+name: Custom DevOps Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        profile_path = tmp_path / "vault" / "agent-types" / "custom-devops" / "profile.md"
+        _create_file(str(profile_path), custom_profile)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/custom-devops/profile.md",
+            operation="created",
+        )
+
+        # Should not raise — profile created, no starter knowledge needed
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        profile = await db.get_profile("custom-devops")
+        assert profile is not None
+        assert profile.name == "Custom DevOps Agent"
+
+        # Memory directory may or may not exist, but no knowledge files
+        memory_dir = tmp_path / "vault" / "agent-types" / "custom-devops" / "memory"
+        if memory_dir.exists():
+            md_files = list(memory_dir.glob("*.md"))
+            assert md_files == [], "No knowledge files should be present for custom type"
+
+    @pytest.mark.asyncio
+    async def test_watcher_memory_collection_ensured_on_create(self, db, tmp_path):
+        """(e) Knowledge pack files are indexed into agent-type memory collection.
+
+        When a profile is created via the command handler, ensure_agent_type_collection
+        is called so the memory collection is ready for indexing starter knowledge.
+        This test verifies the integration point in _cmd_create_profile.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.vault import ensure_default_templates
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+
+        # Build a mock orchestrator with memory manager and DB
+        mock_memory_mgr = MagicMock()
+        mock_memory_mgr.ensure_agent_type_collection = AsyncMock(return_value=True)
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.memory_manager = mock_memory_mgr
+        mock_orchestrator.db = db
+
+        mock_config = MagicMock()
+        mock_config.data_dir = data_dir
+
+        # Patch _cmd_create_profile's dependencies to test the call path
+        with patch("src.command_handler.CommandHandler.__init__", return_value=None):
+            from src.command_handler import CommandHandler
+
+            handler = CommandHandler.__new__(CommandHandler)
+            handler.orchestrator = mock_orchestrator
+            handler.config = mock_config
+
+            # Set up vault path to return a path that doesn't exist
+            vault_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+            handler._vault_profile_path = MagicMock(return_value=str(vault_path))
+
+            result = await handler._cmd_create_profile({"id": "coding", "name": "Coding Agent"})
+
+        assert result.get("created") == "coding"
+        # Verify ensure_agent_type_collection was called for memory indexing
+        mock_memory_mgr.ensure_agent_type_collection.assert_awaited_once_with("coding")
+
+    @pytest.mark.asyncio
+    async def test_starter_tag_identifies_starter_content(self, db, tmp_path):
+        """(f) #starter tag allows users to identify and optionally remove starter content.
+
+        Users should be able to find all starter files by searching for the
+        #starter tag in YAML frontmatter.  This test verifies that all copied
+        starter files across all agent types are discoverable via this tag.
+        """
+        import yaml
+
+        from src.vault import (
+            _STARTER_KNOWLEDGE,
+            ensure_default_templates,
+            ensure_vault_profile_dirs,
+        )
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+
+        # Create profiles for all known agent types through the watcher
+        for agent_type in _STARTER_KNOWLEDGE:
+            ensure_vault_profile_dirs(data_dir, agent_type)
+
+            profile_md = f"""\
+---
+id: {agent_type}
+name: {agent_type.title()} Agent
+---
+
+## Config
+```json
+{{"model": "claude-sonnet-4-6"}}
+```
+"""
+            profile_path = (
+                tmp_path / "vault" / "agent-types" / agent_type / "profile.md"
+            )
+            _create_file(str(profile_path), profile_md)
+
+            change = VaultChange(
+                path=str(profile_path),
+                rel_path=f"agent-types/{agent_type}/profile.md",
+                operation="created",
+            )
+            await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # Now search all memory dirs for files with #starter tag
+        starter_files_found: list[str] = []
+        for agent_type in _STARTER_KNOWLEDGE:
+            memory_dir = tmp_path / "vault" / "agent-types" / agent_type / "memory"
+            for md_file in sorted(memory_dir.glob("*.md")):
+                content = md_file.read_text()
+                if content.startswith("---"):
+                    lines = content.strip().splitlines()
+                    end_idx = next(
+                        (i for i, line in enumerate(lines[1:], 1) if line == "---"),
+                        None,
+                    )
+                    if end_idx:
+                        fm = yaml.safe_load("\n".join(lines[1:end_idx]))
+                        if fm and "starter" in fm.get("tags", []):
+                            starter_files_found.append(f"{agent_type}/{md_file.name}")
+
+        # Every file from every knowledge pack should be discoverable via #starter
+        expected_count = sum(len(files) for files in _STARTER_KNOWLEDGE.values())
+        assert len(starter_files_found) == expected_count, (
+            f"Expected {expected_count} starter files, found {len(starter_files_found)}: "
+            f"{starter_files_found}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_starter_files_are_copies_not_symlinks(self, db, tmp_path):
+        """(g) Starter files are copies (not symlinks) — editing them does not affect template.
+
+        Starter knowledge files must be independent copies of the templates.
+        Modifying a copied file must not alter the original template, ensuring
+        user customizations are safe.
+        """
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        template_dir = tmp_path / "vault" / "templates" / "knowledge" / "coding"
+
+        for filename in ("common-pitfalls.md", "git-conventions.md"):
+            copied_file = memory_dir / filename
+            template_file = template_dir / filename
+
+            # Verify the file is NOT a symlink
+            assert not copied_file.is_symlink(), f"{filename} should not be a symlink"
+
+            # Read original template content
+            original_template = template_file.read_text()
+
+            # Modify the copied file
+            copied_file.write_text("# User-customized content\nThis replaces the starter.")
+
+            # Verify the template is unchanged
+            assert template_file.read_text() == original_template, (
+                f"Editing {filename} in memory/ must not affect the template"
+            )
+
+    @pytest.mark.asyncio
+    async def test_watcher_no_starter_copy_without_data_dir(self, db, tmp_path):
+        """Watcher does not attempt starter knowledge copy when data_dir is None."""
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+
+        # Call without data_dir — starter knowledge should NOT be copied
+        await on_profile_changed([change], db=db, data_dir=None)
+
+        # Profile synced to DB
+        profile = await db.get_profile("coding")
+        assert profile is not None
+
+        # But no starter knowledge files copied (memory dir may exist from
+        # ensure_vault_profile_dirs but should be empty of knowledge files)
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        md_files = list(memory_dir.glob("*.md")) if memory_dir.exists() else []
+        assert md_files == [], "No knowledge files should be copied without data_dir"
+
+    @pytest.mark.asyncio
+    async def test_watcher_no_starter_copy_on_modify(self, db, tmp_path):
+        """Watcher does not copy starter knowledge on profile modification (only creation)."""
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "coding")
+
+        # Pre-create the profile in DB so on_profile_changed treats it as update
+        await db.create_profile(AgentProfile(id="coding", name="Old Name"))
+
+        profile_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="modified",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # Profile updated in DB
+        profile = await db.get_profile("coding")
+        assert profile.name == "Coding Agent"
+
+        # No starter knowledge copied on modify
+        memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+        md_files = list(memory_dir.glob("*.md")) if memory_dir.exists() else []
+        assert md_files == [], "Starter knowledge should not be copied on modify"
+
+    @pytest.mark.asyncio
+    async def test_watcher_no_starter_copy_for_orchestrator(self, db, tmp_path):
+        """Orchestrator profile does not get starter knowledge copied."""
+        from src.vault import ensure_default_templates
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+
+        orchestrator_profile = """\
+---
+id: orchestrator
+name: Orchestrator
+tags: [profile, orchestrator]
+---
+
+# Orchestrator
+
+## Role
+You are the orchestrator.
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
+        _create_file(str(profile_path), orchestrator_profile)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="orchestrator/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        # Profile synced to DB
+        profile = await db.get_profile("orchestrator")
+        assert profile is not None
+
+        # No starter knowledge for orchestrator
+        orch_memory = tmp_path / "vault" / "orchestrator" / "memory"
+        md_files = list(orch_memory.glob("*.md")) if orch_memory.exists() else []
+        assert md_files == [], "Orchestrator should not get starter knowledge"
+
+    @pytest.mark.asyncio
+    async def test_watcher_copies_code_review_starter_knowledge(self, db, tmp_path):
+        """Watcher copies code-review knowledge pack for code-review profile."""
+        from src.vault import ensure_default_templates, ensure_vault_profile_dirs
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+        ensure_vault_profile_dirs(data_dir, "code-review")
+
+        cr_profile = """\
+---
+id: code-review
+name: Code Review Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        profile_path = tmp_path / "vault" / "agent-types" / "code-review" / "profile.md"
+        _create_file(str(profile_path), cr_profile)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/code-review/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, data_dir=data_dir)
+
+        memory_dir = tmp_path / "vault" / "agent-types" / "code-review" / "memory"
+        assert (memory_dir / "review-checklist.md").is_file()
+        assert (memory_dir / "review-process.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_cmd_create_profile_returns_starter_knowledge(self, db, tmp_path):
+        """_cmd_create_profile includes starter_knowledge list in result."""
+        from unittest.mock import MagicMock, patch
+
+        from src.vault import ensure_default_templates
+
+        data_dir = str(tmp_path)
+        ensure_default_templates(data_dir)
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.memory_manager = None  # No memory manager
+        mock_orchestrator.db = db
+
+        mock_config = MagicMock()
+        mock_config.data_dir = data_dir
+
+        with patch("src.command_handler.CommandHandler.__init__", return_value=None):
+            from src.command_handler import CommandHandler
+
+            handler = CommandHandler.__new__(CommandHandler)
+            handler.orchestrator = mock_orchestrator
+            handler.config = mock_config
+
+            vault_path = tmp_path / "vault" / "agent-types" / "coding" / "profile.md"
+            handler._vault_profile_path = MagicMock(return_value=str(vault_path))
+
+            result = await handler._cmd_create_profile({"id": "coding", "name": "Coding Agent"})
+
+        assert result.get("created") == "coding"
+        assert "starter_knowledge" in result, "Result should include starter_knowledge list"
+        assert "common-pitfalls.md" in result["starter_knowledge"]
+        assert "git-conventions.md" in result["starter_knowledge"]

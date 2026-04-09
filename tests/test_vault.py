@@ -1254,3 +1254,127 @@ def test_copy_starter_knowledge_all_types(tmp_path):
             f"Mismatch for {agent_type}: expected {sorted(files.keys())}, "
             f"got {sorted(result['copied'])}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Starter knowledge pack provisioning — Roadmap §4.3.5 supplementary tests
+# ---------------------------------------------------------------------------
+
+
+def test_starter_files_are_copies_not_symlinks(tmp_path):
+    """(g) Starter files are copies (not symlinks) — editing them doesn't affect template.
+
+    Verifies that copy_starter_knowledge produces independent file copies.
+    Modifying a copied file must not alter the source template.
+    """
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+
+    copy_starter_knowledge(str(tmp_path), "coding")
+
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+    template_dir = tmp_path / "vault" / "templates" / "knowledge" / "coding"
+
+    for filename in ("common-pitfalls.md", "git-conventions.md"):
+        copied = memory_dir / filename
+        template = template_dir / filename
+
+        # Must not be a symlink
+        assert not copied.is_symlink(), f"{filename} in memory/ should not be a symlink"
+
+        # Read original template
+        original = template.read_text()
+
+        # Modify the copy
+        copied.write_text("completely replaced content")
+
+        # Template must be untouched
+        assert template.read_text() == original, (
+            f"Modifying memory/{filename} must not change templates/knowledge/coding/{filename}"
+        )
+
+
+def test_starter_tag_discoverable_across_all_types(tmp_path):
+    """(f) #starter tag allows users to identify and optionally remove starter content.
+
+    Every starter knowledge file across all agent types must be discoverable
+    by searching for the 'starter' tag in YAML frontmatter.
+    """
+    import yaml
+
+    ensure_default_templates(str(tmp_path))
+
+    discovered: list[str] = []
+
+    for agent_type, expected_files in _STARTER_KNOWLEDGE.items():
+        ensure_vault_profile_dirs(str(tmp_path), agent_type)
+        copy_starter_knowledge(str(tmp_path), agent_type)
+
+        memory_dir = tmp_path / "vault" / "agent-types" / agent_type / "memory"
+
+        for filename in sorted(expected_files):
+            filepath = memory_dir / filename
+            assert filepath.is_file(), f"Expected {agent_type}/{filename} to exist"
+
+            content = filepath.read_text()
+            assert content.startswith("---"), f"{agent_type}/{filename} has no YAML frontmatter"
+
+            lines = content.strip().splitlines()
+            end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+            fm = yaml.safe_load("\n".join(lines[1:end_idx]))
+
+            assert fm is not None, f"{agent_type}/{filename} frontmatter parsed as None"
+            tags = fm.get("tags", [])
+            assert "starter" in tags, (
+                f"{agent_type}/{filename} must have 'starter' tag for discoverability, "
+                f"got tags={tags}"
+            )
+            discovered.append(f"{agent_type}/{filename}")
+
+    # Sanity: we found tags in every expected file
+    total_expected = sum(len(f) for f in _STARTER_KNOWLEDGE.values())
+    assert len(discovered) == total_expected
+
+
+def test_starter_tag_removable_by_user(tmp_path):
+    """(f) Users can optionally remove starter content identified by #starter tag.
+
+    Verifies the user workflow: find files by tag, then delete them.
+    After removal, the files are gone and re-running copy won't restore them
+    (the memory directory already has other files, but the deleted ones are
+    re-copied since they no longer exist — by design, allowing re-provisioning).
+    """
+    import yaml
+
+    ensure_default_templates(str(tmp_path))
+    ensure_vault_profile_dirs(str(tmp_path), "coding")
+    copy_starter_knowledge(str(tmp_path), "coding")
+
+    memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
+
+    # Step 1: User identifies starter files by #starter tag
+    starter_files = []
+    for md_file in memory_dir.glob("*.md"):
+        content = md_file.read_text()
+        if content.startswith("---"):
+            lines = content.strip().splitlines()
+            end_idx = next(
+                (i for i, line in enumerate(lines[1:], 1) if line == "---"),
+                None,
+            )
+            if end_idx:
+                fm = yaml.safe_load("\n".join(lines[1:end_idx]))
+                if fm and "starter" in fm.get("tags", []):
+                    starter_files.append(md_file)
+
+    assert len(starter_files) == 2, "Should find 2 starter files for coding type"
+
+    # Step 2: User removes a starter file
+    starter_files[0].unlink()
+    remaining = list(memory_dir.glob("*.md"))
+    assert len(remaining) == 1, "One starter file should remain after deletion"
+
+    # Step 3: Re-running copy restores only the deleted file (idempotent)
+    result = copy_starter_knowledge(str(tmp_path), "coding")
+    assert len(result["copied"]) == 1, "Only the deleted file should be re-copied"
+    assert len(result["skipped"]) == 1, "The remaining file should be skipped"
