@@ -155,15 +155,23 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Print complete help for all commands (for LLM ingestion).",
 )
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output raw JSON instead of formatted tables.",
+)
 @click.version_option(version="0.1.0", prog_name="aq")
 @click.pass_context
-def cli(ctx: click.Context, api_url: str | None, help_all: bool) -> None:
+def cli(ctx: click.Context, api_url: str | None, help_all: bool, output_json: bool) -> None:
     """AgentQueue CLI — Modern terminal interface for task management.
 
     Connects to the agent-queue daemon via its REST API.
     """
     ctx.ensure_object(dict)
     ctx.obj["api_url"] = api_url
+    ctx.obj["json"] = output_json
 
     if help_all:
         _print_full_help(ctx)
@@ -195,6 +203,12 @@ def status(ctx: click.Context) -> None:
             return result
 
     result = _run(_run_status())
+
+    # --json: emit raw result and return
+    if ctx.obj.get("json"):
+        json_data = result.to_dict() if hasattr(result, "to_dict") else result
+        console.print_json(data=json_data)
+        return
 
     # Adapt get_status response for format_status_overview.
     # The formatter expects (projects: list, agents: list, task_counts: dict).

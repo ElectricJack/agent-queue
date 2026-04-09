@@ -88,7 +88,20 @@ def apply_formatter(command: str, result: dict, console) -> bool:
 
     Returns True if a formatter was found and applied, False otherwise
     (caller should fall back to JSON output).
+
+    When the global ``--json`` flag is set (via Click context), this
+    returns False unconditionally so the caller emits raw JSON.
     """
+    # Check for global --json flag
+    try:
+        import click
+
+        ctx = click.get_current_context(silent=True)
+        if ctx and ctx.find_root().obj and ctx.find_root().obj.get("json"):
+            return False
+    except Exception:
+        pass
+
     spec = FORMATTERS.get(command)
     if spec is None:
         return False
