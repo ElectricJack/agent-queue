@@ -6862,15 +6862,25 @@ class TestResumePlaybookCommand:
 
 
 class TestListPlaybookRunsCommand:
-    """Tests for the _cmd_list_playbook_runs command handler method."""
+    """Tests for the _cmd_list_playbook_runs command handler method.
 
-    async def test_list_all_runs(self):
-        """list_playbook_runs returns all runs when no filters given."""
+    Roadmap 5.5.5 — recent runs with status and path taken.
+    """
+
+    @staticmethod
+    def _make_handler():
+        """Build a mock CommandHandler with real list/format methods bound."""
         from src.command_handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
+        handler._format_playbook_run_summary = CommandHandler._format_playbook_run_summary
         handler.db = AsyncMock()
+        return handler
+
+    async def test_list_all_runs(self):
+        """list_playbook_runs returns all runs when no filters given."""
+        handler = self._make_handler()
 
         run1 = PlaybookRun(
             run_id="r1",
@@ -6897,14 +6907,13 @@ class TestListPlaybookRunsCommand:
         assert result["runs"][0]["run_id"] == "r1"
         assert result["runs"][1]["run_id"] == "r2"
         assert result["runs"][1]["current_node"] == "review"
+        # Path field should be present (empty for default node_trace)
+        assert "path" in result["runs"][0]
+        assert "path" in result["runs"][1]
 
     async def test_list_paused_runs_only(self):
         """list_playbook_runs filters by status."""
-        from src.command_handler import CommandHandler
-
-        handler = AsyncMock(spec=CommandHandler)
-        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
-        handler.db = AsyncMock()
+        handler = self._make_handler()
 
         paused_run = PlaybookRun(
             run_id="r2",
@@ -6928,11 +6937,7 @@ class TestListPlaybookRunsCommand:
 
     async def test_list_invalid_status_rejected(self):
         """list_playbook_runs rejects invalid status values."""
-        from src.command_handler import CommandHandler
-
-        handler = AsyncMock(spec=CommandHandler)
-        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
-        handler.db = AsyncMock()
+        handler = self._make_handler()
 
         result = await handler._cmd_list_playbook_runs({"status": "invalid"})
         assert "error" in result
@@ -6940,17 +6945,182 @@ class TestListPlaybookRunsCommand:
 
     async def test_list_with_limit(self):
         """list_playbook_runs respects the limit parameter."""
-        from src.command_handler import CommandHandler
-
-        handler = AsyncMock(spec=CommandHandler)
-        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
-        handler.db = AsyncMock()
+        handler = self._make_handler()
         handler.db.list_playbook_runs = AsyncMock(return_value=[])
 
         await handler._cmd_list_playbook_runs({"limit": 5})
         handler.db.list_playbook_runs.assert_called_once_with(
             playbook_id=None, status=None, limit=5
         )
+
+    async def test_path_extracted_from_node_trace(self):
+        """list_playbook_runs includes compact path from node_trace JSON."""
+        import json
+
+        handler = self._make_handler()
+
+        trace = [
+            {"node_id": "start", "started_at": 100.0, "completed_at": 110.0, "status": "completed"},
+            {"node_id": "validate", "started_at": 110.0, "completed_at": 120.0, "status": "completed"},
+            {"node_id": "deploy", "started_at": 120.0, "completed_at": 130.0, "status": "completed"},
+        ]
+        run = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=2,
+            status="completed",
+            started_at=100.0,
+            completed_at=130.0,
+            tokens_used=1500,
+            node_trace=json.dumps(trace),
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["count"] == 1
+        run_data = result["runs"][0]
+
+        # Path should contain compact node summaries
+        assert len(run_data["path"]) == 3
+        assert run_data["path"][0] == {"node_id": "start", "status": "completed"}
+        assert run_data["path"][1] == {"node_id": "validate", "status": "completed"}
+        assert run_data["path"][2] == {"node_id": "deploy", "status": "completed"}
+
+    async def test_path_with_failed_node(self):
+        """Path shows the failed node status when a run fails mid-graph."""
+        import json
+
+        handler = self._make_handler()
+
+        trace = [
+            {"node_id": "start", "started_at": 100.0, "completed_at": 110.0, "status": "completed"},
+            {"node_id": "build", "started_at": 110.0, "completed_at": 115.0, "status": "failed"},
+        ]
+        run = PlaybookRun(
+            run_id="r-fail",
+            playbook_id="ci-pipeline",
+            playbook_version=1,
+            status="failed",
+            current_node="build",
+            started_at=100.0,
+            completed_at=115.0,
+            tokens_used=800,
+            node_trace=json.dumps(trace),
+            error="Build step failed: exit code 1",
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        run_data = result["runs"][0]
+
+        assert run_data["path"][1] == {"node_id": "build", "status": "failed"}
+        assert run_data["error"] == "Build step failed: exit code 1"
+
+    async def test_empty_node_trace_gives_empty_path(self):
+        """Runs with default empty node_trace produce an empty path list."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r-empty",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="running",
+            started_at=100.0,
+            tokens_used=0,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["runs"][0]["path"] == []
+
+    async def test_malformed_node_trace_gives_empty_path(self):
+        """Malformed node_trace JSON is handled gracefully — empty path."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r-bad",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="failed",
+            started_at=100.0,
+            tokens_used=0,
+            node_trace="NOT VALID JSON{{{",
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["runs"][0]["path"] == []
+
+    async def test_duration_seconds_computed_for_completed_runs(self):
+        """Completed runs include duration_seconds in the summary."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="completed",
+            started_at=100.0,
+            completed_at=245.5,
+            tokens_used=1200,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["runs"][0]["duration_seconds"] == 145.5
+
+    async def test_no_duration_for_running_runs(self):
+        """Running (in-progress) runs do not include duration_seconds."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="running",
+            started_at=100.0,
+            tokens_used=50,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert "duration_seconds" not in result["runs"][0]
+
+    async def test_playbook_version_included_in_summary(self):
+        """Each run summary includes the playbook_version field."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=3,
+            status="completed",
+            started_at=100.0,
+            completed_at=200.0,
+            tokens_used=500,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["runs"][0]["playbook_version"] == 3
+
+    async def test_error_omitted_when_none(self):
+        """Successful runs do not include the error key in the summary."""
+        handler = self._make_handler()
+
+        run = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="completed",
+            started_at=100.0,
+            completed_at=200.0,
+            tokens_used=500,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert "error" not in result["runs"][0]
 
 
 # ---------------------------------------------------------------------------

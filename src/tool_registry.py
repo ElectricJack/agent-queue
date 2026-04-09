@@ -2225,7 +2225,9 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "list_playbook_runs",
         "description": (
-            "List recent playbook runs. Filter by playbook_id and/or status "
+            "List recent playbook runs with status and path taken through the graph. "
+            "Each run includes a compact node trace showing visited nodes and their "
+            "outcome. Filter by playbook_id and/or status "
             "(e.g. 'paused' to find runs awaiting human review). Returns newest first."
         ),
         "input_schema": {

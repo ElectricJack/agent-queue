@@ -6659,10 +6659,15 @@ feature work stuck on feature branches across multiple workspaces.
         }
 
     async def _cmd_list_playbook_runs(self, args: dict) -> dict:
-        """List recent playbook runs with optional filtering.
+        """List recent playbook runs with status and path taken.
 
-        Supports filtering by playbook_id and/or status (e.g. ``"paused"``
-        to find runs awaiting human review).  Returns newest first.
+        Returns summary data for recent playbook runs including the path
+        taken through the graph (compact node trace with node IDs and
+        statuses).  Supports filtering by playbook_id and/or status
+        (e.g. ``"paused"`` to find runs awaiting human review).  Returns
+        newest first.
+
+        Roadmap 5.5.5.
 
         Args:
             playbook_id: Optional — filter to a specific playbook.
@@ -6686,21 +6691,58 @@ feature work stuck on feature branches across multiple workspaces.
             limit=limit,
         )
         return {
-            "runs": [
-                {
-                    "run_id": r.run_id,
-                    "playbook_id": r.playbook_id,
-                    "status": r.status,
-                    "current_node": r.current_node,
-                    "tokens_used": r.tokens_used,
-                    "started_at": r.started_at,
-                    "completed_at": r.completed_at,
-                    "error": r.error,
-                }
-                for r in runs
-            ],
+            "runs": [self._format_playbook_run_summary(r) for r in runs],
             "count": len(runs),
         }
+
+    @staticmethod
+    def _format_playbook_run_summary(run) -> dict:
+        """Build a summary dict for a single playbook run.
+
+        Extracts a compact *path* from the persisted ``node_trace`` JSON —
+        a list of ``{"node_id": ..., "status": ...}`` dicts showing which
+        nodes were visited and their outcome.  Also computes a
+        ``duration_seconds`` when both ``started_at`` and ``completed_at``
+        are available.
+        """
+        # Parse node_trace JSON → compact path (just node_id + status)
+        path: list[dict[str, str]] = []
+        try:
+            raw_trace = (
+                json.loads(run.node_trace)
+                if isinstance(run.node_trace, str)
+                else run.node_trace or []
+            )
+            for entry in raw_trace:
+                path.append(
+                    {
+                        "node_id": entry.get("node_id", "unknown"),
+                        "status": entry.get("status", "unknown"),
+                    }
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass  # leave path as empty list
+
+        summary: dict = {
+            "run_id": run.run_id,
+            "playbook_id": run.playbook_id,
+            "playbook_version": run.playbook_version,
+            "status": run.status,
+            "current_node": run.current_node,
+            "tokens_used": run.tokens_used,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "path": path,
+        }
+
+        # Compute duration for finished runs
+        if run.started_at and run.completed_at:
+            summary["duration_seconds"] = round(run.completed_at - run.started_at, 3)
+
+        if run.error:
+            summary["error"] = run.error
+
+        return summary
 
     async def _cmd_inspect_playbook_run(self, args: dict) -> dict:
         """Inspect a playbook run: full node trace, conversation, and token usage.
