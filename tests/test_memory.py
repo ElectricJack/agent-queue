@@ -220,6 +220,55 @@ class TestMemoryManager:
         paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 4  # memory dir + notes + specs + docs
 
+    # -- Legacy task migration ----------------------------------------------
+
+    def test_migrate_legacy_tasks_moves_files(self, tmp_path):
+        """Files in memory/proj/tasks/ are moved to tasks/proj/."""
+        legacy_dir = tmp_path / "memory" / "proj" / "tasks"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "task-001.md").write_text("# Task 001")
+        (legacy_dir / "task-002.md").write_text("# Task 002")
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        mgr._migrate_legacy_tasks("proj")
+
+        new_dir = tmp_path / "tasks" / "proj"
+        assert (new_dir / "task-001.md").read_text() == "# Task 001"
+        assert (new_dir / "task-002.md").read_text() == "# Task 002"
+        assert not legacy_dir.exists()
+
+    def test_migrate_legacy_tasks_skips_duplicates(self, tmp_path):
+        """If the new location already has a file, the legacy copy is removed."""
+        legacy_dir = tmp_path / "memory" / "proj" / "tasks"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "task-dup.md").write_text("old content")
+
+        new_dir = tmp_path / "tasks" / "proj"
+        new_dir.mkdir(parents=True)
+        (new_dir / "task-dup.md").write_text("new content")
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        mgr._migrate_legacy_tasks("proj")
+
+        # New file preserved, legacy removed
+        assert (new_dir / "task-dup.md").read_text() == "new content"
+        assert not legacy_dir.exists()
+
+    def test_migrate_legacy_tasks_noop_when_absent(self, tmp_path):
+        """No legacy dir — nothing happens, no error."""
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        mgr._migrate_legacy_tasks("proj")  # should not raise
+
+    def test_migrate_legacy_tasks_removes_empty_dir(self, tmp_path):
+        """Empty legacy tasks/ dir is cleaned up."""
+        legacy_dir = tmp_path / "memory" / "proj" / "tasks"
+        legacy_dir.mkdir(parents=True)
+
+        mgr = self._make_manager(storage_root=str(tmp_path))
+        mgr._migrate_legacy_tasks("proj")
+
+        assert not legacy_dir.exists()
+
     # -- Project doc file indexing -----------------------------------------
 
     @patch("src.memory.MEMSEARCH_AVAILABLE", True)

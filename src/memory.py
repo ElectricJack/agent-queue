@@ -32,6 +32,7 @@ import glob
 import json
 import logging
 import os
+import shutil
 import time
 from typing import Any
 
@@ -95,6 +96,52 @@ class MemoryManager:
         outside the memory/vault tree per vault spec §6.
         """
         return os.path.join(self._storage_root, "tasks", project_id)
+
+    def _migrate_legacy_tasks(self, project_id: str) -> None:
+        """Move task records from legacy ``memory/*/tasks/`` to ``tasks/*/``.
+
+        The old layout stored task markdown files inside the memory tree at
+        ``{data_dir}/memory/{project_id}/tasks/``.  Because MemSearch indexes
+        the entire ``memory/{project_id}/`` directory recursively, those task
+        files pollute semantic search results.
+
+        This method moves any remaining files to the new canonical location
+        (``{data_dir}/tasks/{project_id}/``) and removes the legacy directory
+        so future MemSearch scans no longer encounter them.
+
+        Safe to call repeatedly — it's a no-op once the legacy directory is
+        gone.  Per vault spec §6 (Migration Path, Phase 1).
+        """
+        legacy_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        if not os.path.isdir(legacy_dir):
+            return
+
+        new_dir = self._tasks_dir(project_id)
+        os.makedirs(new_dir, exist_ok=True)
+
+        migrated = 0
+        for fname in os.listdir(legacy_dir):
+            src = os.path.join(legacy_dir, fname)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(new_dir, fname)
+            if not os.path.exists(dst):
+                shutil.move(src, dst)
+                migrated += 1
+            else:
+                # New location already has this file — remove the stale copy
+                os.remove(src)
+
+        # Remove the now-empty legacy directory (and any leftover subdirs)
+        shutil.rmtree(legacy_dir, ignore_errors=True)
+
+        if migrated:
+            logger.info(
+                "Migrated %d task record(s) from legacy memory/tasks/ to tasks/ "
+                "for project %s",
+                migrated,
+                project_id,
+            )
 
     def _profile_path(self, project_id: str) -> str:
         """Path to the project profile file.
@@ -207,6 +254,11 @@ class MemoryManager:
         try:
             # Ensure the task record directory exists for remember()
             os.makedirs(self._tasks_dir(project_id), exist_ok=True)
+
+            # Migrate any leftover task files from the legacy memory/*/tasks/
+            # directory to the new tasks/*/ location so MemSearch no longer
+            # indexes them (vault spec §6 Phase 1).
+            self._migrate_legacy_tasks(project_id)
 
             paths = self._memory_paths(project_id, workspace_path)
 
