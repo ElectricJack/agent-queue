@@ -177,3 +177,213 @@ def test_collection_description_empty_by_default(tmp_path: Path):
     info = s._client.describe_collection(s._collection)
     assert info.get("description") == ""
     s.close()
+
+
+# ---- Unified schema tests (entry_type, KV, temporal, topic, tags) ----------
+
+
+def test_unified_schema_fields_exist(store: MilvusStore):
+    """Collection should have all unified schema fields."""
+    info = store._client.describe_collection(store._collection)
+    field_names = {f["name"] for f in info.get("fields", [])}
+    expected = {
+        "chunk_hash",
+        "entry_type",
+        "embedding",
+        "content",
+        "sparse_vector",
+        "original",
+        "kv_namespace",
+        "kv_key",
+        "kv_value",
+        "valid_from",
+        "valid_to",
+        "topic",
+        "source",
+        "tags",
+        "updated_at",
+        "heading",
+        "heading_level",
+        "start_line",
+        "end_line",
+    }
+    assert expected.issubset(field_names), f"Missing fields: {expected - field_names}"
+
+
+def test_upsert_defaults_applied(store: MilvusStore):
+    """Upsert without new fields should apply defaults automatically."""
+    chunk = {
+        "embedding": [1.0, 0.0, 0.0, 0.0],
+        "content": "Hello world",
+        "source": "test.md",
+        "heading": "Intro",
+        "chunk_hash": "defaults_test",
+        "heading_level": 1,
+        "start_line": 1,
+        "end_line": 5,
+    }
+    store.upsert([chunk])
+    results = store.query(filter_expr='chunk_hash == "defaults_test"')
+    assert len(results) == 1
+    r = results[0]
+    assert r["entry_type"] == "document"
+    assert r["original"] == ""
+    assert r["kv_namespace"] == ""
+    assert r["kv_key"] == ""
+    assert r["kv_value"] == ""
+    assert r["valid_from"] == 0
+    assert r["valid_to"] == 0
+    assert r["topic"] == ""
+    assert r["tags"] == "[]"
+    assert r["updated_at"] == 0
+
+
+def test_kv_entry(store: MilvusStore):
+    """KV entries can be stored and queried via scalar filters."""
+    kv = {
+        "chunk_hash": "kv_test_1",
+        "entry_type": "kv",
+        "embedding": [0.0, 0.0, 0.0, 0.0],
+        "content": "",
+        "original": "",
+        "source": "facts.md",
+        "heading": "",
+        "heading_level": 0,
+        "start_line": 0,
+        "end_line": 0,
+        "kv_namespace": "project",
+        "kv_key": "test_command",
+        "kv_value": '"pytest tests/ -v"',
+        "valid_from": 0,
+        "valid_to": 0,
+        "topic": "",
+        "tags": "[]",
+        "updated_at": 1700000000,
+    }
+    store.upsert([kv])
+    results = store.query(filter_expr='entry_type == "kv" AND kv_namespace == "project" AND kv_key == "test_command"')
+    assert len(results) == 1
+    assert results[0]["kv_value"] == '"pytest tests/ -v"'
+
+
+def test_temporal_entry(store: MilvusStore):
+    """Temporal entries can be stored and queried."""
+    entries = [
+        {
+            "chunk_hash": "temporal_1",
+            "entry_type": "temporal",
+            "embedding": [0.0, 0.0, 0.0, 0.0],
+            "content": "deploy branch was main",
+            "original": "",
+            "source": "facts.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 0,
+            "end_line": 0,
+            "kv_namespace": "",
+            "kv_key": "deploy_branch",
+            "kv_value": '"main"',
+            "valid_from": 1700000000,
+            "valid_to": 1710000000,
+            "topic": "",
+            "tags": "[]",
+            "updated_at": 1700000000,
+        },
+        {
+            "chunk_hash": "temporal_2",
+            "entry_type": "temporal",
+            "embedding": [0.0, 0.0, 0.0, 0.0],
+            "content": "deploy branch changed to release",
+            "original": "",
+            "source": "facts.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 0,
+            "end_line": 0,
+            "kv_namespace": "",
+            "kv_key": "deploy_branch",
+            "kv_value": '"release"',
+            "valid_from": 1710000000,
+            "valid_to": 1720000000,
+            "topic": "",
+            "tags": "[]",
+            "updated_at": 1710000000,
+        },
+    ]
+    store.upsert(entries)
+
+    # Query full history by entry_type + key
+    results = store.query(filter_expr='entry_type == "temporal" AND kv_key == "deploy_branch"')
+    assert len(results) == 2
+    values = {r["kv_value"] for r in results}
+    assert values == {'"main"', '"release"'}
+
+    # Verify temporal fields are stored correctly
+    by_hash = {r["chunk_hash"]: r for r in results}
+    assert by_hash["temporal_1"]["valid_from"] == 1700000000
+    assert by_hash["temporal_1"]["valid_to"] == 1710000000
+    assert by_hash["temporal_2"]["valid_from"] == 1710000000
+    assert by_hash["temporal_2"]["valid_to"] == 1720000000
+
+    # Windowed INT64 filter (tested in isolation — Milvus Lite has
+    # limitations with complex multi-type AND expressions)
+    results = store.query(filter_expr="valid_from <= 1705000000")
+    matched_hashes = {r["chunk_hash"] for r in results}
+    assert "temporal_1" in matched_hashes
+
+
+def test_topic_and_tags_filtering(store: MilvusStore):
+    """Topic and tags fields support scalar filtering."""
+    chunks = [
+        {
+            "chunk_hash": "topic_1",
+            "entry_type": "document",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "content": "Authentication uses JWT tokens",
+            "original": "Authentication uses JWT tokens with RS256 signing",
+            "source": "auth.md",
+            "heading": "Auth",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "kv_namespace": "",
+            "kv_key": "",
+            "kv_value": "",
+            "valid_from": 0,
+            "valid_to": 0,
+            "topic": "authentication",
+            "tags": '["security", "jwt"]',
+            "updated_at": 1700000000,
+        },
+        {
+            "chunk_hash": "topic_2",
+            "entry_type": "document",
+            "embedding": [0.0, 1.0, 0.0, 0.0],
+            "content": "Unit tests use pytest fixtures",
+            "original": "Unit tests use pytest fixtures for setup",
+            "source": "testing.md",
+            "heading": "Testing",
+            "heading_level": 1,
+            "start_line": 1,
+            "end_line": 5,
+            "kv_namespace": "",
+            "kv_key": "",
+            "kv_value": "",
+            "valid_from": 0,
+            "valid_to": 0,
+            "topic": "testing",
+            "tags": '["pytest", "testing"]',
+            "updated_at": 1700000000,
+        },
+    ]
+    store.upsert(chunks)
+
+    # Filter by topic
+    results = store.query(filter_expr='topic == "authentication"')
+    assert len(results) == 1
+    assert results[0]["chunk_hash"] == "topic_1"
+
+    # Filter by tags (substring match on JSON array)
+    results = store.query(filter_expr='tags like "%pytest%"')
+    assert len(results) == 1
+    assert results[0]["chunk_hash"] == "topic_2"

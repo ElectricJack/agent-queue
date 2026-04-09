@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -169,6 +170,7 @@ class MemSearch:
         contents = [clean_content_for_embedding(c.content) for c in chunks]
         embeddings = await self._embedder.embed(contents)
 
+        now_ts = int(time.time())
         records: list[dict[str, Any]] = []
         for i, chunk in enumerate(chunks):
             chunk_id = compute_chunk_id(
@@ -181,13 +183,17 @@ class MemSearch:
             records.append(
                 {
                     "chunk_hash": chunk_id,
+                    "entry_type": "document",
                     "embedding": embeddings[i],
-                    "content": chunk.content,
+                    "content": contents[i],
+                    "original": chunk.content,
                     "source": chunk.source,
                     "heading": chunk.heading,
                     "heading_level": chunk.heading_level,
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
+                    "tags": "[]",
+                    "updated_at": now_ts,
                 }
             )
 
