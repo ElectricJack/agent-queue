@@ -27,6 +27,88 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def migrate_notes_to_vault(data_dir: str, project_id: str) -> bool:
+    """Move project notes from ``notes/{project_id}/`` to ``vault/projects/{project_id}/notes/``.
+
+    Part of vault migration Phase 1 (spec §6).  Moves all files (preserving
+    any subdirectory structure) from the legacy ``notes/{project_id}/``
+    directory into the vault's per-project notes directory.
+
+    The operation is **idempotent**:
+
+    * If the source directory does not exist, nothing happens (returns ``False``).
+    * If a destination file already exists, that individual file is skipped.
+    * After all files are moved, empty source directories are removed.
+    * Calling the function again after a successful migration is a safe no-op.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+        project_id: The project identifier (e.g. ``mech-fighters``).
+
+    Returns:
+        ``True`` if any files were moved, ``False`` if skipped entirely.
+    """
+    source = os.path.join(data_dir, "notes", project_id)
+    dest = os.path.join(data_dir, "vault", "projects", project_id, "notes")
+
+    if not os.path.isdir(source):
+        logger.debug(
+            "Notes migration for %s: source %s does not exist, skipping",
+            project_id,
+            source,
+        )
+        return False
+
+    # Ensure the destination exists before moving files into it.
+    os.makedirs(dest, exist_ok=True)
+
+    moved_any = False
+    for dirpath, _dirnames, filenames in os.walk(source):
+        # Compute relative path from source root
+        rel_dir = os.path.relpath(dirpath, source)
+        dest_dir = os.path.join(dest, rel_dir) if rel_dir != "." else dest
+        os.makedirs(dest_dir, exist_ok=True)
+
+        for fname in filenames:
+            src_file = os.path.join(dirpath, fname)
+            dst_file = os.path.join(dest_dir, fname)
+
+            if os.path.exists(dst_file):
+                logger.debug(
+                    "Notes migration for %s: %s already exists at destination, skipping",
+                    project_id,
+                    fname,
+                )
+                continue
+
+            shutil.move(src_file, dst_file)
+            moved_any = True
+            logger.debug("Moved note %s → %s", src_file, dst_file)
+
+    # Clean up empty source directories (bottom-up).
+    for dirpath, dirnames, filenames in os.walk(source, topdown=False):
+        if not filenames and not dirnames:
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass  # Not empty or permission issue — leave it
+
+    # Remove the top-level source dir if it's now empty.
+    try:
+        os.rmdir(source)
+    except OSError:
+        pass
+
+    if moved_any:
+        logger.info(
+            "Migrated notes for project %s from %s to %s",
+            project_id,
+            source,
+            dest,
+        )
+    return moved_any
+
+
 def migrate_obsidian_config(data_dir: str) -> bool:
     """Move Obsidian config from ``memory/.obsidian/`` to ``vault/.obsidian/``.
 

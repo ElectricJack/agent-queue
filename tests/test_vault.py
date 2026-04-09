@@ -1,5 +1,5 @@
 """Tests for vault directory structure initialization (vault spec §2)
-and Obsidian config migration (vault spec §6, Phase 1).
+and vault migrations (vault spec §6, Phase 1).
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from src.vault import (
     ensure_vault_layout,
     ensure_vault_profile_dirs,
     ensure_vault_project_dirs,
+    migrate_notes_to_vault,
     migrate_obsidian_config,
 )
 
@@ -186,3 +187,122 @@ def test_multiple_profiles_and_projects(tmp_path):
     projects = tmp_path / "vault" / "projects"
     assert (projects / "project-a" / "overrides").is_dir()
     assert (projects / "project-b" / "references").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# migrate_notes_to_vault (vault spec §6, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_notes_moves_files(tmp_path):
+    """Markdown files are moved from notes/{id}/ to vault/projects/{id}/notes/."""
+    source = tmp_path / "notes" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "design.md").write_text("# Design Notes")
+    (source / "roadmap.md").write_text("# Roadmap")
+
+    # Ensure vault project dirs exist (as orchestrator would do)
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+
+    result = migrate_notes_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    assert (dest / "design.md").read_text() == "# Design Notes"
+    assert (dest / "roadmap.md").read_text() == "# Roadmap"
+    # Source directory should be cleaned up
+    assert not source.exists()
+
+
+def test_migrate_notes_preserves_subdirectory_structure(tmp_path):
+    """Nested subdirectories inside notes are preserved at the destination."""
+    source = tmp_path / "notes" / "my-proj"
+    sub = source / "category"
+    sub.mkdir(parents=True)
+    (source / "top.md").write_text("top-level")
+    (sub / "nested.md").write_text("nested note")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = migrate_notes_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    assert (dest / "top.md").read_text() == "top-level"
+    assert (dest / "category" / "nested.md").read_text() == "nested note"
+    assert not source.exists()
+
+
+def test_migrate_notes_skips_when_source_missing(tmp_path):
+    """When the source notes directory does not exist, nothing happens."""
+    result = migrate_notes_to_vault(str(tmp_path), "no-such-project")
+
+    assert result is False
+    # Destination should not be created by the migration itself
+    assert not (tmp_path / "vault" / "projects" / "no-such-project" / "notes").exists()
+
+
+def test_migrate_notes_skips_existing_dest_files(tmp_path):
+    """Files already at the destination are not overwritten."""
+    source = tmp_path / "notes" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "existing.md").write_text("old version")
+    (source / "new-note.md").write_text("brand new")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    (dest / "existing.md").write_text("already migrated")
+
+    result = migrate_notes_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True  # new-note.md was moved
+    # The pre-existing file at dest should NOT be overwritten
+    assert (dest / "existing.md").read_text() == "already migrated"
+    assert (dest / "new-note.md").read_text() == "brand new"
+
+
+def test_migrate_notes_idempotent(tmp_path):
+    """Calling migrate twice — the second call is a no-op."""
+    source = tmp_path / "notes" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "note.md").write_text("content")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+
+    assert migrate_notes_to_vault(str(tmp_path), "my-proj") is True
+    # Source is gone — second call should skip
+    assert migrate_notes_to_vault(str(tmp_path), "my-proj") is False
+
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    assert (dest / "note.md").read_text() == "content"
+
+
+def test_migrate_notes_creates_dest_dir(tmp_path):
+    """Destination vault directories are created if they don't exist yet."""
+    source = tmp_path / "notes" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "note.md").write_text("content")
+
+    # Do NOT call ensure_vault_project_dirs — migration should handle it
+    assert not (tmp_path / "vault").exists()
+
+    result = migrate_notes_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    assert (dest / "note.md").read_text() == "content"
+
+
+def test_migrate_notes_moves_non_markdown_files(tmp_path):
+    """All files are moved, not just .md files."""
+    source = tmp_path / "notes" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "note.md").write_text("markdown")
+    (source / "data.json").write_text('{"key": "value"}')
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = migrate_notes_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    assert (dest / "note.md").read_text() == "markdown"
+    assert (dest / "data.json").read_text() == '{"key": "value"}'

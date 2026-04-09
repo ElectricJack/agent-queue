@@ -992,7 +992,7 @@ class Orchestrator:
         Called during ``initialize()`` after the database is ready and
         ``self.vault_manager`` has been created.
         """
-        from src.vault import migrate_obsidian_config
+        from src.vault import migrate_notes_to_vault, migrate_obsidian_config
 
         # Migrate legacy .obsidian config before ensure_layout creates
         # an empty vault/.obsidian/ directory (spec §6, Phase 1).
@@ -1011,6 +1011,11 @@ class Orchestrator:
         all_projects = await self.db.list_projects()
         for project in all_projects:
             self.vault_manager.register_project(project.id)
+
+        # Migrate legacy notes/{project_id}/ → vault/projects/{project_id}/notes/
+        # (spec §6, Phase 1).  Must run after register_project ensures dest dirs.
+        for project in all_projects:
+            migrate_notes_to_vault(self.config.data_dir, project.id)
 
         if all_profiles or all_projects:
             logger.info(

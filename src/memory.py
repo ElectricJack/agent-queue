@@ -180,8 +180,13 @@ class MemoryManager:
         return os.path.join(self._project_memory_dir(project_id), "profile.md")
 
     def _notes_dir(self, project_id: str) -> str:
-        """Path to the project notes directory."""
-        return os.path.join(self._storage_root, "notes", project_id)
+        """Path to the project notes directory.
+
+        Notes live in the vault at ``vault/projects/{project_id}/notes/``.
+        """
+        return os.path.join(
+            self._storage_root, "vault", "projects", project_id, "notes"
+        )
 
     def _factsheet_path(self, project_id: str) -> str:
         """Path to the project factsheet file.

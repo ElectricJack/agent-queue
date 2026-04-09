@@ -499,8 +499,13 @@ class WorkspaceServiceImpl:
         return None
 
     def get_notes_dir(self, project_id: str) -> str:
-        """Return the central notes directory for a project."""
-        return os.path.join(self._config.data_dir, "notes", project_id)
+        """Return the central notes directory for a project.
+
+        Notes live in the vault at ``vault/projects/{project_id}/notes/``.
+        """
+        return os.path.join(
+            self._config.data_dir, "vault", "projects", project_id, "notes"
+        )
 
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.
