@@ -641,26 +641,207 @@ Guidelines for effective testing strategies. This file is seeded from
 a starter template — update it as you discover project-specific patterns.
 
 ## Test Pyramid
-- Prefer unit tests for pure logic and data transformations
-- Use integration tests for critical paths (API endpoints, DB queries)
-- Reserve end-to-end tests for key user workflows only
+- Prefer unit tests for pure logic and data transformations — they're
+  fast, reliable, and pinpoint failures precisely
+- Use integration tests for critical paths (API endpoints, database
+  queries, service boundaries) where components must work together
+- Reserve end-to-end tests for key user workflows only — they're slow,
+  flaky, and expensive to maintain
+- Aim for roughly 70% unit / 20% integration / 10% end-to-end as a
+  starting point; adjust based on project risk profile
+- If a bug slips through, add the cheapest test that would have caught
+  it (prefer unit over integration over e2e)
 
-## Test Design
-- Each test should verify one behavior (single assertion principle)
-- Use descriptive test names that explain the scenario and expected outcome
-- Arrange-Act-Assert: set up state, perform action, check result
+## Test Design Principles
+- Each test should verify one behavior (single assertion principle) —
+  multiple assertions are fine if they verify a single logical outcome
+- Use descriptive test names that explain the scenario and expected
+  outcome: `test_expired_token_returns_401` not `test_token`
+- Follow Arrange-Act-Assert: set up state, perform the action, check
+  the result — keep the three phases visually distinct
+- Test public behavior, not implementation details — tests coupled to
+  internals break on every refactor without catching real bugs
+- Write the test first when fixing a bug: reproduce the failure, then
+  fix it, ensuring the test goes from red to green
 
-## Fixtures and Mocking
-- Use fixtures for shared setup (database connections, temp directories)
-- Mock external services (APIs, file systems) to avoid flaky tests
-- Prefer dependency injection over monkey-patching for testability
+## Naming Conventions
+- Group related tests in classes: `TestTokenRefresh`, `TestRateLimiter`
+- Use a consistent naming pattern:
+  `test_{method_or_feature}_{scenario}_{expected_outcome}`
+- Prefix integration tests or slow tests with markers so they can be
+  run selectively (e.g. `@pytest.mark.integration`)
+- Name fixtures descriptively: `authenticated_client` not `client2`
+- Name test files to mirror the module under test:
+  `test_orchestrator.py` tests `orchestrator.py`
+
+## Fixtures and Setup
+- Use fixtures for shared setup (database connections, temp directories,
+  authenticated clients) — avoid duplicating setup across tests
+- Scope fixtures appropriately: session for expensive one-time setup
+  (e.g. CLI auth check), function (default) for per-test isolation
+- Always clean up resources in fixtures using `yield` with teardown:
+  create in the setup phase, `yield` the resource, close/cleanup after
+- Prefer creating real lightweight objects (in-memory DBs, temp dirs)
+  over elaborate mocks when feasible — they catch more bugs
+- Use factory fixtures when tests need variations of the same object:
+  `make_task(status="running")` is clearer than many similar fixtures
+
+## Mocking and Stubbing
+- Mock at boundaries (external APIs, file systems, clocks, network) —
+  not internal implementation details
+- Use `AsyncMock` for coroutines and `MagicMock` for synchronous code;
+  mixing them causes subtle `TypeError` or `RuntimeWarning` issues
+- Prefer dependency injection over monkey-patching: pass the dependency
+  as a parameter rather than patching it at import time
+- When using `patch()`, patch where the name is *looked up*, not where
+  it's *defined*: `patch("mymodule.requests.get")` not
+  `patch("requests.get")`
+- Verify mock interactions sparingly — assert on outcomes (return values,
+  state changes) rather than call counts when possible
+- Scripted/deterministic test doubles (pre-programmed response queues)
+  are excellent for testing multi-step interaction loops without real
+  service calls
+
+## Async Testing
+- Use `asyncio_mode = "auto"` in pytest config to avoid decorating
+  every async test with `@pytest.mark.asyncio`
+- Async fixtures need `async def` and work with `yield` just like
+  synchronous ones — the test framework handles the event loop
+- Never use `asyncio.run()` inside tests that already have a running
+  event loop — let the framework manage the loop
+- Use `asyncio.wait_for()` with a timeout in tests that await
+  potentially-hanging operations to prevent test suite hangs
+- For testing concurrent behavior, use `asyncio.gather()` or
+  `asyncio.TaskGroup` to run operations in parallel and assert on
+  the combined result
+
+## Database and State Testing
+- Use temporary databases (in-memory SQLite, temp-dir-backed files)
+  for isolation — never test against shared or production data
+- Always initialize and tear down the database in fixtures:
+  `await db.initialize()` / `yield db` / `await db.close()`
+- Test the full lifecycle: create → read → update → delete, not just
+  individual operations in isolation
+- Verify constraint enforcement: unique violations, foreign keys,
+  not-null constraints should raise specific errors
+- Reset state between tests — residual data from a prior test is a
+  common source of flaky failures
+
+## Error and Edge-Case Testing
+- Test both the happy path and error paths for every function —
+  untested error handling is effectively untested code
+- Use `pytest.raises(ExceptionType, match="pattern")` to verify both
+  the exception type and message content
+- Test boundary values: empty collections, zero, negative numbers,
+  maximum lengths, `None` inputs
+- Verify that partial failures leave the system in a consistent state
+  (e.g. a transaction rolls back on error, a lock is released)
+- Test timeout and cancellation behavior for async operations
 
 ## Common Pitfalls
 - Tests that depend on execution order are fragile — each test should
-  be independent
+  be fully independent and idempotent
 - Tests that sleep for fixed durations are slow and flaky — use polling
-  or event-based waits
-- Over-mocking hides bugs — mock boundaries, not internals
+  with a timeout, event-based waits, or `asyncio.Event`
+- Over-mocking hides bugs — if you mock everything, you're only
+  testing that your mocks work, not that the code works
+- Catching too many exceptions in test helpers masks failures — let
+  unexpected exceptions propagate so they surface as test errors
+- Shared mutable state between tests (module-level variables, class
+  attributes) causes order-dependent failures that only appear in CI
+- Forgetting to `await` async assertions — the test passes because
+  the coroutine object is truthy, not because the assertion succeeded
+- Tests that assert on exact error messages are brittle — match on
+  key phrases or error codes instead of full strings
+""",
+        "qa-process.md": """\
+---
+tags: [starter, qa, process]
+---
+
+# QA Process
+
+Guidelines for planning, maintaining, and improving a test suite. This
+file is seeded from a starter template — update it as you develop
+project-specific QA practices.
+
+## Test Planning
+- Before writing code, identify which behaviors need tests — think
+  about inputs, outputs, side effects, and error conditions
+- When fixing a bug, write a failing test first that reproduces the
+  issue, then fix the code — this prevents regressions
+- Prioritise testing critical paths (auth, payments, data integrity)
+  over cosmetic or low-risk features
+- For new features, define acceptance criteria that map directly to
+  test cases — this keeps tests aligned with requirements
+- Keep a mental model of the existing test coverage: know which areas
+  are well-tested and which are under-tested
+
+## Coverage Assessment
+- Use coverage tools (`pytest-cov`, `coverage.py`) to identify untested
+  code paths — but don't chase 100% as a goal
+- Focus coverage on business logic and error handling — low-value
+  targets (getters, `__repr__`, config loading) can be left uncovered
+- Branch coverage is more informative than line coverage: a line may
+  execute but only through one of its conditional paths
+- Treat a sudden coverage drop in a PR as a signal to investigate —
+  new code without tests is a deliberate choice that should be justified
+- Untested code is not "covered by integration tests" unless those
+  tests actually exercise the specific paths in question
+
+## Test Maintenance
+- Treat tests as production code: refactor when they become hard to
+  read, remove when they test deleted features, update when behavior
+  changes intentionally
+- Consolidate duplicate setup into fixtures or helper functions —
+  copy-pasted setup across tests becomes a maintenance burden
+- When a test becomes flaky, fix it immediately — flaky tests erode
+  trust in the entire suite and train developers to ignore failures
+- Periodically review slow tests: can they be moved down the pyramid
+  (integration → unit) or parallelised?
+- Delete tests that no longer provide value — dead tests add noise
+  and slow the suite without catching real bugs
+
+## Debugging Failing Tests
+- Read the full error message and traceback before changing code —
+  the failure message usually points directly to the problem
+- Reproduce the failure in isolation: run the single failing test
+  before running the full suite to rule out ordering effects
+- Check for environment differences between local and CI: Python
+  version, OS, installed packages, available services
+- For intermittent failures, look for timing dependencies, shared
+  state, resource exhaustion, or non-deterministic ordering (e.g.
+  dict iteration, set ordering, async task scheduling)
+- Use `pytest -x` to stop on first failure and `-v` for verbose
+  output when diagnosing a cascade of related failures
+
+## CI Integration
+- Run the full test suite on every PR — don't merge code with
+  failing tests, even if the failures look "unrelated"
+- Separate fast tests (unit) from slow tests (integration, e2e)
+  using markers, so developers can run the fast suite locally and
+  CI runs everything
+- Set a timeout for the overall test run — a hanging test should
+  fail the build, not block the CI queue indefinitely
+- Cache dependencies and build artifacts to keep CI cycle time low —
+  slow CI discourages frequent testing
+- Run tests in parallel when possible (`pytest-xdist`) but ensure
+  tests are truly independent first — shared database state is the
+  most common parallelism failure
+
+## Test Organisation
+- Mirror the source tree structure in the test directory:
+  `src/orchestrator.py` → `tests/test_orchestrator.py`
+- Group related tests in classes to share docstrings, fixtures, and
+  conceptual scope
+- Keep test utility functions and custom assertions in a shared
+  `conftest.py` or `tests/helpers.py` — don't scatter them across
+  individual test files
+- Use `conftest.py` for fixtures that are shared across multiple test
+  files in the same directory; keep module-specific fixtures in the
+  test file itself
+- Tag tests with markers (`@pytest.mark.functional`,
+  `@pytest.mark.integration`) so subsets can be run selectively
 """,
     },
 }
@@ -935,12 +1116,8 @@ def copy_starter_knowledge(data_dir: str, profile_id: str) -> dict:
         - ``skipped`` (list[str]): Relative filenames already present.
         - ``source`` (str): The source template directory path.
     """
-    templates_dir = os.path.join(
-        data_dir, "vault", "templates", "knowledge", profile_id
-    )
-    memory_dir = os.path.join(
-        data_dir, "vault", "agent-types", profile_id, "memory"
-    )
+    templates_dir = os.path.join(data_dir, "vault", "templates", "knowledge", profile_id)
+    memory_dir = os.path.join(data_dir, "vault", "agent-types", profile_id, "memory")
 
     result: dict = {"copied": [], "skipped": [], "source": templates_dir}
 

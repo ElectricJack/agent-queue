@@ -916,8 +916,9 @@ def test_starter_knowledge_covers_expected_types():
     # Code-review has review checklist
     assert "review-checklist.md" in _STARTER_KNOWLEDGE["code-review"]
 
-    # QA has testing patterns
+    # QA has testing patterns and process
     assert "testing-patterns.md" in _STARTER_KNOWLEDGE["qa"]
+    assert "qa-process.md" in _STARTER_KNOWLEDGE["qa"]
 
 
 # ---------------------------------------------------------------------------
