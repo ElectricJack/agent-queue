@@ -184,6 +184,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_active_tasks_all_projects": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
+    "dry_run_playbook": "playbook",
     "show_playbook_graph": "playbook",
     "list_playbooks": "playbook",
     "list_playbook_runs": "playbook",
@@ -2160,6 +2161,35 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "dry_run_playbook",
+        "description": (
+            "Simulate playbook execution with a mock event, producing no side "
+            "effects. Walks the graph from entry to terminal without real LLM "
+            "calls, DB writes, or event emission. Returns the node trace "
+            "showing the path that would be taken. Useful for testing and "
+            "validating playbook design before deploying."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The compiled playbook ID to simulate",
+                },
+                "event": {
+                    "type": "object",
+                    "description": (
+                        "Mock trigger event data. Defaults to "
+                        '{"type": "dry_run"} if not provided. '
+                        "Include fields your playbook expects "
+                        "(e.g. project_id, task_id) for realistic simulation."
+                    ),
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    {
         "name": "show_playbook_graph",
         "description": (
             "Render a compiled playbook graph as an ASCII diagram or Mermaid "
@@ -2196,8 +2226,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "show_prompts": {
                     "type": "boolean",
                     "description": (
-                        "Include truncated prompt previews in node labels. "
-                        "Default: true."
+                        "Include truncated prompt previews in node labels. Default: true."
                     ),
                     "default": True,
                 },

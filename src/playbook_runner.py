@@ -356,6 +356,10 @@ class PlaybookRunner:
         # (see src/playbook_state_machine.py).
         self._status: PlaybookRunStatus = PlaybookRunStatus.RUNNING
 
+        # Dry-run mode — no LLM calls, no DB writes, no event emission.
+        # Set via the :meth:`dry_run` classmethod.
+        self._dry_run: bool = False
+
         # Resolved from graph
         self._playbook_id: str = graph.get("id", "unknown")
         self._playbook_version: int = graph.get("version", 0)
@@ -867,8 +871,9 @@ class PlaybookRunner:
                     event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
-            # Human-in-the-loop pause
-            if node.get("wait_for_human"):
+            # Human-in-the-loop pause (skip in dry-run mode — simulate
+            # continuing past the checkpoint)
+            if node.get("wait_for_human") and not self._dry_run:
                 return await self._pause(db_run, current_node_id, started_at)
 
             # Determine next node via transition evaluation
@@ -1563,6 +1568,22 @@ class PlaybookRunner:
         if self.on_progress:
             await self.on_progress("node_started", node_id)
 
+        # Dry-run mode: skip real LLM calls and return a simulated response.
+        if self._dry_run:
+            prompt = self._build_node_prompt(node_id, node)
+            response = f"[dry-run] Simulated response for node '{node_id}'"
+
+            self.messages.append({"role": "user", "content": prompt})
+            self.messages.append({"role": "assistant", "content": response})
+
+            trace_entry.completed_at = time.time()
+            trace_entry.status = "completed"
+
+            if self.on_progress:
+                await self.on_progress("node_completed", node_id)
+
+            return response
+
         # Context size management: summarize history before this node
         if node.get("summarize_before") and len(self.messages) > 2:
             await self._summarize_history()
@@ -2141,6 +2162,17 @@ class PlaybookRunner:
             The target node ID, or *None* if no condition matched
             (caller should fall back to ``otherwise``).
         """
+        # Dry-run mode: follow the first natural-language transition without
+        # making an LLM call.  Falls back to otherwise if none defined.
+        if self._dry_run:
+            for t in transitions:
+                if not t.get("otherwise") and isinstance(t.get("when"), str):
+                    return t["goto"]
+            for t in transitions:
+                if t.get("otherwise"):
+                    return t["goto"]
+            return None
+
         # Build the classification prompt — only natural-language conditions
         condition_lines = []
         nl_transitions: list[dict] = []  # ordered subset for index mapping
@@ -2493,3 +2525,68 @@ class PlaybookRunner:
         if entry.transition_method is not None:
             d["transition_method"] = entry.transition_method
         return d
+
+    # ------------------------------------------------------------------
+    # Dry-run simulation (roadmap 5.5.2)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def dry_run(
+        cls,
+        graph: dict,
+        event: dict,
+        on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+    ) -> RunResult:
+        """Simulate playbook execution with a mock event, producing no side effects.
+
+        Walks the compiled playbook graph from entry to terminal node without
+        making real LLM calls, writing to the database, or emitting events.
+        Returns the node trace showing the path that *would* be taken.
+
+        **Design decisions:**
+
+        - **No LLM calls:** Node execution returns a simulated response
+          (``"[dry-run] Simulated response for node '{node_id}'"``).
+        - **No DB writes:** ``db`` is set to ``None``.
+        - **No event emission:** ``event_bus`` is set to ``None``.
+        - **Transition strategy:** Unconditional ``goto`` edges work normally.
+          For conditional transitions, structured conditions are evaluated
+          against the simulated response (most will not match), then the
+          first natural-language transition is followed without an LLM call.
+          If no natural-language conditions exist, the ``otherwise`` fallback
+          is used.
+        - **Human-in-the-loop:** ``wait_for_human`` nodes are executed
+          normally (simulated) and the graph continues past them — the run
+          does not pause.
+        - **Token budget:** Skipped (no real tokens are consumed).
+
+        Parameters
+        ----------
+        graph:
+            The compiled playbook JSON (dict) to simulate.
+        event:
+            The mock trigger event data (dict).
+        on_progress:
+            Optional async callback for progress reporting.
+
+        Returns
+        -------
+        RunResult
+            The simulation result with ``status``, ``node_trace`` (the
+            simulated path), and ``tokens_used`` (always 0).
+
+        See Also
+        --------
+        :meth:`run` : The real execution method.
+        docs/specs/design/playbooks.md §15, §19 (Open Questions #2).
+        """
+        runner = cls(
+            graph,
+            event,
+            _DummySupervisor(),  # type: ignore[arg-type]
+            db=None,
+            on_progress=on_progress,
+            event_bus=None,
+        )
+        runner._dry_run = True
+        return await runner.run()

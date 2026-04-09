@@ -6582,8 +6582,7 @@ feature work stuck on feature branches across multiple workspaces.
         if scope_filter and scope_filter not in valid_scopes:
             return {
                 "error": (
-                    f"Invalid scope '{scope_filter}'. "
-                    f"Valid: {', '.join(sorted(valid_scopes))}"
+                    f"Invalid scope '{scope_filter}'. Valid: {', '.join(sorted(valid_scopes))}"
                 )
             }
 
@@ -6595,10 +6594,7 @@ feature work stuck on feature branches across multiple workspaces.
                 continue
 
             # Trigger event types
-            triggers = [
-                t.event_type if hasattr(t, "event_type") else str(t)
-                for t in pb.triggers
-            ]
+            triggers = [t.event_type if hasattr(t, "event_type") else str(t) for t in pb.triggers]
 
             # Scope identifier (project_id for project-scoped playbooks)
             scope_id = pm.get_scope_identifier(pb_id)
@@ -7152,6 +7148,97 @@ feature work stuck on feature branches across multiple workspaces.
             "graph": output,
             "node_count": len(playbook.nodes),
             "version": playbook.version,
+        }
+
+    async def _cmd_dry_run_playbook(self, args: dict) -> dict:
+        """Simulate playbook execution with a mock event, producing no side effects.
+
+        Walks the compiled playbook graph from entry to terminal without
+        making real LLM calls, writing to the database, or emitting events.
+        Returns the node trace showing the path that *would* be taken.
+
+        This is the ``dry_run_playbook`` command from spec §15,
+        roadmap 5.5.2, addressing Open Question #2 (testing and validation).
+
+        Transition strategy during dry-run:
+
+        - Unconditional ``goto`` edges: followed normally.
+        - Structured conditions: evaluated against the simulated response
+          (most won't match, falling through to ``otherwise``).
+        - Natural-language conditions: the first candidate is followed
+          without an LLM call.
+        - Human-in-the-loop nodes: executed and continued past (no pause).
+
+        Args:
+            playbook_id: The compiled playbook to simulate.
+            event: Mock trigger event dict (default: ``{"type": "dry_run"}``).
+        """
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        # Resolve the compiled playbook from the active set
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            return {"error": "Playbook manager is not initialised"}
+
+        playbook = pm.get_playbook(playbook_id)
+        if playbook is None:
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' not found. "
+                    "Make sure it has been compiled (use compile_playbook first)."
+                ),
+            }
+
+        # Build mock event — merge user-provided event with sensible defaults
+        event = args.get("event") or {}
+        if isinstance(event, str):
+            try:
+                event = json.loads(event)
+            except (json.JSONDecodeError, TypeError):
+                return {"error": f"Invalid event JSON: {event}"}
+        if not isinstance(event, dict):
+            return {"error": "event must be a JSON object (dict)"}
+
+        # Ensure a type field exists for seed message clarity
+        if "type" not in event:
+            event["type"] = "dry_run"
+
+        # Convert CompiledPlaybook to the dict format PlaybookRunner expects
+        graph = playbook.to_dict()
+
+        from src.playbook_runner import PlaybookRunner
+
+        try:
+            result = await PlaybookRunner.dry_run(graph=graph, event=event)
+        except Exception as exc:
+            logger.error(
+                "Dry-run failed for playbook '%s': %s",
+                playbook_id,
+                exc,
+                exc_info=True,
+            )
+            return {"error": f"Dry-run simulation failed: {exc}"}
+
+        # Annotate transitions with dry-run-specific info
+        annotated_trace = []
+        for entry in result.node_trace:
+            annotated = dict(entry)
+            method = entry.get("transition_method")
+            if method == "llm":
+                annotated["transition_note"] = "first candidate (LLM skipped in dry-run)"
+            annotated_trace.append(annotated)
+
+        return {
+            "dry_run": True,
+            "playbook_id": playbook_id,
+            "version": playbook.version,
+            "status": result.status,
+            "node_trace": annotated_trace,
+            "node_count": len(annotated_trace),
+            "tokens_used": result.tokens_used,
+            "mock_event": event,
         }
 
     @staticmethod
