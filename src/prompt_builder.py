@@ -31,8 +31,50 @@ from typing import Any
 
 import yaml
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+# Approximate token budget for L0 Identity tier (spec: ~50 tokens).
+# 1 token ≈ 4 chars; 50 tokens ≈ 200 chars.  We warn if exceeded.
+_L0_TOKEN_BUDGET = 50
+_CHARS_PER_TOKEN = 4
+
+
+def extract_section(content: str, heading: str) -> str | None:
+    """Extract the body text under a specific ``##`` heading from markdown.
+
+    Searches for a line matching ``## {heading}`` (case-insensitive), then
+    returns all text up to the next ``##`` heading or end of file.  The
+    heading line itself is excluded from the result.
+
+    Args:
+        content: Full markdown text to search.
+        heading: The heading text to find (e.g. ``"Role"``).
+
+    Returns:
+        The section body text (stripped), or ``None`` if not found.
+    """
+    pattern = rf"^##\s+{re.escape(heading)}\s*$"
+    lines = content.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(pattern, line, re.IGNORECASE):
+            start = i + 1
+            break
+    if start is None:
+        return None
+
+    body_lines: list[str] = []
+    for line in lines[start:]:
+        if re.match(r"^##\s+", line):
+            break
+        body_lines.append(line)
+
+    body = "\n".join(body_lines).strip()
+    return body if body else None
 
 
 @dataclass
@@ -83,6 +125,7 @@ class PromptBuilder:
         self._prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
 
         # Layer state
+        self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
         self._identity: str = ""
         self._project_context: str = ""
         self._rules: str = ""
@@ -204,6 +247,43 @@ class PromptBuilder:
     # Layer setters
     # ------------------------------------------------------------------
 
+    def set_l0_role(self, role_text: str) -> None:
+        """L0 Identity tier: Set the agent's role description (~50 tokens).
+
+        This is the highest-priority content in the prompt, injected before
+        all other layers.  Sourced from the ``## Role`` section of an
+        agent-type profile.md or from ``AgentProfile.system_prompt_suffix``.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L0 tier).
+        """
+        text = role_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L0_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L0 role text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L0_TOKEN_BUDGET,
+            )
+        self._l0_role = text
+
+    def set_l0_role_from_markdown(self, profile_md: str) -> bool:
+        """Extract ``## Role`` from a markdown profile and set as L0 role.
+
+        Args:
+            profile_md: Raw markdown content of a profile file.
+
+        Returns:
+            ``True`` if a ``## Role`` section was found and set,
+            ``False`` otherwise.
+        """
+        role = extract_section(profile_md, "Role")
+        if role:
+            self.set_l0_role(role)
+            return True
+        return False
+
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
         """Layer 1: Set the identity from a prompt template."""
         rendered = self.render_template(name, variables)
@@ -302,6 +382,9 @@ class PromptBuilder:
     def build(self) -> tuple[str, list[dict]]:
         """Assemble all layers into a system prompt and tool list.
 
+        Layer order:
+            L0 role → Identity template → Project context → Rules → Context blocks
+
         Returns:
             Tuple of ``(system_prompt, tools)`` where *system_prompt*
             is a single string with layers separated by ``---`` dividers
@@ -309,6 +392,8 @@ class PromptBuilder:
         """
         sections: list[str] = []
 
+        if self._l0_role:
+            sections.append(self._l0_role)
         if self._identity:
             sections.append(self._identity)
         if self._project_context:

@@ -4257,12 +4257,11 @@ class Orchestrator:
                     "and have already been completed:\n\n" + "\n\n".join(dep_sections),
                 )
 
-        # Agent role instructions from profile
+        # L0 Identity tier — agent role description (~50 tokens, always present).
+        # Sources: (1) vault profile.md ## Role section, (2) AgentProfile.system_prompt_suffix.
+        # See docs/specs/design/memory-scoping.md §2.
         if profile and profile.system_prompt_suffix:
-            builder.add_context(
-                "role_instructions",
-                f"## Agent Role Instructions\n{profile.system_prompt_suffix}",
-            )
+            builder.set_l0_role(profile.system_prompt_suffix)
 
         # Task description
         builder.add_context("task", f"## Task\n{task.description}")

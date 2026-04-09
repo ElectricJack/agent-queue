@@ -449,3 +449,152 @@ def test_load_relevant_rules_empty_when_no_rules(prompts_dir):
     system_prompt, _ = builder.build()
 
     assert "Applicable Rules" not in system_prompt
+
+
+# ------------------------------------------------------------------
+# L0 Identity tier — role extraction and injection
+# ------------------------------------------------------------------
+
+
+def test_extract_section_finds_role():
+    """extract_section returns content under ## Role."""
+    from src.prompt_builder import extract_section
+
+    md = textwrap.dedent("""\
+        # Coding Agent
+
+        ## Role
+        You are a software engineering agent. You write, modify, and debug code
+        within a project workspace.
+
+        ## Config
+        ```json
+        {"model": "claude-sonnet-4-6"}
+        ```
+    """)
+
+    result = extract_section(md, "Role")
+    assert result is not None
+    assert "software engineering agent" in result
+    assert "Config" not in result
+
+
+def test_extract_section_returns_none_when_missing():
+    """extract_section returns None when heading is not found."""
+    from src.prompt_builder import extract_section
+
+    md = "# Agent\n\n## Config\nSome config."
+    assert extract_section(md, "Role") is None
+
+
+def test_extract_section_case_insensitive():
+    """extract_section matches headings case-insensitively."""
+    from src.prompt_builder import extract_section
+
+    md = "## role\nYou are a test agent."
+    result = extract_section(md, "Role")
+    assert result == "You are a test agent."
+
+
+def test_extract_section_at_end_of_file():
+    """extract_section handles section at end of file (no next heading)."""
+    from src.prompt_builder import extract_section
+
+    md = "## Overview\nSome overview.\n\n## Role\nYou are the last section."
+    result = extract_section(md, "Role")
+    assert result == "You are the last section."
+
+
+def test_extract_section_empty_body():
+    """extract_section returns None for headings with empty body."""
+    from src.prompt_builder import extract_section
+
+    md = "## Role\n\n## Config\nStuff."
+    assert extract_section(md, "Role") is None
+
+
+def test_set_l0_role(prompts_dir):
+    """set_l0_role injects text at the very start of the prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    # L0 role appears before identity and context
+    role_pos = prompt.index("You are a coding agent.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < identity_pos < task_pos
+
+
+def test_set_l0_role_empty_noop(prompts_dir):
+    """set_l0_role with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("")
+    builder.set_l0_role("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_l0_role_from_markdown(prompts_dir):
+    """set_l0_role_from_markdown extracts ## Role and injects it."""
+    from src.prompt_builder import PromptBuilder
+
+    profile_md = textwrap.dedent("""\
+        ---
+        id: coding
+        name: Coding Agent
+        ---
+
+        # Coding Agent
+
+        ## Role
+        You are a software engineering agent. You write clean code.
+
+        ## Rules
+        - Always run tests before committing
+    """)
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    found = builder.set_l0_role_from_markdown(profile_md)
+    assert found is True
+
+    prompt = builder.build_task_prompt()
+    assert "software engineering agent" in prompt
+    assert "Always run tests" not in prompt  # Rules section excluded
+
+
+def test_set_l0_role_from_markdown_no_role(prompts_dir):
+    """set_l0_role_from_markdown returns False when no ## Role exists."""
+    from src.prompt_builder import PromptBuilder
+
+    profile_md = "# Agent\n\n## Config\nSome config."
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    found = builder.set_l0_role_from_markdown(profile_md)
+    assert found is False
+
+
+def test_l0_role_ordering_in_full_assembly(prompts_dir):
+    """L0 role appears before all other layers in full assembly."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < sys_pos < task_pos
