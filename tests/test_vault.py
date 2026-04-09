@@ -927,6 +927,31 @@ def test_starter_knowledge_covers_expected_types():
 # ---------------------------------------------------------------------------
 
 
+def test_ensure_default_playbooks_installs_all_four(tmp_path):
+    """A clean install creates all four default playbooks with correct result dict."""
+    result = ensure_default_playbooks(str(tmp_path))
+
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    expected_files = [
+        "codebase-inspector.md",
+        "dependency-audit.md",
+        "system-health-check.md",
+        "task-outcome.md",
+    ]
+
+    # All four files must exist on disk
+    for filename in expected_files:
+        assert (playbooks_dir / filename).is_file(), f"{filename} not installed"
+
+    # All four must appear in result["created"]
+    assert sorted(result["created"]) == expected_files
+    assert result["skipped"] == []
+
+    # No extra files should be present (only .md files from the defaults dir)
+    installed = sorted(f.name for f in playbooks_dir.iterdir() if f.suffix == ".md")
+    assert installed == expected_files
+
+
 def test_ensure_default_playbooks_creates_task_outcome(tmp_path):
     """ensure_default_playbooks installs task-outcome.md to vault/system/playbooks/."""
     result = ensure_default_playbooks(str(tmp_path))
@@ -964,9 +989,10 @@ def test_ensure_default_playbooks_partial_existing(tmp_path):
 
     assert "task-outcome.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
-    # Other playbooks should still be created since they didn't exist
+    # All other playbooks should still be created since they didn't exist
     assert "codebase-inspector.md" in result["created"]
     assert "dependency-audit.md" in result["created"]
+    assert "system-health-check.md" in result["created"]
 
 
 def test_task_outcome_playbook_has_valid_frontmatter():
@@ -1275,15 +1301,24 @@ def test_ensure_default_playbooks_idempotent_system_health_check(tmp_path):
     ensure_default_playbooks(str(tmp_path))
 
     playbook_path = tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md"
-    custom_content = (
-        "---\nid: system-health-check\ntriggers:\n  - timer.30m\nscope: system\n---\n"
-    )
+    custom_content = "---\nid: system-health-check\ntriggers:\n  - timer.30m\nscope: system\n---\n"
     playbook_path.write_text(custom_content)
 
     result = ensure_default_playbooks(str(tmp_path))
 
     assert playbook_path.read_text() == custom_content
     assert "system-health-check.md" in result["skipped"]
+
+
+def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
+    """Second call to ensure_default_playbooks skips all four — nothing overwritten."""
+    first = ensure_default_playbooks(str(tmp_path))
+    assert len(first["created"]) == 4
+    assert len(first["skipped"]) == 0
+
+    second = ensure_default_playbooks(str(tmp_path))
+    assert len(second["created"]) == 0
+    assert sorted(second["skipped"]) == sorted(first["created"])
 
 
 def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
