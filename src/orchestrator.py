@@ -869,6 +869,14 @@ class Orchestrator:
 
         register_memory_handlers(self.vault_watcher)
 
+        # Register playbook .md watcher handlers (playbooks spec §17).
+        # Detects changes to playbook files across all vault scopes so they
+        # can be recompiled into executable graphs.  Phase 4 is a logging
+        # stub; actual compilation is wired in Phase 5.
+        from src.playbook_handler import register_playbook_handlers
+
+        register_playbook_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
