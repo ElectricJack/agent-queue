@@ -3180,3 +3180,260 @@ class TestResolveScopes:
         )
         for entry in entries:
             assert milvus_re.match(entry.collection), f"Invalid Milvus collection name: {entry.collection}"
+
+
+# ---- Roadmap 3.1.8: Scope resolution test cases (a)-(f) ---------------------
+# Spec: docs/specs/design/memory-scoping.md §4 — Scope Hierarchy
+#
+#   (a) resolver for (agent_type="coding", project_id="myapp") returns
+#       collections in order: [aq_project_myapp, aq_agenttype_coding,
+#       aq_system] with weights [1.0, 0.7, 0.4]
+#   (b) resolver for (agent_type="coding", project_id=None) returns
+#       [aq_agenttype_coding, aq_system] (no project scope)
+#   (c) resolver for (agent_type=None, project_id="myapp") returns
+#       [aq_project_myapp, aq_system] (no agent-type scope)
+#   (d) resolver for unknown agent_type still returns system collection
+#   (e) collections are created on-demand if they don't exist yet
+#   (f) weight values match the spec exactly and are configurable
+
+
+class TestRoadmap318ScopeResolution:
+    """Roadmap 3.1.8 — Scope resolution per memory-scoping §4.
+
+    Each test method maps 1:1 to a roadmap case letter using the exact
+    parameters and assertions from the spec.
+    """
+
+    # -- (a) Full context: both agent_type and project_id ----------------------
+
+    def test_a_full_context_ordered_collections_and_weights(self):
+        """(a) resolver for (agent_type="coding", project_id="myapp") returns
+        collections in order [aq_project_myapp, aq_agenttype_coding, aq_system]
+        with weights [1.0, 0.7, 0.4].
+        """
+        entries = resolve_scopes(agent_type="coding", project_id="myapp")
+
+        assert len(entries) == 3
+
+        # Ordered collection names
+        collections = [e.collection for e in entries]
+        assert collections == ["aq_project_myapp", "aq_agenttype_coding", "aq_system"]
+
+        # Weights per spec §4
+        weights = [e.weight for e in entries]
+        assert weights == [1.0, 0.7, 0.4]
+
+        # Scope enum values in order
+        scopes = [e.scope for e in entries]
+        assert scopes == [MemoryScope.PROJECT, MemoryScope.AGENT_TYPE, MemoryScope.SYSTEM]
+
+    # -- (b) No project: agent_type only ---------------------------------------
+
+    def test_b_no_project_scope(self):
+        """(b) resolver for (agent_type="coding", project_id=None) returns
+        [aq_agenttype_coding, aq_system] — no project scope in output.
+        """
+        entries = resolve_scopes(agent_type="coding", project_id=None)
+
+        assert len(entries) == 2
+
+        collections = [e.collection for e in entries]
+        assert collections == ["aq_agenttype_coding", "aq_system"]
+
+        weights = [e.weight for e in entries]
+        assert weights == [0.7, 0.4]
+
+        # No PROJECT scope present
+        scopes = {e.scope for e in entries}
+        assert MemoryScope.PROJECT not in scopes
+
+    # -- (c) No agent-type: project only ---------------------------------------
+
+    def test_c_no_agent_type_scope(self):
+        """(c) resolver for (agent_type=None, project_id="myapp") returns
+        [aq_project_myapp, aq_system] — no agent-type scope in output.
+        """
+        entries = resolve_scopes(agent_type=None, project_id="myapp")
+
+        assert len(entries) == 2
+
+        collections = [e.collection for e in entries]
+        assert collections == ["aq_project_myapp", "aq_system"]
+
+        weights = [e.weight for e in entries]
+        assert weights == [1.0, 0.4]
+
+        # No AGENT_TYPE scope present
+        scopes = {e.scope for e in entries}
+        assert MemoryScope.AGENT_TYPE not in scopes
+
+    # -- (d) Unknown agent_type still returns system ---------------------------
+
+    def test_d_unknown_agent_type_returns_system(self):
+        """(d) resolver for unknown agent_type still returns system collection.
+
+        An unrecognized agent type name should not cause an error — the resolver
+        simply creates a scope entry for it and always includes system.
+        """
+        entries = resolve_scopes(agent_type="totally_unknown_type_xyz")
+
+        # System is always present
+        system_entries = [e for e in entries if e.scope == MemoryScope.SYSTEM]
+        assert len(system_entries) == 1
+        assert system_entries[0].collection == "aq_system"
+        assert system_entries[0].weight == 0.4
+
+        # The unknown agent type still gets its own scope entry
+        at_entries = [e for e in entries if e.scope == MemoryScope.AGENT_TYPE]
+        assert len(at_entries) == 1
+        assert at_entries[0].collection == "aq_agenttype_totally_unknown_type_xyz"
+        assert at_entries[0].scope_id == "totally_unknown_type_xyz"
+
+    def test_d_unknown_agent_type_with_project_still_returns_system(self):
+        """(d) even with both unknown agent_type and project, system is present."""
+        entries = resolve_scopes(
+            agent_type="never_heard_of_this",
+            project_id="nonexistent_project",
+        )
+        scopes = [e.scope for e in entries]
+        assert MemoryScope.SYSTEM in scopes
+        assert len(entries) == 3
+
+    def test_d_no_context_still_returns_system(self):
+        """(d) with no agent_type and no project_id, system is still returned."""
+        entries = resolve_scopes()
+        assert len(entries) == 1
+        assert entries[0].scope == MemoryScope.SYSTEM
+        assert entries[0].collection == "aq_system"
+
+    # -- (e) On-demand collection creation -------------------------------------
+
+    @pytestmark_milvus
+    def test_e_on_demand_creation_via_router(self, tmp_path: Path):
+        """(e) collections are created on-demand if they don't exist yet.
+
+        Resolves scopes, then uses CollectionRouter.get_store() for each
+        entry. Stores are created lazily — no pre-registration required.
+        """
+        db = tmp_path / "roadmap_318e.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            entries = resolve_scopes(agent_type="coding", project_id="myapp")
+
+            # Before: no stores open
+            for entry in entries:
+                assert not router.has_store(entry.scope, entry.scope_id)
+
+            # Create stores on-demand from resolved scopes
+            stores = []
+            for entry in entries:
+                store = router.get_store(entry.scope, entry.scope_id)
+                stores.append(store)
+
+            # After: all stores exist and match expected collection names
+            assert len(stores) == 3
+            assert stores[0]._collection == "aq_project_myapp"
+            assert stores[1]._collection == "aq_agenttype_coding"
+            assert stores[2]._collection == "aq_system"
+
+            for entry in entries:
+                assert router.has_store(entry.scope, entry.scope_id)
+        finally:
+            router.close()
+
+    @pytestmark_milvus
+    def test_e_on_demand_creation_idempotent(self, tmp_path: Path):
+        """(e) calling get_store twice returns the same cached instance."""
+        db = tmp_path / "roadmap_318e_idem.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            entries = resolve_scopes(agent_type="coding", project_id="myapp")
+
+            first = [router.get_store(e.scope, e.scope_id) for e in entries]
+            second = [router.get_store(e.scope, e.scope_id) for e in entries]
+
+            for s1, s2 in zip(first, second, strict=True):
+                assert s1 is s2, "get_store should return cached instance"
+        finally:
+            router.close()
+
+    @pytestmark_milvus
+    def test_e_on_demand_creation_unknown_agent_type(self, tmp_path: Path):
+        """(e) on-demand creation works even for previously unseen agent types."""
+        db = tmp_path / "roadmap_318e_unknown.db"
+        router = CollectionRouter(milvus_uri=str(db), dimension=4)
+        try:
+            entries = resolve_scopes(agent_type="brand_new_agent_type")
+
+            for entry in entries:
+                store = router.get_store(entry.scope, entry.scope_id)
+                assert store is not None
+
+            # Verify the agent-type collection was created
+            assert router.has_store(MemoryScope.AGENT_TYPE, "brand_new_agent_type")
+            assert router.has_store(MemoryScope.SYSTEM)
+        finally:
+            router.close()
+
+    # -- (f) Weights match spec and are configurable ---------------------------
+
+    def test_f_default_weights_match_spec(self):
+        """(f) default weights match spec §4 exactly: project=1.0, agent-type=0.7,
+        system=0.4.
+        """
+        assert SCOPE_WEIGHTS[MemoryScope.PROJECT] == 1.0
+        assert SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE] == 0.7
+        assert SCOPE_WEIGHTS[MemoryScope.SYSTEM] == 0.4
+
+        # Verify resolve_scopes uses these defaults
+        entries = resolve_scopes(agent_type="coding", project_id="myapp")
+        for entry in entries:
+            assert entry.weight == SCOPE_WEIGHTS[entry.scope]
+
+    def test_f_weights_configurable_full_override(self):
+        """(f) all weights can be overridden via the weights parameter."""
+        custom = {
+            MemoryScope.PROJECT: 0.9,
+            MemoryScope.AGENT_TYPE: 0.6,
+            MemoryScope.SYSTEM: 0.2,
+        }
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="myapp",
+            weights=custom,
+        )
+        assert entries[0].weight == 0.9  # project
+        assert entries[1].weight == 0.6  # agent-type
+        assert entries[2].weight == 0.2  # system
+
+    def test_f_weights_configurable_partial_override(self):
+        """(f) partial weight overrides — unspecified scopes keep spec defaults."""
+        custom = {MemoryScope.PROJECT: 0.85}
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="myapp",
+            weights=custom,
+        )
+        assert entries[0].weight == 0.85  # overridden
+        assert entries[1].weight == 0.7  # default (spec §4)
+        assert entries[2].weight == 0.4  # default (spec §4)
+
+    def test_f_weights_ordering_preserved_even_with_custom(self):
+        """(f) custom weights don't affect scope order — still project → agent → system."""
+        # Even with inverted weights, scope ORDER is fixed by specificity
+        custom = {
+            MemoryScope.PROJECT: 0.1,  # intentionally lower
+            MemoryScope.SYSTEM: 0.9,  # intentionally higher
+        }
+        entries = resolve_scopes(
+            agent_type="coding",
+            project_id="myapp",
+            weights=custom,
+        )
+        # Scope order is always most-specific first, regardless of weight values
+        scopes = [e.scope for e in entries]
+        assert scopes == [MemoryScope.PROJECT, MemoryScope.AGENT_TYPE, MemoryScope.SYSTEM]
+
+        # But weight values reflect the custom config
+        assert entries[0].weight == 0.1
+        assert entries[2].weight == 0.9
