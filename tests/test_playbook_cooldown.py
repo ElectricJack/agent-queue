@@ -1,8 +1,7 @@
-"""Tests for PlaybookManager cooldown tracking (roadmap 5.3.4).
+"""Tests for PlaybookManager cooldown tracking (roadmap 5.3.9).
 
-Tests cover the cooldown-per-playbook requirements from the playbooks spec
-Section 6 (Execution Model, Concurrency subsection) and the test cases
-defined in roadmap 5.3.9:
+Covers the seven mandatory test cases from roadmap 5.3.9 for playbook
+cooldown per the playbooks spec Section 6 (Execution Model, Concurrency):
 
   (a) Playbook with 60s cooldown ignores trigger within 60s of completion
   (b) Same playbook triggers normally after cooldown expires
@@ -13,7 +12,8 @@ defined in roadmap 5.3.9:
   (g) Concurrent events during cooldown are dropped (not queued)
 
 Additionally tests the public API surface: is_on_cooldown, get_cooldown_remaining,
-record_execution, clear_cooldown, get_triggerable_playbooks.
+record_execution, clear_cooldown, get_triggerable_playbooks.  Edge cases,
+boundary conditions, and lifecycle scenarios round out the coverage.
 """
 
 from __future__ import annotations
@@ -89,6 +89,10 @@ class TestCooldownBasic:
         assert manager.is_on_cooldown("test-playbook", "system") is True
         assert manager.get_cooldown_remaining("test-playbook", "system") > 0.0
 
+        # Trigger event within cooldown window is ignored
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert result == [], "Trigger event within cooldown window must be ignored"
+
     def test_b_playbook_triggers_after_cooldown_expires(self) -> None:
         """(b) Same playbook triggers normally after cooldown expires."""
         pb = _make_playbook(cooldown_seconds=60)
@@ -101,6 +105,11 @@ class TestCooldownBasic:
         # Cooldown expired — should NOT be on cooldown
         assert manager.is_on_cooldown("test-playbook", "system") is False
         assert manager.get_cooldown_remaining("test-playbook", "system") == 0.0
+
+        # Trigger event after cooldown fires normally
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1
+        assert result[0].id == "test-playbook"
 
     def test_c_cooldown_per_playbook_independent(self) -> None:
         """(c) Cooldown is per-playbook — different playbooks are independent."""
@@ -124,6 +133,11 @@ class TestCooldownBasic:
         assert manager.is_on_cooldown("pb-alpha", "system") is True
         assert manager.is_on_cooldown("pb-beta", "system") is False
 
+        # Same trigger event → only pb-beta fires (pb-alpha is independent, blocked)
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1
+        assert result[0].id == "pb-beta"
+
     def test_d_cooldown_tracked_per_scope(self) -> None:
         """(d) Cooldown is per-scope — project cooldown doesn't block system."""
         pb = _make_playbook(cooldown_seconds=60)
@@ -137,6 +151,12 @@ class TestCooldownBasic:
         assert manager.is_on_cooldown("test-playbook", "project") is True
         # System scope is NOT on cooldown
         assert manager.is_on_cooldown("test-playbook", "system") is False
+
+        # Project-scoped trigger blocked, system-scoped trigger allowed
+        assert manager.get_triggerable_playbooks("git.commit", "project") == []
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1
+        assert result[0].id == "test-playbook"
 
     def test_e_failed_run_applies_cooldown(self) -> None:
         """(e) Failed runs still apply cooldown (prevents error loops).
@@ -167,6 +187,10 @@ class TestCooldownBasic:
         # Should NOT be on cooldown despite recent execution
         assert manager.is_on_cooldown("test-playbook", "system") is False
         assert manager.get_cooldown_remaining("test-playbook", "system") == 0.0
+
+        # Trigger fires immediately despite just-completed execution
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1, "cooldown_seconds=0 must allow every event to trigger"
 
     def test_g_concurrent_events_during_cooldown_dropped(self) -> None:
         """(g) Concurrent events during cooldown are dropped (not queued).
@@ -550,3 +574,180 @@ class TestAgentTypeScopeCooldown:
 
         assert manager.is_on_cooldown("test-playbook", "agent-type:coding") is True
         assert manager.is_on_cooldown("test-playbook", "system") is False
+
+
+# ---------------------------------------------------------------------------
+# Test: Boundary conditions
+# ---------------------------------------------------------------------------
+
+
+class TestCooldownBoundary:
+    """Tests for edge/boundary conditions in cooldown timing."""
+
+    def test_exact_cooldown_boundary_is_expired(self) -> None:
+        """At exactly cooldown_seconds elapsed, cooldown has expired.
+
+        The implementation uses strict ``> 0.0`` for ``is_on_cooldown``,
+        so ``remaining == 0.0`` (at the boundary) means expired.
+        """
+        pb = _make_playbook(cooldown_seconds=60)
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+        manager.record_execution("test-playbook", "system", _clock=now - 60)
+
+        assert manager.is_on_cooldown("test-playbook", "system") is False
+        assert manager.get_cooldown_remaining("test-playbook", "system") == 0.0
+
+        # Trigger fires at the exact boundary
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1
+
+    def test_one_second_before_expiry(self) -> None:
+        """One second before cooldown expires, still blocked."""
+        pb = _make_playbook(cooldown_seconds=60)
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+        manager.record_execution("test-playbook", "system", _clock=now - 59)
+
+        assert manager.is_on_cooldown("test-playbook", "system") is True
+        remaining = manager.get_cooldown_remaining("test-playbook", "system")
+        assert 0.0 < remaining <= 1.0
+
+    def test_very_small_cooldown(self) -> None:
+        """Cooldown of 1 second works correctly."""
+        pb = _make_playbook(cooldown_seconds=1)
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+        # Execution 0.5s ago — within cooldown
+        manager.record_execution("test-playbook", "system", _clock=now - 0.5)
+        assert manager.is_on_cooldown("test-playbook", "system") is True
+
+        # Execution 2s ago — past cooldown
+        manager.record_execution("test-playbook", "system", _clock=now - 2)
+        assert manager.is_on_cooldown("test-playbook", "system") is False
+
+    def test_large_cooldown(self) -> None:
+        """Large cooldown values (e.g. 1 hour) work correctly."""
+        pb = _make_playbook(cooldown_seconds=3600)
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+        manager.record_execution("test-playbook", "system", _clock=now - 1800)
+
+        # 30 minutes in — still on cooldown
+        assert manager.is_on_cooldown("test-playbook", "system") is True
+        remaining = manager.get_cooldown_remaining("test-playbook", "system")
+        assert 1795.0 < remaining <= 1800.0
+
+
+# ---------------------------------------------------------------------------
+# Test: Full lifecycle scenario
+# ---------------------------------------------------------------------------
+
+
+class TestCooldownLifecycle:
+    """End-to-end lifecycle test exercising the full cooldown flow."""
+
+    def test_full_trigger_execute_cooldown_retrigger_cycle(self) -> None:
+        """Full lifecycle: trigger → execute → cooldown → drop → expire → trigger.
+
+        Walks through the complete sequence described in the spec's
+        Concurrency section and roadmap cases (a), (b), and (g) combined.
+        """
+        pb = _make_playbook(cooldown_seconds=60, triggers=["git.commit"])
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+
+        # 1. First event arrives — playbook is triggerable (no prior execution)
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1, "First event should trigger the playbook"
+        assert result[0].id == "test-playbook"
+
+        # 2. Execution completes — record it
+        manager.record_execution("test-playbook", "system", _clock=now)
+
+        # 3. Second event arrives within cooldown — dropped (case g)
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert result == [], "Event during cooldown must be dropped"
+
+        # 4. Third event also within cooldown — also dropped (case a)
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert result == [], "Subsequent event still within cooldown must be dropped"
+
+        # 5. Simulate cooldown expiry (re-record execution 61s ago)
+        manager.record_execution("test-playbook", "system", _clock=now - 61)
+
+        # 6. Event after cooldown — triggers normally (case b)
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1, "Event after cooldown should trigger the playbook"
+        assert result[0].id == "test-playbook"
+
+    def test_multiple_playbooks_mixed_cooldown_lifecycle(self) -> None:
+        """Multiple playbooks with different cooldowns on the same trigger.
+
+        Verifies that cooldown is truly per-playbook: one playbook can be
+        on cooldown while another (with a shorter cooldown or no execution)
+        continues to trigger from the same event type.
+        """
+        pb_short = _make_playbook(
+            playbook_id="pb-short",
+            triggers=["git.commit"],
+            cooldown_seconds=10,
+        )
+        pb_long = _make_playbook(
+            playbook_id="pb-long",
+            triggers=["git.commit"],
+            cooldown_seconds=120,
+        )
+        pb_none = _make_playbook(
+            playbook_id="pb-none",
+            triggers=["git.commit"],
+            cooldown_seconds=None,
+        )
+        manager = _manager_with_playbooks(pb_short, pb_long, pb_none)
+
+        now = time.monotonic()
+
+        # All three trigger initially
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 3
+
+        # Execute all three
+        manager.record_execution("pb-short", "system", _clock=now - 15)  # 15s ago
+        manager.record_execution("pb-long", "system", _clock=now - 15)  # 15s ago
+        manager.record_execution("pb-none", "system", _clock=now)
+
+        # pb-short: 10s cooldown expired (15s ago) → triggers
+        # pb-long: 120s cooldown active (15s ago) → blocked
+        # pb-none: no cooldown → triggers
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        ids = {pb.id for pb in result}
+        assert ids == {"pb-short", "pb-none"}
+
+    def test_rapid_successive_events_only_first_triggers(self) -> None:
+        """Multiple rapid events: only the first one triggers, rest are dropped.
+
+        Strengthens case (g): simulates N events arriving in quick
+        succession — after the first execution, all subsequent events
+        during the cooldown window are dropped (not queued).
+        """
+        pb = _make_playbook(cooldown_seconds=60, triggers=["git.commit"])
+        manager = _manager_with_playbooks(pb)
+
+        now = time.monotonic()
+
+        # First event triggers
+        result = manager.get_triggerable_playbooks("git.commit", "system")
+        assert len(result) == 1
+
+        # Playbook executes, recording completion
+        manager.record_execution("test-playbook", "system", _clock=now)
+
+        # Simulate 5 rapid successive events — all should be dropped
+        for i in range(5):
+            result = manager.get_triggerable_playbooks("git.commit", "system")
+            assert result == [], f"Event {i + 1} during cooldown must be dropped"
