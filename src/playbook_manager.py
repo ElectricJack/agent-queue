@@ -30,6 +30,16 @@ The manager is the integration layer between:
     Subscriptions are automatically refreshed when playbooks are
     added, removed, or recompiled.
 
+**Event-to-scope matching** (roadmap 5.3.3):
+
+    When a trigger event fires, the manager checks whether the event's
+    scope matches the playbook's scope before dispatching.  Events with
+    ``project_id`` in their payload match system-scoped playbooks (always),
+    project-scoped playbooks for the matching project, and agent-type
+    playbooks matching the originating agent's type.  Events without
+    ``project_id`` match system-scoped playbooks only — project and
+    agent-type playbooks are skipped.
+
 **Cooldown tracking** (roadmap 5.3.4):
 
     Per-playbook, per-scope cooldown prevents rapid re-triggering.  Each
@@ -68,7 +78,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from src.playbook_compiler import CompilationResult, PlaybookCompiler
-from src.playbook_models import CompiledPlaybook, PlaybookTrigger
+from src.playbook_models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
@@ -111,8 +121,9 @@ class PlaybookManager:
 
         1. The EventBus delivers the event (type + filter already matched).
         2. The manager verifies the playbook is still active.
-        3. The manager checks cooldown and concurrency limits.
-        4. If all checks pass, the ``on_trigger`` callback is invoked.
+        3. The manager checks event-to-scope matching (5.3.3).
+        4. The manager checks cooldown and concurrency limits.
+        5. If all checks pass, the ``on_trigger`` callback is invoked.
 
         Subscriptions are refreshed automatically when playbooks change.
         Call :meth:`subscribe_to_events` after initial loading to activate
@@ -189,6 +200,14 @@ class PlaybookManager:
 
         # Track source paths for each playbook ID (for notifications)
         self._source_paths: dict[str, str] = {}
+
+        # Scope identifier mapping: playbook_id → identifier string.
+        # For project-scoped playbooks this is the project_id.
+        # For agent-type playbooks the identifier is already encoded in
+        # the scope string ("agent-type:coding"), but we cache it here for
+        # consistency.  System-scoped playbooks have ``None``.
+        # Populated by :meth:`load_from_store` and :meth:`set_scope_identifier`.
+        self._scope_identifiers: dict[str, str | None] = {}
 
         # Cooldown tracking: (playbook_id, scope) → last completion timestamp.
         # Tracked per (playbook_id, scope) so project-level cooldowns don't
@@ -274,6 +293,25 @@ class PlaybookManager:
         if not playbook_ids:
             return []
         return [self._active[pid] for pid in sorted(playbook_ids) if pid in self._active]
+
+    # -- scope identifier tracking (roadmap 5.3.3) -----------------------------
+
+    def set_scope_identifier(self, playbook_id: str, identifier: str | None) -> None:
+        """Associate a scope identifier with a playbook.
+
+        For project-scoped playbooks this is the ``project_id``.  For
+        agent-type playbooks it is extracted automatically from the scope
+        string, but callers may set it explicitly.  System-scoped playbooks
+        should have ``None``.
+
+        Called by :meth:`load_from_store` and available for external callers
+        (e.g. the vault watcher) that add playbooks with project context.
+        """
+        self._scope_identifiers[playbook_id] = identifier
+
+    def get_scope_identifier(self, playbook_id: str) -> str | None:
+        """Return the scope identifier for a playbook, or ``None``."""
+        return self._scope_identifiers.get(playbook_id)
 
     # -- cooldown tracking (roadmap 5.3.4) ------------------------------------
 
@@ -747,8 +785,18 @@ class PlaybookManager:
             )
             return
 
+        # -- Event-to-scope matching (roadmap 5.3.3) --
+        # Events with project_id match system + matching project + matching
+        # agent-type.  Events without project_id match system only.
+        # See spec §7 "Event-to-Scope Matching".
+        if not self._matches_scope(playbook, data):
+            return
+
+        # Build cooldown scope key from the playbook's own scope rather than
+        # from event data.  For project-scoped playbooks include the identifier
+        # so different projects have independent cooldowns.
+        scope = self._cooldown_scope_key(playbook)
         # Check cooldown (roadmap 5.3.4)
-        scope = data.get("scope", "system")
         if self.is_on_cooldown(playbook_id, scope):
             remaining = self.get_cooldown_remaining(playbook_id, scope)
             logger.debug(
@@ -797,6 +845,107 @@ class PlaybookManager:
                 playbook_id,
             )
 
+    def _matches_scope(
+        self,
+        playbook: CompiledPlaybook,
+        data: dict[str, Any],
+    ) -> bool:
+        """Check whether an event's scope matches the playbook's scope.
+
+        Implements the event-to-scope matching rules from spec §7:
+
+        - **System-scoped** playbooks match all events (with or without
+          ``project_id``).
+        - **Project-scoped** playbooks match only events that carry a
+          ``project_id`` matching the playbook's project.  Events without
+          ``project_id`` are skipped.
+        - **Agent-type-scoped** playbooks match only events that carry both
+          a ``project_id`` **and** an ``agent_type`` matching the playbook's
+          agent type.  Events without ``project_id`` are skipped.
+
+        Parameters
+        ----------
+        playbook:
+            The playbook to check.
+        data:
+            The event payload dict from the EventBus.
+
+        Returns
+        -------
+        bool
+            ``True`` if the event should trigger this playbook.
+        """
+        scope_enum, scope_type_id = playbook.parse_scope()
+
+        if scope_enum == PlaybookScope.SYSTEM:
+            return True
+
+        event_project_id = data.get("project_id")
+
+        if scope_enum == PlaybookScope.PROJECT:
+            if event_project_id is None:
+                logger.debug(
+                    "Skipping project-scoped playbook '%s' — event has no project_id",
+                    playbook.id,
+                )
+                return False
+            playbook_project_id = self._scope_identifiers.get(playbook.id)
+            if playbook_project_id is not None and playbook_project_id != event_project_id:
+                logger.debug(
+                    "Skipping project-scoped playbook '%s' — event project '%s' "
+                    "!= playbook project '%s'",
+                    playbook.id,
+                    event_project_id,
+                    playbook_project_id,
+                )
+                return False
+            return True
+
+        if scope_enum == PlaybookScope.AGENT_TYPE:
+            if event_project_id is None:
+                logger.debug(
+                    "Skipping agent-type-scoped playbook '%s' — event has no project_id",
+                    playbook.id,
+                )
+                return False
+            event_agent_type = data.get("agent_type")
+            if event_agent_type is None or event_agent_type != scope_type_id:
+                logger.debug(
+                    "Skipping agent-type-scoped playbook '%s' — event agent_type '%s' "
+                    "!= playbook type '%s'",
+                    playbook.id,
+                    event_agent_type,
+                    scope_type_id,
+                )
+                return False
+            return True
+
+        # Unknown scope — treat as system (matches all)
+        return True
+
+    def _cooldown_scope_key(self, playbook: CompiledPlaybook) -> str:
+        """Compute the cooldown scope key for a playbook.
+
+        Uses the playbook's scope and identifier to produce a unique key
+        for cooldown tracking.  Project-scoped playbooks include the
+        project_id so different projects have independent cooldowns.
+
+        Returns
+        -------
+        str
+            A scope key like ``"system"``, ``"project:myapp"``, or
+            ``"agent-type:coding"``.
+        """
+        scope_enum, scope_type_id = playbook.parse_scope()
+        if scope_enum == PlaybookScope.PROJECT:
+            identifier = self._scope_identifiers.get(playbook.id)
+            if identifier:
+                return f"project:{identifier}"
+            return "project"
+        # For system and agent-type, the scope string itself works:
+        # "system" or "agent-type:coding"
+        return playbook.scope
+
     def _refresh_subscriptions(self) -> None:
         """Rebuild EventBus subscriptions if they were previously active.
 
@@ -840,6 +989,11 @@ class PlaybookManager:
                     continue
                 self._active[playbook.id] = playbook
                 self._index_triggers(playbook)
+                # Best-effort scope identifier extraction for legacy flat dir.
+                # Agent-type identifiers live in the scope string; project
+                # identifiers are unknown here (only the store has them).
+                _, type_id = playbook.parse_scope()
+                self._scope_identifiers[playbook.id] = type_id
                 loaded += 1
                 logger.debug(
                     "Loaded compiled playbook '%s' v%d from disk",
@@ -893,6 +1047,8 @@ class PlaybookManager:
                 continue
             self._active[playbook.id] = playbook
             self._index_triggers(playbook)
+            # Track the scope identifier for event-to-scope matching (5.3.3)
+            self._scope_identifiers[playbook.id] = identifier
             loaded += 1
             logger.debug(
                 "Loaded compiled playbook '%s' v%d from store (scope=%s, identifier=%s)",
@@ -914,6 +1070,7 @@ class PlaybookManager:
         source_path: str = "",
         rel_path: str = "",
         force: bool = False,
+        scope_identifier: str | None = None,
     ) -> CompilationResult:
         """Compile a playbook markdown file and update the active version.
 
@@ -941,6 +1098,11 @@ class PlaybookManager:
         force:
             When ``True``, skip the source hash check and always invoke the
             compiler.  Useful for manual recompilation commands.
+        scope_identifier:
+            Optional scope identifier for event-to-scope matching (roadmap
+            5.3.3).  For project-scoped playbooks this is the ``project_id``;
+            for agent-type playbooks it is extracted from the scope string
+            automatically if not provided.
 
         Returns
         -------
@@ -1002,6 +1164,13 @@ class PlaybookManager:
             self._index_triggers(result.playbook)
             self._source_paths[result.playbook.id] = source_path
             self._persist_compiled(result.playbook)
+            # Track scope identifier for event-to-scope matching (5.3.3).
+            # Prefer explicit identifier; fall back to parsing scope string.
+            if scope_identifier is not None:
+                self._scope_identifiers[result.playbook.id] = scope_identifier
+            else:
+                _, type_id = result.playbook.parse_scope()
+                self._scope_identifiers[result.playbook.id] = type_id
 
             logger.info(
                 "Playbook '%s' v%d now active (hash=%s, nodes=%d)%s",
@@ -1058,6 +1227,7 @@ class PlaybookManager:
         """
         removed = self._active.pop(playbook_id, None)
         self._source_paths.pop(playbook_id, None)
+        self._scope_identifiers.pop(playbook_id, None)
 
         if removed is not None:
             self._unindex_triggers(removed)
