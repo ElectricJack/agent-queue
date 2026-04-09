@@ -363,6 +363,7 @@ class Supervisor:
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
         llm_config: dict | None = None,
+        tool_overrides: list[str] | None = None,
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
@@ -378,6 +379,11 @@ class Supervisor:
                 provider swap based on ``model`` is implemented in a
                 follow-up task (0.4.2); for now only ``max_tokens`` is
                 applied.
+            tool_overrides: Optional list of tool names to make available
+                for this call.  When *None* (the default), the full
+                default tool set is used (backward compatible).  An empty
+                list ``[]`` means no tools (text-only response).  Unknown
+                tool names raise ``ValueError`` before the LLM call.
         """
         async with self._llm_lock:
             return await self._chat_unlocked(
@@ -387,6 +393,7 @@ class Supervisor:
                 on_progress,
                 _reflection_trigger,
                 llm_config=llm_config,
+                tool_overrides=tool_overrides,
             )
 
     async def _chat_unlocked(
@@ -397,6 +404,7 @@ class Supervisor:
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
         llm_config: dict | None = None,
+        tool_overrides: list[str] | None = None,
     ) -> str:
         """Process a user message without acquiring ``_llm_lock``.
 
@@ -416,6 +424,8 @@ class Supervisor:
         indicator, etc.).
 
         ``llm_config`` — see :meth:`chat` for details.
+
+        ``tool_overrides`` — see :meth:`chat` for details.
         """
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
@@ -437,6 +447,7 @@ class Supervisor:
                 _reflection_trigger,
                 cancel_event=cancel_event,
                 llm_config=llm_config,
+                tool_overrides=tool_overrides,
             )
         finally:
             self._cancel_events.remove(cancel_event)
@@ -475,6 +486,7 @@ class Supervisor:
         _reflection_trigger: str = "user.request",
         cancel_event: asyncio.Event | None = None,
         llm_config: dict | None = None,
+        tool_overrides: list[str] | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
         the cancel event lifecycle in a try/finally.
@@ -484,27 +496,47 @@ class Supervisor:
         ``chat()`` calls clobber each other's cancellation state.
 
         ``llm_config`` — see :meth:`chat` for details.
+
+        ``tool_overrides`` — see :meth:`chat` for details.
         """
         registry = self._registry
 
         # Use compressed schemas for local LLMs with small context windows
         compressed = self.config.chat_provider.provider == "ollama"
 
-        # Mutable tool set — starts with core, expands via load_tools
-        active_tools: dict[str, dict] = {
-            t["name"]: t for t in registry.get_core_tools(compressed=compressed)
-        }
+        if tool_overrides is not None:
+            # Validate all requested tool names exist in the registry.
+            all_known = {t["name"] for t in registry.get_all_tools()}
+            unknown = set(tool_overrides) - all_known
+            if unknown:
+                raise ValueError(
+                    f"Unknown tool names in tool_overrides: {sorted(unknown)}"
+                )
 
-        # Pre-load categories relevant to the user's prompt so the LLM
-        # doesn't need to spend a turn calling browse_tools/load_tools.
-        preloaded_categories: list[str] = []
-        relevant_cats = registry.search_relevant_categories(text)
-        for cat_name in relevant_cats:
-            cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
-            if cat_tools:
-                for t in cat_tools:
-                    active_tools[t["name"]] = t
-                preloaded_categories.append(cat_name)
+            # Build tool set from only the specified tools (empty list = no tools).
+            all_tools_map = {t["name"]: t for t in registry.get_all_tools()}
+            active_tools: dict[str, dict] = {}
+            for name in tool_overrides:
+                tool = all_tools_map[name]
+                if compressed:
+                    tool = registry.compress_tool_schema(tool)
+                active_tools[name] = tool
+        else:
+            # Default: start with core tools, expand via load_tools
+            active_tools: dict[str, dict] = {
+                t["name"]: t for t in registry.get_core_tools(compressed=compressed)
+            }
+
+            # Pre-load categories relevant to the user's prompt so the LLM
+            # doesn't need to spend a turn calling browse_tools/load_tools.
+            preloaded_categories: list[str] = []
+            relevant_cats = registry.search_relevant_categories(text)
+            for cat_name in relevant_cats:
+                cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
+                if cat_tools:
+                    for t in cat_tools:
+                        active_tools[t["name"]] = t
+                    preloaded_categories.append(cat_name)
 
         messages = list(history) if history else []
 
@@ -626,8 +658,14 @@ class Supervisor:
                     }
                 )
 
-                # If load_tools was called, expand active tool set
-                if tool_use.name == "load_tools" and "loaded" in result:
+                # If load_tools was called, expand active tool set.
+                # Skip expansion when tool_overrides is active — the override
+                # set is the complete, fixed tool set for this call.
+                if (
+                    tool_overrides is None
+                    and tool_use.name == "load_tools"
+                    and "loaded" in result
+                ):
                     category = result["loaded"]
                     cat_tools = registry.get_category_tools(
                         category,
@@ -703,6 +741,7 @@ class Supervisor:
                                 on_progress=on_progress,
                                 _reflection_trigger=_reflection_trigger,
                                 llm_config=llm_config,
+                                tool_overrides=tool_overrides,
                             )
                         finally:
                             self._reflection_retry_active = False

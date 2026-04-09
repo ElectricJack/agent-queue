@@ -563,3 +563,117 @@ async def test_system_prompt_mentions_reply_to_user():
 
 
 # test_chat_max_rounds_returns_fallback removed — agents now run without step limits
+
+
+# ------------------------------------------------------------------
+# tool_overrides tests
+# ------------------------------------------------------------------
+
+
+def test_chat_tool_overrides_filters_tools():
+    """When tool_overrides is provided, only those tools are sent to the LLM."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Done."])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    asyncio.run(sup.chat("Hello", "testuser", tool_overrides=["create_task", "reply_to_user"]))
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+    assert tool_names == {"create_task", "reply_to_user"}
+
+
+def test_chat_tool_overrides_empty_list_no_tools():
+    """Empty tool_overrides list means no tools (text-only response)."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Text only response."])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    result = asyncio.run(sup.chat("Hello", "testuser", tool_overrides=[]))
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    assert tools_sent == []
+    assert result == "Text only response."
+
+
+def test_chat_tool_overrides_none_uses_default():
+    """When tool_overrides is None, the full default tool set is used."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Hello!"])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    asyncio.run(sup.chat("Hello", "testuser", tool_overrides=None))
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+    # Default includes core tools at minimum
+    assert "browse_tools" in tool_names
+    assert "reply_to_user" in tool_names
+    assert "load_tools" in tool_names
+
+
+def test_chat_tool_overrides_unknown_raises_valueerror():
+    """Unknown tool names in tool_overrides raise ValueError."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    try:
+        asyncio.run(
+            sup.chat("Hello", "testuser", tool_overrides=["nonexistent_tool_xyz"])
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "nonexistent_tool_xyz" in str(e)
+        assert "Unknown tool names" in str(e)
+
+
+def test_chat_tool_overrides_can_include_category_tools():
+    """tool_overrides can include tools from any category, not just core."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    resp = _make_resp(text_parts=["Done."])
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    # create_project is in the "project" category, not a core tool
+    asyncio.run(
+        sup.chat("Hello", "testuser", tool_overrides=["create_project", "reply_to_user"])
+    )
+
+    call_kwargs = sup._provider.create_message.call_args
+    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+    assert tool_names == {"create_project", "reply_to_user"}
+
+
+def test_chat_tool_overrides_disables_load_tools_expansion():
+    """When tool_overrides is active, load_tools calls don't expand the tool set."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    # First response: LLM calls load_tools
+    resp1 = _make_resp(
+        tool_uses=[_make_tool_use("load_tools", {"category": "git"}, "tu-load")]
+    )
+    # Second response: LLM calls reply_to_user
+    resp2 = _make_resp(
+        tool_uses=[_make_reply_tool_use("Done.", "tu-reply")]
+    )
+
+    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
+    sup.handler.execute = AsyncMock(return_value={"loaded": "git"})
+
+    asyncio.run(
+        sup.chat("Hello", "testuser", tool_overrides=["load_tools", "reply_to_user"])
+    )
+
+    # Second call should still only have the override tools (no git tools added)
+    second_call = sup._provider.create_message.call_args_list[1]
+    tools_sent = second_call.kwargs.get("tools") or second_call[1].get("tools")
+    tool_names = {t["name"] for t in tools_sent}
+    assert tool_names == {"load_tools", "reply_to_user"}
