@@ -1917,6 +1917,404 @@ def test_same_second_updates_preserve_history(store: MilvusStore):
     assert open_entries[0]["kv_value"] == '"second"'
 
 
+# ---- Roadmap 2.1.16 — Temporal fact lifecycle (spec §6) --------------------
+# Explicit test coverage for each roadmap case (a) through (g), plus the
+# integration test checkpoint: "create a fact, update it 5 times, query as-of
+# each historical timestamp".
+
+
+def test_roadmap_2_1_16a_insert_and_query_at_now(store: MilvusStore):
+    """Case (a): insert temporal fact with valid_from=now, valid_to=0 — as-of
+    query at *now* returns it.
+
+    This verifies the most basic contract: a newly-inserted temporal fact is
+    immediately visible when queried at its own insertion timestamp.
+    """
+    T0 = 1700000000
+    entry = store.set_temporal("deploy_branch", "main", timestamp=T0)
+
+    # Structural checks on the returned entry
+    assert entry["entry_type"] == "temporal"
+    assert entry["kv_key"] == "deploy_branch"
+    assert entry["kv_value"] == '"main"'
+    assert entry["valid_from"] == T0
+    assert entry["valid_to"] == 0  # open / current
+
+    # As-of query at exact insertion time finds the entry
+    results = store.get_temporal("deploy_branch", at=T0)
+    assert len(results) == 1
+    assert results[0]["kv_value"] == '"main"'
+    assert results[0]["valid_from"] == T0
+    assert results[0]["valid_to"] == 0
+
+    # Also visible slightly after insertion
+    results_after = store.get_temporal("deploy_branch", at=T0 + 1)
+    assert len(results_after) == 1
+    assert results_after[0]["kv_value"] == '"main"'
+
+
+def test_roadmap_2_1_16b_update_closes_old_opens_new(store: MilvusStore):
+    """Case (b): update fact — old record gets valid_to=now, new record gets
+    valid_from=now — as-of query at *now* returns the new value.
+
+    This is the core temporal lifecycle: updating closes the previous window
+    and opens a new one, both at the same boundary timestamp.
+    """
+    T0 = 1700000000
+    T1 = 1710000000
+
+    store.set_temporal("deploy_branch", "main", timestamp=T0)
+    store.set_temporal("deploy_branch", "release", timestamp=T1)
+
+    # Old record: closed at T1
+    history = store.get_temporal_history("deploy_branch")
+    assert len(history) == 2
+
+    old = history[0]
+    assert old["kv_value"] == '"main"'
+    assert old["valid_from"] == T0
+    assert old["valid_to"] == T1  # closed at update time
+
+    # New record: open from T1
+    new = history[1]
+    assert new["kv_value"] == '"release"'
+    assert new["valid_from"] == T1
+    assert new["valid_to"] == 0  # still open
+
+    # As-of query at T1 returns the NEW value (valid_from <= T1 AND valid_to == 0)
+    results = store.get_temporal("deploy_branch", at=T1)
+    assert len(results) == 1
+    assert results[0]["kv_value"] == '"release"'
+
+
+def test_roadmap_2_1_16c_as_of_past_returns_old_value(store: MilvusStore):
+    """Case (c): as-of query at a past timestamp returns the old value
+    (before update).
+
+    After updating deploy_branch from "main" to "release" at T1, querying
+    at a time between T0 and T1 must return "main".
+    """
+    T0 = 1700000000
+    T1 = 1710000000
+    T_BETWEEN = 1705000000  # T0 < T_BETWEEN < T1
+
+    store.set_temporal("deploy_branch", "main", timestamp=T0)
+    store.set_temporal("deploy_branch", "release", timestamp=T1)
+
+    result = store.get_temporal("deploy_branch", at=T_BETWEEN)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"main"'
+    assert result[0]["valid_from"] == T0
+    assert result[0]["valid_to"] == T1
+
+
+def test_roadmap_2_1_16d_as_of_future_returns_current(store: MilvusStore):
+    """Case (d): as-of query at a future timestamp returns the current value
+    (valid_to=0 / None means open-ended).
+
+    The current value should remain visible at any future point because its
+    validity window is unbounded (valid_to == 0).
+    """
+    T0 = 1700000000
+    T1 = 1710000000
+    T_FUTURE = 9999999999  # far future
+
+    store.set_temporal("deploy_branch", "main", timestamp=T0)
+    store.set_temporal("deploy_branch", "release", timestamp=T1)
+
+    result = store.get_temporal("deploy_branch", at=T_FUTURE)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"release"'
+    assert result[0]["valid_from"] == T1
+    assert result[0]["valid_to"] == 0  # open-ended
+
+
+def test_roadmap_2_1_16e_history_chain_as_of_each_point(store: MilvusStore):
+    """Case (e): multiple updates create a complete history chain — as-of
+    query at each point returns the correct version.
+
+    Creates 4 versions and queries at a point within each validity window
+    to verify the correct value is returned.
+    """
+    # Version timeline:
+    #   [1000, 2000)  -> "v1"
+    #   [2000, 3000)  -> "v2"
+    #   [3000, 4000)  -> "v3"
+    #   [4000, ∞)     -> "v4"
+    store.set_temporal("config", "v1", timestamp=1000)
+    store.set_temporal("config", "v2", timestamp=2000)
+    store.set_temporal("config", "v3", timestamp=3000)
+    store.set_temporal("config", "v4", timestamp=4000)
+
+    # Full history chain is intact
+    history = store.get_temporal_history("config")
+    assert len(history) == 4
+
+    # Verify contiguous, non-overlapping windows
+    for i in range(len(history) - 1):
+        assert history[i]["valid_to"] == history[i + 1]["valid_from"], (
+            f"Gap/overlap between history[{i}] and history[{i + 1}]: "
+            f"valid_to={history[i]['valid_to']} != valid_from={history[i + 1]['valid_from']}"
+        )
+
+    # Last entry is open
+    assert history[-1]["valid_to"] == 0
+
+    # As-of query at each window midpoint returns the correct version
+    test_cases = [
+        (1500, '"v1"'),
+        (2500, '"v2"'),
+        (3500, '"v3"'),
+        (5000, '"v4"'),  # future — still v4
+    ]
+    for query_time, expected_value in test_cases:
+        result = store.get_temporal("config", at=query_time)
+        assert len(result) == 1, f"Expected 1 result at t={query_time}, got {len(result)}"
+        assert result[0]["kv_value"] == expected_value, (
+            f"At t={query_time}: expected {expected_value}, got {result[0]['kv_value']}"
+        )
+
+    # As-of at exact boundary timestamps
+    # At T=2000: v1 is closed (valid_to=2000, which means valid_to > 2000 is False)
+    # and v2 is open (valid_from=2000 <= 2000), so v2 wins
+    boundary_result = store.get_temporal("config", at=2000)
+    assert len(boundary_result) == 1
+    assert boundary_result[0]["kv_value"] == '"v2"'
+
+
+def test_roadmap_2_1_16f_no_matching_window_returns_empty(store: MilvusStore):
+    """Case (f): temporal query with no matching time window returns empty.
+
+    Covers multiple scenarios where no validity window covers the query time.
+    """
+    store.set_temporal("branch", "main", timestamp=1000)
+    store.set_temporal("branch", "develop", timestamp=2000)
+
+    # Before any entry exists
+    result_before = store.get_temporal("branch", at=500)
+    assert result_before == [], "Query before first entry should return empty"
+
+    # After deletion (all windows closed)
+    store.delete_temporal("branch", timestamp=3000)
+    result_after = store.get_temporal("branch", at=4000)
+    assert result_after == [], "Query after deletion should return empty"
+
+    # Nonexistent key
+    result_missing = store.get_temporal("nonexistent_key", at=2000)
+    assert result_missing == [], "Query for nonexistent key should return empty"
+
+
+def test_roadmap_2_1_16g_concurrent_updates_no_window_corruption(store: MilvusStore):
+    """Case (g): concurrent updates to the same fact do not corrupt the
+    window chain (no overlapping valid_from/valid_to).
+
+    Simulates rapid-fire updates (same-second) and verifies:
+    1. All entries are preserved (no hash collisions)
+    2. At most one entry is open (valid_to == 0) at any time
+    3. No overlapping validity windows exist
+    """
+    # Rapid updates at the same timestamp (same-second collision scenario)
+    T = 5000
+    store.set_temporal("branch", "first", timestamp=T)
+    store.set_temporal("branch", "second", timestamp=T)
+    store.set_temporal("branch", "third", timestamp=T)
+
+    history = store.get_temporal_history("branch")
+    assert len(history) == 3, f"Expected 3 entries, got {len(history)}"
+
+    # Exactly one open entry
+    open_entries = [h for h in history if h["valid_to"] == 0]
+    assert len(open_entries) == 1, f"Expected exactly 1 open entry, got {len(open_entries)}"
+    assert open_entries[0]["kv_value"] == '"third"'  # last write wins
+
+    # All closed entries have valid_to > 0
+    closed_entries = [h for h in history if h["valid_to"] != 0]
+    assert len(closed_entries) == 2
+
+    # No overlapping windows: for any pair of entries, one window does not
+    # contain the start of the other (unless they share a boundary, which
+    # is fine — [T0, T1) and [T1, T2) don't overlap).
+    for i, a in enumerate(history):
+        for j, b in enumerate(history):
+            if i == j:
+                continue
+            a_from, a_to = a["valid_from"], a["valid_to"] or float("inf")
+            b_from = b["valid_from"]
+            # b_from should not be strictly inside a's window
+            # (it CAN equal a_from if they're at the same timestamp, since
+            # one is immediately closed)
+            if a_from < b_from < a_to:
+                # This is OK only if a was closed at b_from
+                assert a["valid_to"] == b_from or a["valid_to"] == 0, (
+                    f"Overlapping windows: entry {i} [{a['valid_from']}, {a['valid_to']}] "
+                    f"overlaps with entry {j} starting at {b_from}"
+                )
+
+
+def test_roadmap_2_1_16g_concurrent_different_timestamps(store: MilvusStore):
+    """Case (g) variant: rapid updates at distinct timestamps preserve
+    chain integrity.
+
+    Verifies that when updates arrive at closely-spaced but distinct
+    timestamps, every intermediate version has a properly-bounded window.
+    """
+    timestamps = [1000, 1001, 1002, 1003, 1004]
+    for i, ts in enumerate(timestamps):
+        store.set_temporal("key", f"v{i}", timestamp=ts)
+
+    history = store.get_temporal_history("key")
+    assert len(history) == len(timestamps)
+
+    # Verify contiguous chain: each entry's valid_to == next entry's valid_from
+    for i in range(len(history) - 1):
+        assert history[i]["valid_to"] == history[i + 1]["valid_from"], (
+            f"Chain broken at index {i}: valid_to={history[i]['valid_to']} "
+            f"!= valid_from={history[i + 1]['valid_from']}"
+        )
+
+    # Final entry is open
+    assert history[-1]["valid_to"] == 0
+    assert history[-1]["kv_value"] == '"v4"'
+
+
+# ---- Roadmap 2.1.16 checkpoint integration test ----------------------------
+
+
+def test_temporal_checkpoint_5_updates_as_of_each(store: MilvusStore):
+    """Test checkpoint: create a fact, update it 5 times, query as-of each
+    historical timestamp.
+
+    From the roadmap test checkpoint:
+    "Temporal: create a fact, update it 5 times, query as-of each historical
+    timestamp"
+    """
+    # Timeline:
+    #   T=1000  set "v0"
+    #   T=2000  set "v1"
+    #   T=3000  set "v2"
+    #   T=4000  set "v3"
+    #   T=5000  set "v4"
+    #   T=6000  set "v5"
+    versions = ["v0", "v1", "v2", "v3", "v4", "v5"]
+    timestamps = [1000, 2000, 3000, 4000, 5000, 6000]
+
+    for val, ts in zip(versions, timestamps):
+        store.set_temporal("deploy_env", val, timestamp=ts)
+
+    # Full history chain has 6 entries
+    history = store.get_temporal_history("deploy_env")
+    assert len(history) == 6
+
+    # Verify history values in order
+    for i, (expected_val, expected_ts) in enumerate(zip(versions, timestamps)):
+        assert history[i]["kv_value"] == json.dumps(expected_val)
+        assert history[i]["valid_from"] == expected_ts
+
+    # Verify 5 closed entries + 1 open
+    closed = [h for h in history if h["valid_to"] != 0]
+    assert len(closed) == 5
+    open_entries = [h for h in history if h["valid_to"] == 0]
+    assert len(open_entries) == 1
+    assert open_entries[0]["kv_value"] == '"v5"'
+
+    # Query as-of each historical timestamp — each should return the value
+    # that was current at that time
+    as_of_cases = [
+        # (query_time, expected_value)
+        (1000, "v0"),   # exact start of v0 window
+        (1500, "v0"),   # midpoint of v0 window
+        (2000, "v1"),   # boundary: v0 closed, v1 opens
+        (2500, "v1"),   # midpoint of v1 window
+        (3000, "v2"),
+        (3500, "v2"),
+        (4000, "v3"),
+        (4500, "v3"),
+        (5000, "v4"),
+        (5500, "v4"),
+        (6000, "v5"),   # current value
+        (9999, "v5"),   # far future — still v5
+    ]
+    for query_time, expected in as_of_cases:
+        result = store.get_temporal("deploy_env", at=query_time)
+        assert len(result) == 1, (
+            f"At t={query_time}: expected 1 result, got {len(result)}"
+        )
+        assert result[0]["kv_value"] == json.dumps(expected), (
+            f"At t={query_time}: expected {expected!r}, "
+            f"got {json.loads(result[0]['kv_value'])!r}"
+        )
+
+    # Before first entry: empty
+    assert store.get_temporal("deploy_env", at=999) == []
+
+
+def test_temporal_checkpoint_contiguous_windows(store: MilvusStore):
+    """Checkpoint validation: 5 updates produce contiguous, non-overlapping
+    validity windows with no gaps.
+
+    For each adjacent pair of history entries, the first entry's valid_to
+    must exactly equal the next entry's valid_from.
+    """
+    timestamps = [1000, 2000, 3000, 4000, 5000, 6000]
+    for i, ts in enumerate(timestamps):
+        store.set_temporal("chain_test", f"val_{i}", timestamp=ts)
+
+    history = store.get_temporal_history("chain_test")
+    assert len(history) == len(timestamps)
+
+    # Verify chain integrity
+    for i in range(len(history) - 1):
+        current_to = history[i]["valid_to"]
+        next_from = history[i + 1]["valid_from"]
+        assert current_to == next_from, (
+            f"Window gap/overlap at index {i}: "
+            f"[{history[i]['valid_from']}, {current_to}) -> "
+            f"[{next_from}, {history[i + 1]['valid_to'] or '∞'})"
+        )
+        assert current_to > 0, f"Entry {i} should be closed but has valid_to=0"
+
+    # Last entry must be open
+    assert history[-1]["valid_to"] == 0
+
+
+def test_temporal_list_reflects_lifecycle(store: MilvusStore):
+    """list_temporal shows full lifecycle state: insert → update → delete.
+
+    Verifies that list_temporal (not just list_temporal_keys) correctly
+    reflects the complete entry set through each lifecycle phase.
+    """
+    # Phase 1: insert
+    store.set_temporal("env", "staging", timestamp=1000)
+    entries = store.list_temporal()
+    assert len(entries) == 1
+    assert entries[0]["kv_value"] == '"staging"'
+    assert entries[0]["valid_to"] == 0
+
+    # Phase 2: update
+    store.set_temporal("env", "production", timestamp=2000)
+    entries = store.list_temporal()
+    assert len(entries) == 2  # old (closed) + new (open)
+
+    current = store.list_temporal(current_only=True)
+    assert len(current) == 1
+    assert current[0]["kv_value"] == '"production"'
+
+    # Phase 3: delete
+    store.delete_temporal("env", timestamp=3000)
+    entries = store.list_temporal()
+    assert len(entries) == 2  # both now closed
+    current = store.list_temporal(current_only=True)
+    assert len(current) == 0
+
+    # Phase 4: re-create
+    store.set_temporal("env", "development", timestamp=4000)
+    entries = store.list_temporal()
+    assert len(entries) == 3
+    current = store.list_temporal(current_only=True)
+    assert len(current) == 1
+    assert current[0]["kv_value"] == '"development"'
+
+
 # ---- Summary + Original pattern (spec §9) -----------------------------------
 
 
