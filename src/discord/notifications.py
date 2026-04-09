@@ -1739,6 +1739,97 @@ def format_playbook_paused_embed(
     return embed
 
 
+def format_playbook_timed_out(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    transitioned_to: str | None = None,
+) -> str:
+    """Plain-text message for a playbook pause timeout (roadmap 5.4.7 case f)."""
+    if transitioned_to:
+        return (
+            f"⏰ **Playbook Timeout** — `{playbook_id}` "
+            f"(run `{run_id}`) timed out at node `{node_id}` "
+            f"and transitioned to `{transitioned_to}`."
+        )
+    return (
+        f"⏰ **Playbook Timeout** — `{playbook_id}` (run `{run_id}`) timed out at node `{node_id}`."
+    )
+
+
+def format_playbook_timed_out_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    timeout_seconds: int = 0,
+    waited_seconds: float = 0.0,
+    tokens_used: int = 0,
+    transitioned_to: str | None = None,
+) -> "discord.Embed":
+    """Rich embed for a playbook pause timeout notification.
+
+    Mirrors :func:`format_playbook_paused_embed` and routes to the same
+    channel so the human reviewer sees timeout context alongside the
+    original pause notification (roadmap 5.4.7 case f).
+    """
+    if transitioned_to:
+        description = (
+            f"Playbook `{playbook_id}` timed out at node `{node_id}` "
+            f"and execution has continued at node `{transitioned_to}`."
+        )
+    else:
+        description = (
+            f"Playbook `{playbook_id}` timed out at node `{node_id}`. "
+            f"The run has been marked as **timed_out**."
+        )
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+        ("Timed Out at Node", f"`{node_id}`", True),
+    ]
+
+    if timeout_seconds > 0:
+        if timeout_seconds >= 3600:
+            hours = timeout_seconds / 3600
+            timeout_str = f"{hours:.1f}h"
+        elif timeout_seconds >= 60:
+            mins = timeout_seconds // 60
+            timeout_str = f"{mins}m"
+        else:
+            timeout_str = f"{timeout_seconds}s"
+        fields.append(("Timeout", timeout_str, True))
+
+    if waited_seconds > 0:
+        if waited_seconds >= 3600:
+            waited_str = f"{waited_seconds / 3600:.1f}h"
+        elif waited_seconds >= 60:
+            waited_str = f"{int(waited_seconds // 60)}m {int(waited_seconds % 60)}s"
+        else:
+            waited_str = f"{waited_seconds:.1f}s"
+        fields.append(("Waited", waited_str, True))
+
+    if tokens_used > 0:
+        fields.append(("Tokens Used", f"{tokens_used:,}", True))
+
+    if transitioned_to:
+        fields.append(("Transitioned To", f"`{transitioned_to}`", False))
+
+    _TIMEOUT_COLOR = 0xE67E22  # orange — attention, but not as urgent as red
+
+    embed = make_embed(
+        EmbedStyle.WARNING,
+        "⏰ Playbook Pause Timeout",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+        color_override=_TIMEOUT_COLOR,
+    )
+
+    return embed
+
+
 class PlaybookResumeModal(discord.ui.Modal, title="Resume Playbook"):
     """Modal dialog for providing human input to resume a paused playbook run.
 

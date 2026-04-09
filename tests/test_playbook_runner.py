@@ -6839,9 +6839,10 @@ class TestConfigurablePauseTimeout:
             event_bus=mock_bus,
         )
 
-        mock_bus.emit.assert_called_once()
-        event_type, payload = mock_bus.emit.call_args[0]
-        assert event_type == "playbook.run.timed_out"
+        # Two events: playbook.run.timed_out + notify.playbook_run_timed_out
+        raw_calls = [c for c in mock_bus.emit.call_args_list if c[0][0] == "playbook.run.timed_out"]
+        assert len(raw_calls) == 1
+        payload = raw_calls[0][0][1]
         assert payload["run_id"] == "r1"
         assert payload["node_id"] == "review"
         assert payload["timeout_seconds"] == 10
@@ -7117,3 +7118,585 @@ class TestConfigurablePauseTimeout:
         )
 
         progress.assert_called_with("playbook_timed_out", "review")
+
+
+# ---------------------------------------------------------------------------
+# Pause timeout spec compliance (roadmap 5.4.7)
+# ---------------------------------------------------------------------------
+
+
+class TestPauseTimeoutSpec:
+    """Tests for pause timeout per roadmap 5.4.7.
+
+    Adds coverage for cases not fully validated by 5.4.4:
+
+    (f) Timeout notification is sent to the same channel as the original
+        pause notification — i.e., the ``notify.playbook_run_timed_out``
+        event carries the same ``project_id`` as the trigger event, which
+        the notification handler uses for channel routing.
+
+    (g) Timeout countdown resets if human provides partial input and
+        re-pauses — i.e., ``paused_at`` is refreshed on every ``_pause()``
+        call, not just the first one.
+    """
+
+    # -- Helper: reuse from TestConfigurablePauseTimeout ---------------------
+
+    @staticmethod
+    def _make_paused_run(
+        run_id: str = "r1",
+        playbook_id: str = "test-pb",
+        current_node: str = "review",
+        paused_at: float | None = None,
+        started_at: float = 100.0,
+        graph: dict | None = None,
+        messages: list | None = None,
+        node_trace: list | None = None,
+        trigger_event: dict | None = None,
+    ) -> PlaybookRun:
+        return PlaybookRun(
+            run_id=run_id,
+            playbook_id=playbook_id,
+            playbook_version=1,
+            trigger_event=json.dumps(trigger_event or {"type": "test"}),
+            status="paused",
+            current_node=current_node,
+            conversation_history=json.dumps(messages or []),
+            node_trace=json.dumps(
+                node_trace
+                or [
+                    {
+                        "node_id": current_node,
+                        "started_at": started_at,
+                        "completed_at": started_at + 1,
+                        "status": "completed",
+                    }
+                ]
+            ),
+            tokens_used=100,
+            started_at=started_at,
+            paused_at=paused_at,
+            pinned_graph=json.dumps(graph) if graph else None,
+        )
+
+    # -- (f) Timeout notification routed to same channel as pause ------------
+
+    async def test_timeout_notification_includes_project_id(self):
+        """notify.playbook_run_timed_out carries project_id for channel routing."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        # Trigger event includes project_id — this is how the runner knows
+        # which channel to route notifications to.
+        trigger_event = {"type": "test", "project_id": "my-project"}
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+            trigger_event=trigger_event,
+        )
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        mock_bus = AsyncMock()
+        mock_bus.emit = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+            event_bus=mock_bus,
+        )
+
+        # Find the notify.playbook_run_timed_out event
+        notify_calls = [
+            c for c in mock_bus.emit.call_args_list if c[0][0] == "notify.playbook_run_timed_out"
+        ]
+        assert len(notify_calls) == 1, (
+            f"Expected exactly 1 notify.playbook_run_timed_out, "
+            f"got {len(notify_calls)}. All events: "
+            f"{[c[0][0] for c in mock_bus.emit.call_args_list]}"
+        )
+        payload = notify_calls[0][0][1]
+        # project_id must match the trigger event so the notification handler
+        # routes the timeout to the same Discord/Telegram channel.
+        assert payload["project_id"] == "my-project"
+        assert payload["run_id"] == "r1"
+        assert payload["node_id"] == "review"
+        assert payload["timeout_seconds"] == 10
+
+    async def test_timeout_notification_matches_pause_notification_channel(self):
+        """Both pause and timeout notifications carry the same project_id.
+
+        This end-to-end test runs a playbook to a pause, captures the
+        project_id from the pause notification, then times it out and
+        verifies the timeout notification carries the same project_id.
+        """
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review this code.",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        trigger_event = {"type": "test", "project_id": "channel-42"}
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Analysis complete.")
+        mock_db = AsyncMock()
+        mock_db.create_playbook_run = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        mock_bus = AsyncMock()
+        mock_bus.emit = AsyncMock()
+
+        # Phase 1: Run to pause
+        runner = PlaybookRunner(graph, trigger_event, mock_supervisor, mock_db, event_bus=mock_bus)
+        result = await runner.run()
+        assert result.status == "paused"
+
+        # Capture project_id from the pause notification
+        pause_notify_calls = [
+            c for c in mock_bus.emit.call_args_list if c[0][0] == "notify.playbook_run_paused"
+        ]
+        assert len(pause_notify_calls) == 1
+        pause_project_id = pause_notify_calls[0][0][1]["project_id"]
+        assert pause_project_id == "channel-42"
+
+        # Phase 2: Simulate timeout
+        mock_bus.emit.reset_mock()
+        db_run = self._make_paused_run(
+            run_id=runner.run_id,
+            paused_at=time.time() - 100,
+            graph=graph,
+            trigger_event=trigger_event,
+        )
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            db=mock_db,
+            event_bus=mock_bus,
+        )
+
+        # Capture project_id from the timeout notification
+        timeout_notify_calls = [
+            c for c in mock_bus.emit.call_args_list if c[0][0] == "notify.playbook_run_timed_out"
+        ]
+        assert len(timeout_notify_calls) == 1
+        timeout_project_id = timeout_notify_calls[0][0][1]["project_id"]
+        # The key assertion: same project_id → same channel
+        assert timeout_project_id == pause_project_id
+
+    async def test_timeout_with_transition_notification_includes_target(self):
+        """Timeout notification includes transitioned_to when on_timeout is set."""
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "on_timeout": "handle_timeout",
+                    "goto": "done",
+                },
+                "handle_timeout": {
+                    "prompt": "Handle the timeout.",
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        trigger_event = {"type": "test", "project_id": "proj-1"}
+        db_run = self._make_paused_run(
+            paused_at=time.time() - 100,
+            graph=graph,
+            trigger_event=trigger_event,
+            messages=[
+                {"role": "user", "content": "test"},
+                {"role": "assistant", "content": "analysis done"},
+            ],
+        )
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Handled timeout.")
+        mock_db = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+        mock_bus = AsyncMock()
+        mock_bus.emit = AsyncMock()
+
+        await PlaybookRunner.handle_timeout(
+            db_run=db_run,
+            graph=graph,
+            supervisor=mock_supervisor,
+            db=mock_db,
+            event_bus=mock_bus,
+        )
+
+        timeout_notify_calls = [
+            c for c in mock_bus.emit.call_args_list if c[0][0] == "notify.playbook_run_timed_out"
+        ]
+        assert len(timeout_notify_calls) == 1
+        payload = timeout_notify_calls[0][0][1]
+        assert payload["project_id"] == "proj-1"
+        assert payload["transitioned_to"] == "handle_timeout"
+
+    # -- (g) Timeout countdown resets on re-pause ----------------------------
+
+    async def test_re_pause_resets_paused_at(self):
+        """Resume → second wait_for_human → re-pause sets a new paused_at.
+
+        This validates that the timeout countdown resets when the human
+        provides partial input and the playbook re-pauses at a subsequent
+        (or the same) wait_for_human node.
+        """
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review1": {
+                    "entry": True,
+                    "prompt": "First review gate.",
+                    "wait_for_human": True,
+                    "goto": "review2",
+                },
+                "review2": {
+                    "prompt": "Second review gate.",
+                    "wait_for_human": True,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Processed.")
+        mock_db = AsyncMock()
+        mock_db.create_playbook_run = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        # Phase 1: Run → pauses at review1
+        runner = PlaybookRunner(graph, {"type": "test"}, mock_supervisor, mock_db)
+        result1 = await runner.run()
+        assert result1.status == "paused"
+
+        # Extract paused_at from the first pause DB update
+        pause1_calls = [
+            c for c in mock_db.update_playbook_run.call_args_list if "paused_at" in (c[1] or {})
+        ]
+        assert len(pause1_calls) >= 1
+        paused_at_1 = pause1_calls[-1][1]["paused_at"]
+        assert isinstance(paused_at_1, float)
+
+        # Phase 2: Resume with input → should pause at review2
+        mock_db.update_playbook_run.reset_mock()
+        db_run = PlaybookRun(
+            run_id=runner.run_id,
+            playbook_id="pb",
+            playbook_version=1,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node="review1",
+            conversation_history=json.dumps(runner.messages),
+            node_trace=json.dumps(result1.node_trace),
+            tokens_used=result1.tokens_used,
+            started_at=100.0,
+            paused_at=paused_at_1,
+            pinned_graph=json.dumps(graph),
+        )
+
+        result2 = await PlaybookRunner.resume(
+            db_run=db_run,
+            graph=graph,
+            supervisor=mock_supervisor,
+            human_input="Approved, continue to review2.",
+            db=mock_db,
+        )
+        assert result2.status == "paused"
+
+        # Extract paused_at from the second pause DB update
+        pause2_calls = [
+            c for c in mock_db.update_playbook_run.call_args_list if "paused_at" in (c[1] or {})
+        ]
+        assert len(pause2_calls) >= 1
+        paused_at_2 = pause2_calls[-1][1]["paused_at"]
+        assert isinstance(paused_at_2, float)
+
+        # Key assertion: second paused_at is strictly later → countdown reset
+        assert paused_at_2 > paused_at_1, (
+            f"paused_at should reset on re-pause: first={paused_at_1}, second={paused_at_2}"
+        )
+
+    async def test_resume_and_re_pause_at_same_node(self):
+        """Re-pause at the same node resets the timeout countdown.
+
+        Models the case where a human provides partial/insufficient input
+        and the playbook pauses again at the same wait_for_human node.
+        """
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review gate — needs full approval.",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 3600,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor = AsyncMock()
+        mock_supervisor.chat = AsyncMock(return_value="Awaiting review.")
+        mock_db = AsyncMock()
+        mock_db.create_playbook_run = AsyncMock()
+        mock_db.update_playbook_run = AsyncMock()
+
+        # Phase 1: Run → pauses at review (verify basic pause works)
+        runner = PlaybookRunner(graph, {"type": "test"}, mock_supervisor, mock_db)
+        result1 = await runner.run()
+        assert result1.status == "paused"
+
+        # Phase 2: Resume → the "review" node's goto is "done" (terminal),
+        # so after providing human input the run should complete, not re-pause.
+        # To test re-pause at the same node, we need a conditional transition
+        # that loops back. Let's use a graph with a conditional loop.
+        loop_graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "entry": True,
+                    "prompt": "Review: say APPROVED or NEEDS_WORK.",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 3600,
+                    "transitions": [
+                        {
+                            "condition": {
+                                "field": "response",
+                                "op": "contains",
+                                "value": "APPROVED",
+                            },
+                            "goto": "done",
+                        },
+                    ],
+                    "goto": "review",  # default fallback → loop back
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.update_playbook_run.reset_mock()
+        # Supervisor returns NEEDS_WORK (doesn't match APPROVED → loops)
+        mock_supervisor.chat = AsyncMock(return_value="NEEDS_WORK — please revise.")
+
+        runner2 = PlaybookRunner(loop_graph, {"type": "test"}, mock_supervisor, mock_db)
+        result2 = await runner2.run()
+        assert result2.status == "paused"  # first pause
+
+        pause2_calls = [
+            c for c in mock_db.update_playbook_run.call_args_list if "paused_at" in (c[1] or {})
+        ]
+        paused_at_first = pause2_calls[-1][1]["paused_at"]
+
+        # Resume with partial input → should loop back to review and pause again
+        mock_db.update_playbook_run.reset_mock()
+        db_run = PlaybookRun(
+            run_id=runner2.run_id,
+            playbook_id="pb",
+            playbook_version=1,
+            trigger_event=json.dumps({"type": "test"}),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(runner2.messages),
+            node_trace=json.dumps(result2.node_trace),
+            tokens_used=result2.tokens_used,
+            started_at=100.0,
+            paused_at=paused_at_first,
+            pinned_graph=json.dumps(loop_graph),
+        )
+
+        result3 = await PlaybookRunner.resume(
+            db_run=db_run,
+            graph=loop_graph,
+            supervisor=mock_supervisor,
+            human_input="Partial feedback — not approved yet.",
+            db=mock_db,
+        )
+        assert result3.status == "paused"
+
+        pause3_calls = [
+            c for c in mock_db.update_playbook_run.call_args_list if "paused_at" in (c[1] or {})
+        ]
+        paused_at_second = pause3_calls[-1][1]["paused_at"]
+        assert isinstance(paused_at_second, float)
+        assert paused_at_second > paused_at_first, (
+            "Re-pause at same node should reset the timeout countdown"
+        )
+
+    # -- check_paused_playbook_timeouts integration -------------------------
+
+    async def test_check_paused_playbook_timeouts_processes_expired(self):
+        """Background sweep processes expired paused runs."""
+        from src.command_handler import CommandHandler
+
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 10,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        expired_run = self._make_paused_run(
+            run_id="expired-1",
+            paused_at=time.time() - 100,
+            graph=graph,
+        )
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler.check_paused_playbook_timeouts = (
+            CommandHandler.check_paused_playbook_timeouts.__get__(handler)
+        )
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.db.list_playbook_runs = AsyncMock(return_value=[expired_run])
+        handler.db.update_playbook_run = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+        handler.orchestrator.bus.emit = AsyncMock()
+
+        results = await handler.check_paused_playbook_timeouts()
+
+        assert len(results) == 1
+        assert results[0]["run_id"] == "expired-1"
+        assert results[0]["status"] == "timed_out"
+
+    async def test_check_paused_playbook_timeouts_skips_unexpired(self):
+        """Background sweep skips runs that haven't exceeded timeout."""
+        from src.command_handler import CommandHandler
+
+        graph = {
+            "id": "pb",
+            "version": 1,
+            "nodes": {
+                "review": {
+                    "prompt": "Review",
+                    "wait_for_human": True,
+                    "pause_timeout_seconds": 86400,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        # This run was paused 10 seconds ago — timeout is 24h, so not expired
+        fresh_run = self._make_paused_run(
+            run_id="fresh-1",
+            paused_at=time.time() - 10,
+            graph=graph,
+        )
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler.check_paused_playbook_timeouts = (
+            CommandHandler.check_paused_playbook_timeouts.__get__(handler)
+        )
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.db.list_playbook_runs = AsyncMock(return_value=[fresh_run])
+        handler.db.update_playbook_run = AsyncMock()
+        handler.orchestrator = AsyncMock()
+
+        results = await handler.check_paused_playbook_timeouts()
+
+        assert len(results) == 0
+
+    # -- PlaybookRunTimedOutEvent model -------------------------------------
+
+    async def test_timed_out_event_model_roundtrip(self):
+        """PlaybookRunTimedOutEvent serializes and deserializes correctly."""
+        from src.notifications.events import PlaybookRunTimedOutEvent
+
+        event = PlaybookRunTimedOutEvent(
+            playbook_id="test-pb",
+            run_id="r1",
+            node_id="review",
+            timeout_seconds=3600,
+            waited_seconds=3605.2,
+            tokens_used=500,
+            transitioned_to="fallback",
+            project_id="proj-1",
+        )
+        d = event.model_dump(mode="json")
+        assert d["event_type"] == "notify.playbook_run_timed_out"
+        assert d["playbook_id"] == "test-pb"
+        assert d["transitioned_to"] == "fallback"
+        assert d["project_id"] == "proj-1"
+        assert d["severity"] == "warning"
+        assert d["category"] == "interaction"
+
+        restored = PlaybookRunTimedOutEvent(**d)
+        assert restored.playbook_id == "test-pb"
+        assert restored.transitioned_to == "fallback"
+
+    async def test_timed_out_event_without_transition(self):
+        """PlaybookRunTimedOutEvent works without transitioned_to."""
+        from src.notifications.events import PlaybookRunTimedOutEvent
+
+        event = PlaybookRunTimedOutEvent(
+            playbook_id="pb",
+            run_id="r1",
+            node_id="review",
+            timeout_seconds=86400,
+        )
+        d = event.model_dump(mode="json")
+        assert d["transitioned_to"] is None
+
+    # -- Notification formatter tests ---------------------------------------
+
+    async def test_format_playbook_timed_out_without_transition(self):
+        """format_playbook_timed_out returns correct text without transition."""
+        from src.discord.notifications import format_playbook_timed_out
+
+        msg = format_playbook_timed_out(
+            playbook_id="my-pb",
+            run_id="r123",
+            node_id="review",
+            transitioned_to=None,
+        )
+        assert "my-pb" in msg
+        assert "r123" in msg
+        assert "review" in msg
+        assert "timed out" in msg.lower()
+
+    async def test_format_playbook_timed_out_with_transition(self):
+        """format_playbook_timed_out includes transition target when set."""
+        from src.discord.notifications import format_playbook_timed_out
+
+        msg = format_playbook_timed_out(
+            playbook_id="my-pb",
+            run_id="r123",
+            node_id="review",
+            transitioned_to="handle_timeout",
+        )
+        assert "handle_timeout" in msg
+        assert "transitioned" in msg.lower()

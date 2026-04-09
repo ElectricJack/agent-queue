@@ -22,6 +22,7 @@ from src.notifications.events import (
     MergeConflictEvent,
     PlanAwaitingApprovalEvent,
     PlaybookRunPausedEvent,
+    PlaybookRunTimedOutEvent,
     PRCreatedEvent,
     PushFailedEvent,
     StuckDefinedTaskEvent,
@@ -134,6 +135,7 @@ class DiscordNotificationHandler:
             ("notify.stuck_defined_task", self._on_stuck_defined_task),
             ("notify.system_online", self._on_system_online),
             ("notify.playbook_run_paused", self._on_playbook_run_paused),
+            ("notify.playbook_run_timed_out", self._on_playbook_run_timed_out),
             ("notify.task_thread_open", self._on_task_thread_open),
             ("notify.task_message", self._on_task_message),
             ("notify.task_thread_close", self._on_task_thread_close),
@@ -571,6 +573,35 @@ class DiscordNotificationHandler:
             project_id=event.project_id,
             embed=embed,
             view=view,
+        )
+
+    async def _on_playbook_run_timed_out(self, data: dict) -> None:
+        event = PlaybookRunTimedOutEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            format_playbook_timed_out,
+            format_playbook_timed_out_embed,
+        )
+
+        embed = format_playbook_timed_out_embed(
+            playbook_id=event.playbook_id,
+            run_id=event.run_id,
+            node_id=event.node_id,
+            timeout_seconds=event.timeout_seconds,
+            waited_seconds=event.waited_seconds,
+            tokens_used=event.tokens_used,
+            transitioned_to=event.transitioned_to,
+        )
+
+        await self.bot._send_message(
+            format_playbook_timed_out(
+                playbook_id=event.playbook_id,
+                run_id=event.run_id,
+                node_id=event.node_id,
+                transitioned_to=event.transitioned_to,
+            ),
+            project_id=event.project_id,
+            embed=embed,
         )
 
     # ------------------------------------------------------------------

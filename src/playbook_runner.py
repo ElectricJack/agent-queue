@@ -640,6 +640,38 @@ class PlaybookRunner:
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.timed_out", payload)
 
+        # Emit typed notification event so Discord/Telegram route the timeout
+        # to the same channel that received the original pause notification
+        # (roadmap 5.4.7 test case (f)).
+        await self._emit_timed_out_notification(payload)
+
+    async def _emit_timed_out_notification(
+        self,
+        raw_payload: dict[str, Any],
+    ) -> None:
+        """Emit ``notify.playbook_run_timed_out`` for notification transports.
+
+        Mirrors :meth:`_emit_paused_notification` — converts the raw
+        ``playbook.run.timed_out`` payload into a typed
+        ``PlaybookRunTimedOutEvent`` and emits it on the EventBus.  Because
+        the runner's ``_emit_bus_event`` automatically injects ``project_id``
+        from the trigger event, the notification routes to the same channel
+        that received the original pause notification (roadmap 5.4.7 case f).
+        """
+        from src.notifications.events import PlaybookRunTimedOutEvent
+
+        event = PlaybookRunTimedOutEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            node_id=raw_payload.get("node_id", ""),
+            timeout_seconds=raw_payload.get("timeout_seconds", 0),
+            waited_seconds=raw_payload.get("waited_seconds", 0.0),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            transitioned_to=raw_payload.get("transitioned_to"),
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_timed_out", event.model_dump(mode="json"))
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

@@ -337,6 +337,32 @@ class PlaybookRunPausedEvent(NotifyEvent):
     paused_at: float = 0.0
 
 
+class PlaybookRunTimedOutEvent(NotifyEvent):
+    """Emitted when a paused playbook run exceeds its configured pause timeout.
+
+    Routes to the same notification channel as the original
+    ``PlaybookRunPausedEvent`` so the human reviewer is informed in-context
+    that the review window has closed.
+
+    If the run transitioned to an ``on_timeout`` node instead of failing,
+    ``transitioned_to`` contains the target node ID.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.4 / 5.4.7.
+    """
+
+    event_type: str = "notify.playbook_run_timed_out"
+    severity: str = "warning"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    timeout_seconds: int = 0
+    waited_seconds: float = 0.0
+    tokens_used: int = 0
+    transitioned_to: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Generic text notification (catch-all for simple messages)
 # ---------------------------------------------------------------------------
