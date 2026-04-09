@@ -309,6 +309,134 @@ class MemSearch:
         return self._store.get(chunk_hash)
 
     # ------------------------------------------------------------------
+    # KV storage (scalar-only, no vector search)
+    # ------------------------------------------------------------------
+
+    def set_kv(
+        self,
+        key: str,
+        value: Any,
+        *,
+        namespace: str = "",
+        source: str = "",
+        content: str = "",
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert or update a KV entry (scalar-only, no vector search).
+
+        Parameters
+        ----------
+        key:
+            The key to store.
+        value:
+            The value (will be JSON-encoded).
+        namespace:
+            Optional namespace for grouping (e.g., ``"project"``,
+            ``"conventions"``).
+        source:
+            Source identifier for provenance tracking.
+        content:
+            Human-readable description (indexed for BM25).
+        tags:
+            Optional list of string tags.
+
+        Returns
+        -------
+        dict
+            The stored entry (without the ``embedding`` field).
+        """
+        return self._store.set_kv(
+            key,
+            value,
+            namespace=namespace,
+            source=source,
+            content=content,
+            tags=tags,
+        )
+
+    def get_kv(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+    ) -> dict[str, Any] | None:
+        """Retrieve a single KV entry by exact key and namespace.
+
+        Parameters
+        ----------
+        key:
+            The key to look up.
+        namespace:
+            Namespace filter.
+
+        Returns
+        -------
+        dict | None
+            The entry if found, or ``None``.
+        """
+        return self._store.get_kv(key, namespace=namespace)
+
+    def list_kv(
+        self,
+        *,
+        namespace: str = "",
+    ) -> list[dict[str, Any]]:
+        """List all KV entries in a namespace.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter.
+
+        Returns
+        -------
+        list[dict]
+            All KV entries, sorted by key.
+        """
+        return self._store.list_kv(namespace=namespace)
+
+    def delete_kv(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+    ) -> bool:
+        """Delete a KV entry.
+
+        Parameters
+        ----------
+        key:
+            The key to delete.
+        namespace:
+            Namespace filter.
+
+        Returns
+        -------
+        bool
+            ``True`` if deleted, ``False`` if not found.
+        """
+        return self._store.delete_kv(key, namespace=namespace)
+
+    def list_kv_keys(
+        self,
+        *,
+        namespace: str = "",
+    ) -> list[str]:
+        """List all unique KV keys in a namespace.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of unique keys.
+        """
+        return self._store.list_kv_keys(namespace=namespace)
+
+    # ------------------------------------------------------------------
     # Compact (compress memories)
     # ------------------------------------------------------------------
 

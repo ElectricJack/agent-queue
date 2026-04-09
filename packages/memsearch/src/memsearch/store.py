@@ -542,6 +542,190 @@ class MilvusStore:
         )
         return results[0] if results else None
 
+    # ---- KV API (spec §6 — scalar-only insert/query) ----------------------
+
+    def set_kv(
+        self,
+        key: str,
+        value: Any,
+        *,
+        namespace: str = "",
+        source: str = "",
+        content: str = "",
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Insert or update a KV entry (scalar-only, no vector search).
+
+        The ``chunk_hash`` is deterministic:
+        ``sha256("kv:{namespace}:{key}")[:32]``, so repeated calls with the
+        same *key* / *namespace* overwrite (upsert) the existing entry.
+
+        Parameters
+        ----------
+        key:
+            The key to store (``kv_key``).
+        value:
+            The value.  Will be JSON-encoded into ``kv_value``.
+        namespace:
+            Optional namespace for grouping related KV pairs.
+        source:
+            Source identifier for provenance tracking.
+        content:
+            Human-readable description (indexed for BM25 keyword search).
+        tags:
+            Optional list of string tags.
+
+        Returns
+        -------
+        dict
+            The stored entry (without the ``embedding`` field).
+        """
+        import hashlib
+        import time
+
+        json_value = json.dumps(value)
+        json_tags = json.dumps(tags or [])
+        now = int(time.time())
+
+        chunk_hash = hashlib.sha256(f"kv:{namespace}:{key}".encode()).hexdigest()[:32]
+
+        entry: dict[str, Any] = {
+            "chunk_hash": chunk_hash,
+            "entry_type": "kv",
+            "embedding": self._zero_embedding(),
+            "content": content,
+            "original": "",
+            "source": source,
+            "heading": "",
+            "heading_level": 0,
+            "start_line": 0,
+            "end_line": 0,
+            "kv_namespace": namespace,
+            "kv_key": key,
+            "kv_value": json_value,
+            "valid_from": 0,
+            "valid_to": 0,
+            "topic": "",
+            "tags": json_tags,
+            "updated_at": now,
+        }
+        self.upsert([entry])
+
+        # Return without embedding (matches query output format)
+        return {k: v for k, v in entry.items() if k != "embedding"}
+
+    def get_kv(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+    ) -> dict[str, Any] | None:
+        """Retrieve a single KV entry by exact key and namespace.
+
+        Pure scalar lookup — no vector search.
+
+        Parameters
+        ----------
+        key:
+            The key to look up (``kv_key``).
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+
+        Returns
+        -------
+        dict | None
+            The entry if found, or ``None``.
+        """
+        # Use deterministic hash for direct primary-key lookup.
+        import hashlib
+
+        chunk_hash = hashlib.sha256(f"kv:{namespace}:{key}".encode()).hexdigest()[:32]
+        entry = self.get(chunk_hash)
+        if entry is None:
+            return None
+        # Verify it's actually a KV entry (guard against hash collisions).
+        if entry.get("entry_type") != "kv":
+            return None
+        return entry
+
+    def list_kv(
+        self,
+        *,
+        namespace: str = "",
+    ) -> list[dict[str, Any]]:
+        """List all KV entries in a namespace.
+
+        Pure scalar query — no vector search.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+            Empty string returns KV entries with no namespace.
+
+        Returns
+        -------
+        list[dict]
+            All KV entries in the namespace, sorted by ``kv_key``.
+        """
+        all_kv = self.query(filter_expr='entry_type == "kv"')
+        results = [e for e in all_kv if e["kv_namespace"] == namespace]
+        results.sort(key=lambda e: e["kv_key"])
+        return results
+
+    def delete_kv(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+    ) -> bool:
+        """Delete a KV entry by key and namespace.
+
+        Parameters
+        ----------
+        key:
+            The key to delete (``kv_key``).
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+
+        Returns
+        -------
+        bool
+            ``True`` if an entry was deleted, ``False`` if it didn't exist.
+        """
+        import hashlib
+
+        chunk_hash = hashlib.sha256(f"kv:{namespace}:{key}".encode()).hexdigest()[:32]
+        existing = self.get(chunk_hash)
+        if existing is None or existing.get("entry_type") != "kv":
+            return False
+        self.delete_by_hashes([chunk_hash])
+        return True
+
+    def list_kv_keys(
+        self,
+        *,
+        namespace: str = "",
+    ) -> list[str]:
+        """List all unique KV keys in a namespace.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+
+        Returns
+        -------
+        list[str]
+            Sorted list of unique ``kv_key`` values.
+        """
+        all_kv = self.query(filter_expr='entry_type == "kv"')
+        keys: set[str] = set()
+        for entry in all_kv:
+            if entry["kv_namespace"] == namespace:
+                keys.add(entry["kv_key"])
+        return sorted(keys)
+
     # ---- Temporal fact API (spec §6) --------------------------------------
 
     def _zero_embedding(self) -> list[float]:

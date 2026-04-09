@@ -2040,3 +2040,282 @@ def test_query_includes_original_when_full(store: MilvusStore):
     assert len(match) == 1
     assert match[0]["content"] == "Query summary"
     assert match[0]["original"] == "Query original full text"
+
+
+# ---- KV API tests (spec §6 — scalar-only insert/query) ------------------
+
+
+def test_set_kv_basic(store: MilvusStore):
+    """set_kv stores a KV entry and returns it without embedding."""
+    result = store.set_kv("test_command", "pytest tests/ -v", namespace="project")
+    assert result["entry_type"] == "kv"
+    assert result["kv_key"] == "test_command"
+    assert result["kv_namespace"] == "project"
+    assert result["kv_value"] == '"pytest tests/ -v"'
+    assert "embedding" not in result
+    assert result["updated_at"] > 0
+
+
+def test_set_kv_json_value_types(store: MilvusStore):
+    """set_kv JSON-encodes various value types correctly."""
+    # String
+    store.set_kv("str_key", "hello", namespace="types")
+    r = store.get_kv("str_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == "hello"
+
+    # Integer
+    store.set_kv("int_key", 42, namespace="types")
+    r = store.get_kv("int_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == 42
+
+    # Dict
+    store.set_kv("dict_key", {"a": 1, "b": [2, 3]}, namespace="types")
+    r = store.get_kv("dict_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == {"a": 1, "b": [2, 3]}
+
+    # List
+    store.set_kv("list_key", [1, "two", 3.0], namespace="types")
+    r = store.get_kv("list_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) == [1, "two", 3.0]
+
+    # Bool
+    store.set_kv("bool_key", True, namespace="types")
+    r = store.get_kv("bool_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) is True
+
+    # None / null
+    store.set_kv("null_key", None, namespace="types")
+    r = store.get_kv("null_key", namespace="types")
+    assert r is not None
+    assert json.loads(r["kv_value"]) is None
+
+
+def test_set_kv_upsert_overwrites(store: MilvusStore):
+    """Calling set_kv with the same key/namespace overwrites the value."""
+    store.set_kv("deploy_branch", "main", namespace="project")
+    r1 = store.get_kv("deploy_branch", namespace="project")
+    assert r1 is not None
+    assert json.loads(r1["kv_value"]) == "main"
+
+    store.set_kv("deploy_branch", "release", namespace="project")
+    r2 = store.get_kv("deploy_branch", namespace="project")
+    assert r2 is not None
+    assert json.loads(r2["kv_value"]) == "release"
+
+    # Only one entry should exist (upsert, not insert-new)
+    all_kv = store.list_kv(namespace="project")
+    deploy_entries = [e for e in all_kv if e["kv_key"] == "deploy_branch"]
+    assert len(deploy_entries) == 1
+
+
+def test_set_kv_with_metadata(store: MilvusStore):
+    """set_kv stores source, content, and tags correctly."""
+    result = store.set_kv(
+        "test_command",
+        "pytest tests/ -v",
+        namespace="project",
+        source="facts.md",
+        content="The project test command",
+        tags=["testing", "ci"],
+    )
+    assert result["source"] == "facts.md"
+    assert result["content"] == "The project test command"
+    assert json.loads(result["tags"]) == ["testing", "ci"]
+
+
+def test_get_kv_basic(store: MilvusStore):
+    """get_kv retrieves a stored KV entry."""
+    store.set_kv("test_command", "pytest tests/ -v", namespace="project")
+    result = store.get_kv("test_command", namespace="project")
+    assert result is not None
+    assert result["kv_key"] == "test_command"
+    assert result["kv_namespace"] == "project"
+    assert json.loads(result["kv_value"]) == "pytest tests/ -v"
+
+
+def test_get_kv_nonexistent(store: MilvusStore):
+    """get_kv returns None for a key that doesn't exist."""
+    result = store.get_kv("nonexistent", namespace="project")
+    assert result is None
+
+
+def test_get_kv_wrong_namespace(store: MilvusStore):
+    """get_kv returns None when namespace doesn't match."""
+    store.set_kv("test_command", "pytest", namespace="project")
+    result = store.get_kv("test_command", namespace="other")
+    assert result is None
+
+
+def test_get_kv_includes_original(store: MilvusStore):
+    """get_kv returns full fields including original (via store.get)."""
+    store.set_kv("key1", "value1", namespace="ns")
+    result = store.get_kv("key1", namespace="ns")
+    assert result is not None
+    # get_kv uses store.get() which returns _FULL_FIELDS including original
+    assert "original" in result
+
+
+def test_list_kv_basic(store: MilvusStore):
+    """list_kv returns all KV entries in a namespace sorted by key."""
+    store.set_kv("beta", "b_val", namespace="ns1")
+    store.set_kv("alpha", "a_val", namespace="ns1")
+    store.set_kv("gamma", "g_val", namespace="ns1")
+
+    results = store.list_kv(namespace="ns1")
+    assert len(results) == 3
+    keys = [r["kv_key"] for r in results]
+    assert keys == ["alpha", "beta", "gamma"]
+
+
+def test_list_kv_namespace_isolation(store: MilvusStore):
+    """list_kv only returns entries in the requested namespace."""
+    store.set_kv("key1", "val1", namespace="ns_a")
+    store.set_kv("key2", "val2", namespace="ns_b")
+    store.set_kv("key3", "val3", namespace="ns_a")
+
+    results_a = store.list_kv(namespace="ns_a")
+    assert len(results_a) == 2
+    assert {r["kv_key"] for r in results_a} == {"key1", "key3"}
+
+    results_b = store.list_kv(namespace="ns_b")
+    assert len(results_b) == 1
+    assert results_b[0]["kv_key"] == "key2"
+
+
+def test_list_kv_empty_namespace(store: MilvusStore):
+    """list_kv with empty namespace returns unnamespaced entries."""
+    store.set_kv("bare_key", "bare_val")
+    store.set_kv("ns_key", "ns_val", namespace="named")
+
+    results = store.list_kv(namespace="")
+    keys = {r["kv_key"] for r in results}
+    assert "bare_key" in keys
+    assert "ns_key" not in keys
+
+
+def test_list_kv_empty(store: MilvusStore):
+    """list_kv returns empty list when no entries exist."""
+    results = store.list_kv(namespace="empty")
+    assert results == []
+
+
+def test_delete_kv_basic(store: MilvusStore):
+    """delete_kv removes a KV entry and returns True."""
+    store.set_kv("to_delete", "some_value", namespace="project")
+    assert store.get_kv("to_delete", namespace="project") is not None
+
+    deleted = store.delete_kv("to_delete", namespace="project")
+    assert deleted is True
+
+    assert store.get_kv("to_delete", namespace="project") is None
+
+
+def test_delete_kv_nonexistent(store: MilvusStore):
+    """delete_kv returns False for a key that doesn't exist."""
+    deleted = store.delete_kv("nope", namespace="project")
+    assert deleted is False
+
+
+def test_delete_kv_namespace_isolation(store: MilvusStore):
+    """delete_kv only deletes in the specified namespace."""
+    store.set_kv("shared_key", "val_a", namespace="ns_a")
+    store.set_kv("shared_key", "val_b", namespace="ns_b")
+
+    deleted = store.delete_kv("shared_key", namespace="ns_a")
+    assert deleted is True
+
+    # ns_b should still have its entry
+    assert store.get_kv("shared_key", namespace="ns_b") is not None
+    assert store.get_kv("shared_key", namespace="ns_a") is None
+
+
+def test_list_kv_keys_basic(store: MilvusStore):
+    """list_kv_keys returns sorted unique keys."""
+    store.set_kv("beta", "b", namespace="ns")
+    store.set_kv("alpha", "a", namespace="ns")
+    store.set_kv("gamma", "g", namespace="ns")
+
+    keys = store.list_kv_keys(namespace="ns")
+    assert keys == ["alpha", "beta", "gamma"]
+
+
+def test_list_kv_keys_namespace_filter(store: MilvusStore):
+    """list_kv_keys only returns keys from the specified namespace."""
+    store.set_kv("k1", "v1", namespace="a")
+    store.set_kv("k2", "v2", namespace="b")
+
+    assert store.list_kv_keys(namespace="a") == ["k1"]
+    assert store.list_kv_keys(namespace="b") == ["k2"]
+
+
+def test_list_kv_keys_empty(store: MilvusStore):
+    """list_kv_keys returns empty list when no entries exist."""
+    keys = store.list_kv_keys(namespace="empty")
+    assert keys == []
+
+
+def test_kv_does_not_interfere_with_temporal(store: MilvusStore):
+    """KV entries and temporal entries are independent."""
+    store.set_kv("deploy_branch", "main", namespace="project")
+    store.set_temporal("deploy_branch", "release", namespace="project", timestamp=1000)
+
+    # KV lookup returns the KV entry
+    kv_result = store.get_kv("deploy_branch", namespace="project")
+    assert kv_result is not None
+    assert json.loads(kv_result["kv_value"]) == "main"
+    assert kv_result["entry_type"] == "kv"
+
+    # Temporal lookup returns the temporal entry
+    temporal_results = store.get_temporal("deploy_branch", namespace="project", at=1000)
+    assert len(temporal_results) >= 1
+    assert temporal_results[0]["entry_type"] == "temporal"
+    assert json.loads(temporal_results[0]["kv_value"]) == "release"
+
+
+def test_kv_does_not_interfere_with_documents(store: MilvusStore):
+    """KV entries don't pollute document queries and vice versa."""
+    store.set_kv("test_command", "pytest", namespace="project")
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Document about testing",
+                "source": "test.md",
+                "heading": "Testing",
+                "chunk_hash": "doc_hash_1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            }
+        ]
+    )
+
+    # list_kv should not include documents
+    kv_results = store.list_kv(namespace="project")
+    assert all(r["entry_type"] == "kv" for r in kv_results)
+
+    # Document search should not include KV entries
+    doc_results = store.query(filter_expr='entry_type == "document"')
+    assert all(r["entry_type"] == "document" for r in doc_results)
+
+
+def test_set_kv_deterministic_hash(store: MilvusStore):
+    """set_kv generates a deterministic hash from namespace:key."""
+    import hashlib
+
+    r1 = store.set_kv("mykey", "val1", namespace="myns")
+    expected_hash = hashlib.sha256(b"kv:myns:mykey").hexdigest()[:32]
+    assert r1["chunk_hash"] == expected_hash
+
+    # Second set with same key/ns should have the same hash
+    r2 = store.set_kv("mykey", "val2", namespace="myns")
+    assert r2["chunk_hash"] == expected_hash
+
+    # Different key should have a different hash
+    r3 = store.set_kv("otherkey", "val3", namespace="myns")
+    assert r3["chunk_hash"] != expected_hash
