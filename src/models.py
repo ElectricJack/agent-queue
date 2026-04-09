@@ -484,6 +484,7 @@ class MemoryContext:
     profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
     topic_context: str = ""  # L2 topic-filtered knowledge (Tier 2, on-demand by topic)
+    topic_memories: str = ""  # L2 memories filtered by topic frontmatter (spec §2)
     detected_topics: list[str] = field(default_factory=list)  # Topics detected from task context
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
@@ -500,13 +501,22 @@ class MemoryContext:
             sections.append(f"## Project Profile\n{self.profile}")
         if self.project_docs:
             sections.append(f"## Project Documentation\n{self.project_docs}")
-        if self.topic_context:
+        if self.topic_context or self.topic_memories:
             topic_label = ", ".join(self.detected_topics) if self.detected_topics else "detected"
-            sections.append(
+            l2_parts: list[str] = []
+            l2_parts.append(
                 f"## Topic Context ({topic_label})\n"
                 "The following knowledge was pre-loaded based on topics detected "
-                f"in your task description.\n\n{self.topic_context}"
+                "in your task description."
             )
+            if self.topic_context:
+                l2_parts.append(self.topic_context)
+            if self.topic_memories:
+                l2_parts.append(
+                    "### Related Memories\n"
+                    "These past insights matched the detected topics:\n\n" + self.topic_memories
+                )
+            sections.append("\n\n".join(l2_parts))
         if self.notes:
             sections.append(f"## Relevant Notes\n{self.notes}")
         if self.recent_tasks:
@@ -538,6 +548,7 @@ class MemoryContext:
                 self.profile,
                 self.project_docs,
                 self.topic_context,
+                self.topic_memories,
                 self.notes,
                 self.recent_tasks,
                 self.search_results,

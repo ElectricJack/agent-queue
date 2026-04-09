@@ -361,6 +361,10 @@ class MemoryConfig:
     topic_detection_enabled: bool = True  # detect topics from task description for L2 loading
     topic_max_knowledge_files: int = 3  # max knowledge files to inject per task
     topic_max_chars_per_file: int = 2000  # max chars per knowledge topic file in context
+    # L2 Topic-Filtered Memories (spec §2 — memories with matching topic frontmatter)
+    topic_memory_enabled: bool = True  # load memories filtered by detected topic
+    topic_memory_budget_chars: int = 2000  # ~500 token budget for topic-filtered memories
+    topic_memory_max_results: int = 5  # max number of topic-matched memory files
     # Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include

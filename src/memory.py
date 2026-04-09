@@ -3186,6 +3186,180 @@ class MemoryManager:
 
         return "\n\n".join(parts)
 
+    def _parse_frontmatter_topic(self, content: str) -> str | None:
+        """Extract the ``topic`` field from YAML frontmatter.
+
+        Returns the topic string if found, ``None`` otherwise.
+        Fast and safe — returns ``None`` on any parse error.
+        """
+        stripped = content.strip()
+        if not stripped.startswith("---"):
+            return None
+        end = stripped.find("---", 3)
+        if end == -1:
+            return None
+        yaml_text = stripped[3:end]
+        try:
+            import yaml as _yaml
+
+            data = _yaml.safe_load(yaml_text)
+            if isinstance(data, dict):
+                topic = data.get("topic")
+                if isinstance(topic, str) and topic.strip():
+                    return topic.strip().lower()
+        except Exception:
+            pass
+        return None
+
+    def _strip_frontmatter(self, content: str) -> str:
+        """Remove YAML frontmatter from content, returning the body."""
+        stripped = content.strip()
+        if not stripped.startswith("---"):
+            return stripped
+        end = stripped.find("---", 3)
+        if end == -1:
+            return stripped
+        return stripped[end + 3 :].strip()
+
+    async def _load_topic_memories(
+        self,
+        project_id: str,
+        topics: list[str],
+    ) -> str:
+        """Load memory files whose ``topic`` frontmatter matches detected topics.
+
+        Scans notes and memory directories for ``.md`` files with YAML
+        frontmatter containing a ``topic`` field that matches one of the
+        given topics.  Returns formatted markdown within the configured
+        ``topic_memory_budget_chars`` budget (~500 tokens).
+
+        This implements the L2 "memories filtered by topic" tier from
+        the memory-scoping spec §2, complementing the knowledge-file
+        loading in ``_load_topic_context()``.
+
+        Parameters
+        ----------
+        project_id:
+            Project whose memory files to scan.
+        topics:
+            Detected topic names (lowercase) to match against.
+
+        Returns
+        -------
+        str
+            Formatted markdown of matching memories, or empty string
+            if no matches found.
+        """
+        if not topics or not self.config.topic_memory_enabled:
+            return ""
+
+        topic_set = {t.lower() for t in topics}
+        budget = self.config.topic_memory_budget_chars
+        max_results = self.config.topic_memory_max_results
+
+        # Collect candidate directories to scan
+        scan_dirs: list[str] = []
+
+        # Notes directory (vault/projects/{id}/notes/)
+        notes_dir = self._notes_dir(project_id)
+        if os.path.isdir(notes_dir):
+            scan_dirs.append(notes_dir)
+
+        # Memory staging directory (memory/{id}/staging/)
+        staging_dir = os.path.join(self._project_memory_dir(project_id), "staging")
+        if os.path.isdir(staging_dir):
+            scan_dirs.append(staging_dir)
+
+        # Memory root (memory/{id}/) — but only top-level .md files
+        # (exclude profile.md, factsheet.md, and subdirectories which are
+        # scanned separately or are knowledge files)
+        memory_dir = self._project_memory_dir(project_id)
+
+        # Gather matching files: (mtime, path, body) sorted by recency
+        matches: list[tuple[float, str, str]] = []
+
+        exclude_basenames = {"profile.md", "factsheet.md", ".needs_reindex"}
+
+        for scan_dir in scan_dirs:
+            if not os.path.isdir(scan_dir):
+                continue
+            try:
+                for fname in os.listdir(scan_dir):
+                    if not fname.endswith(".md") or fname in exclude_basenames:
+                        continue
+                    fpath = os.path.join(scan_dir, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    try:
+                        with open(fpath) as f:
+                            content = f.read()
+                        file_topic = self._parse_frontmatter_topic(content)
+                        if file_topic and file_topic in topic_set:
+                            body = self._strip_frontmatter(content)
+                            if body:
+                                mtime = os.path.getmtime(fpath)
+                                matches.append((mtime, fpath, body))
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # Also scan top-level memory dir .md files (non-recursive)
+        if os.path.isdir(memory_dir):
+            try:
+                for fname in os.listdir(memory_dir):
+                    if not fname.endswith(".md") or fname in exclude_basenames:
+                        continue
+                    fpath = os.path.join(memory_dir, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    # Skip if already scanned from another dir
+                    if any(fpath == m[1] for m in matches):
+                        continue
+                    try:
+                        with open(fpath) as f:
+                            content = f.read()
+                        file_topic = self._parse_frontmatter_topic(content)
+                        if file_topic and file_topic in topic_set:
+                            body = self._strip_frontmatter(content)
+                            if body:
+                                mtime = os.path.getmtime(fpath)
+                                matches.append((mtime, fpath, body))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        if not matches:
+            return ""
+
+        # Sort by recency (newest first)
+        matches.sort(key=lambda m: m[0], reverse=True)
+
+        # Assemble within budget
+        parts: list[str] = []
+        chars_used = 0
+
+        for _mtime, fpath, body in matches[:max_results]:
+            # Truncate individual entry if needed
+            remaining = budget - chars_used
+            if remaining <= 0:
+                break
+
+            entry_body = body
+            if len(entry_body) > remaining:
+                entry_body = entry_body[:remaining] + "\n[truncated]"
+
+            basename = os.path.basename(fpath)
+            entry = f"- **{basename}:** {entry_body}"
+            parts.append(entry)
+            chars_used += len(entry_body)
+
+            if chars_used >= budget:
+                break
+
+        return "\n\n".join(parts)
+
     async def build_context(
         self,
         project_id: str,
@@ -3256,23 +3430,38 @@ class MemoryManager:
             if doc_parts:
                 ctx.project_docs = "\n\n".join(doc_parts)
 
-        # Tier 2: Topic Context (L2 — spec §3)
-        # Detect topics from task description, then load matching knowledge
-        # base files.  This is fast (keyword matching, file reads) and runs
-        # before any semantic search to give the agent focused domain knowledge.
-        if self.config.topic_detection_enabled and self.config.index_knowledge:
+        # Tier 2: Topic Context (L2 — spec §2/§3)
+        # Detect topics from task description, then:
+        #   a) Load matching knowledge base files (§3)
+        #   b) Load memories filtered by topic frontmatter (§2)
+        # This is fast (keyword matching, file reads) and runs before any
+        # semantic search to give the agent focused domain knowledge.
+        if self.config.topic_detection_enabled:
             try:
                 task_text = f"{task.title} {task.description}"
                 detected = await self.detect_topics(project_id, task_text)
                 if detected:
-                    topic_content = await self._load_topic_context(project_id, detected)
-                    if topic_content:
-                        ctx.topic_context = topic_content
+                    # L2a: Knowledge base files
+                    if self.config.index_knowledge:
+                        topic_content = await self._load_topic_context(project_id, detected)
+                        if topic_content:
+                            ctx.topic_context = topic_content
+
+                    # L2b: Memories filtered by topic frontmatter
+                    if self.config.topic_memory_enabled:
+                        topic_memories = await self._load_topic_memories(project_id, detected)
+                        if topic_memories:
+                            ctx.topic_memories = topic_memories
+
+                    if ctx.topic_context or ctx.topic_memories:
                         ctx.detected_topics = detected
                         logger.debug(
-                            "L2 topic context loaded for task %s: %s",
+                            "L2 topic context loaded for task %s: topics=%s "
+                            "knowledge=%s memories=%s",
                             getattr(task, "id", "?"),
                             detected,
+                            bool(ctx.topic_context),
+                            bool(ctx.topic_memories),
                         )
             except Exception as e:
                 logger.warning("L2 topic detection failed for project %s: %s", project_id, e)
