@@ -2,7 +2,7 @@
 
 Replaces the v1 MemoryPlugin (``memory.py``) with a single self-contained
 plugin backed by a memsearch fork and Milvus.  See the design spec at
-``docs/specs/design/memory-plugin.md`` (especially Section 3) for the full
+``docs/specs/design/memory-plugin.md`` (especially Sections 3–4) for the full
 architecture.
 
 Key differences from v1
@@ -15,9 +15,22 @@ Key differences from v1
 * **Vault as source of truth** — human-readable markdown files in the vault
   directory are the canonical representation; Milvus is a derived index.
 
+Transition (v1 + v2 coexistence)
+--------------------------------
+Both v1 (``MemoryPlugin``) and v2 (``MemoryV2Plugin``) are active during the
+transition period.  v1 continues to own existing tool names (``memory_search``,
+``view_profile``, etc.) while v2 registers **only** the new tool names that
+are unique to the v2 architecture:
+
+* ``memory_search_by_tag`` — cross-scope tag search
+* ``memory_kv_get``, ``memory_kv_set``, ``memory_kv_list`` — KV operations
+* ``memory_fact_get``, ``memory_fact_set``, ``memory_fact_history`` — temporal facts
+
+Once the memsearch backend is wired up and v2 is fully functional, v1 will be
+deprecated and v2 will take over all tool names.
+
 Status: **skeleton** — tool definitions and command stubs only.  The memsearch
-backend is not yet wired up.  Set ``_internal = False`` to prevent
-auto-discovery conflicts with the existing v1 MemoryPlugin while both coexist.
+backend is not yet wired up.
 """
 
 from __future__ import annotations
@@ -38,6 +51,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TOOL_CATEGORY = "memory"
+
+# Tool names unique to v2 — only these are registered during the v1/v2
+# transition.  Overlapping names (memory_search, view_profile, etc.) remain
+# owned by v1's MemoryPlugin until v1 is fully deprecated.
+V2_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "memory_search_by_tag",
+        "memory_kv_get",
+        "memory_kv_set",
+        "memory_kv_list",
+        "memory_fact_get",
+        "memory_fact_set",
+        "memory_fact_history",
+    }
+)
 
 TOOL_DEFINITIONS: list[dict] = [
     # ---- Semantic Search ----
@@ -507,15 +535,16 @@ TOOL_DEFINITIONS: list[dict] = [
 class MemoryV2Plugin(InternalPlugin):
     """Memory v2: unified memory via memsearch/Milvus with scoped collections.
 
-    Replaces the v1 MemoryPlugin with a single self-contained plugin backed
-    by a memsearch fork.  See ``docs/specs/design/memory-plugin.md`` §3.
+    Registered alongside v1 MemoryPlugin during transition (§4 of the spec).
+    Only the new v2-specific tool names are registered here; overlapping
+    tool names remain owned by v1.  See ``docs/specs/design/memory-plugin.md``.
 
     Status: **skeleton** — command handlers are stubs.
     """
 
-    # Prevent auto-discovery while v1 MemoryPlugin is still active.
-    # Remove this override to enable v2 once v1 is deprecated.
-    _internal: bool = False
+    # Auto-discovered and loaded alongside v1 MemoryPlugin.  Both plugins
+    # are active: v1 owns existing tool names, v2 owns new ones.
+    _internal: bool = True
 
     async def initialize(self, ctx: PluginContext) -> None:
         self._ctx = ctx
@@ -525,34 +554,52 @@ class MemoryV2Plugin(InternalPlugin):
         # self._db = ctx.get_service("db")
         # self._memsearch = None  # TODO: initialize memsearch client
 
-        # -- Register commands --
-        ctx.register_command("memory_search", self.cmd_memory_search)
-        ctx.register_command("memory_search_by_tag", self.cmd_memory_search_by_tag)
+        # -- Map command names to handlers --
+        # Full command table — includes both v2-only and overlapping names.
+        # During transition only V2_ONLY_TOOLS are registered; overlapping
+        # names stay with v1 MemoryPlugin.
+        all_commands: dict[str, object] = {
+            # Semantic search
+            "memory_search": self.cmd_memory_search,
+            "memory_search_by_tag": self.cmd_memory_search_by_tag,
+            # KV operations
+            "memory_kv_get": self.cmd_memory_kv_get,
+            "memory_kv_set": self.cmd_memory_kv_set,
+            "memory_kv_list": self.cmd_memory_kv_list,
+            # Temporal facts
+            "memory_fact_get": self.cmd_memory_fact_get,
+            "memory_fact_set": self.cmd_memory_fact_set,
+            "memory_fact_history": self.cmd_memory_fact_history,
+            # Index management
+            "memory_reindex": self.cmd_memory_reindex,
+            "memory_stats": self.cmd_memory_stats,
+            # Profile / knowledge
+            "view_profile": self.cmd_view_profile,
+            "edit_project_profile": self.cmd_edit_project_profile,
+            "project_factsheet": self.cmd_project_factsheet,
+            "project_knowledge": self.cmd_project_knowledge,
+            # Compaction
+            "compact_memory": self.cmd_compact_memory,
+            "consolidate": self.cmd_consolidate,
+        }
 
-        ctx.register_command("memory_kv_get", self.cmd_memory_kv_get)
-        ctx.register_command("memory_kv_set", self.cmd_memory_kv_set)
-        ctx.register_command("memory_kv_list", self.cmd_memory_kv_list)
+        # -- Register only v2-only commands during transition --
+        registered = 0
+        for name, handler in all_commands.items():
+            if name in V2_ONLY_TOOLS:
+                ctx.register_command(name, handler)
+                registered += 1
 
-        ctx.register_command("memory_fact_get", self.cmd_memory_fact_get)
-        ctx.register_command("memory_fact_set", self.cmd_memory_fact_set)
-        ctx.register_command("memory_fact_history", self.cmd_memory_fact_history)
-
-        ctx.register_command("memory_reindex", self.cmd_memory_reindex)
-        ctx.register_command("memory_stats", self.cmd_memory_stats)
-
-        ctx.register_command("view_profile", self.cmd_view_profile)
-        ctx.register_command("edit_project_profile", self.cmd_edit_project_profile)
-        ctx.register_command("project_factsheet", self.cmd_project_factsheet)
-        ctx.register_command("project_knowledge", self.cmd_project_knowledge)
-
-        ctx.register_command("compact_memory", self.cmd_compact_memory)
-        ctx.register_command("consolidate", self.cmd_consolidate)
-
-        # -- Register tool schemas --
+        # -- Register only v2-only tool schemas during transition --
         for tool_def in TOOL_DEFINITIONS:
-            ctx.register_tool(dict(tool_def), category=TOOL_CATEGORY)
+            if tool_def["name"] in V2_ONLY_TOOLS:
+                ctx.register_tool(dict(tool_def), category=TOOL_CATEGORY)
 
-        self._log.info("MemoryV2Plugin initialized (skeleton)")
+        self._log.info(
+            "MemoryV2Plugin initialized (skeleton, %d/%d v2-only commands registered)",
+            registered,
+            len(all_commands),
+        )
 
     async def shutdown(self, ctx: PluginContext) -> None:
         # TODO: close memsearch client / Milvus connections
