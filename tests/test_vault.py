@@ -4,7 +4,10 @@ and vault migrations (vault spec §6, Phase 1).
 
 from __future__ import annotations
 
+import time
+
 from src.vault import (
+    copy_project_memory_to_vault,
     ensure_vault_layout,
     ensure_vault_profile_dirs,
     ensure_vault_project_dirs,
@@ -306,3 +309,210 @@ def test_migrate_notes_moves_non_markdown_files(tmp_path):
     dest = tmp_path / "vault" / "projects" / "my-proj" / "notes"
     assert (dest / "note.md").read_text() == "markdown"
     assert (dest / "data.json").read_text() == '{"key": "value"}'
+
+
+# ---------------------------------------------------------------------------
+# copy_project_memory_to_vault (vault spec §6, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_copy_memory_copies_profile_and_factsheet(tmp_path):
+    """profile.md and factsheet.md are copied to vault memory directory."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "profile.md").write_text("# Project Profile")
+    (source / "factsheet.md").write_text("# Factsheet")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    assert (dest / "profile.md").read_text() == "# Project Profile"
+    assert (dest / "factsheet.md").read_text() == "# Factsheet"
+    # Source files should still exist (copy, not move)
+    assert (source / "profile.md").read_text() == "# Project Profile"
+    assert (source / "factsheet.md").read_text() == "# Factsheet"
+
+
+def test_copy_memory_copies_knowledge_dir(tmp_path):
+    """knowledge/ directory contents are recursively copied to vault."""
+    source = tmp_path / "memory" / "my-proj"
+    knowledge = source / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "architecture.md").write_text("# Architecture")
+    (knowledge / "decisions.md").write_text("# Decisions")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory" / "knowledge"
+    assert (dest / "architecture.md").read_text() == "# Architecture"
+    assert (dest / "decisions.md").read_text() == "# Decisions"
+    # Source files should still exist
+    assert (knowledge / "architecture.md").exists()
+    assert (knowledge / "decisions.md").exists()
+
+
+def test_copy_memory_copies_knowledge_subdirs(tmp_path):
+    """Nested subdirectories inside knowledge/ are preserved."""
+    source = tmp_path / "memory" / "my-proj"
+    sub = source / "knowledge" / "deep" / "nested"
+    sub.mkdir(parents=True)
+    (sub / "topic.md").write_text("deep topic")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory" / "knowledge"
+    assert (dest / "deep" / "nested" / "topic.md").read_text() == "deep topic"
+
+
+def test_copy_memory_skips_when_source_missing(tmp_path):
+    """When memory/{project_id}/ does not exist, nothing happens."""
+    result = copy_project_memory_to_vault(str(tmp_path), "nonexistent")
+
+    assert result is False
+
+
+def test_copy_memory_skips_up_to_date_files(tmp_path):
+    """Files already at the destination with same or newer mtime are skipped."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "profile.md").write_text("old version")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    (dest / "profile.md").write_text("already copied version")
+
+    # Make dest file newer than source
+    import os
+
+    src_file = str(source / "profile.md")
+    dst_file = str(dest / "profile.md")
+    now = time.time()
+    os.utime(src_file, (now - 10, now - 10))
+    os.utime(dst_file, (now, now))
+
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is False
+    # Destination should retain its own content
+    assert (dest / "profile.md").read_text() == "already copied version"
+
+
+def test_copy_memory_updates_when_source_newer(tmp_path):
+    """When source is newer than destination, the destination is updated."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+
+    # Write destination first with older timestamp
+    (dest / "profile.md").write_text("stale version")
+    import os
+
+    now = time.time()
+    os.utime(str(dest / "profile.md"), (now - 10, now - 10))
+
+    # Write source with newer timestamp
+    (source / "profile.md").write_text("updated version")
+    os.utime(str(source / "profile.md"), (now, now))
+
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    assert (dest / "profile.md").read_text() == "updated version"
+
+
+def test_copy_memory_idempotent(tmp_path):
+    """Calling copy twice — second call is a no-op when files haven't changed."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "profile.md").write_text("# Profile")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+
+    assert copy_project_memory_to_vault(str(tmp_path), "my-proj") is True
+    # Second call: dest now has same mtime (via copy2), so should be skipped
+    assert copy_project_memory_to_vault(str(tmp_path), "my-proj") is False
+
+
+def test_copy_memory_excludes_tasks_and_rules(tmp_path):
+    """tasks/ and rules/ directories are NOT copied to the vault."""
+    source = tmp_path / "memory" / "my-proj"
+    (source / "tasks").mkdir(parents=True)
+    (source / "rules").mkdir(parents=True)
+    (source / "tasks" / "task-001.md").write_text("task record")
+    (source / "rules" / "rule-001.yaml").write_text("rule content")
+    (source / "profile.md").write_text("# Profile")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    assert (dest / "profile.md").read_text() == "# Profile"
+    # tasks/ and rules/ should NOT exist in vault memory
+    assert not (dest / "tasks").exists()
+    assert not (dest / "rules").exists()
+
+
+def test_copy_memory_handles_partial_files(tmp_path):
+    """Only existing files are copied — missing profile.md or factsheet.md is fine."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+    # Only factsheet, no profile.md
+    (source / "factsheet.md").write_text("# Facts")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    assert (dest / "factsheet.md").read_text() == "# Facts"
+    assert not (dest / "profile.md").exists()
+
+
+def test_copy_memory_creates_dest_dir(tmp_path):
+    """Destination vault directories are created if they don't exist yet."""
+    source = tmp_path / "memory" / "my-proj"
+    source.mkdir(parents=True)
+    (source / "profile.md").write_text("# Profile")
+
+    # Do NOT call ensure_vault_project_dirs — copy should handle it
+    assert not (tmp_path / "vault").exists()
+
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    assert (dest / "profile.md").read_text() == "# Profile"
+
+
+def test_copy_memory_all_files_together(tmp_path):
+    """Full scenario: profile.md + factsheet.md + knowledge/ all copied."""
+    source = tmp_path / "memory" / "my-proj"
+    knowledge = source / "knowledge"
+    knowledge.mkdir(parents=True)
+    (source / "profile.md").write_text("# Profile")
+    (source / "factsheet.md").write_text("# Factsheet")
+    (knowledge / "arch.md").write_text("# Architecture")
+    (knowledge / "conventions.md").write_text("# Conventions")
+
+    ensure_vault_project_dirs(str(tmp_path), "my-proj")
+    result = copy_project_memory_to_vault(str(tmp_path), "my-proj")
+
+    assert result is True
+    dest = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    assert (dest / "profile.md").read_text() == "# Profile"
+    assert (dest / "factsheet.md").read_text() == "# Factsheet"
+    assert (dest / "knowledge" / "arch.md").read_text() == "# Architecture"
+    assert (dest / "knowledge" / "conventions.md").read_text() == "# Conventions"
+    # Source files still exist
+    assert (source / "profile.md").exists()
+    assert (source / "factsheet.md").exists()
+    assert (knowledge / "arch.md").exists()

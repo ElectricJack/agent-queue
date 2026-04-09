@@ -211,6 +211,120 @@ def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
     os.makedirs(os.path.join(base, "memory"), exist_ok=True)
 
 
+def copy_project_memory_to_vault(data_dir: str, project_id: str) -> bool:
+    """Copy project memory files from ``memory/{project_id}/`` to the vault.
+
+    Part of vault migration Phase 1 (spec §6).  Copies the following files
+    from the legacy ``memory/{project_id}/`` directory into the vault's
+    per-project memory directory:
+
+    - ``profile.md`` → ``vault/projects/{project_id}/memory/profile.md``
+    - ``factsheet.md`` → ``vault/projects/{project_id}/memory/factsheet.md``
+    - ``knowledge/`` → ``vault/projects/{project_id}/memory/knowledge/``
+
+    Files are **copied** (not moved) because the old paths are still used by
+    the v1 memory system during the transition period.
+
+    Explicitly excluded: ``tasks/`` (already migrated in Phase 0) and
+    ``rules/`` (migrated in roadmap 1.2.2).
+
+    The operation is **idempotent**:
+
+    * If the source directory does not exist, nothing happens (returns ``False``).
+    * If a destination file already exists and is at least as recent as the
+      source, that file is skipped.
+    * If the source file is newer than the destination, the destination is
+      updated.
+    * Calling the function again after a successful copy is a safe no-op
+      (unless source files have been updated).
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+        project_id: The project identifier (e.g. ``mech-fighters``).
+
+    Returns:
+        ``True`` if any files were copied/updated, ``False`` if skipped.
+    """
+    source = os.path.join(data_dir, "memory", project_id)
+    dest = os.path.join(data_dir, "vault", "projects", project_id, "memory")
+
+    if not os.path.isdir(source):
+        logger.debug(
+            "Memory copy for %s: source %s does not exist, skipping",
+            project_id,
+            source,
+        )
+        return False
+
+    os.makedirs(dest, exist_ok=True)
+
+    copied_any = False
+
+    # Copy top-level memory files (profile.md, factsheet.md)
+    for filename in ("profile.md", "factsheet.md"):
+        src_file = os.path.join(source, filename)
+        dst_file = os.path.join(dest, filename)
+
+        if not os.path.isfile(src_file):
+            continue
+
+        if os.path.exists(dst_file):
+            # Only update if source is newer
+            src_mtime = os.path.getmtime(src_file)
+            dst_mtime = os.path.getmtime(dst_file)
+            if src_mtime <= dst_mtime:
+                logger.debug(
+                    "Memory copy for %s: %s is up to date, skipping",
+                    project_id,
+                    filename,
+                )
+                continue
+
+        shutil.copy2(src_file, dst_file)
+        copied_any = True
+        logger.debug("Copied memory file %s → %s", src_file, dst_file)
+
+    # Copy knowledge/ directory contents
+    knowledge_src = os.path.join(source, "knowledge")
+    knowledge_dst = os.path.join(dest, "knowledge")
+
+    if os.path.isdir(knowledge_src):
+        os.makedirs(knowledge_dst, exist_ok=True)
+
+        for dirpath, _dirnames, filenames in os.walk(knowledge_src):
+            rel_dir = os.path.relpath(dirpath, knowledge_src)
+            dst_dir = os.path.join(knowledge_dst, rel_dir) if rel_dir != "." else knowledge_dst
+            os.makedirs(dst_dir, exist_ok=True)
+
+            for fname in filenames:
+                src_file = os.path.join(dirpath, fname)
+                dst_file = os.path.join(dst_dir, fname)
+
+                if os.path.exists(dst_file):
+                    src_mtime = os.path.getmtime(src_file)
+                    dst_mtime = os.path.getmtime(dst_file)
+                    if src_mtime <= dst_mtime:
+                        logger.debug(
+                            "Memory copy for %s: knowledge/%s is up to date, skipping",
+                            project_id,
+                            fname,
+                        )
+                        continue
+
+                shutil.copy2(src_file, dst_file)
+                copied_any = True
+                logger.debug("Copied knowledge file %s → %s", src_file, dst_file)
+
+    if copied_any:
+        logger.info(
+            "Copied project memory files for %s from %s to %s",
+            project_id,
+            source,
+            dest,
+        )
+    return copied_any
+
+
 def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
     """Create vault subdirectories for a project.
 

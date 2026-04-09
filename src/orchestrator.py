@@ -992,7 +992,11 @@ class Orchestrator:
         Called during ``initialize()`` after the database is ready and
         ``self.vault_manager`` has been created.
         """
-        from src.vault import migrate_notes_to_vault, migrate_obsidian_config
+        from src.vault import (
+            copy_project_memory_to_vault,
+            migrate_notes_to_vault,
+            migrate_obsidian_config,
+        )
 
         # Migrate legacy .obsidian config before ensure_layout creates
         # an empty vault/.obsidian/ directory (spec §6, Phase 1).
@@ -1016,6 +1020,12 @@ class Orchestrator:
         # (spec §6, Phase 1).  Must run after register_project ensures dest dirs.
         for project in all_projects:
             migrate_notes_to_vault(self.config.data_dir, project.id)
+
+        # Copy project memory files (profile.md, factsheet.md, knowledge/)
+        # into vault/projects/{project_id}/memory/ (spec §6, Phase 1).
+        # Uses copy (not move) — old paths still used by v1 memory system.
+        for project in all_projects:
+            copy_project_memory_to_vault(self.config.data_dir, project.id)
 
         if all_profiles or all_projects:
             logger.info(
