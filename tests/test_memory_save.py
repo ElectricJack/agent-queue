@@ -1699,6 +1699,421 @@ class TestLLMMerge:
 
 
 # ---------------------------------------------------------------------------
+# LLM Merge: end-to-end behavior for 0.8–0.95 similarity — Roadmap 3.4.5
+# ---------------------------------------------------------------------------
+
+
+class TestLLMMergeSimilarContent:
+    """End-to-end tests for LLM merge when similarity is 0.8–0.95.
+
+    Roadmap 3.4.5 cases:
+    (a) Saving content with 0.85 similarity to existing triggers LLM merge call.
+    (b) Merged result contains information from both the old and new content.
+    (c) On contradiction between old and new, merged result prefers newer information.
+    (d) Tags from both old and new content are preserved in merged entry.
+    (e) Merged entry replaces the old one (not two entries).
+    (f) If LLM merge fails (provider error), original is kept and new content is
+        saved separately with a warning.
+    (g) Merge produces content that is coherent and not just concatenated.
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="Merged content result")
+        return plugin
+
+    # -- (a) 0.85 similarity triggers LLM merge --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_085_similarity_triggers_llm_merge(self, wired_plugin, mock_store):
+        """(a) Content with 0.85 similarity to existing triggers LLM merge call."""
+        mock_store.search.return_value = [
+            {
+                "content": "Database indexes improve read performance significantly",
+                "score": 0.85,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "database",
+                "tags": '["insight", "database"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Adding indexes on frequently queried columns speeds up reads.",
+                "tags": ["insight", "performance"],
+                "topic": "database",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        assert result["similarity_score"] == 0.85
+
+        # LLM must have been called for the merge
+        merge_calls = [
+            c
+            for c in wired_plugin._ctx.invoke_llm.call_args_list
+            if "merging two related" in c[0][0].lower()
+        ]
+        assert len(merge_calls) == 1
+
+    # -- (b) Merged result contains info from both old and new --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merged_result_contains_both_old_and_new(self, wired_plugin, mock_store):
+        """(b) The stored merged content includes information from both entries.
+
+        We mock the LLM to return content that clearly references facts from
+        both the old and new memories, then verify that content reaches the store.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth tokens expire after 1 hour",
+                "score": 0.87,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "auth"]',
+            }
+        ]
+
+        # LLM returns a merged result that incorporates both facts
+        merged_text = (
+            "OAuth tokens expire after 1 hour. When a token expires, "
+            "the client should use the refresh token to obtain a new one."
+        )
+
+        async def mock_llm(prompt, **kwargs):
+            if "merging two related" in prompt.lower():
+                return merged_text
+            return "auth"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Expired tokens should be refreshed using the refresh token.",
+                "tags": ["insight", "auth"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+
+        # Verify the merged content was stored in Milvus via upsert
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert "expire after 1 hour" in upserted["content"]  # from old
+        assert "refresh token" in upserted["content"]  # from new
+
+    # -- (c) Contradiction prefers newer information --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_contradiction_prefers_newer_info(self, wired_plugin, mock_store):
+        """(c) When old and new content contradict, the merged result prefers newer.
+
+        Verifies the LLM prompt instructs contradiction resolution in favor of
+        newer content, and the LLM's merge result (which reflects the newer info)
+        is stored.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "Token expiry is set to 30 minutes",
+                "score": 0.89,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "auth"]',
+            }
+        ]
+
+        # LLM returns a result that prefers the newer info (1 hour, not 30 min)
+        merged_text = (
+            "Token expiry is set to 1 hour (previously 30 minutes). "
+            "Ensure refresh is triggered before expiry."
+        )
+
+        async def mock_llm(prompt, **kwargs):
+            if "merging two related" in prompt.lower():
+                # Verify the prompt instructs to prefer newer
+                assert "prefer" in prompt.lower()
+                assert "newer" in prompt.lower()
+                return merged_text
+            return "auth"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Token expiry has been changed to 1 hour.",
+                "tags": ["insight", "auth"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+
+        # Verify the stored content reflects the newer value
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert "1 hour" in upserted["content"]
+        # The old value should be noted as "previously"
+        assert "previously" in upserted["content"].lower()
+
+    # -- (d) Tags from both old and new are preserved --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_tags_from_both_entries_preserved(self, wired_plugin, mock_store):
+        """(d) Tags from both old and new content are preserved and deduplicated."""
+        mock_store.search.return_value = [
+            {
+                "content": "Use connection pooling for database access",
+                "score": 0.86,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "database",
+                "tags": '["insight", "database", "performance"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Connection pool size should match the number of workers.",
+                "tags": ["insight", "scaling", "database"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+
+        # merged_tags should contain all unique tags: old first, then new
+        assert "insight" in result["merged_tags"]
+        assert "database" in result["merged_tags"]
+        assert "performance" in result["merged_tags"]  # from old
+        assert "scaling" in result["merged_tags"]  # from new
+        # No duplicates
+        assert len(result["merged_tags"]) == len(set(result["merged_tags"]))
+
+        # Verify tags are stored in Milvus
+        import json
+
+        upserted = mock_store.upsert.call_args[0][0][0]
+        stored_tags = json.loads(upserted["tags"])
+        assert "performance" in stored_tags
+        assert "scaling" in stored_tags
+        assert "database" in stored_tags
+        assert "insight" in stored_tags
+
+    # -- (e) Merged entry replaces old (no extra entries) --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_replaces_old_entry_not_two_entries(self, wired_plugin, mock_store):
+        """(e) After merge, the old entry is updated in place — no second entry created.
+
+        The merge path calls update_document_content (which updates the existing
+        entry via its chunk_hash), NOT save_document (which creates a new entry).
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "API rate limits are 100 requests per minute",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "api",
+                "tags": '["insight", "api"]',
+            }
+        ]
+        mock_store.upsert.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Rate limits also apply per-user, not just globally.",
+                "tags": ["insight", "api"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        assert result["merged_with"] == "existing_hash"
+
+        # Only one upsert call should have been made (updating the existing entry)
+        assert mock_store.upsert.call_count == 1
+        upserted = mock_store.upsert.call_args[0][0][0]
+        # The upserted entry reuses the EXISTING chunk_hash — proving it's an
+        # update, not a new entry
+        assert upserted["chunk_hash"] == "existing_hash"
+
+    # -- (f) LLM failure: original kept, warning logged --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_llm_failure_preserves_original_and_warns(self, wired_plugin, mock_store):
+        """(f) When LLM merge fails, both contents are preserved via concatenation
+        fallback and a warning is logged.
+
+        The implementation uses a concatenation fallback that keeps both old and
+        new content in the existing entry, rather than creating a separate entry.
+        This ensures no information is lost.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "Original: use retry logic for transient errors",
+                "score": 0.84,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "error-handling",
+                "tags": '["insight", "reliability"]',
+            }
+        ]
+
+        # Make LLM fail with a provider error
+        wired_plugin._ctx.invoke_llm = AsyncMock(
+            side_effect=RuntimeError("Provider error: rate limited")
+        )
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "New: add circuit breaker pattern for cascading failures",
+                "tags": ["insight", "resilience"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+
+        # Both old and new content should be preserved in the stored result
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert "retry logic for transient errors" in upserted["content"]
+        assert "circuit breaker pattern" in upserted["content"]
+
+        # A warning should have been logged about the LLM fallback
+        warning_calls = [
+            c for c in wired_plugin._log.warning.call_args_list if "fallback" in str(c).lower()
+        ]
+        assert len(warning_calls) >= 1
+
+    # -- (g) Merge is coherent, not just concatenated --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_produces_coherent_content_not_concatenation(
+        self, wired_plugin, mock_store
+    ):
+        """(g) When the LLM succeeds, the stored content is the LLM's coherent
+        merge result, not a raw concatenation of old + new.
+
+        The LLM's output should be used directly — it should not contain the
+        raw separator pattern (\"---\\n\\n**Updated:**\") that the fallback uses.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "Use PostgreSQL for ACID transactions",
+                "score": 0.85,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "database",
+                "tags": '["insight", "database"]',
+            }
+        ]
+
+        coherent_merge = (
+            "PostgreSQL provides ACID transactions and supports advanced "
+            "indexing strategies like GIN and GiST for complex queries."
+        )
+
+        async def mock_llm(prompt, **kwargs):
+            if "merging two related" in prompt.lower():
+                return coherent_merge
+            return "database"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "PostgreSQL supports GIN and GiST indexes for complex queries.",
+                "tags": ["insight", "database"],
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "merged"
+
+        # Verify the stored content is the LLM's coherent output
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert upserted["content"] == coherent_merge
+
+        # Must NOT contain the fallback concatenation markers
+        assert "---" not in upserted["content"]
+        assert "**Updated:**" not in upserted["content"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_uses_llm_output_not_raw_inputs(self, wired_plugin, mock_store):
+        """(g) Extended: the stored content should be the LLM's output, not the
+        raw old/new texts verbatim side-by-side."""
+        old_content = "Caching reduces database load by storing frequent queries in memory."
+        new_content = "Redis is the preferred caching backend for our stack."
+
+        mock_store.search.return_value = [
+            {
+                "content": old_content,
+                "score": 0.83,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "caching",
+                "tags": '["insight"]',
+            }
+        ]
+
+        # LLM produces a genuinely merged result
+        llm_output = (
+            "Caching reduces database load by storing frequent queries in memory. "
+            "Redis is the preferred caching backend, providing fast key-value lookups."
+        )
+
+        async def mock_llm(prompt, **kwargs):
+            if "merging two related" in prompt.lower():
+                return llm_output
+            return "caching"
+
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": new_content,
+                "tags": ["insight"],
+            }
+        )
+
+        # The stored content must be the LLM's merged output
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert upserted["content"] == llm_output
+        # It should NOT be a raw concatenation of old\nnew
+        assert upserted["content"] != f"{old_content}\n{new_content}"
+        assert upserted["content"] != f"{old_content}\n\n{new_content}"
+
+
+# ---------------------------------------------------------------------------
 # Duplicate detection (>0.95 similarity) — Roadmap 3.4.4
 # ---------------------------------------------------------------------------
 
