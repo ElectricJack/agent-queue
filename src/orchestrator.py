@@ -983,7 +983,12 @@ class Orchestrator:
             ensure_vault_layout,
             ensure_vault_profile_dirs,
             ensure_vault_project_dirs,
+            migrate_obsidian_config,
         )
+
+        # Migrate legacy .obsidian config before ensure_vault_layout creates
+        # an empty vault/.obsidian/ directory (spec §6, Phase 1).
+        migrate_obsidian_config(self.config.data_dir)
 
         ensure_vault_layout(self.config.data_dir)
 

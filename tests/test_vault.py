@@ -1,4 +1,6 @@
-"""Tests for vault directory structure initialization (vault spec §2)."""
+"""Tests for vault directory structure initialization (vault spec §2)
+and Obsidian config migration (vault spec §6, Phase 1).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +8,7 @@ from src.vault import (
     ensure_vault_layout,
     ensure_vault_profile_dirs,
     ensure_vault_project_dirs,
+    migrate_obsidian_config,
 )
 
 
@@ -75,6 +78,93 @@ def test_ensure_vault_project_dirs_idempotent(tmp_path):
     ensure_vault_project_dirs(str(tmp_path), "my-project")
 
     assert (tmp_path / "vault" / "projects" / "my-project" / "playbooks").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# migrate_obsidian_config (vault spec §6, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_obsidian_config_moves_directory(tmp_path):
+    """When source exists and destination does not, .obsidian is moved."""
+    source = tmp_path / "memory" / ".obsidian"
+    source.mkdir(parents=True)
+    # Populate with representative Obsidian config files
+    (source / "app.json").write_text('{"theme": "dark"}')
+    (source / "workspace.json").write_text('{"active": "notes"}')
+    plugins_dir = source / "plugins" / "dataview"
+    plugins_dir.mkdir(parents=True)
+    (plugins_dir / "main.js").write_text("// plugin code")
+
+    result = migrate_obsidian_config(str(tmp_path))
+
+    assert result is True
+    dest = tmp_path / "vault" / ".obsidian"
+    assert dest.is_dir()
+    assert (dest / "app.json").read_text() == '{"theme": "dark"}'
+    assert (dest / "workspace.json").read_text() == '{"active": "notes"}'
+    assert (dest / "plugins" / "dataview" / "main.js").read_text() == "// plugin code"
+    # Source should no longer exist
+    assert not source.exists()
+
+
+def test_migrate_obsidian_config_skips_when_source_missing(tmp_path):
+    """When source does not exist, nothing happens."""
+    result = migrate_obsidian_config(str(tmp_path))
+
+    assert result is False
+    # Destination should not have been created either
+    assert not (tmp_path / "vault" / ".obsidian").exists()
+
+
+def test_migrate_obsidian_config_skips_when_dest_exists(tmp_path):
+    """When destination already exists, source is left untouched."""
+    source = tmp_path / "memory" / ".obsidian"
+    source.mkdir(parents=True)
+    (source / "app.json").write_text('{"theme": "dark"}')
+
+    dest = tmp_path / "vault" / ".obsidian"
+    dest.mkdir(parents=True)
+    (dest / "existing.json").write_text('{"keep": true}')
+
+    result = migrate_obsidian_config(str(tmp_path))
+
+    assert result is False
+    # Source still exists (not moved)
+    assert source.is_dir()
+    assert (source / "app.json").read_text() == '{"theme": "dark"}'
+    # Destination retains its original content
+    assert (dest / "existing.json").read_text() == '{"keep": true}'
+
+
+def test_migrate_obsidian_config_idempotent(tmp_path):
+    """Calling migrate twice — the second call is a no-op."""
+    source = tmp_path / "memory" / ".obsidian"
+    source.mkdir(parents=True)
+    (source / "app.json").write_text('{"theme": "dark"}')
+
+    assert migrate_obsidian_config(str(tmp_path)) is True
+    # Source gone after first call; second call should skip gracefully
+    assert migrate_obsidian_config(str(tmp_path)) is False
+
+    dest = tmp_path / "vault" / ".obsidian"
+    assert dest.is_dir()
+    assert (dest / "app.json").read_text() == '{"theme": "dark"}'
+
+
+def test_migrate_obsidian_config_creates_vault_parent(tmp_path):
+    """Vault parent directory is created if it doesn't exist yet."""
+    source = tmp_path / "memory" / ".obsidian"
+    source.mkdir(parents=True)
+    (source / "themes.json").write_text("{}")
+
+    # No vault/ directory exists yet
+    assert not (tmp_path / "vault").exists()
+
+    result = migrate_obsidian_config(str(tmp_path))
+
+    assert result is True
+    assert (tmp_path / "vault" / ".obsidian" / "themes.json").read_text() == "{}"
 
 
 def test_multiple_profiles_and_projects(tmp_path):

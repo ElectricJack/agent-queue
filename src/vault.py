@@ -17,8 +17,55 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Migration helpers
+# ---------------------------------------------------------------------------
+
+
+def migrate_obsidian_config(data_dir: str) -> bool:
+    """Move Obsidian config from ``memory/.obsidian/`` to ``vault/.obsidian/``.
+
+    Part of vault migration Phase 1 (spec §6).  Moves the entire
+    ``.obsidian/`` directory — themes, plugins, workspace layout — from the
+    legacy ``memory/`` location to the new ``vault/`` root.
+
+    The operation is **idempotent**:
+
+    * If the source does not exist, nothing happens (returns ``False``).
+    * If the destination already exists, nothing happens (returns ``False``).
+    * Only when the source exists *and* the destination does not will the
+      move be performed (returns ``True``).
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        ``True`` if the move was performed, ``False`` if skipped.
+    """
+    source = os.path.join(data_dir, "memory", ".obsidian")
+    dest = os.path.join(data_dir, "vault", ".obsidian")
+
+    if not os.path.isdir(source):
+        logger.debug("Obsidian config migration: source %s does not exist, skipping", source)
+        return False
+
+    if os.path.exists(dest):
+        logger.debug(
+            "Obsidian config migration: destination %s already exists, skipping", dest
+        )
+        return False
+
+    # Ensure the vault/ parent directory exists before moving into it.
+    os.makedirs(os.path.join(data_dir, "vault"), exist_ok=True)
+
+    shutil.move(source, dest)
+    logger.info("Migrated Obsidian config from %s to %s", source, dest)
+    return True
 
 # ---------------------------------------------------------------------------
 # Static vault subdirectories (always created at startup)
