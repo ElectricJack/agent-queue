@@ -4702,3 +4702,313 @@ class TestPlaybookExecutionHappyPath:
         persisted_trace = json.loads(final_call.kwargs["node_trace"])
         assert len(persisted_trace) == 1
         assert persisted_trace[0]["node_id"] == "only"
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 5.2.17 — PlaybookRun persistence test cases (a)-(h)
+# ---------------------------------------------------------------------------
+
+
+class TestRoadmap5217:
+    """Roadmap 5.2.17: PlaybookRun persistence per playbooks spec §6.
+
+    Each test method maps to a specific roadmap case (a)-(h).
+    """
+
+    # -- helpers --
+
+    @staticmethod
+    def _three_node_graph(
+        graph_id: str = "three-node",
+        version: int = 1,
+        *,
+        source_hash: str | None = None,
+        max_tokens: int | None = None,
+    ) -> dict:
+        """Build a 3-node linear graph: start → analyze → report → done."""
+        g: dict = {
+            "id": graph_id,
+            "version": version,
+            "nodes": {
+                "start": {"entry": True, "prompt": "Initialise scan.", "goto": "analyze"},
+                "analyze": {"prompt": "Analyze the findings.", "goto": "report"},
+                "report": {"prompt": "Generate final report.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        if source_hash is not None:
+            g["source_hash"] = source_hash
+        if max_tokens is not None:
+            g["max_tokens"] = max_tokens
+        return g
+
+    # (a) completed run → status "completed", full node trace, total token usage
+
+    async def test_a_completed_run_has_status_trace_and_tokens(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """(a) Completed run has DB record with status 'completed',
+        full node trace, and total token usage."""
+        graph = self._three_node_graph()
+        responses = iter(["Scan initialised.", "Analysis done.", "Report ready."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+
+        # Final DB update
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        assert final_call.kwargs["status"] == "completed"
+        assert final_call.kwargs["completed_at"] is not None
+
+        # Full node trace — one entry per executable node (3 nodes)
+        trace = json.loads(final_call.kwargs["node_trace"])
+        assert len(trace) == 3
+        assert all(t["status"] == "completed" for t in trace)
+
+        # Total token usage accumulated
+        assert final_call.kwargs["tokens_used"] > 0
+        assert final_call.kwargs["tokens_used"] == result.tokens_used
+
+    # (b) node trace contains ordered list of node IDs visited
+
+    async def test_b_node_trace_ordered_ids(self, mock_supervisor, event_data, mock_db):
+        """(b) Node trace contains ordered list of node IDs visited
+        (e.g., ['start', 'analyze', 'report'])."""
+        graph = self._three_node_graph()
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        trace = json.loads(final_call.kwargs["node_trace"])
+
+        visited_ids = [entry["node_id"] for entry in trace]
+        assert visited_ids == ["start", "analyze", "report"]
+
+    # (c) conversation history in DB matches messages exchanged at each node
+
+    async def test_c_conversation_history_matches_messages(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """(c) Conversation history in DB matches the actual messages
+        exchanged at each node."""
+        graph = self._three_node_graph()
+        node_responses = {
+            "Initialise scan.": "Scan started: 5 files found.",
+            "Analyze the findings.": "Analysis: 2 critical, 1 warning.",
+            "Generate final report.": "Report: all issues documented.",
+        }
+
+        async def respond(**kw):
+            return node_responses.get(kw["text"], "Unknown prompt")
+
+        mock_supervisor.chat.side_effect = respond
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        history = json.loads(final_call.kwargs["conversation_history"])
+
+        # Expected: seed + 3 × (user prompt + assistant response) = 7 messages
+        assert len(history) == 7
+
+        # Seed message (event context)
+        assert history[0]["role"] == "user"
+        assert "Event received" in history[0]["content"]
+
+        # Node "start"
+        assert history[1] == {"role": "user", "content": "Initialise scan."}
+        assert history[2] == {"role": "assistant", "content": "Scan started: 5 files found."}
+
+        # Node "analyze"
+        assert history[3] == {"role": "user", "content": "Analyze the findings."}
+        assert history[4] == {
+            "role": "assistant",
+            "content": "Analysis: 2 critical, 1 warning.",
+        }
+
+        # Node "report"
+        assert history[5] == {"role": "user", "content": "Generate final report."}
+        assert history[6] == {"role": "assistant", "content": "Report: all issues documented."}
+
+    # (d) failed run → status "failed" with error details and partial node trace
+
+    async def test_d_failed_run_has_error_and_partial_trace(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """(d) Failed run has status 'failed' with error details and
+        partial node trace up to failure point."""
+        graph = self._three_node_graph()
+        call_count = 0
+
+        async def fail_on_second(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # Fail on "analyze" node
+                raise RuntimeError("Connection refused: model API unavailable")
+            return "Step done."
+
+        mock_supervisor.chat.side_effect = fail_on_second
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+
+        # Find the failure DB update
+        fail_call = None
+        for call in mock_db.update_playbook_run.call_args_list:
+            if call.kwargs.get("status") == "failed":
+                fail_call = call
+                break
+
+        assert fail_call is not None
+
+        # Error details present
+        assert fail_call.kwargs["error"] is not None
+        assert "Connection refused" in fail_call.kwargs["error"]
+
+        # Partial node trace: "start" completed + "analyze" failed
+        trace = json.loads(fail_call.kwargs["node_trace"])
+        assert len(trace) == 2
+        assert trace[0]["node_id"] == "start"
+        assert trace[0]["status"] == "completed"
+        assert trace[1]["node_id"] == "analyze"
+        assert trace[1]["status"] == "failed"
+
+        # "report" node was never reached
+        visited_ids = [t["node_id"] for t in trace]
+        assert "report" not in visited_ids
+
+    # (e) timed-out run → status "timed_out" with the node where timeout occurred
+
+    async def test_e_timed_out_run_identifies_node(self, mock_supervisor, event_data, mock_db):
+        """(e) Timed-out run has status 'timed_out' with the node where
+        timeout occurred."""
+        # Use a very small token budget so it exhausts after the first node
+        graph = self._three_node_graph(max_tokens=10)
+
+        # Return a long response so token estimate exceeds budget
+        mock_supervisor.chat.return_value = "x" * 500
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "timed_out"
+
+        # Find the timed_out DB update
+        timeout_call = None
+        for call in mock_db.update_playbook_run.call_args_list:
+            if call.kwargs.get("status") == "timed_out":
+                timeout_call = call
+                break
+
+        assert timeout_call is not None
+        assert "Token budget exceeded" in timeout_call.kwargs["error"]
+
+        # The current_node identifies where the budget check fired.
+        # Budget is checked BEFORE executing the next node, so after "start"
+        # completes and tokens exceed the limit, the runner fails before
+        # "analyze" can execute. The trace shows which nodes actually ran.
+        trace = json.loads(timeout_call.kwargs["node_trace"])
+        assert len(trace) >= 1
+        # First node completed (tokens accumulated there)
+        assert trace[0]["node_id"] == "start"
+        assert trace[0]["status"] == "completed"
+
+    # (f) run record includes playbook source version hash
+
+    async def test_f_source_version_hash_preserved(self, mock_supervisor, event_data, mock_db):
+        """(f) Run record includes playbook source version hash
+        (for version tracking) via pinned_graph."""
+        graph = self._three_node_graph(
+            graph_id="versioned-pb",
+            version=3,
+            source_hash="sha256:a1b2c3d4e5f6789012345678",
+        )
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # The create call pins the compiled graph (including source_hash)
+        created_run = mock_db.create_playbook_run.call_args[0][0]
+        assert created_run.pinned_graph is not None
+        pinned = json.loads(created_run.pinned_graph)
+        assert pinned["source_hash"] == "sha256:a1b2c3d4e5f6789012345678"
+        assert pinned["version"] == 3
+        assert pinned["id"] == "versioned-pb"
+
+    # (g) querying runs by playbook_id returns all runs sorted by start time
+
+    async def test_g_query_by_playbook_id_sorted(self, mock_supervisor, mock_db):
+        """(g) Querying runs by playbook_id returns all runs sorted by
+        start time.
+
+        This test verifies the runner creates records with the correct
+        playbook_id — the sorting behaviour is verified in the database
+        integration tests (TestPlaybookRunQueries).
+        """
+        graph_a = {
+            "id": "playbook-alpha",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Go.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        event = {"type": "test"}
+
+        runner = PlaybookRunner(graph_a, event, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        created = mock_db.create_playbook_run.call_args[0][0]
+        assert created.playbook_id == "playbook-alpha"
+        assert created.started_at > 0
+
+    # (h) run record includes start_time, end_time, and per-node durations
+
+    async def test_h_timing_fields_present(self, mock_supervisor, event_data, mock_db):
+        """(h) Run record includes start_time, end_time, and per-node
+        durations."""
+        graph = self._three_node_graph()
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # 1. start_time set at creation
+        created_run = mock_db.create_playbook_run.call_args[0][0]
+        assert created_run.started_at > 0
+
+        # 2. end_time set at completion
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        completed_at = final_call.kwargs["completed_at"]
+        assert completed_at is not None
+        assert completed_at >= created_run.started_at
+
+        # 3. Per-node durations in trace
+        trace = json.loads(final_call.kwargs["node_trace"])
+        assert len(trace) == 3
+
+        for entry in trace:
+            assert "started_at" in entry
+            assert "completed_at" in entry
+            assert entry["started_at"] > 0
+            assert entry["completed_at"] is not None
+            # Duration must be non-negative
+            duration = entry["completed_at"] - entry["started_at"]
+            assert duration >= 0, f"Node '{entry['node_id']}' has negative duration: {duration}"
+
+        # Node ordering in time: each node starts at or after the previous finished
+        for i in range(1, len(trace)):
+            assert trace[i]["started_at"] >= trace[i - 1]["completed_at"], (
+                f"Node '{trace[i]['node_id']}' started before "
+                f"'{trace[i - 1]['node_id']}' completed"
+            )

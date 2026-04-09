@@ -1317,6 +1317,132 @@ class TestPlaybookRunQueries:
         assert fetched.tokens_used == 100
 
 
+class TestRoadmap5217DB:
+    """Roadmap 5.2.17 — DB-layer integration tests for PlaybookRun persistence.
+
+    These complement the mock-based runner tests with real SQLite round-trips
+    for cases (f), (g), and (h).
+    """
+
+    async def test_f_source_hash_round_trip_via_pinned_graph(self, db):
+        """(f) source_hash survives DB round-trip inside pinned_graph."""
+        graph = {
+            "id": "versioned-playbook",
+            "version": 4,
+            "source_hash": "sha256:deadbeef12345678",
+            "triggers": ["git.push"],
+            "scope": "project",
+            "nodes": {
+                "start": {"entry": True, "prompt": "Go.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        run = _make_playbook_run(
+            run_id="hash-round-trip-1",
+            playbook_id="versioned-playbook",
+            version=4,
+            status="completed",
+            completed_at=time.time(),
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("hash-round-trip-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is not None
+        restored = json.loads(fetched.pinned_graph)
+        assert restored["source_hash"] == "sha256:deadbeef12345678"
+        assert restored["version"] == 4
+
+    async def test_g_query_by_playbook_id_returns_sorted(self, db):
+        """(g) Querying runs by playbook_id returns all runs sorted by
+        start time (newest first)."""
+        # Create 4 runs for two playbooks with interleaved start times
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-1", playbook_id="pb-alpha", started_at=1000.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-2", playbook_id="pb-beta", started_at=1001.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-3", playbook_id="pb-alpha", started_at=1002.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-4", playbook_id="pb-alpha", started_at=1003.0)
+        )
+
+        # Filter by pb-alpha — should return 3 runs
+        runs = await db.list_playbook_runs(playbook_id="pb-alpha")
+        assert len(runs) == 3
+        assert all(r.playbook_id == "pb-alpha" for r in runs)
+
+        # Sorted by start_time descending (newest first)
+        assert runs[0].run_id == "g-4"  # started_at=1003
+        assert runs[1].run_id == "g-3"  # started_at=1002
+        assert runs[2].run_id == "g-1"  # started_at=1000
+
+        # pb-beta should be excluded
+        assert not any(r.playbook_id == "pb-beta" for r in runs)
+
+    async def test_h_timing_fields_round_trip(self, db):
+        """(h) Run record includes start_time, end_time, and per-node
+        durations — all survive DB round-trip."""
+        node_trace = [
+            {
+                "node_id": "start",
+                "started_at": 1000.0,
+                "completed_at": 1002.5,
+                "status": "completed",
+            },
+            {
+                "node_id": "analyze",
+                "started_at": 1002.5,
+                "completed_at": 1007.3,
+                "status": "completed",
+            },
+            {
+                "node_id": "report",
+                "started_at": 1007.3,
+                "completed_at": 1010.0,
+                "status": "completed",
+            },
+        ]
+        run = _make_playbook_run(
+            run_id="timing-1",
+            status="completed",
+            started_at=1000.0,
+            completed_at=1010.0,
+            node_trace=node_trace,
+            tokens_used=500,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("timing-1")
+        assert fetched is not None
+
+        # Run-level timing
+        assert fetched.started_at == 1000.0
+        assert fetched.completed_at == 1010.0
+
+        # Per-node durations
+        trace = json.loads(fetched.node_trace)
+        assert len(trace) == 3
+
+        expected_durations = {
+            "start": 2.5,
+            "analyze": 4.8,
+            "report": 2.7,
+        }
+        for entry in trace:
+            assert entry["started_at"] is not None
+            assert entry["completed_at"] is not None
+            duration = entry["completed_at"] - entry["started_at"]
+            assert abs(duration - expected_durations[entry["node_id"]]) < 0.01, (
+                f"Node '{entry['node_id']}': expected duration "
+                f"{expected_durations[entry['node_id']]}, got {duration}"
+            )
+
+
 class TestMockAdapter:
     """Demonstrate that the protocol can be satisfied by a mock."""
 
