@@ -148,6 +148,63 @@ class MemoryService(Protocol):
 
 
 @runtime_checkable
+class MemoryV2ServiceProtocol(Protocol):
+    """V2 memory operations via memsearch/Milvus with scoped collections.
+
+    Provides semantic search, KV storage, temporal facts, and cross-scope
+    tag search.  Wraps the memsearch fork's ``CollectionRouter`` and
+    ``MilvusStore``.
+
+    See ``docs/specs/design/memory-plugin.md`` §3.
+    """
+
+    @property
+    def available(self) -> bool: ...
+
+    # Semantic search
+    async def search(
+        self,
+        project_id: str,
+        query: str,
+        *,
+        scope: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+    ) -> list[dict]: ...
+    async def batch_search(
+        self,
+        project_id: str,
+        queries: list[str],
+        *,
+        scope: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+    ) -> dict[str, list[dict]]: ...
+    async def search_by_tag(
+        self, tag: str, *, entry_type: str | None = None, topic: str | None = None, limit: int = 10
+    ) -> list[dict]: ...
+
+    # KV operations
+    async def kv_get(self, project_id: str, namespace: str, key: str) -> dict | None: ...
+    async def kv_set(self, project_id: str, namespace: str, key: str, value: str) -> dict: ...
+    async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
+
+    # Temporal facts
+    async def fact_get(
+        self, project_id: str, key: str, *, as_of: int | None = None
+    ) -> dict | None: ...
+    async def fact_set(self, project_id: str, key: str, value: str) -> dict: ...
+    async def fact_history(self, project_id: str, key: str) -> list[dict]: ...
+
+    # Stats
+    async def stats(self, project_id: str, *, scope: str | None = None) -> dict: ...
+
+    # Lifecycle
+    async def initialize(self) -> None: ...
+    async def shutdown(self) -> None: ...
+
+
+@runtime_checkable
 class WorkspaceService(Protocol):
     """Path resolution, validation, and workspace helpers."""
 
@@ -703,15 +760,34 @@ def build_internal_services(
     git: GitManager,
     config: AppConfig,
     memory_manager: Any = None,
+    memory_v2_service: Any = None,
 ) -> dict[str, Any]:
     """Build the services dict for internal plugin contexts.
 
     Called by the PluginRegistry during internal plugin loading.
+
+    Parameters
+    ----------
+    db:
+        Database instance.
+    git:
+        Git manager instance.
+    config:
+        Application configuration.
+    memory_manager:
+        Optional v1 MemoryManager instance.
+    memory_v2_service:
+        Optional v2 MemoryV2Service instance.  When provided, exposed
+        as ``"memory_v2"`` for plugins that need v2-specific operations
+        (KV, temporal facts, scoped search).
     """
-    return {
+    services: dict[str, Any] = {
         "git": GitServiceImpl(git),
         "db": DatabaseServiceImpl(db),
         "memory": MemoryServiceImpl(memory_manager),
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),
     }
+    if memory_v2_service is not None:
+        services["memory_v2"] = memory_v2_service
+    return services

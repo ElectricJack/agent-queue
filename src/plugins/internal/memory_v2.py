@@ -29,19 +29,21 @@ are unique to the v2 architecture:
 Once the memsearch backend is wired up and v2 is fully functional, v1 will be
 deprecated and v2 will take over all tool names.
 
-Status: **skeleton** — tool definitions and command stubs only.  The memsearch
-backend is not yet wired up.
+Status: **connected** — v2-only commands are wired to MemoryV2Service which
+delegates to the memsearch fork (CollectionRouter + MilvusStore).  Overlapping
+commands (memory_search, view_profile, etc.) remain stubs pending v1 deprecation.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.plugins.base import InternalPlugin, PluginContext
 
 if TYPE_CHECKING:
-    pass
+    from src.memory_v2_service import MemoryV2Service
 
 logger = logging.getLogger(__name__)
 
@@ -539,7 +541,9 @@ class MemoryV2Plugin(InternalPlugin):
     Only the new v2-specific tool names are registered here; overlapping
     tool names remain owned by v1.  See ``docs/specs/design/memory-plugin.md``.
 
-    Status: **skeleton** — command handlers are stubs.
+    The plugin delegates all operations to :class:`MemoryV2Service` which
+    wraps the memsearch fork's :class:`CollectionRouter` and
+    :class:`MilvusStore`.
     """
 
     # Auto-discovered and loaded alongside v1 MemoryPlugin.  Both plugins
@@ -550,18 +554,9 @@ class MemoryV2Plugin(InternalPlugin):
         self._ctx = ctx
         self._log = ctx.logger
 
-        # MemoryServiceImpl wraps MemoryManager — provides both
-        # single-project MemSearch instances and the shared
-        # CollectionRouter for multi-scope search.
-        try:
-            self._memory_service = ctx.get_service("memory")
-        except (ValueError, PermissionError):
-            self._memory_service = None
-
-        # CollectionRouter for cross-scope tag search.  Obtained lazily
-        # from the MemoryManager when first needed (it creates the router
-        # on demand with the configured Milvus URI and embedding dimension).
-        self._router = None
+        # Initialize the MemoryV2Service backend.
+        self._service: MemoryV2Service | None = None
+        await self._init_service(ctx)
 
         # -- Map command names to handlers --
         # Full command table — includes both v2-only and overlapping names.
@@ -604,77 +599,157 @@ class MemoryV2Plugin(InternalPlugin):
             if tool_def["name"] in V2_ONLY_TOOLS:
                 ctx.register_tool(dict(tool_def), category=TOOL_CATEGORY)
 
+        status = "connected" if self._service and self._service.available else "degraded"
         self._log.info(
-            "MemoryV2Plugin initialized (skeleton, %d/%d v2-only commands registered)",
+            "MemoryV2Plugin initialized (%s, %d/%d v2-only commands registered)",
+            status,
             registered,
             len(all_commands),
         )
 
+    async def _init_service(self, ctx: PluginContext) -> None:
+        """Initialize the MemoryV2Service backend from config.
+
+        Reads Milvus/embedding settings from the ``config`` service and
+        creates the service.  If memsearch is not installed or config is
+        unavailable, the plugin operates in degraded mode (all commands
+        return graceful error responses).
+        """
+        try:
+            from src.memory_v2_service import MemoryV2Service
+
+            # Get config values from the config service
+            config_svc = ctx.get_service("config")
+            data_dir = config_svc.data_dir if config_svc else ""
+
+            # Access the raw AppConfig for memory settings via the
+            # config service's internal reference.
+            memory_cfg = self._get_memory_config(config_svc)
+
+            self._service = MemoryV2Service(
+                milvus_uri=memory_cfg.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db"),
+                milvus_token=memory_cfg.get("milvus_token", ""),
+                embedding_provider=memory_cfg.get("embedding_provider", "openai"),
+                embedding_model=memory_cfg.get("embedding_model", ""),
+                embedding_base_url=memory_cfg.get("embedding_base_url", ""),
+                embedding_api_key=memory_cfg.get("embedding_api_key", ""),
+                data_dir=data_dir,
+            )
+            await self._service.initialize()
+
+            if self._service.available:
+                self._log.info("MemoryV2Service backend connected")
+            else:
+                self._log.warning(
+                    "MemoryV2Service initialized but not available (memsearch may not be installed)"
+                )
+        except Exception:
+            self._log.warning(
+                "Failed to initialize MemoryV2Service — operating in degraded mode",
+                exc_info=True,
+            )
+            self._service = None
+
+    def _get_memory_config(self, config_svc: Any) -> dict[str, Any]:
+        """Extract memory configuration as a dict.
+
+        Tries to access the ``AppConfig.memory`` attribute through the
+        config service.  Falls back to safe defaults if unavailable.
+        """
+        try:
+            app_config = getattr(config_svc, "_config", None)
+            if app_config and hasattr(app_config, "memory"):
+                mem = app_config.memory
+                return {
+                    "milvus_uri": getattr(mem, "milvus_uri", ""),
+                    "milvus_token": getattr(mem, "milvus_token", ""),
+                    "embedding_provider": getattr(mem, "embedding_provider", "openai"),
+                    "embedding_model": getattr(mem, "embedding_model", ""),
+                    "embedding_base_url": getattr(mem, "embedding_base_url", ""),
+                    "embedding_api_key": getattr(mem, "embedding_api_key", ""),
+                }
+        except Exception:
+            pass
+        return {}
+
     async def shutdown(self, ctx: PluginContext) -> None:
-        # TODO: close memsearch client / Milvus connections
-        pass
+        if self._service:
+            await self._service.shutdown()
+            self._service = None
 
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
 
     def _not_implemented(self, command: str) -> dict:
-        """Return a standard 'not yet implemented' response."""
+        """Return a standard 'not yet implemented' response.
+
+        Used for overlapping commands that are still owned by v1.
+        """
         return {
-            "error": f"{command} is not yet implemented (memory v2 skeleton)",
+            "error": (
+                f"{command} is not yet implemented in memory v2 (owned by v1 during transition)"
+            ),
             "plugin": "memory_v2",
         }
 
-    @staticmethod
-    def _format_result(r: dict) -> dict:
-        """Format a raw search result for the tool response."""
+    def _unavailable(self, command: str) -> dict:
+        """Return a response for when the service is not available."""
         return {
-            "content": r.get("content", ""),
-            "source": r.get("source", ""),
-            "heading": r.get("heading", ""),
-            "score": r.get("score", 0.0),
-            "weighted_score": r.get("weighted_score", 0.0),
-            "scope": r.get("_scope", ""),
-            "scope_id": r.get("_scope_id"),
-            "weight": r.get("_weight", 0.0),
-            "collection": r.get("_collection", ""),
-            "chunk_hash": r.get("chunk_hash", ""),
-            "topic": r.get("topic", ""),
-            "topic_fallback": r.get("topic_fallback", False),
+            "error": (
+                f"{command}: MemoryV2Service is not available. "
+                "Ensure memsearch is installed and memory is enabled "
+                "in config."
+            ),
+            "plugin": "memory_v2",
         }
 
-    def _resolve_scope(self, project_id: str, scope: str | None = None) -> str:
-        """Resolve scope string to a Milvus collection name.
+    def _format_kv_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Format a KV entry for API response."""
+        return {
+            "namespace": entry.get("kv_namespace", ""),
+            "key": entry.get("kv_key", ""),
+            "value": self._decode_kv_value(entry.get("kv_value", "")),
+            "updated_at": entry.get("updated_at", 0),
+            "tags": self._decode_tags(entry.get("tags", "[]")),
+            "source": entry.get("source", ""),
+        }
 
-        Default scope is ``aq_project_{project_id}``.
-        """
-        if scope is None:
-            return f"aq_project_{project_id}"
-        if scope == "system":
-            return "aq_system"
-        if scope == "orchestrator":
-            return "aq_orchestrator"
-        if scope.startswith("agenttype_"):
-            agent_type = scope.removeprefix("agenttype_")
-            return f"aq_agenttype_{agent_type}"
-        if scope.startswith("project_"):
-            pid = scope.removeprefix("project_")
-            return f"aq_project_{pid}"
-        # Assume it's already a full collection name
-        return scope
+    def _format_temporal_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Format a temporal entry for API response."""
+        return {
+            "key": entry.get("kv_key", ""),
+            "value": self._decode_kv_value(entry.get("kv_value", "")),
+            "valid_from": entry.get("valid_from", 0),
+            "valid_to": entry.get("valid_to", 0),
+            "updated_at": entry.get("updated_at", 0),
+            "tags": self._decode_tags(entry.get("tags", "[]")),
+            "source": entry.get("source", ""),
+        }
+
+    @staticmethod
+    def _decode_kv_value(raw: str) -> Any:
+        """Decode a JSON-encoded KV value, returning the raw string on failure."""
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return raw
+
+    @staticmethod
+    def _decode_tags(raw: str) -> list[str]:
+        """Decode a JSON-encoded tags array."""
+        try:
+            tags = json.loads(raw)
+            return tags if isinstance(tags, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     # -----------------------------------------------------------------
-    # Command stubs — Semantic Search
+    # Command handlers — Semantic Search
     # -----------------------------------------------------------------
 
     async def cmd_memory_search(self, args: dict) -> dict:
-        """Semantic vector search across scoped collections.
-
-        Uses :meth:`MemoryManager.scoped_search` for multi-scope weighted
-        merge per spec §6.  Searches project, agent-type, and system
-        collections in parallel and merges results weighted by specificity
-        (project=1.0, agent-type=0.7, system=0.4).
-        """
+        """Semantic vector search across a scoped collection."""
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
@@ -684,91 +759,75 @@ class MemoryV2Plugin(InternalPlugin):
         if not query and not queries:
             return {"error": "Either 'query' or 'queries' is required"}
 
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_search")
+
+        scope = args.get("scope")
         topic = args.get("topic")
         top_k = args.get("top_k", 10)
-        # The scope field can hint at an agent_type for cross-scope search.
-        # When scope starts with "agenttype_", extract the agent type ID.
-        scope = args.get("scope")
-        agent_type = None
-        if scope and scope.startswith("agenttype_"):
-            agent_type = scope.removeprefix("agenttype_")
-
-        svc = self._memory_service
-        if svc is None:
-            return self._not_implemented("memory_search")
 
         try:
             if queries:
-                # Batch multi-scope search
-                results_map = await svc.scoped_batch_search(
-                    queries,
-                    project_id=project_id,
-                    agent_type=agent_type,
-                    topic=topic,
-                    top_k=top_k,
+                # Batch search
+                results = await self._service.batch_search(
+                    project_id, queries, scope=scope, topic=topic, top_k=top_k
                 )
                 return {
                     "success": True,
-                    "queries": {
-                        q: [self._format_result(r) for r in hits] for q, hits in results_map.items()
+                    "project_id": project_id,
+                    "batch": True,
+                    "results": {
+                        q: [self._format_search_result(r) for r in hits]
+                        for q, hits in results.items()
                     },
                 }
             else:
-                # Single multi-scope search
-                results = await svc.scoped_search(
-                    query,
-                    project_id=project_id,
-                    agent_type=agent_type,
-                    topic=topic,
-                    top_k=top_k,
+                results = await self._service.search(
+                    project_id, query, scope=scope, topic=topic, top_k=top_k
                 )
                 return {
                     "success": True,
+                    "project_id": project_id,
                     "query": query,
                     "count": len(results),
-                    "results": [self._format_result(r) for r in results],
+                    "results": [self._format_search_result(r) for r in results],
                 }
         except Exception as e:
             self._log.error("memory_search failed: %s", e, exc_info=True)
             return {"error": f"Search failed: {e}"}
 
-    async def _get_router(self) -> object | None:
-        """Lazily obtain the CollectionRouter from MemoryManager.
-
-        The MemoryServiceImpl wraps MemoryManager; the router is
-        accessible via ``_mm._get_router()`` on the underlying manager.
-        """
-        if self._router is not None:
-            return self._router
-        svc = self._memory_service
-        if svc is None or not hasattr(svc, "_mm") or svc._mm is None:
-            return None
-        try:
-            self._router = await svc._mm._get_router()
-        except Exception:
-            return None
-        return self._router
+    def _format_search_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Format a search result for API response."""
+        return {
+            "content": result.get("content", ""),
+            "source": result.get("source", ""),
+            "heading": result.get("heading", ""),
+            "score": result.get("score", 0.0),
+            "weighted_score": result.get("weighted_score", 0.0),
+            "entry_type": result.get("entry_type", "document"),
+            "topic": result.get("topic", ""),
+            "tags": self._decode_tags(result.get("tags", "[]")),
+            "chunk_hash": result.get("chunk_hash", ""),
+            "scope": result.get("_scope", ""),
+            "scope_id": result.get("_scope_id"),
+            "collection": result.get("_collection", ""),
+        }
 
     async def cmd_memory_search_by_tag(self, args: dict) -> dict:
-        """Cross-scope search by tag across all collections.
-
-        Uses CollectionRouter.search_by_tag_async to query ALL aq_*
-        collections in the Milvus instance filtered by tag.  Per spec §7.3.
-        """
+        """Cross-scope search by tag across all collections."""
         tag = args.get("tag")
         if not tag:
             return {"error": "tag is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_search_by_tag")
 
         entry_type = args.get("entry_type")
         topic = args.get("topic")
         limit = args.get("limit", 10)
 
-        router = await self._get_router()
-        if not router:
-            return self._not_implemented("memory_search_by_tag")
-
         try:
-            results = await router.search_by_tag_async(
+            results = await self._service.search_by_tag(
                 tag,
                 entry_type=entry_type,
                 topic=topic,
@@ -783,7 +842,7 @@ class MemoryV2Plugin(InternalPlugin):
                         "content": r.get("content", ""),
                         "source": r.get("source", ""),
                         "entry_type": r.get("entry_type", "document"),
-                        "tags": r.get("tags", "[]"),
+                        "tags": self._decode_tags(r.get("tags", "[]")),
                         "scope": r.get("_scope", ""),
                         "scope_id": r.get("_scope_id"),
                         "collection": r.get("_collection", ""),
@@ -797,7 +856,7 @@ class MemoryV2Plugin(InternalPlugin):
             return {"error": f"Tag search failed: {e}"}
 
     # -----------------------------------------------------------------
-    # Command stubs — KV Operations
+    # Command handlers — KV Operations
     # -----------------------------------------------------------------
 
     async def cmd_memory_kv_get(self, args: dict) -> dict:
@@ -812,10 +871,28 @@ class MemoryV2Plugin(InternalPlugin):
         if not key:
             return {"error": "key is required"}
 
-        _scope = self._resolve_scope(project_id)
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_kv_get")
 
-        # TODO: collection.query(filter='entry_type == "kv" AND ...')
-        return self._not_implemented("memory_kv_get")
+        try:
+            entry = await self._service.kv_get(project_id, namespace, key)
+            if entry is None:
+                return {
+                    "success": True,
+                    "found": False,
+                    "project_id": project_id,
+                    "namespace": namespace,
+                    "key": key,
+                }
+            return {
+                "success": True,
+                "found": True,
+                "project_id": project_id,
+                **self._format_kv_entry(entry),
+            }
+        except Exception as e:
+            self._log.error("memory_kv_get failed: %s", e, exc_info=True)
+            return {"error": f"KV get failed: {e}"}
 
     async def cmd_memory_kv_set(self, args: dict) -> dict:
         """Write a KV entry to the scoped collection and vault."""
@@ -832,10 +909,19 @@ class MemoryV2Plugin(InternalPlugin):
         if value is None:
             return {"error": "value is required"}
 
-        _scope = self._resolve_scope(project_id)
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_kv_set")
 
-        # TODO: upsert KV entry in Milvus + sync vault facts.md
-        return self._not_implemented("memory_kv_set")
+        try:
+            entry = await self._service.kv_set(project_id, namespace, key, value)
+            return {
+                "success": True,
+                "project_id": project_id,
+                **self._format_kv_entry(entry),
+            }
+        except Exception as e:
+            self._log.error("memory_kv_set failed: %s", e, exc_info=True)
+            return {"error": f"KV set failed: {e}"}
 
     async def cmd_memory_kv_list(self, args: dict) -> dict:
         """List all KV entries in a namespace."""
@@ -846,13 +932,24 @@ class MemoryV2Plugin(InternalPlugin):
         if not namespace:
             return {"error": "namespace is required"}
 
-        _scope = self._resolve_scope(project_id)
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_kv_list")
 
-        # TODO: collection.query(filter='entry_type == "kv" AND kv_namespace == ...')
-        return self._not_implemented("memory_kv_list")
+        try:
+            entries = await self._service.kv_list(project_id, namespace)
+            return {
+                "success": True,
+                "project_id": project_id,
+                "namespace": namespace,
+                "count": len(entries),
+                "entries": [self._format_kv_entry(e) for e in entries],
+            }
+        except Exception as e:
+            self._log.error("memory_kv_list failed: %s", e, exc_info=True)
+            return {"error": f"KV list failed: {e}"}
 
     # -----------------------------------------------------------------
-    # Command stubs — Temporal Facts
+    # Command handlers — Temporal Facts
     # -----------------------------------------------------------------
 
     async def cmd_memory_fact_get(self, args: dict) -> dict:
@@ -864,11 +961,29 @@ class MemoryV2Plugin(InternalPlugin):
         if not key:
             return {"error": "key is required"}
 
-        _scope = self._resolve_scope(project_id)
-        _as_of = args.get("as_of")  # None means current time
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_fact_get")
 
-        # TODO: temporal query with valid_from/valid_to window check
-        return self._not_implemented("memory_fact_get")
+        as_of = args.get("as_of")
+
+        try:
+            entry = await self._service.fact_get(project_id, key, as_of=as_of)
+            if entry is None:
+                return {
+                    "success": True,
+                    "found": False,
+                    "project_id": project_id,
+                    "key": key,
+                }
+            return {
+                "success": True,
+                "found": True,
+                "project_id": project_id,
+                **self._format_temporal_entry(entry),
+            }
+        except Exception as e:
+            self._log.error("memory_fact_get failed: %s", e, exc_info=True)
+            return {"error": f"Fact get failed: {e}"}
 
     async def cmd_memory_fact_set(self, args: dict) -> dict:
         """Set a temporal fact, closing the previous validity window."""
@@ -882,13 +997,19 @@ class MemoryV2Plugin(InternalPlugin):
         if value is None:
             return {"error": "value is required"}
 
-        _scope = self._resolve_scope(project_id)
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_fact_set")
 
-        # TODO:
-        # 1. Find current entry (valid_to == 0), set valid_to = now
-        # 2. Insert new entry with valid_from = now, valid_to = 0
-        # 3. Update vault facts.md
-        return self._not_implemented("memory_fact_set")
+        try:
+            entry = await self._service.fact_set(project_id, key, value)
+            return {
+                "success": True,
+                "project_id": project_id,
+                **self._format_temporal_entry(entry),
+            }
+        except Exception as e:
+            self._log.error("memory_fact_set failed: %s", e, exc_info=True)
+            return {"error": f"Fact set failed: {e}"}
 
     async def cmd_memory_fact_history(self, args: dict) -> dict:
         """Retrieve full history of a temporal fact."""
@@ -899,13 +1020,24 @@ class MemoryV2Plugin(InternalPlugin):
         if not key:
             return {"error": "key is required"}
 
-        _scope = self._resolve_scope(project_id)
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_fact_history")
 
-        # TODO: query all temporal entries for this key, ordered by valid_from
-        return self._not_implemented("memory_fact_history")
+        try:
+            entries = await self._service.fact_history(project_id, key)
+            return {
+                "success": True,
+                "project_id": project_id,
+                "key": key,
+                "count": len(entries),
+                "history": [self._format_temporal_entry(e) for e in entries],
+            }
+        except Exception as e:
+            self._log.error("memory_fact_history failed: %s", e, exc_info=True)
+            return {"error": f"Fact history failed: {e}"}
 
     # -----------------------------------------------------------------
-    # Command stubs — Index Management
+    # Command handlers — Index Management
     # -----------------------------------------------------------------
 
     async def cmd_memory_reindex(self, args: dict) -> dict:
@@ -914,10 +1046,9 @@ class MemoryV2Plugin(InternalPlugin):
         if not project_id:
             return {"error": "project_id is required"}
 
-        _scope = self._resolve_scope(project_id, args.get("scope"))
-        _full = args.get("full", False)
-
-        # TODO: scan vault, embed documents, upsert into Milvus
+        # TODO: implement vault scanning and re-indexing via MemSearch
+        # This requires a per-scope MemSearch instance that scans vault
+        # directories and re-embeds changed content.
         return self._not_implemented("memory_reindex")
 
     async def cmd_memory_stats(self, args: dict) -> dict:
@@ -926,13 +1057,21 @@ class MemoryV2Plugin(InternalPlugin):
         if not project_id:
             return {"error": "project_id is required"}
 
-        _scope = self._resolve_scope(project_id, args.get("scope"))
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_stats")
 
-        # TODO: collection.num_entities, entry type counts, storage info
-        return self._not_implemented("memory_stats")
+        scope = args.get("scope")
+
+        try:
+            stats = await self._service.stats(project_id, scope=scope)
+            return {"success": True, **stats}
+        except Exception as e:
+            self._log.error("memory_stats failed: %s", e, exc_info=True)
+            return {"error": f"Stats failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command stubs — Profile / Factsheet / Knowledge
+    # (remain stubs until v1 is deprecated and these tools transfer)
     # -----------------------------------------------------------------
 
     async def cmd_view_profile(self, args: dict) -> dict:
@@ -940,8 +1079,6 @@ class MemoryV2Plugin(InternalPlugin):
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
-
-        # TODO: read profile document from vault / Milvus
         return self._not_implemented("view_profile")
 
     async def cmd_edit_project_profile(self, args: dict) -> dict:
@@ -952,8 +1089,6 @@ class MemoryV2Plugin(InternalPlugin):
         content = args.get("content")
         if not content:
             return {"error": "content is required"}
-
-        # TODO: update vault file + Milvus document entry
         return self._not_implemented("edit_project_profile")
 
     async def cmd_project_factsheet(self, args: dict) -> dict:
@@ -965,8 +1100,6 @@ class MemoryV2Plugin(InternalPlugin):
         action = args.get("action", "view")
         if action not in ("view", "update"):
             return {"error": f"Unknown action '{action}'. Use 'view' or 'update'."}
-
-        # TODO: read/write factsheet from vault + sync KV entries
         return self._not_implemented("project_factsheet")
 
     async def cmd_project_knowledge(self, args: dict) -> dict:
@@ -981,8 +1114,6 @@ class MemoryV2Plugin(InternalPlugin):
 
         if action == "read" and not args.get("topic"):
             return {"error": "topic is required for action='read'"}
-
-        # TODO: read topic documents from vault / Milvus
         return self._not_implemented("project_knowledge")
 
     # -----------------------------------------------------------------
@@ -994,8 +1125,6 @@ class MemoryV2Plugin(InternalPlugin):
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
-
-        # TODO: age-based compaction of document entries
         return self._not_implemented("compact_memory")
 
     async def cmd_consolidate(self, args: dict) -> dict:
@@ -1006,7 +1135,5 @@ class MemoryV2Plugin(InternalPlugin):
 
         mode = args.get("mode", "daily")
         if mode not in ("daily", "deep", "bootstrap"):
-            return {"error": f"Invalid mode '{mode}'. Use 'daily', 'deep', or 'bootstrap'."}
-
-        # TODO: delegate to consolidation engine
+            return {"error": (f"Invalid mode '{mode}'. Use 'daily', 'deep', or 'bootstrap'.")}
         return self._not_implemented("consolidate")
