@@ -890,6 +890,11 @@ class Orchestrator:
             event_bus=self.bus,
             data_dir=self.config.data_dir,
         )
+        # Restore previously compiled playbooks from disk so version numbers
+        # continue from where they left off and source-hash change detection
+        # can skip recompilation of unchanged files (roadmap 5.1.5).
+        await self.playbook_manager.load_from_disk()
+
         register_playbook_handlers(
             self.vault_watcher,
             playbook_manager=self.playbook_manager,

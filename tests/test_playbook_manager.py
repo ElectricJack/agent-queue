@@ -202,7 +202,7 @@ class TestCompilationSuccess:
 
     @pytest.mark.asyncio
     async def test_version_increments_on_recompilation(self, tmp_path: Path) -> None:
-        """Recompiling an existing playbook increments the version number."""
+        """Recompiling an existing playbook with changed content increments version."""
         provider = _make_mock_provider()
         # Need two responses for two compilations
         from src.chat_providers.types import ChatResponse, TextBlock
@@ -219,8 +219,128 @@ class TestCompilationSuccess:
         await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
         assert manager.get_playbook("test-playbook").version == 1
 
-        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        # Use different markdown content so the source hash changes
+        modified_md = _make_playbook_md(body="# Updated\n\nDo something different then finish.")
+        await manager.compile_playbook(modified_md)
         assert manager.get_playbook("test-playbook").version == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: Source-hash change detection (skip recompilation when unchanged)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceHashChangeDetection:
+    """Test that unchanged playbooks are not recompiled (roadmap 5.1.5)."""
+
+    @pytest.mark.asyncio
+    async def test_skip_recompilation_when_hash_unchanged(self, tmp_path: Path) -> None:
+        """Recompiling identical markdown returns the existing playbook without LLM call."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # First compile
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert manager.get_playbook("test-playbook").version == 1
+        assert provider.create_message.call_count == 1
+
+        # Second compile with identical markdown — should skip LLM
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result2.success
+        assert result2.playbook is not None
+        assert result2.playbook.version == 1  # Same version, not incremented
+        # LLM should NOT have been called again
+        assert provider.create_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_recompile_when_content_changes(self, tmp_path: Path) -> None:
+        """Changing the markdown body triggers actual recompilation."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # First compile
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert manager.get_playbook("test-playbook").version == 1
+
+        # Modify the markdown body
+        modified_md = _make_playbook_md(body="# Updated\n\nDo something different then finish.")
+        result2 = await manager.compile_playbook(modified_md)
+        assert result2.success
+        assert manager.get_playbook("test-playbook").version == 2
+        # Both compilations should have called the LLM
+        assert provider.create_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skip_does_not_emit_events(self, tmp_path: Path) -> None:
+        """Skipping recompilation does not emit success/failure events."""
+        provider = _make_mock_provider()
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        bus.emit.reset_mock()
+
+        # Second compile with identical content — should skip
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        bus.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hash_check_after_load_from_disk(self, tmp_path: Path) -> None:
+        """Source hash check works for playbooks loaded from disk at startup."""
+        # Compile and persist
+        provider = _make_mock_provider()
+        manager1 = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+        await manager1.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert provider.create_message.call_count == 1
+
+        # Create a new manager (simulating restart) and load from disk
+        provider2 = _make_mock_provider()
+        manager2 = PlaybookManager(
+            chat_provider=provider2,
+            data_dir=str(tmp_path),
+        )
+        loaded = await manager2.load_from_disk()
+        assert loaded == 1
+
+        # Recompile the same markdown — should skip because hash matches
+        result = await manager2.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result.success
+        assert result.playbook.version == 1  # Same version
+        provider2.create_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_new_playbook_always_compiles(self, tmp_path: Path) -> None:
+        """A playbook ID not in the registry always triggers compilation."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result.success
+        assert provider.create_message.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -243,11 +363,9 @@ class TestCompilationFailureRetainsPrevious:
 
         json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
         good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
-        # Second call returns garbage
+        # Subsequent calls return garbage
         bad_resp = ChatResponse(content=[TextBlock(text="not json at all")])
-        provider.create_message = AsyncMock(
-            side_effect=[good_resp, bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         bus = _make_event_bus()
         manager = PlaybookManager(
@@ -263,8 +381,9 @@ class TestCompilationFailureRetainsPrevious:
 
         bus.emit.reset_mock()
 
-        # Compile again with bad output — should fail
-        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        # Compile again with DIFFERENT content (so hash changes) but bad LLM output
+        modified_md = _make_playbook_md(body="# Updated\n\nChanged content to trigger recompile.")
+        result2 = await manager.compile_playbook(modified_md)
         assert not result2.success
 
         # Previous version remains active
@@ -281,9 +400,7 @@ class TestCompilationFailureRetainsPrevious:
         json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
         good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
         bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
-        provider.create_message = AsyncMock(
-            side_effect=[good_resp, bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
             chat_provider=provider,
@@ -296,8 +413,10 @@ class TestCompilationFailureRetainsPrevious:
         original_data = json.loads(json_path.read_text())
         assert original_data["version"] == 1
 
-        # Failed recompilation — disk file untouched
-        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        # Failed recompilation with different content (hash changes) — disk file untouched
+        modified_md = _make_playbook_md(body="# Updated\n\nChanged content.")
+        result2 = await manager.compile_playbook(modified_md)
+        assert not result2.success
         assert json_path.exists()
         after_data = json.loads(json_path.read_text())
         assert after_data["version"] == 1  # Not overwritten
@@ -310,9 +429,7 @@ class TestCompilationFailureRetainsPrevious:
 
         # Return something that can't be parsed as valid JSON
         bad_resp = ChatResponse(content=[TextBlock(text="no json here")])
-        provider.create_message = AsyncMock(
-            side_effect=[bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
 
         bus = _make_event_bus()
         manager = PlaybookManager(
@@ -354,10 +471,11 @@ class TestCompilationFailureRetainsPrevious:
 
         bus.emit.reset_mock()
 
-        # Now switch to a failing provider
+        # Now switch to a failing provider and use different content
         manager._compiler._provider = _make_failing_provider()
 
-        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        modified_md = _make_playbook_md(body="# Updated\n\nChanged content to trigger recompile.")
+        result2 = await manager.compile_playbook(modified_md)
         assert not result2.success
         assert any("LLM call failed" in e for e in result2.errors)
 
@@ -379,9 +497,7 @@ class TestCompilationFailureRetainsPrevious:
         # LLM returns JSON with no nodes (empty)
         bad_json = json.dumps({"nodes": {}})
         bad_resp = ChatResponse(content=[TextBlock(text=f"```json\n{bad_json}\n```")])
-        provider.create_message = AsyncMock(
-            side_effect=[bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
 
         bus = _make_event_bus()
         manager = PlaybookManager(
@@ -416,9 +532,7 @@ class TestCompilationFailureRetainsPrevious:
         }
         bad_json = json.dumps(partial_nodes)
         bad_resp = ChatResponse(content=[TextBlock(text=f"```json\n{bad_json}\n```")])
-        provider.create_message = AsyncMock(
-            side_effect=[bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
 
         bus = _make_event_bus()
         manager = PlaybookManager(
@@ -450,9 +564,7 @@ class TestFixAndRecompile:
         good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
         bad_resp = ChatResponse(content=[TextBlock(text="not json")])
         # First compile fails (3 attempts), then second compile succeeds
-        provider.create_message = AsyncMock(
-            side_effect=[bad_resp, bad_resp, bad_resp, good_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp, good_resp])
 
         bus = _make_event_bus()
         manager = PlaybookManager(
@@ -495,9 +607,7 @@ class TestDiskLoading:
         compiled_dir.mkdir(parents=True)
 
         playbook = _make_playbook()
-        (compiled_dir / "test-playbook.json").write_text(
-            json.dumps(playbook.to_dict(), indent=2)
-        )
+        (compiled_dir / "test-playbook.json").write_text(json.dumps(playbook.to_dict(), indent=2))
 
         manager = PlaybookManager(data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
@@ -783,7 +893,9 @@ class TestPlaybookHandler:
         await on_playbook_changed([change], playbook_manager=manager)
         assert manager.get_playbook("test-playbook").version == 1
 
-        # Modify and recompile
+        # Modify the file content (so hash changes) and recompile
+        modified_md = _make_playbook_md(body="# Updated\n\nChanged body for v2.")
+        md_path.write_text(modified_md)
         await on_playbook_changed([change], playbook_manager=manager)
         assert manager.get_playbook("test-playbook").version == 2
 
@@ -922,9 +1034,7 @@ class TestHelperFunctions:
         from src.playbook_handler import _derive_playbook_id_from_path
 
         assert _derive_playbook_id_from_path("system/playbooks/deploy.md") == "deploy"
-        assert (
-            _derive_playbook_id_from_path("projects/my-app/playbooks/review.md") == "review"
-        )
+        assert _derive_playbook_id_from_path("projects/my-app/playbooks/review.md") == "review"
         assert _derive_playbook_id_from_path("") is None
 
     def test_derive_playbook_scope(self) -> None:
