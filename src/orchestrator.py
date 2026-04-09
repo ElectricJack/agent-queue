@@ -996,16 +996,30 @@ class Orchestrator:
 
         See ``docs/specs/design/vault.md`` §2 for the full layout.
 
-        1. Run the consolidated vault migration (spec §6, Phase 1) which
-           handles obsidian config, notes, memory files, and rules in the
-           correct order.
-        2. Create per-profile subdirectories under ``vault/agent-types/``.
+        1. Ensure the static vault directory structure exists.
+        2. Check for legacy data + empty vault → auto-migrate (spec §6).
+        3. Create per-profile subdirectories under ``vault/agent-types/``.
+
+        The auto-migration logic (spec §6) only triggers when **both**
+        conditions are met:
+
+        * Legacy data exists (``notes/``, ``memory/*/rules/``, etc.)
+        * The vault is empty (freshly created, no user content)
+
+        If the vault already has content, migration is skipped to avoid
+        overwriting user customizations.  This ensures a smooth transition
+        for existing installs.
 
         All operations are idempotent — safe to call on every startup.
         Called during ``initialize()`` after the database is ready and
         ``self.vault_manager`` has been created.
         """
-        from src.vault import run_vault_migration
+        from src.vault import has_legacy_data, run_vault_migration, vault_has_content
+
+        # Ensure the vault manager layout is created first (static dirs).
+        # This must happen before checking vault_has_content so the
+        # directory skeleton exists.
+        self.vault_manager.ensure_layout()
 
         # Per-profile directories need DB access (not discoverable from FS),
         # so we handle them here.  Per-project dirs and all migrations are
@@ -1017,14 +1031,33 @@ class Orchestrator:
         all_projects = await self.db.list_projects()
         db_project_ids = [p.id for p in all_projects]
 
-        # Run the consolidated migration (obsidian, vault layout, notes,
-        # memory, rules) — spec §6, Phase 1.  Passing project_ids ensures
-        # DB-only projects also get their vault directories created.
-        run_vault_migration(self.config.data_dir, project_ids=db_project_ids)
+        # Auto-migration check (spec §6): only run migration when legacy
+        # data exists AND the vault has no user content yet.
+        data_dir = self.config.data_dir
+        legacy_exists = has_legacy_data(data_dir)
+        vault_populated = vault_has_content(data_dir)
 
-        # Ensure the vault manager layout is also called (handles any
-        # additional vault-manager-specific setup beyond run_vault_migration).
-        self.vault_manager.ensure_layout()
+        if legacy_exists and not vault_populated:
+            logger.info(
+                "Auto-migration triggered: legacy data detected and vault is empty — "
+                "running vault migration for smooth transition"
+            )
+            report = run_vault_migration(data_dir, project_ids=db_project_ids)
+            s = report["summary"]
+            logger.info(
+                "Auto-migration complete: %d moved, %d copied, %d skipped, %d errors",
+                s["total_moved"],
+                s["total_copied"],
+                s["total_skipped"],
+                s["total_errors"],
+            )
+        elif legacy_exists and vault_populated:
+            logger.debug(
+                "Vault already has content — skipping auto-migration "
+                "(legacy data still present at old paths)"
+            )
+        else:
+            logger.debug("No legacy data detected — no auto-migration needed")
 
         # Per-profile directories (vault/agent-types/{profile_id}/)
         for profile in all_profiles:

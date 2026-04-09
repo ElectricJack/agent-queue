@@ -435,6 +435,94 @@ def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Startup auto-migration helpers (spec §6 — smooth transition)
+# ---------------------------------------------------------------------------
+
+
+def has_legacy_data(data_dir: str) -> bool:
+    """Check whether legacy data paths exist that should be migrated.
+
+    Returns ``True`` if any of these contain actual content:
+
+    * ``notes/{project}/`` — any project subdirectory with files
+    * ``memory/{project}/rules/`` — any project or global rules directory
+    * ``memory/.obsidian/`` — Obsidian config at the old location
+    * ``memory/{project}/`` — any project memory directory with files
+
+    This is used at startup to decide whether to trigger an automatic
+    migration for existing installs (spec §6).
+    """
+    # Check notes/{project}/ directories
+    notes_root = os.path.join(data_dir, "notes")
+    if os.path.isdir(notes_root):
+        for entry in os.listdir(notes_root):
+            entry_path = os.path.join(notes_root, entry)
+            if os.path.isdir(entry_path) and any(os.scandir(entry_path)):
+                return True
+
+    # Check memory/ tree for rules dirs, obsidian config, or project files
+    memory_root = os.path.join(data_dir, "memory")
+    if os.path.isdir(memory_root):
+        # Obsidian config at old location
+        if os.path.isdir(os.path.join(memory_root, ".obsidian")):
+            return True
+
+        for entry in os.listdir(memory_root):
+            if entry.startswith("."):
+                continue
+            entry_path = os.path.join(memory_root, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            # Check for rules/ subdirectory with .md files
+            rules_path = os.path.join(entry_path, "rules")
+            if os.path.isdir(rules_path):
+                for f in os.listdir(rules_path):
+                    if f.endswith(".md"):
+                        return True
+            # Check for project memory files (profile.md, factsheet.md, knowledge/)
+            if entry not in _MEMORY_SPECIAL_DIRS:
+                for mem_file in ("profile.md", "factsheet.md"):
+                    if os.path.isfile(os.path.join(entry_path, mem_file)):
+                        return True
+                if os.path.isdir(os.path.join(entry_path, "knowledge")):
+                    return True
+
+    return False
+
+
+def vault_has_content(data_dir: str) -> bool:
+    """Check whether the vault already contains user or migrated content.
+
+    Returns ``True`` if the vault has any regular files beyond the
+    bare directory skeleton created by ``ensure_vault_layout``.  This is
+    used at startup to avoid overwriting existing vault content when
+    deciding whether to auto-migrate (spec §6).
+
+    Specifically, checks for any ``.md`` files or other content files
+    inside ``vault/projects/``, ``vault/system/playbooks/``,
+    ``vault/orchestrator/``, or ``vault/agent-types/``.
+    The ``vault/.obsidian/`` directory is excluded from the check
+    because its presence alone doesn't indicate user-created content.
+    """
+    vault_root = os.path.join(data_dir, "vault")
+    if not os.path.isdir(vault_root):
+        return False
+
+    # Walk the vault tree looking for any regular files
+    # (excluding .obsidian/ which is config, not content)
+    for dirpath, dirnames, filenames in os.walk(vault_root):
+        # Skip .obsidian/ subtree — it's Obsidian config, not vault content
+        rel = os.path.relpath(dirpath, vault_root)
+        if rel == ".obsidian" or rel.startswith(".obsidian" + os.sep):
+            continue
+
+        if filenames:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Consolidated vault migration (spec §6)
 # ---------------------------------------------------------------------------
 

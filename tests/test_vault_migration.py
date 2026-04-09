@@ -8,6 +8,7 @@ Covers:
 - Correct operation ordering
 - Report structure and summary accuracy
 - Edge cases (empty data dir, partial data, etc.)
+- Startup auto-migration helpers (has_legacy_data, vault_has_content)
 """
 
 from __future__ import annotations
@@ -21,7 +22,9 @@ from src.vault import (
     _scan_notes_migration,
     _scan_obsidian_migration,
     _scan_rule_migration,
+    has_legacy_data,
     run_vault_migration,
+    vault_has_content,
 )
 
 
@@ -498,3 +501,148 @@ def test_migration_handles_project_rules(tmp_path):
     assert (tmp_path / "vault" / "projects" / "proj-x" / "playbooks" / "rule-p.md").exists()
     assert report["rules"]["moved"] == 2
     assert report["rules"]["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# has_legacy_data
+# ---------------------------------------------------------------------------
+
+
+def test_has_legacy_data_empty_dir(tmp_path):
+    """Empty data directory has no legacy data."""
+    assert has_legacy_data(str(tmp_path)) is False
+
+
+def test_has_legacy_data_notes_with_files(tmp_path):
+    """Notes directory with project subdirs containing files is legacy data."""
+    notes = tmp_path / "notes" / "my-proj"
+    notes.mkdir(parents=True)
+    (notes / "design.md").write_text("# Design")
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_notes_empty_subdir(tmp_path):
+    """Notes directory with empty project subdirs is NOT legacy data."""
+    (tmp_path / "notes" / "empty-proj").mkdir(parents=True)
+
+    assert has_legacy_data(str(tmp_path)) is False
+
+
+def test_has_legacy_data_memory_rules(tmp_path):
+    """Memory directory with rules/*.md files is legacy data."""
+    rules = tmp_path / "memory" / "global" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "rule.md").write_text("# Rule")
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_memory_rules_no_md(tmp_path):
+    """Memory rules directory with non-.md files only is NOT legacy data."""
+    rules = tmp_path / "memory" / "global" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "readme.txt").write_text("not a rule")
+
+    assert has_legacy_data(str(tmp_path)) is False
+
+
+def test_has_legacy_data_obsidian_config(tmp_path):
+    """Obsidian config at memory/.obsidian/ is legacy data."""
+    (tmp_path / "memory" / ".obsidian").mkdir(parents=True)
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_project_memory_profile(tmp_path):
+    """Project memory with profile.md is legacy data."""
+    mem = tmp_path / "memory" / "my-proj"
+    mem.mkdir(parents=True)
+    (mem / "profile.md").write_text("# Profile")
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_project_memory_factsheet(tmp_path):
+    """Project memory with factsheet.md is legacy data."""
+    mem = tmp_path / "memory" / "my-proj"
+    mem.mkdir(parents=True)
+    (mem / "factsheet.md").write_text("# Facts")
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_project_memory_knowledge(tmp_path):
+    """Project memory with knowledge/ directory is legacy data."""
+    (tmp_path / "memory" / "my-proj" / "knowledge").mkdir(parents=True)
+
+    assert has_legacy_data(str(tmp_path)) is True
+
+
+def test_has_legacy_data_global_memory_not_project(tmp_path):
+    """Global memory dir (no rules, no .obsidian) is NOT legacy project data."""
+    mem = tmp_path / "memory" / "global"
+    mem.mkdir(parents=True)
+    (mem / "some-file.md").write_text("global stuff")
+
+    assert has_legacy_data(str(tmp_path)) is False
+
+
+# ---------------------------------------------------------------------------
+# vault_has_content
+# ---------------------------------------------------------------------------
+
+
+def test_vault_has_content_no_vault(tmp_path):
+    """No vault directory means no content."""
+    assert vault_has_content(str(tmp_path)) is False
+
+
+def test_vault_has_content_empty_skeleton(tmp_path):
+    """Vault with only empty directories has no content."""
+    for d in (
+        "vault/system/playbooks",
+        "vault/system/memory",
+        "vault/orchestrator/playbooks",
+        "vault/projects",
+        "vault/templates",
+    ):
+        (tmp_path / d).mkdir(parents=True)
+
+    assert vault_has_content(str(tmp_path)) is False
+
+
+def test_vault_has_content_obsidian_only(tmp_path):
+    """Vault with only .obsidian/ config is NOT considered to have content."""
+    obs = tmp_path / "vault" / ".obsidian"
+    obs.mkdir(parents=True)
+    (obs / "app.json").write_text('{"theme": "dark"}')
+
+    assert vault_has_content(str(tmp_path)) is False
+
+
+def test_vault_has_content_with_playbook(tmp_path):
+    """Vault with a playbook file has content."""
+    playbooks = tmp_path / "vault" / "system" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "task-outcome.md").write_text("# Playbook")
+
+    assert vault_has_content(str(tmp_path)) is True
+
+
+def test_vault_has_content_with_project_notes(tmp_path):
+    """Vault with project notes has content."""
+    notes = tmp_path / "vault" / "projects" / "my-proj" / "notes"
+    notes.mkdir(parents=True)
+    (notes / "design.md").write_text("# Design")
+
+    assert vault_has_content(str(tmp_path)) is True
+
+
+def test_vault_has_content_with_memory_file(tmp_path):
+    """Vault with project memory file has content."""
+    mem = tmp_path / "vault" / "projects" / "my-proj" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "profile.md").write_text("# Profile")
+
+    assert vault_has_content(str(tmp_path)) is True
