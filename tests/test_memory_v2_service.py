@@ -1249,9 +1249,7 @@ class TestMemoryGetAutoRouting:
 
     # (d) KV takes priority over semantic matches
     @pytest.mark.asyncio
-    async def test_kv_takes_priority_over_semantic(
-        self, wired_plugin, mock_store, mock_router
-    ):
+    async def test_kv_takes_priority_over_semantic(self, wired_plugin, mock_store, mock_router):
         """memory_get for a key that exists in KV but also has semantic matches
         returns the KV result (KV takes priority).
 
@@ -1286,9 +1284,7 @@ class TestMemoryGetAutoRouting:
             ]
         )
 
-        result = await wired_plugin.cmd_memory_get(
-            {"query": "deploy_branch", "project_id": "proj"}
-        )
+        result = await wired_plugin.cmd_memory_get({"query": "deploy_branch", "project_id": "proj"})
 
         # KV wins: source is "kv", not "semantic"
         assert result["success"] is True
@@ -2081,3 +2077,251 @@ class TestFormatHelpers:
         long_line = "A" * 100
         result = plugin._extract_title(long_line)
         assert len(result) == 80
+
+
+# ---------------------------------------------------------------------------
+# full=true parameter on memory_get (spec §9, roadmap 2.2.12)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryGetFull:
+    """Test memory_get with full=true returns original content (spec §9).
+
+    When full=true, semantic search results should return the original
+    content instead of the summary.  KV results are unaffected.
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        """Plugin with a wired-up service."""
+        plugin._service = service
+        plugin._log = MagicMock()
+        return plugin
+
+    @pytest.mark.asyncio
+    async def test_full_true_returns_original_content(self, wired_plugin, mock_router):
+        """When full=true, semantic results contain original content."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        # Mock router.search to return results with both content and original
+        mock_router.search = AsyncMock(
+            return_value=[
+                {
+                    "content": "Short summary of auth system",
+                    "original": "Full detailed description of the auth system with all implementation details",
+                    "source": "/path/to/auth.md",
+                    "heading": "Auth System",
+                    "score": 0.95,
+                    "topic": "authentication",
+                    "tags": '["auth"]',
+                    "_collection": "aq_project_test",
+                    "_scope": "project",
+                    "_scope_id": "test",
+                }
+            ]
+        )
+
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "auth system", "project_id": "proj", "full": True}
+        )
+
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+        assert result["count"] == 1
+        # Content should be the original, not the summary
+        assert result["results"][0]["content"] == (
+            "Full detailed description of the auth system with all implementation details"
+        )
+        assert result["results"][0]["full"] is True
+
+    @pytest.mark.asyncio
+    async def test_full_false_returns_summary(self, wired_plugin, mock_router):
+        """When full=false (default), semantic results contain summary."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        mock_router.search = AsyncMock(
+            return_value=[
+                {
+                    "content": "Short summary of auth system",
+                    "original": "Full detailed description of the auth system",
+                    "source": "/path/to/auth.md",
+                    "heading": "Auth System",
+                    "score": 0.95,
+                    "topic": "",
+                    "tags": "[]",
+                    "_collection": "aq_project_test",
+                    "_scope": "project",
+                    "_scope_id": "test",
+                }
+            ]
+        )
+
+        result = await wired_plugin.cmd_memory_get({"query": "auth system", "project_id": "proj"})
+
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+        # Content should be the summary
+        assert result["results"][0]["content"] == "Short summary of auth system"
+        assert "full" not in result["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_full_true_no_original_falls_back_to_summary(self, wired_plugin, mock_router):
+        """When full=true but no original stored, returns summary content."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        mock_router.search = AsyncMock(
+            return_value=[
+                {
+                    "content": "Short insight (already summary-length)",
+                    "original": "",
+                    "source": "/path/to/insight.md",
+                    "heading": "Insight",
+                    "score": 0.85,
+                    "topic": "",
+                    "tags": "[]",
+                    "_collection": "aq_project_test",
+                    "_scope": "project",
+                    "_scope_id": "test",
+                }
+            ]
+        )
+
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "insight", "project_id": "proj", "full": True}
+        )
+
+        assert result["success"] is True
+        assert result["source"] == "semantic"
+        # Falls back to summary when original is empty
+        assert result["results"][0]["content"] == "Short insight (already summary-length)"
+        # "full" flag not set since we didn't actually return original
+        assert "full" not in result["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_full_true_kv_hit_unaffected(self, wired_plugin):
+        """full=true has no effect on KV exact-match results."""
+        result = await wired_plugin.cmd_memory_get(
+            {"query": "test_key", "project_id": "proj", "full": True}
+        )
+
+        assert result["success"] is True
+        assert result["source"] == "kv"
+        # KV results have value, not content/original
+        assert result["results"][0]["value"] == "test_value"
+
+    @pytest.mark.asyncio
+    async def test_full_passes_to_service_recall(self, wired_plugin, service):
+        """full parameter is correctly passed through to service.recall()."""
+        service.recall = AsyncMock(return_value={"source": "semantic", "results": []})
+
+        await wired_plugin.cmd_memory_get({"query": "test", "project_id": "proj", "full": True})
+
+        service.recall.assert_called_once_with(
+            "test",
+            project_id="proj",
+            agent_type=None,
+            topic=None,
+            top_k=5,
+            full=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_full_false_passes_to_service_recall(self, wired_plugin, service):
+        """full=False is passed through when not specified."""
+        service.recall = AsyncMock(return_value={"source": "semantic", "results": []})
+
+        await wired_plugin.cmd_memory_get({"query": "test", "project_id": "proj"})
+
+        service.recall.assert_called_once_with(
+            "test",
+            project_id="proj",
+            agent_type=None,
+            topic=None,
+            top_k=5,
+            full=False,
+        )
+
+
+class TestMemoryGetFullToolSchema:
+    """Test that memory_get tool schema includes the full parameter."""
+
+    def test_full_parameter_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert tool is not None
+        props = tool["input_schema"]["properties"]
+        assert "full" in props
+
+    def test_full_parameter_is_boolean(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        props = tool["input_schema"]["properties"]
+        assert props["full"]["type"] == "boolean"
+
+    def test_full_parameter_defaults_false(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        props = tool["input_schema"]["properties"]
+        assert props["full"]["default"] is False
+
+    def test_full_parameter_not_required(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        assert "full" not in tool["input_schema"]["required"]
+
+    def test_full_description_mentions_original(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
+        props = tool["input_schema"]["properties"]
+        desc = props["full"]["description"].lower()
+        assert "original" in desc
+
+
+class TestMemoryGetFullServiceLayer:
+    """Test full parameter threading through MemoryV2Service.recall() and search()."""
+
+    @pytest.mark.asyncio
+    async def test_recall_passes_full_to_search(self, service, mock_router):
+        """recall(full=True) passes full=True to the underlying search."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        await service.recall("query", project_id="proj", full=True)
+
+        # Router search should have been called with full=True
+        mock_router.search.assert_called_once()
+        call_kwargs = mock_router.search.call_args
+        assert call_kwargs.kwargs.get("full") is True or (
+            len(call_kwargs.args) > 0 and call_kwargs.kwargs.get("full") is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_recall_defaults_full_false(self, service, mock_router):
+        """recall() without full= defaults to full=False."""
+        miss_store = MagicMock()
+        miss_store.get_kv.return_value = None
+        mock_router.get_store.return_value = miss_store
+
+        await service.recall("query", project_id="proj")
+
+        mock_router.search.assert_called_once()
+        call_kwargs = mock_router.search.call_args
+        assert call_kwargs.kwargs.get("full") is False

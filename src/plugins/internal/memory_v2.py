@@ -454,6 +454,16 @@ TOOL_DEFINITIONS: list[dict] = [
                     "description": "Max semantic search results if KV miss (default 5).",
                     "default": 5,
                 },
+                "full": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, return the original content instead of "
+                        "the summary for semantic search results.  Use this "
+                        "when you need the full context of a memory, not "
+                        "just the search-optimized summary.  Per spec §9."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["query"],
         },
@@ -2167,6 +2177,7 @@ class MemoryV2Plugin(InternalPlugin):
         agent_type = args.get("agent_type")
         topic = args.get("topic")
         top_k = args.get("top_k", 5)
+        full = args.get("full", False)
 
         try:
             result = await self._service.recall(
@@ -2175,6 +2186,7 @@ class MemoryV2Plugin(InternalPlugin):
                 agent_type=agent_type,
                 topic=topic,
                 top_k=top_k,
+                full=full,
             )
             source = result.get("source", "unavailable")
             raw_results = result.get("results", [])
@@ -2190,7 +2202,7 @@ class MemoryV2Plugin(InternalPlugin):
                     "scopes_searched": self._build_scope_list(project_id, agent_type),
                 }
             elif source == "semantic":
-                formatted = self._format_search_results(raw_results)
+                formatted = self._format_search_results(raw_results, full=full)
                 return {
                     "success": True,
                     "source": "semantic",
@@ -2225,18 +2237,40 @@ class MemoryV2Plugin(InternalPlugin):
         scopes.append("system")
         return scopes
 
-    def _format_search_results(self, results: list[dict]) -> list[dict]:
-        """Format semantic search results for API response."""
+    def _format_search_results(self, results: list[dict], *, full: bool = False) -> list[dict]:
+        """Format semantic search results for API response.
+
+        Parameters
+        ----------
+        results:
+            Raw search results from memsearch.
+        full:
+            When ``True``, replace ``content`` (summary) with the
+            ``original`` field when available.  Per spec §9: "Search
+            returns summary; ``memory_get`` with ``full=true`` returns
+            the original."
+        """
         formatted: list[dict] = []
         for r in results:
+            content = r.get("content", "")
+            original = r.get("original", "")
+
+            if full and original:
+                # Return original content instead of summary
+                display_content = original
+            else:
+                display_content = content
+
             entry: dict[str, Any] = {
-                "content": r.get("content", ""),
+                "content": display_content,
                 "heading": r.get("heading", ""),
                 "source": r.get("source", ""),
                 "score": r.get("score", 0.0),
                 "topic": r.get("topic", ""),
                 "tags": self._decode_tags(r.get("tags", "[]")),
             }
+            if full and original:
+                entry["full"] = True
             if "_collection" in r:
                 entry["collection"] = r["_collection"]
             if "_scope" in r:

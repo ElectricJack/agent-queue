@@ -245,6 +245,7 @@ class MemoryV2Service:
         scope: str | None = None,
         topic: str | None = None,
         top_k: int = 10,
+        full: bool = False,
     ) -> list[dict[str, Any]]:
         """Semantic search across scoped collection(s).
 
@@ -267,6 +268,10 @@ class MemoryV2Service:
             Optional topic pre-filter.
         top_k:
             Maximum results.
+        full:
+            When ``True``, include the ``original`` field in results.
+            When ``False`` (default), only the summary ``content``
+            is returned.  Per spec §9.
         """
         if not self.available:
             return []
@@ -291,6 +296,7 @@ class MemoryV2Service:
                 query_text=query,
                 top_k=top_k,
                 filter_expr=filter_expr,
+                full=full,
             )
             # Annotate with scope info
             mem_scope, scope_id = self._resolve_scope(project_id, scope)
@@ -308,6 +314,7 @@ class MemoryV2Service:
                 project_id=project_id,
                 topic=topic,
                 top_k=top_k,
+                full=full,
             )
 
     async def batch_search(
@@ -693,6 +700,7 @@ class MemoryV2Service:
         namespace: str | None = None,
         topic: str | None = None,
         top_k: int = 5,
+        full: bool = False,
     ) -> dict[str, Any]:
         """Smart retrieval: KV exact match first, then semantic search.
 
@@ -719,6 +727,11 @@ class MemoryV2Service:
             Topic pre-filter for semantic search fallback.
         top_k:
             Maximum semantic search results.
+        full:
+            When ``True``, include the ``original`` field in semantic
+            search results (full content alongside the summary).
+            Per spec §9: "``memory_get`` with ``full=true`` returns
+            the original."
 
         Returns
         -------
@@ -744,6 +757,7 @@ class MemoryV2Service:
             query,
             topic=topic,
             top_k=top_k,
+            full=full,
         )
         return {"source": "semantic", "results": results}
 
