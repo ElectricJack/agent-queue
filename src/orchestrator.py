@@ -885,6 +885,14 @@ class Orchestrator:
 
         register_override_handlers(self.vault_watcher)
 
+        # Register project README.md watcher handler (self-improvement spec §5).
+        # Detects changes to project README files so the orchestrator can
+        # update its per-project summaries.  Phase 5 is a logging stub;
+        # actual summary generation is wired in Phase 6.
+        from src.readme_handler import register_readme_handlers
+
+        register_readme_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
