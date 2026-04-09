@@ -848,10 +848,11 @@ class Orchestrator:
 
         # Register profile.md watchers (profiles spec §3 — file → DB sync).
         # Must happen before the initial snapshot so changes are detected
-        # from the first check() call.
+        # from the first check() call.  Pass self.db so the handler can
+        # upsert parsed profile fields into the agent_profiles table.
         from src.profile_sync import register_profile_handlers
 
-        register_profile_handlers(self.vault_watcher)
+        register_profile_handlers(self.vault_watcher, db=self.db)
 
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
