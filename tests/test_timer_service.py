@@ -261,13 +261,17 @@ class TestTimerServiceTick:
 
     @pytest.mark.asyncio
     async def test_tick_before_interval_emits_nothing(self):
-        """No emission when the interval hasn't elapsed yet."""
+        """No emission when the interval hasn't elapsed since last fire."""
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.30m"])
         service = TimerService(event_bus=bus, playbook_manager=manager)
         service.start()
 
-        # Immediately after start, 30 minutes haven't passed
+        import time
+
+        # Simulate: timer just fired — 30 minutes haven't passed since last fire
+        service._last_fire["timer.30m"] = time.monotonic()
+
         count = await service.tick()
         assert count == 0
         bus.emit.assert_not_called()
@@ -535,16 +539,21 @@ class TestEdgeCases:
         assert count == 0
         bus.emit.assert_not_called()
 
-    def test_new_interval_waits_full_cycle(self):
-        """New intervals should wait one full cycle before first firing."""
+    def test_new_interval_via_rebuild_waits_full_cycle(self):
+        """Intervals added via rebuild() (not start()) wait one full cycle."""
         bus = _make_event_bus()
-        manager = _make_playbook_manager(["timer.30m"])
+        manager = _make_playbook_manager(["git.commit"])  # No timers initially
         service = TimerService(event_bus=bus, playbook_manager=manager)
         service.start()
 
+        # Add a timer playbook during runtime
+        manager.get_all_triggers.return_value = ["git.commit", "timer.30m"]
+        service.rebuild()
+
         import time
 
-        # The last_fire for the new interval should be approximately now
+        # The last_fire for the newly-added interval should be approximately now
+        # (meaning it waits one full cycle before first firing)
         fire_time = service._last_fire["timer.30m"]
         assert abs(fire_time - time.monotonic()) < 1.0
 
@@ -592,3 +601,438 @@ class TestEdgeCases:
 
         # Internal state should not be modified
         assert "timer.99m" not in service._intervals
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 5.3.10 — Timer service integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRoadmap5310:
+    """Roadmap 5.3.10: Timer service spec compliance tests.
+
+    Per [[playbooks#7. Event System]] Timer Service:
+      (a) 30m timer receives synthetic events every 30 minutes
+      (b) interval tolerance +/- 5 seconds
+      (c) minimum 1-minute interval — sub-minute rejected
+      (d) multiple intervals fire at independent cadences
+      (e) timer continues firing (recurring) after each cycle
+      (f) timer stops when playbook removed/disabled
+      (g) restart resumes from config — fires immediately if overdue
+    """
+
+    # -- (a) playbook with trigger timer.30m receives timer event every 30 min --
+
+    @pytest.mark.asyncio
+    async def test_30m_timer_fires_every_30_minutes(self):
+        """A playbook subscribed to timer.30m receives events at 30m cadence."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        now = time.monotonic()
+
+        # Simulate 30 minutes elapsed since last fire
+        service._last_fire["timer.30m"] = now - 1800  # 30 min ago
+
+        count = await service.tick()
+        assert count == 1
+
+        call_args = bus.emit.call_args
+        assert call_args[0][0] == "timer.30m"
+        payload = call_args[0][1]
+        assert payload["interval"] == "30m"
+        assert "tick_time" in payload
+
+    @pytest.mark.asyncio
+    async def test_30m_timer_fires_second_cycle(self):
+        """Timer.30m fires again after another 30 minutes (not just once)."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # First fire: 30m elapsed
+        service._last_fire["timer.30m"] = time.monotonic() - 1800
+        count1 = await service.tick()
+        assert count1 == 1
+
+        bus.reset_mock()
+
+        # Second fire: another 30m elapsed
+        service._last_fire["timer.30m"] = time.monotonic() - 1800
+        count2 = await service.tick()
+        assert count2 == 1
+        bus.emit.assert_called_once()
+        assert bus.emit.call_args[0][0] == "timer.30m"
+
+    # -- (b) timer interval respected within tolerance (+/- 5 seconds) --
+
+    @pytest.mark.asyncio
+    async def test_interval_tolerance_fires_at_exact_interval(self):
+        """Timer fires when exactly the interval has elapsed."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # Exactly 5 minutes (300s) elapsed
+        service._last_fire["timer.5m"] = time.monotonic() - 300
+
+        count = await service.tick()
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_interval_tolerance_fires_within_5s_late(self):
+        """Timer fires when up to 5s past the interval (within tolerance)."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # 5 minutes + 5 seconds elapsed — within tolerance
+        service._last_fire["timer.5m"] = time.monotonic() - 305
+
+        count = await service.tick()
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_interval_tolerance_does_not_fire_early(self):
+        """Timer does NOT fire when interval hasn't fully elapsed."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # 4 minutes 54 seconds elapsed — 6s early, outside tolerance
+        service._last_fire["timer.5m"] = time.monotonic() - 294
+
+        count = await service.tick()
+        assert count == 0
+        bus.emit.assert_not_called()
+
+    # -- (c) minimum 1-minute interval — sub-minute rejected --
+
+    def test_sub_minute_timer_30s_rejected(self):
+        """timer.30s is rejected — 's' is not a valid unit."""
+        assert parse_interval("timer.30s") is None
+
+    def test_sub_minute_timer_45s_rejected(self):
+        """timer.45s is rejected — seconds unit not supported."""
+        assert parse_interval("timer.45s") is None
+
+    def test_sub_minute_timer_0m_rejected(self):
+        """timer.0m is rejected — 0 minutes is below minimum."""
+        assert parse_interval("timer.0m") is None
+
+    @pytest.mark.asyncio
+    async def test_sub_minute_timer_not_tracked(self):
+        """Playbooks with sub-minute triggers are ignored by the timer service."""
+        bus = _make_event_bus()
+        # Include triggers that would be sub-minute if parsed
+        manager = _make_playbook_manager(["timer.30s", "timer.0m", "timer.5m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        # Only timer.5m should be tracked (the others are invalid)
+        assert service.interval_count == 1
+        assert "timer.5m" in service.active_intervals
+        assert "timer.30s" not in service.active_intervals
+        assert "timer.0m" not in service.active_intervals
+
+    # -- (d) multiple intervals fire at independent cadences --
+
+    @pytest.mark.asyncio
+    async def test_multiple_intervals_independent_cadence(self):
+        """Different timer intervals fire independently at their own cadence."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.1m", "timer.5m", "timer.30m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        now = time.monotonic()
+
+        # After 2 minutes: only 1m should have fired (5m and 30m not yet)
+        service._last_fire["timer.1m"] = now - 120  # 2min ago — elapsed
+        service._last_fire["timer.5m"] = now - 120  # 2min ago — not elapsed (needs 5m)
+        service._last_fire["timer.30m"] = now - 120  # 2min ago — not elapsed (needs 30m)
+
+        count = await service.tick()
+        assert count == 1
+        assert bus.emit.call_args[0][0] == "timer.1m"
+
+        bus.reset_mock()
+
+        # After 6 minutes: 1m and 5m should fire, 30m still not
+        now2 = time.monotonic()
+        service._last_fire["timer.1m"] = now2 - 90  # 1.5min ago — elapsed
+        service._last_fire["timer.5m"] = now2 - 360  # 6min ago — elapsed
+        service._last_fire["timer.30m"] = now2 - 360  # 6min ago — not elapsed
+
+        count = await service.tick()
+        assert count == 2
+        emitted_types = {call.args[0] for call in bus.emit.call_args_list}
+        assert emitted_types == {"timer.1m", "timer.5m"}
+        assert "timer.30m" not in emitted_types
+
+        bus.reset_mock()
+
+        # After 31 minutes: all three should fire
+        now3 = time.monotonic()
+        service._last_fire["timer.1m"] = now3 - 90  # elapsed
+        service._last_fire["timer.5m"] = now3 - 360  # elapsed
+        service._last_fire["timer.30m"] = now3 - 1860  # 31min — elapsed
+
+        count = await service.tick()
+        assert count == 3
+        emitted_types = {call.args[0] for call in bus.emit.call_args_list}
+        assert emitted_types == {"timer.1m", "timer.5m", "timer.30m"}
+
+    # -- (e) timer continues firing after playbook run completes (recurring) --
+
+    @pytest.mark.asyncio
+    async def test_timer_recurring_fires_repeatedly(self):
+        """Timer keeps firing on each interval — it is not one-shot."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.1m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # Simulate 5 consecutive firing cycles
+        for cycle in range(5):
+            service._last_fire["timer.1m"] = time.monotonic() - 61
+            count = await service.tick()
+            assert count == 1, f"Timer should fire on cycle {cycle + 1}"
+
+        # Total emissions across all cycles
+        assert bus.emit.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_timer_recurring_not_affected_by_playbook_completion(self):
+        """Simulated playbook completion does not stop the timer.
+
+        The timer service fires events independently of playbook run status.
+        Even after a playbook run triggered by a timer event completes, the
+        timer continues to fire at its interval.
+        """
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        import time
+
+        # First fire
+        service._last_fire["timer.5m"] = time.monotonic() - 301
+        count1 = await service.tick()
+        assert count1 == 1
+
+        # (Playbook would run and complete here — timer service doesn't care)
+
+        bus.reset_mock()
+
+        # Second fire after another interval — timer is still active
+        service._last_fire["timer.5m"] = time.monotonic() - 301
+        count2 = await service.tick()
+        assert count2 == 1
+        bus.emit.assert_called_once()
+        assert bus.emit.call_args[0][0] == "timer.5m"
+
+    # -- (f) timer stops firing when playbook is removed/disabled --
+
+    @pytest.mark.asyncio
+    async def test_timer_stops_when_playbook_removed(self):
+        """When the only playbook using a timer trigger is removed, the timer stops."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m", "git.commit"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        assert service.interval_count == 1
+        assert "timer.30m" in service.active_intervals
+
+        # Simulate playbook removal — timer trigger disappears
+        manager.get_all_triggers.return_value = ["git.commit"]
+
+        import time
+
+        service._last_fire["timer.30m"] = time.monotonic() - 1801  # overdue
+
+        # tick() detects the trigger change and rebuilds
+        await service.tick()
+
+        # Timer.30m should no longer be tracked
+        assert service.interval_count == 0
+        assert "timer.30m" not in service.active_intervals
+        # No emission for the removed timer
+        bus.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timer_stops_when_playbook_disabled(self):
+        """Disabling a playbook removes its timer trigger (same as removal)."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m", "timer.1h"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        assert service.interval_count == 2
+
+        # Simulate one playbook being disabled — its trigger disappears
+        manager.get_all_triggers.return_value = ["timer.1h"]
+
+        import time
+
+        service._last_fire["timer.5m"] = time.monotonic() - 600  # would be overdue
+
+        await service.tick()
+
+        # Only timer.1h should remain
+        assert service.interval_count == 1
+        assert "timer.5m" not in service.active_intervals
+        assert "timer.1h" in service.active_intervals
+
+    @pytest.mark.asyncio
+    async def test_removed_timer_does_not_fire_again(self):
+        """After removal, even if clock advances, the removed timer never fires."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.1m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+        service.start()
+
+        # Fire once
+        import time
+
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        count = await service.tick()
+        assert count == 1
+
+        bus.reset_mock()
+
+        # Remove the playbook
+        manager.get_all_triggers.return_value = []
+        await service.tick()  # triggers rebuild
+
+        assert service.interval_count == 0
+
+        bus.reset_mock()
+
+        # Even with further ticks, nothing fires
+        count = await service.tick()
+        assert count == 0
+        bus.emit.assert_not_called()
+
+    # -- (g) system restart resumes timers from config, fires immediately --
+
+    @pytest.mark.asyncio
+    async def test_restart_fires_immediately(self):
+        """After a restart (start()), all timers fire on the first tick.
+
+        Per spec: 'system restart resumes timers from configuration
+        (not from last fire time — fires immediately if overdue).'
+        Since fire times are not persisted, all timers are treated as
+        overdue on startup.
+        """
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m", "timer.4h"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+
+        service.start()
+
+        # First tick after start — both should fire immediately
+        count = await service.tick()
+        assert count == 2
+
+        emitted_types = {call.args[0] for call in bus.emit.call_args_list}
+        assert emitted_types == {"timer.30m", "timer.4h"}
+
+    @pytest.mark.asyncio
+    async def test_restart_resumes_from_configuration(self):
+        """After stop+start, timers are rebuilt from playbook configuration."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.5m", "timer.1h"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+
+        service.start()
+        assert service.interval_count == 2
+
+        service.stop()
+        assert service.interval_count == 0
+
+        # Change configuration while stopped
+        manager.get_all_triggers.return_value = ["timer.10m", "timer.2h"]
+
+        service.start()
+
+        # Should have the new intervals, not the old ones
+        assert service.interval_count == 2
+        assert "timer.10m" in service.active_intervals
+        assert "timer.2h" in service.active_intervals
+        assert "timer.5m" not in service.active_intervals
+        assert "timer.1h" not in service.active_intervals
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_use_persisted_fire_times(self):
+        """Restart ignores previous fire times — always fires immediately."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+
+        # First start + fire
+        service.start()
+        count = await service.tick()
+        assert count == 1  # fires immediately on startup
+
+        bus.reset_mock()
+
+        # Stop and restart
+        service.stop()
+        service.start()
+
+        # Should fire immediately again — no memory of previous fire time
+        count = await service.tick()
+        assert count == 1
+        assert bus.emit.call_args[0][0] == "timer.30m"
+
+    @pytest.mark.asyncio
+    async def test_restart_after_interval_wait_still_fires_immediately(self):
+        """Even a short-interval timer fires immediately on restart."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.1m"])
+        service = TimerService(event_bus=bus, playbook_manager=manager)
+
+        service.start()
+
+        # First tick fires immediately (startup behavior)
+        count = await service.tick()
+        assert count == 1
+
+        bus.reset_mock()
+
+        # Immediately tick again — should NOT fire (only ~0s since last fire)
+        count = await service.tick()
+        assert count == 0
+
+        bus.reset_mock()
+
+        # Restart
+        service.stop()
+        service.start()
+
+        # Fires immediately again on restart
+        count = await service.tick()
+        assert count == 1

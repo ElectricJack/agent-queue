@@ -171,10 +171,26 @@ class TimerService:
         Scans the playbook manager for timer triggers and begins tracking
         intervals.  Call this after the playbook manager has loaded its
         compiled playbooks.
+
+        On startup all timers are considered overdue and fire on the first
+        ``tick()`` call.  Since fire times are not persisted across restarts,
+        there is no way to know how much time has passed — so we fire
+        immediately rather than making everything wait a full interval.
+
+        .. note::
+            ``rebuild()`` called *during* runtime (when playbooks are
+            compiled/removed) uses a different strategy: new intervals wait
+            one full cycle before first firing, to avoid event storms when
+            adding playbooks.
         """
         self._start_time = time.monotonic()
         self._running = True
         self.rebuild()
+        # Override _last_fire for all intervals so they fire immediately
+        # on the first tick.  rebuild() sets _last_fire = now (wait one
+        # cycle), but on startup we treat all timers as overdue.
+        for trigger in self._intervals:
+            self._last_fire[trigger] = 0.0
         logger.info(
             "Timer service started — tracking %d interval(s): %s",
             len(self._intervals),

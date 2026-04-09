@@ -270,6 +270,54 @@ class PlaybookCompilationSucceededEvent(NotifyEvent):
     retries_used: int = 0
 
 
+# ---------------------------------------------------------------------------
+# Playbook run lifecycle events
+# ---------------------------------------------------------------------------
+
+
+class PlaybookRunCompletedEvent(NotifyEvent):
+    """Emitted when a playbook run completes successfully.
+
+    Provides observability into playbook execution outcomes — useful for
+    dashboards, audit logs, and cross-playbook composition (roadmap 5.3.11).
+
+    See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+    """
+
+    event_type: str = "notify.playbook_run_completed"
+    category: str = "system"
+    playbook_id: str = ""
+    run_id: str = ""
+    final_context: str | None = None
+    tokens_used: int = 0
+    duration_seconds: float = 0.0
+
+
+class PlaybookRunFailedEvent(NotifyEvent):
+    """Emitted when a playbook run fails.
+
+    Includes the node where execution failed and the error details for
+    operator diagnosis and meta-monitoring.
+
+    See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+    """
+
+    event_type: str = "notify.playbook_run_failed"
+    severity: str = "error"
+    category: str = "system"
+    playbook_id: str = ""
+    run_id: str = ""
+    failed_at_node: str = ""
+    error: str = ""
+    tokens_used: int = 0
+    duration_seconds: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Generic text notification (catch-all for simple messages)
+# ---------------------------------------------------------------------------
+
+
 class TextNotifyEvent(NotifyEvent):
     """Plain-text notification for messages that don't warrant a typed event."""
 

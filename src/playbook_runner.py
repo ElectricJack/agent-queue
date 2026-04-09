@@ -45,6 +45,7 @@ from src.playbook_state_machine import (
 
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
+    from src.event_bus import EventBus
     from src.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,7 @@ class PlaybookRunner:
         max_daily_playbook_tokens: int | None = None,
         daily_token_tracker: DailyTokenTracker | None = None,
         daily_token_cap: int | None = None,
+        event_bus: EventBus | None = None,
     ):
         self.graph = graph
         self.event = event
@@ -329,6 +331,7 @@ class PlaybookRunner:
         self.on_progress = on_progress
         self._daily_token_tracker = daily_token_tracker
         self._daily_token_cap = daily_token_cap
+        self.event_bus = event_bus
 
         # Conversation history — node prompts and final responses only.
         self.messages: list[dict] = []
@@ -430,6 +433,83 @@ class PlaybookRunner:
         return target
 
     # ------------------------------------------------------------------
+    # Event emission (roadmap 5.3.6)
+    # ------------------------------------------------------------------
+
+    async def _emit_bus_event(self, event_type: str, payload: dict) -> None:
+        """Emit an event on the EventBus if one is configured.
+
+        Silently ignores errors to avoid breaking the runner if a subscriber
+        misbehaves.  The caller is responsible for building the payload —
+        this helper only adds ``project_id`` from the trigger event when
+        present (for scope-based filtering by downstream playbooks).
+        """
+        if self.event_bus is None:
+            return
+        # Inject project_id from the trigger event if available
+        project_id = self.event.get("project_id")
+        if project_id and "project_id" not in payload:
+            payload["project_id"] = project_id
+        try:
+            await self.event_bus.emit(event_type, payload)
+        except Exception:
+            logger.warning(
+                "Failed to emit %s for playbook run %s",
+                event_type,
+                self.run_id,
+                exc_info=True,
+            )
+
+    async def _emit_completed_event(
+        self,
+        *,
+        final_context: str | None = None,
+        started_at: float | None = None,
+    ) -> None:
+        """Emit ``playbook.run.completed`` on the EventBus.
+
+        See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        """
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+        }
+        if final_context is not None:
+            payload["final_context"] = final_context
+        if started_at is not None:
+            payload["duration_seconds"] = round(time.time() - started_at, 2)
+        payload["tokens_used"] = self.tokens_used
+        await self._emit_bus_event("playbook.run.completed", payload)
+
+    async def _emit_failed_event(
+        self,
+        *,
+        failed_at_node: str | None = None,
+        error: str | None = None,
+        started_at: float | None = None,
+    ) -> None:
+        """Emit ``playbook.run.failed`` on the EventBus.
+
+        See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        """
+        # Determine the node where failure occurred — fall back to the last
+        # node in the trace, or "<unknown>" if the failure happened before
+        # any node was reached (e.g. missing entry node, budget pre-check).
+        if failed_at_node is None and self.node_trace:
+            failed_at_node = self.node_trace[-1].node_id
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "failed_at_node": failed_at_node or "<unknown>",
+        }
+        if error is not None:
+            payload["error"] = error
+        if started_at is not None:
+            payload["duration_seconds"] = round(time.time() - started_at, 2)
+        payload["tokens_used"] = self.tokens_used
+        await self._emit_bus_event("playbook.run.failed", payload)
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -465,6 +545,8 @@ class PlaybookRunner:
             # Build a minimal RunResult directly.
             if self.on_progress:
                 await self.on_progress("playbook_failed", error)
+            # Emit playbook.run.failed event (roadmap 5.3.6)
+            await self._emit_failed_event(error=error, started_at=started_at)
             return RunResult(
                 run_id=self.run_id,
                 status="failed",
@@ -641,6 +723,12 @@ class PlaybookRunner:
         if self.on_progress:
             await self.on_progress("playbook_completed", self._playbook_id)
 
+        # Emit playbook.run.completed event (roadmap 5.3.6)
+        await self._emit_completed_event(
+            final_context=final_response,
+            started_at=started_at,
+        )
+
         return RunResult(
             run_id=self.run_id,
             status=self._status.value,
@@ -662,6 +750,7 @@ class PlaybookRunner:
         human_input: str,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
     ) -> RunResult:
         """Resume a paused playbook run with human input.
 
@@ -712,7 +801,14 @@ class PlaybookRunner:
                 graph.get("version", 0),
             )
 
-        runner = cls(effective_graph, json.loads(db_run.trigger_event), supervisor, db, on_progress)
+        runner = cls(
+            effective_graph,
+            json.loads(db_run.trigger_event),
+            supervisor,
+            db,
+            on_progress,
+            event_bus=event_bus,
+        )
         runner.run_id = db_run.run_id
         runner.messages = json.loads(db_run.conversation_history)
         runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
@@ -789,6 +885,8 @@ class PlaybookRunner:
                     tokens_used=runner.tokens_used,
                     completed_at=completed_at,
                 )
+            # Emit playbook.run.completed event (roadmap 5.3.6)
+            await runner._emit_completed_event(started_at=db_run.started_at)
             return RunResult(
                 run_id=db_run.run_id,
                 status=runner._status.value,
@@ -893,6 +991,12 @@ class PlaybookRunner:
                 completed_at=completed_at,
             )
 
+        # Emit playbook.run.completed event (roadmap 5.3.6)
+        await runner._emit_completed_event(
+            final_context=final_response,
+            started_at=db_run.started_at,
+        )
+
         return RunResult(
             run_id=db_run.run_id,
             status=runner._status.value,
@@ -991,8 +1095,7 @@ class PlaybookRunner:
             usage_pct = self.tokens_used / self._max_tokens
             if usage_pct >= 0.9 and self.tokens_used < self._max_tokens:
                 logger.warning(
-                    "Playbook '%s' run %s approaching token budget: "
-                    "%d/%d (%.0f%%)",
+                    "Playbook '%s' run %s approaching token budget: %d/%d (%.0f%%)",
                     self._playbook_id,
                     self.run_id,
                     self.tokens_used,
@@ -1772,6 +1875,13 @@ class PlaybookRunner:
 
         if self.on_progress:
             await self.on_progress("playbook_failed", error)
+
+        # Emit playbook.run.failed event (roadmap 5.3.6)
+        await self._emit_failed_event(
+            failed_at_node=current_node,
+            error=error,
+            started_at=started_at,
+        )
 
         return RunResult(
             run_id=self.run_id,
