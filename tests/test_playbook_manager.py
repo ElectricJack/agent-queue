@@ -1513,3 +1513,281 @@ class TestSourceHashChangeDetection:
         assert manager.get_playbook("test-playbook").version == 1
         # LLM was NOT called again
         assert provider.create_message.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test: Source hash change detection — roadmap 5.1.10 cases (a)-(f)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceHashChangeDetection5110:
+    """Roadmap 5.1.10 test cases for source_hash change detection.
+
+    Cases:
+      (a) Saving playbook markdown without content changes → no recompilation.
+      (b) Comment-only or whitespace-only changes → no recompilation
+          (hash based on normalized content).
+      (c) Changing a node prompt → triggers recompilation.
+      (d) After recompilation, stored source_hash matches new content.
+      (e) compiled_at timestamp updates only on actual recompilation.
+      (f) force=True bypasses hash check and always recompiles.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_unchanged_markdown_does_not_recompile(self, tmp_path: Path) -> None:
+        """(a) Saving the same playbook markdown does NOT trigger recompilation."""
+        from src.playbook_handler import on_playbook_changed
+
+        md_path = tmp_path / "test.md"
+        md_path.write_text(SIMPLE_PLAYBOOK_MD)
+
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        change = MagicMock()
+        change.path = str(md_path)
+        change.rel_path = "system/playbooks/test.md"
+        change.operation = "created"
+
+        # Initial save — compiles
+        await on_playbook_changed([change], playbook_manager=manager)
+        assert provider.create_message.call_count == 1
+        v1 = manager.get_playbook("test-playbook")
+        assert v1 is not None
+
+        # "Save" again with identical content — simulates a no-op save in editor
+        change.operation = "modified"
+        await on_playbook_changed([change], playbook_manager=manager)
+
+        # Hash is unchanged → no LLM call, version stays at 1
+        assert provider.create_message.call_count == 1
+        v_after = manager.get_playbook("test-playbook")
+        assert v_after.version == v1.version
+        assert v_after is v1  # exact same object
+
+    @pytest.mark.asyncio
+    async def test_b_whitespace_only_change_does_not_recompile(self, tmp_path: Path) -> None:
+        """(b) Whitespace-only changes do NOT trigger recompilation.
+
+        The source hash is based on *normalized* content (trailing whitespace
+        stripped, multiple blank lines collapsed), so cosmetic edits don't
+        alter the hash.
+        """
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile original markdown
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        assert provider.create_message.call_count == 1
+
+        # Add trailing whitespace and extra blank lines — cosmetic only
+        whitespace_md = _make_playbook_md(body="# Test  \n\n\n\nDo something then finish.  ")
+        result2 = await manager.compile_playbook(whitespace_md)
+        assert result2.success
+        assert result2.skipped, "Whitespace-only change should skip recompilation"
+        assert provider.create_message.call_count == 1  # no additional LLM call
+
+    @pytest.mark.asyncio
+    async def test_b_comment_only_change_does_not_recompile(self, tmp_path: Path) -> None:
+        """(b) Adding or changing HTML/YAML comments does NOT trigger recompilation.
+
+        HTML comments in the body and YAML comments in the frontmatter are
+        stripped during normalization, so adding them doesn't change the hash.
+        """
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        assert provider.create_message.call_count == 1
+
+        # Add an HTML comment to the body — cosmetic only
+        comment_md = _make_playbook_md(
+            body="<!-- Author: JK -->\n# Test\n\nDo something then finish."
+        )
+        result2 = await manager.compile_playbook(comment_md)
+        assert result2.success
+        assert result2.skipped, "Comment-only change should skip recompilation"
+        assert provider.create_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_b_yaml_comment_does_not_recompile(self, tmp_path: Path) -> None:
+        """(b) Adding a YAML comment in frontmatter does NOT trigger recompilation."""
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        assert provider.create_message.call_count == 1
+
+        # Same frontmatter values but with a YAML comment added
+        yaml_comment_md = """\
+---
+id: test-playbook
+# This is a YAML comment
+triggers:
+  - git.commit
+scope: system
+---
+
+# Test
+
+Do something then finish.
+"""
+        result2 = await manager.compile_playbook(yaml_comment_md)
+        assert result2.success
+        assert result2.skipped, "YAML comment-only change should skip recompilation"
+        assert provider.create_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_c_changing_node_prompt_triggers_recompilation(self, tmp_path: Path) -> None:
+        """(c) Changing the node prompt text DOES trigger recompilation."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+
+        # Change the body text that describes the node prompt
+        changed_md = _make_playbook_md(
+            body="# Test\n\nDo something COMPLETELY DIFFERENT then finish."
+        )
+        result2 = await manager.compile_playbook(changed_md)
+        assert result2.success
+        assert not result2.skipped, "Changed node prompt should trigger recompilation"
+        assert result2.playbook.version == 2
+        assert provider.create_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_d_source_hash_matches_new_content_after_recompile(self, tmp_path: Path) -> None:
+        """(d) After recompilation, the stored source_hash matches new content."""
+        from src.playbook_compiler import PlaybookCompiler
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider = _make_mock_provider()
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile initial version
+        await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+
+        # Compile with changed content
+        new_md = _make_playbook_md(body="# Updated Prompt\n\nRun a totally new action.")
+        result2 = await manager.compile_playbook(new_md)
+        assert result2.success
+        assert not result2.skipped
+
+        # The stored hash must match the hash of the *new* content
+        expected_hash = PlaybookCompiler._compute_source_hash(new_md)
+        assert result2.source_hash == expected_hash
+        assert result2.playbook.source_hash == expected_hash
+
+        # Also verify the persisted JSON matches
+        compiled_json_path = tmp_path / "playbooks" / "compiled" / "test-playbook.json"
+        persisted = json.loads(compiled_json_path.read_text())
+        assert persisted["source_hash"] == expected_hash
+
+    @pytest.mark.asyncio
+    async def test_e_compiled_at_updates_only_on_actual_recompilation(self, tmp_path: Path) -> None:
+        """(e) compiled_at timestamp updates only on actual recompilation.
+
+        When compilation is skipped (hash unchanged), the compiled_at
+        timestamp is NOT updated — the existing playbook is returned as-is.
+        When actual recompilation occurs, compiled_at is set to a new value.
+        """
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider = _make_mock_provider()
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # First compilation — sets compiled_at
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        ts1 = result1.playbook.compiled_at
+        assert ts1 is not None, "compiled_at should be set after compilation"
+
+        # Same markdown — skipped, compiled_at preserved
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result2.skipped
+        assert result2.playbook.compiled_at == ts1, "compiled_at must not change on skip"
+
+        # Different markdown — actual recompilation, compiled_at updated
+        new_md = _make_playbook_md(body="# Different\n\nSomething entirely new.")
+        result3 = await manager.compile_playbook(new_md)
+        assert result3.success
+        assert not result3.skipped
+        ts3 = result3.playbook.compiled_at
+        assert ts3 is not None, "compiled_at should be set after recompilation"
+        assert ts3 != ts1, "compiled_at must update on actual recompilation"
+
+    @pytest.mark.asyncio
+    async def test_f_force_compile_bypasses_hash_check(self, tmp_path: Path) -> None:
+        """(f) force-compile command bypasses hash check and recompiles regardless."""
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        provider = _make_mock_provider()
+        provider.create_message = AsyncMock(side_effect=[resp, resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert not result1.skipped
+        ts1 = result1.playbook.compiled_at
+
+        # Same markdown, but force=True — must recompile
+        result2 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD, force=True)
+        assert result2.success
+        assert not result2.skipped, "force=True must bypass hash check"
+        assert result2.playbook.version == 2, "Version must increment on force"
+        assert provider.create_message.call_count == 2, "LLM must be called again"
+
+        # compiled_at should be different (new timestamp)
+        ts2 = result2.playbook.compiled_at
+        assert ts2 is not None
+        assert ts2 != ts1, "compiled_at should update on forced recompilation"

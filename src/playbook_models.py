@@ -232,7 +232,7 @@ class CompiledPlaybook:
 
     Top-level fields fall into three groups:
 
-    **Identity & provenance** — ``id``, ``version``, ``source_hash``
+    **Identity & provenance** — ``id``, ``version``, ``source_hash``, ``compiled_at``
     **Trigger & scope** — ``triggers``, ``scope``, ``cooldown_seconds``
     **Graph** — ``nodes`` (the directed graph of LLM decision points)
     **Budget & config** — ``max_tokens``, ``llm_config``
@@ -247,6 +247,7 @@ class CompiledPlaybook:
     cooldown_seconds: int | None = None
     max_tokens: int | None = None
     llm_config: LlmConfig | None = None
+    compiled_at: str | None = None
 
     # -- scope helpers -------------------------------------------------------
 
@@ -494,6 +495,8 @@ class CompiledPlaybook:
             d["max_tokens"] = self.max_tokens
         if self.llm_config is not None:
             d["llm_config"] = self.llm_config.to_dict()
+        if self.compiled_at is not None:
+            d["compiled_at"] = self.compiled_at
         return d
 
     @classmethod
@@ -511,6 +514,7 @@ class CompiledPlaybook:
             cooldown_seconds=data.get("cooldown_seconds"),
             max_tokens=data.get("max_tokens"),
             llm_config=llm_cfg,
+            compiled_at=data.get("compiled_at"),
         )
 
 
@@ -689,6 +693,10 @@ def generate_json_schema() -> dict[str, Any]:
                 "type": "integer",
                 "description": ("Token budget for the entire run. Run fails if exceeded."),
                 "minimum": 1,
+            },
+            "compiled_at": {
+                "type": "string",
+                "description": "ISO-8601 UTC timestamp of when this version was compiled.",
             },
             "llm_config": {"$ref": "#/$defs/llm_config"},
             "nodes": {

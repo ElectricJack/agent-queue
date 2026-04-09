@@ -336,13 +336,59 @@ class PlaybookCompiler:
     # -- hashing -------------------------------------------------------------
 
     @staticmethod
-    def _compute_source_hash(content: str) -> str:
-        """Compute a stable SHA-256 hash (16 hex chars) of the raw markdown.
+    def _normalize_content(content: str) -> str:
+        """Normalize playbook markdown for stable hashing.
 
-        The hash covers the full file content (frontmatter + body) so that
-        any change — including metadata-only edits — triggers recompilation.
+        Strips cosmetic differences that don't affect the compiled output:
+
+        - **YAML frontmatter comments** (``# ...`` lines) — removed by parsing
+          the YAML and re-serializing with sorted keys.
+        - **HTML/Markdown comments** (``<!-- ... -->``) — stripped from the body.
+        - **Trailing whitespace** on each line.
+        - **Multiple consecutive blank lines** collapsed to one.
+        - **Leading/trailing blank lines** trimmed.
+
+        The result is a canonical string used only for hashing — it is never
+        displayed or persisted.
         """
-        return hashlib.sha256(content.encode()).hexdigest()[:16]
+        frontmatter, body = PlaybookCompiler._parse_frontmatter(content)
+
+        # Canonical frontmatter: sorted keys, no comments
+        if frontmatter:
+            fm_str = yaml.dump(frontmatter, default_flow_style=False, sort_keys=True).strip()
+        else:
+            fm_str = ""
+
+        # Strip HTML comments from body
+        body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+
+        # Normalize whitespace
+        lines = [line.rstrip() for line in body.splitlines()]
+        normalized: list[str] = []
+        prev_blank = False
+        for line in lines:
+            if not line:
+                if not prev_blank:
+                    normalized.append("")
+                prev_blank = True
+            else:
+                normalized.append(line)
+                prev_blank = False
+        body = "\n".join(normalized).strip()
+
+        return f"{fm_str}\n---\n{body}"
+
+    @staticmethod
+    def _compute_source_hash(content: str) -> str:
+        """Compute a stable SHA-256 hash (16 hex chars) of normalized markdown.
+
+        The hash covers frontmatter values (parsed, sorted, comment-free) and
+        the body with HTML comments stripped and whitespace normalized.  This
+        ensures cosmetic-only edits (extra blank lines, trailing spaces, YAML
+        or HTML comments) do **not** change the hash.
+        """
+        normalized = PlaybookCompiler._normalize_content(content)
+        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
     # -- prompt construction -------------------------------------------------
 
@@ -474,9 +520,11 @@ class PlaybookCompiler:
         but if it does, they are overwritten.  This ensures the ``id``,
         ``triggers``, ``scope``, etc. always match the source file's YAML.
 
-        Also injects ``source_hash`` and ``version`` which are computed by
-        the compiler, not authored.
+        Also injects ``source_hash``, ``version``, and ``compiled_at`` which
+        are computed by the compiler, not authored.
         """
+        from datetime import datetime, timezone
+
         result = dict(compiled)
 
         # Authoritative fields from frontmatter
@@ -485,6 +533,7 @@ class PlaybookCompiler:
         result["scope"] = frontmatter["scope"]
         result["source_hash"] = source_hash
         result["version"] = version
+        result["compiled_at"] = datetime.now(timezone.utc).isoformat()
 
         # Optional frontmatter fields
         if "cooldown" in frontmatter:

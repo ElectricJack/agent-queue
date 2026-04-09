@@ -237,9 +237,10 @@ class TestSourceHash:
         h2 = PlaybookCompiler._compute_source_hash("content B")
         assert h1 != h2
 
-    def test_matches_sha256(self):
+    def test_matches_sha256_of_normalized(self):
         content = "test content"
-        expected = hashlib.sha256(content.encode()).hexdigest()[:16]
+        normalized = PlaybookCompiler._normalize_content(content)
+        expected = hashlib.sha256(normalized.encode()).hexdigest()[:16]
         assert PlaybookCompiler._compute_source_hash(content) == expected
 
 
@@ -1168,15 +1169,18 @@ class TestCompilationHappyPath:
         assert result1.success is True
         assert result2.success is True
 
-        # Serialize both to dicts and compare
+        # Serialize both to dicts and compare (excluding compiled_at which
+        # is a timestamp and will differ between compilations)
         dict1 = result1.playbook.to_dict()
         dict2 = result2.playbook.to_dict()
+        dict1.pop("compiled_at", None)
+        dict2.pop("compiled_at", None)
         assert dict1 == dict2
 
         # Also compare source hashes
         assert result1.source_hash == result2.source_hash
 
-        # And JSON serializations are byte-identical
+        # And JSON serializations are byte-identical (excluding timestamp)
         json1 = json.dumps(dict1, sort_keys=True)
         json2 = json.dumps(dict2, sort_keys=True)
         assert json1 == json2
@@ -1196,7 +1200,11 @@ class TestCompilationHappyPath:
 
         assert result1.playbook.version == 4
         assert result2.playbook.version == 4
-        assert result1.playbook.to_dict() == result2.playbook.to_dict()
+        d1 = result1.playbook.to_dict()
+        d2 = result2.playbook.to_dict()
+        d1.pop("compiled_at", None)
+        d2.pop("compiled_at", None)
+        assert d1 == d2
 
     # -- (g) Storage at correct path ----------------------------------------
 

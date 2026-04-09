@@ -53,6 +53,10 @@
       "description": "Token budget for the entire run. Run fails if exceeded.",
       "minimum": 1
     },
+    "compiled_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of when this version was compiled."
+    },
     "llm_config": {
       "$ref": "#/$defs/llm_config"
     },
