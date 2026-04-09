@@ -1328,6 +1328,7 @@ class MemoryV2Service:
         *,
         original: str | None = None,
         tags: list[str] | None = None,
+        source_task: str | None = None,
         scope: str | None = None,
     ) -> dict[str, Any]:
         """Replace the content of an existing document entry (merge case).
@@ -1348,6 +1349,8 @@ class MemoryV2Service:
             Optional new original text.
         tags:
             Optional merged tag list.
+        source_task:
+            Task ID that triggered the merge (appended as provenance).
         scope:
             Memory scope.
 
@@ -1388,7 +1391,13 @@ class MemoryV2Service:
         if source:
             vault_file = Path(source)
             if vault_file.exists():
-                self._update_vault_file(vault_file, content=content, original=original, tags=tags)
+                self._update_vault_file(
+                    vault_file,
+                    content=content,
+                    original=original,
+                    tags=tags,
+                    source_task=source_task,
+                )
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)

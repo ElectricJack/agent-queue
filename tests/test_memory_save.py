@@ -1410,6 +1410,295 @@ class TestDistinctContentSave:
 
 
 # ---------------------------------------------------------------------------
+# LLM Merge: prompt quality and tag/provenance handling (Roadmap 3.4.2)
+# ---------------------------------------------------------------------------
+
+
+class TestLLMMerge:
+    """Test the _merge_via_llm method and its integration with _handle_dedup_merge.
+
+    Roadmap 3.4.2: Combine content, prefer newer on contradiction, preserve tags.
+    Uses cheap model (claude-haiku-4-20250514).
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="Merged content result")
+        return plugin
+
+    # -- Prompt quality --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_includes_both_memories(self, wired_plugin):
+        """The LLM prompt must include both old and new content."""
+        await wired_plugin._merge_via_llm(
+            "OAuth needs scope re-request",
+            "Tokens expire after 1 hour",
+        )
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0]
+        assert "OAuth needs scope re-request" in prompt
+        assert "Tokens expire after 1 hour" in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_labels_old_and_new(self, wired_plugin):
+        """Prompt clearly labels existing (older) vs new (more recent) memory."""
+        await wired_plugin._merge_via_llm("old content", "new content")
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0]
+        # Must distinguish old from new for contradiction resolution
+        assert "OLDER" in prompt.upper() or "EXISTING" in prompt.upper()
+        assert "NEW" in prompt.upper() or "RECENT" in prompt.upper()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_instructs_prefer_newer(self, wired_plugin):
+        """Prompt instructs the LLM to prefer newer info on contradictions."""
+        await wired_plugin._merge_via_llm("old info", "new info")
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0].lower()
+        assert "contradict" in prompt
+        assert "prefer" in prompt and "newer" in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_instructs_preserve_facts(self, wired_plugin):
+        """Prompt instructs the LLM to preserve all distinct facts."""
+        await wired_plugin._merge_via_llm("fact A", "fact B")
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0].lower()
+        assert "preserve" in prompt or "distinct" in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_includes_tag_context(self, wired_plugin):
+        """When tags are provided, the prompt includes tag context."""
+        await wired_plugin._merge_via_llm(
+            "old content",
+            "new content",
+            old_tags=["insight", "auth"],
+            new_tags=["insight", "tokens"],
+        )
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0]
+        assert "auth" in prompt
+        assert "tokens" in prompt
+        assert "TAG CONTEXT" in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_prompt_no_tag_context_when_no_tags(self, wired_plugin):
+        """When no tags are provided, no TAG CONTEXT section appears."""
+        await wired_plugin._merge_via_llm("old", "new")
+        prompt = wired_plugin._ctx.invoke_llm.call_args[0][0]
+        assert "TAG CONTEXT" not in prompt
+
+    # -- Cheap model --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_uses_haiku_model(self, wired_plugin):
+        """LLM merge must use the cheap haiku model."""
+        await wired_plugin._merge_via_llm("old", "new")
+        call_kwargs = wired_plugin._ctx.invoke_llm.call_args[1]
+        assert call_kwargs.get("model") == "claude-haiku-4-20250514"
+
+    # -- Fallback --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_fallback_preserves_both_contents(self, wired_plugin):
+        """When LLM is unavailable, concatenation fallback preserves both entries."""
+        wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM down"))
+        result = await wired_plugin._merge_via_llm(
+            "First memory content",
+            "Second memory content",
+        )
+        assert "First memory content" in result
+        assert "Second memory content" in result
+        assert "Updated" in result
+
+    # -- Tag preservation through full pipeline --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_preserves_and_deduplicates_tags(self, wired_plugin, mock_store):
+        """Tags from both old and new entries are merged and deduplicated."""
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth needs scope on refresh",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight", "auth", "oauth"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Token refresh also needs retry logic.",
+                "tags": ["insight", "tokens", "auth"],
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        # merged_tags should contain all unique tags in order
+        assert result["merged_tags"] == ["insight", "auth", "oauth", "tokens"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_tags_passed_to_service(self, wired_plugin, mock_store):
+        """Merged tags are passed through to update_document_content."""
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight about database connection pooling strategies",
+                "score": 0.85,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight", "old-tag"]',
+            }
+        ]
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "New related content about database connection pooling approaches",
+                "tags": ["insight", "new-tag"],
+            }
+        )
+
+        # The tags upserted to Milvus should include both old and new
+        import json
+
+        upserted = mock_store.upsert.call_args[0][0][0]
+        stored_tags = json.loads(upserted["tags"])
+        assert "old-tag" in stored_tags
+        assert "new-tag" in stored_tags
+        assert "insight" in stored_tags
+
+    # -- Source task provenance in merge --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_tracks_source_task(self, wired_plugin, mock_store, service, tmp_data_dir):
+        """Source task should be tracked in vault file during merge (provenance)."""
+        # Create a vault file so the update path can find it
+        vault_dir = Path(tmp_data_dir) / "vault" / "projects" / "test-project" / "memory"
+        filepath = service._write_vault_file(
+            vault_dir,
+            content="Existing content about caching",
+            tags=["insight", "caching"],
+            source_task="task-001",
+        )
+
+        mock_store.search.return_value = [
+            {
+                "content": "Existing content about caching",
+                "score": 0.87,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight", "caching"]',
+            }
+        ]
+        # Point the mock entry's source to the vault file
+        mock_store.get.return_value = {
+            "chunk_hash": "existing_hash",
+            "entry_type": "document",
+            "content": "Existing content about caching",
+            "original": "",
+            "source": str(filepath),
+            "heading": "",
+            "topic": "caching",
+            "tags": '["insight", "caching"]',
+            "updated_at": 1000,
+            "embedding": [0.1] * 384,
+        }
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Cache invalidation needs TTL strategy.",
+                "tags": ["insight", "caching"],
+                "source_task": "task-002",
+            }
+        )
+
+        # Verify vault file was updated with the new source_task
+        text = filepath.read_text()
+        assert "task-002" in text
+
+    # -- Merge with missing chunk_hash falls back to create --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_merge_no_chunk_hash_falls_back_to_create(self, wired_plugin, mock_store):
+        """If the matching entry has no chunk_hash, merge falls back to creating a new entry."""
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight",
+                "score": 0.88,
+                "chunk_hash": "",  # No chunk_hash!
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Related but chunk_hash missing",
+                "tags": ["insight", "fallback"],
+            }
+        )
+        # Should fall back to creating a new entry with the LLM-merged content
+        assert result["success"] is True
+        assert result["action"] == "created"
+
+    # -- LLM merge receives tag context from pipeline --
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_pipeline_passes_tags_to_llm_merge(self, wired_plugin, mock_store):
+        """_handle_dedup_merge passes old and new tags to _merge_via_llm."""
+        mock_store.search.return_value = [
+            {
+                "content": "Old content about microservice architecture design patterns",
+                "score": 0.90,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight", "architecture"]',
+            }
+        ]
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "New architecture decision about microservice communication patterns",
+                "tags": ["insight", "design"],
+            }
+        )
+
+        # Find the merge LLM call (not topic inference)
+        merge_calls = [
+            c
+            for c in wired_plugin._ctx.invoke_llm.call_args_list
+            if "merging two related" in c[0][0].lower()
+        ]
+        assert len(merge_calls) == 1
+        prompt = merge_calls[0][0][0]
+        # Tag context should be in the prompt
+        assert "architecture" in prompt
+        assert "design" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Duplicate detection (>0.95 similarity) — Roadmap 3.4.4
 # ---------------------------------------------------------------------------
 
@@ -1800,6 +2089,69 @@ class TestDuplicateDetection:
 
         assert result["action"] == "created"
         assert mock_store.search.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Service-layer: update_document_content with source_task (Roadmap 3.4.2)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDocumentContentSourceTask:
+    """Verify update_document_content propagates source_task to vault file."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_update_content_with_source_task(
+        self, service, mock_store, mock_embedder, tmp_data_dir
+    ):
+        """source_task should be appended to the vault file during content update."""
+        # Create a vault file
+        vault_dir = Path(tmp_data_dir) / "vault" / "projects" / "test" / "memory"
+        filepath = service._write_vault_file(
+            vault_dir,
+            content="Original insight about auth",
+            tags=["insight", "auth"],
+            source_task="task-001",
+        )
+
+        # Point the mock entry's source to the vault file
+        mock_store.get.return_value = {
+            "chunk_hash": "existing_hash",
+            "entry_type": "document",
+            "content": "Original insight about auth",
+            "original": "",
+            "source": str(filepath),
+            "heading": "",
+            "topic": "auth",
+            "tags": '["insight", "auth"]',
+            "updated_at": 1000,
+            "embedding": [0.1] * 384,
+        }
+
+        result = await service.update_document_content(
+            "test-project",
+            "existing_hash",
+            "Merged auth insight",
+            tags=["insight", "auth", "tokens"],
+            source_task="task-002",
+        )
+        assert result["chunk_hash"] == "existing_hash"
+
+        # Vault file should now contain the new source_task
+        text = filepath.read_text()
+        assert "task-002" in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_update_content_without_source_task(self, service, mock_store, mock_embedder):
+        """When source_task is None, vault file update skips task tracking."""
+        result = await service.update_document_content(
+            "test-project",
+            "existing_hash",
+            "Merged content",
+        )
+        assert result["chunk_hash"] == "existing_hash"
+        # Should succeed without error even with no source_task
 
 
 # ---------------------------------------------------------------------------

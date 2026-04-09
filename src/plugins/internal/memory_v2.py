@@ -1631,8 +1631,13 @@ class MemoryV2Plugin(InternalPlugin):
         # Merge tags (preserve both, deduplicate)
         merged_tags = list(dict.fromkeys(old_tags + tags))
 
-        # Attempt LLM merge
-        merged_content = await self._merge_via_llm(old_content, content)
+        # Attempt LLM merge — pass tag context for better results
+        merged_content = await self._merge_via_llm(
+            old_content,
+            content,
+            old_tags=old_tags,
+            new_tags=tags,
+        )
 
         if not chunk_hash:
             self._log.warning("Merge match has no chunk_hash, creating new entry instead")
@@ -1659,6 +1664,7 @@ class MemoryV2Plugin(InternalPlugin):
             summary or merged_content,
             original=original,
             tags=merged_tags,
+            source_task=source_task,
             scope=scope,
         )
         return {
@@ -1667,6 +1673,7 @@ class MemoryV2Plugin(InternalPlugin):
             "project_id": project_id,
             "similarity_score": round(similarity, 4),
             "merged_with": chunk_hash,
+            "merged_tags": merged_tags,
             "has_summary": summary is not None,
             **result,
         }
@@ -1712,7 +1719,14 @@ class MemoryV2Plugin(InternalPlugin):
             **result,
         }
 
-    async def _merge_via_llm(self, old_content: str, new_content: str) -> str:
+    async def _merge_via_llm(
+        self,
+        old_content: str,
+        new_content: str,
+        *,
+        old_tags: list[str] | None = None,
+        new_tags: list[str] | None = None,
+    ) -> str:
         """Merge two related memories via a lightweight LLM call.
 
         Per spec §8: "Combine these into a single memory.  If they
@@ -1720,18 +1734,43 @@ class MemoryV2Plugin(InternalPlugin):
         Preserve tags from both."
 
         Falls back to simple concatenation if LLM is unavailable.
+
+        Parameters
+        ----------
+        old_content:
+            The existing (older) memory content.
+        new_content:
+            The incoming (newer) memory content.
+        old_tags:
+            Tags on the existing memory (for context).
+        new_tags:
+            Tags on the new memory (for context).
         """
+        # Build tag context line if tags are available
+        tag_context = ""
+        if old_tags or new_tags:
+            parts = []
+            if old_tags:
+                parts.append(f"Existing tags: {', '.join(old_tags)}")
+            if new_tags:
+                parts.append(f"New tags: {', '.join(new_tags)}")
+            tag_context = f"\nTAG CONTEXT:\n{'; '.join(parts)}\n"
+
         prompt = (
             "You are merging two related memory entries into one concise, unified memory.\n\n"
-            "EXISTING MEMORY:\n"
+            "EXISTING (OLDER) MEMORY:\n"
             f"{old_content}\n\n"
-            "NEW MEMORY:\n"
-            f"{new_content}\n\n"
-            "INSTRUCTIONS:\n"
-            "- Combine both into a single, cohesive memory entry.\n"
-            "- If they contradict, prefer the newer information but briefly note what changed.\n"
-            "- Keep the result concise — no longer than the longer of the two inputs.\n"
-            "- Output ONLY the merged memory content, no preamble or explanation.\n"
+            "NEW (MORE RECENT) MEMORY:\n"
+            f"{new_content}\n"
+            f"{tag_context}\n"
+            "RULES:\n"
+            "1. Combine both into a single, cohesive memory entry.\n"
+            "2. If they contradict, PREFER the newer information. Briefly note "
+            'what changed (e.g. "Previously X, now Y." or "Updated: …").\n'
+            "3. Preserve all distinct facts from both — do not drop information "
+            "that is only in one of them.\n"
+            "4. Keep the result concise — no longer than the longer of the two inputs.\n"
+            "5. Output ONLY the merged memory content, no preamble or explanation.\n"
         )
         try:
             return await self._ctx.invoke_llm(
