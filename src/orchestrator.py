@@ -955,6 +955,23 @@ class Orchestrator:
         )
         self.timer_service.start()
 
+        # Playbook resume handler (roadmap 5.4.3) — subscribes to
+        # ``human.review.completed`` events and resumes paused playbook
+        # runs from their saved conversation state.  External systems
+        # (Discord buttons, API endpoints) fire the event; this handler
+        # validates, creates a Supervisor, and delegates to
+        # PlaybookRunner.resume().
+        from src.playbook_resume_handler import PlaybookResumeHandler
+
+        self.playbook_resume_handler = PlaybookResumeHandler(
+            db=self.db,
+            event_bus=self.bus,
+            orchestrator=self,
+            playbook_manager=self.playbook_manager,
+            config=self.config,
+        )
+        self.playbook_resume_handler.subscribe()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -1427,6 +1444,8 @@ class Orchestrator:
                 logger.warning("Rule file watcher shutdown error: %s", e)
         if self.timer_service:
             self.timer_service.stop()
+        if hasattr(self, "playbook_resume_handler") and self.playbook_resume_handler:
+            self.playbook_resume_handler.shutdown()
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:

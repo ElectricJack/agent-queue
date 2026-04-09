@@ -337,6 +337,26 @@ class PlaybookRunPausedEvent(NotifyEvent):
     paused_at: float = 0.0
 
 
+class PlaybookRunResumedEvent(NotifyEvent):
+    """Emitted when a paused playbook run is resumed after human review.
+
+    Confirms that a previously paused run has been resumed with the human's
+    input, allowing notification transports to inform the team.  The
+    ``decision`` field contains the human's review response (capped at
+    2000 chars).
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.3.
+    """
+
+    event_type: str = "notify.playbook_run_resumed"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    decision: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Generic text notification (catch-all for simple messages)
 # ---------------------------------------------------------------------------

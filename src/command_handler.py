@@ -6617,8 +6617,11 @@ feature work stuck on feature branches across multiple workspaces.
         run continues from the paused node, evaluating transitions with
         the new context.
 
-        A ``human.review.completed`` event is emitted on the EventBus
-        so downstream subscribers can react (spec §9).
+        A ``playbook.run.resumed`` event is emitted on the EventBus
+        so downstream subscribers can react (spec §9).  Note: external
+        systems can also fire ``human.review.completed`` on the EventBus
+        to trigger a resume via the :class:`PlaybookResumeHandler`
+        (roadmap 5.4.3).
 
         Args:
             run_id: The playbook run to resume.

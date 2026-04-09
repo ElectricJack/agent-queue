@@ -192,6 +192,17 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "run_id": "run-001",
         "failed_at_node": "lint-check",
     },
+    "playbook.run.paused": {
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "review-step",
+    },
+    "playbook.run.resumed": {
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "review-step",
+        "decision": "approved",
+    },
     # Human interaction
     "human.review.completed": {
         "playbook_id": "code-quality-gate",
@@ -323,6 +334,29 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "event_type": "notify.profile_sync_failed",
         "severity": "error",
         "category": "system",
+    },
+    "notify.playbook_run_completed": {
+        "event_type": "notify.playbook_run_completed",
+        "severity": "info",
+        "category": "system",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+    },
+    "notify.playbook_run_failed": {
+        "event_type": "notify.playbook_run_failed",
+        "severity": "error",
+        "category": "system",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "failed_at_node": "lint-check",
+    },
+    "notify.playbook_run_resumed": {
+        "event_type": "notify.playbook_run_resumed",
+        "severity": "info",
+        "category": "interaction",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "review-step",
     },
 }
 

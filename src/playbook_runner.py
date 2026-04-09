@@ -585,11 +585,18 @@ class PlaybookRunner:
         node_id: str,
         human_input: str,
     ) -> None:
-        """Emit ``human.review.completed`` on the EventBus.
+        """Emit ``playbook.run.resumed`` on the EventBus.
 
-        Fired when a human provides input to resume a paused run (spec §9).
-        Downstream subscribers can use this for audit logging, dashboards,
-        or chaining further automation.
+        Fired when a paused run is successfully resumed after human review
+        (spec §9).  Downstream subscribers can use this for audit logging,
+        dashboards, or chaining further automation.
+
+        .. note::
+
+           Prior to roadmap 5.4.3 this method emitted ``human.review.completed``.
+           That event is now the **trigger** (fired by Dashboard/Discord to
+           initiate the resume); ``playbook.run.resumed`` is the **notification**
+           confirming the resume occurred.
         """
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
@@ -597,7 +604,33 @@ class PlaybookRunner:
             "node_id": node_id,
             "decision": human_input[:2000],  # cap for event payload
         }
-        await self._emit_bus_event("human.review.completed", payload)
+        await self._emit_bus_event("playbook.run.resumed", payload)
+
+        # Also emit a typed notification event for Discord/Telegram transports
+        await self._emit_resumed_notification(payload, human_input)
+
+    async def _emit_resumed_notification(
+        self,
+        raw_payload: dict[str, Any],
+        human_input: str,
+    ) -> None:
+        """Emit ``notify.playbook_run_resumed`` for notification transports.
+
+        Converts the raw ``playbook.run.resumed`` payload into a typed
+        ``PlaybookRunResumedEvent`` and emits it on the EventBus so that
+        Discord, Telegram, and other transports can render a rich
+        notification confirming the run was resumed (roadmap 5.4.3).
+        """
+        from src.notifications.events import PlaybookRunResumedEvent
+
+        event = PlaybookRunResumedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            node_id=raw_payload.get("node_id", ""),
+            decision=human_input[:2000],
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_resumed", event.model_dump(mode="json"))
 
     # ------------------------------------------------------------------
     # Public API
@@ -920,7 +953,7 @@ class PlaybookRunner:
         if db:
             await db.update_playbook_run(db_run.run_id, status=runner._status.value)
 
-        # Emit human.review.completed event (spec §9) for audit/notification
+        # Emit playbook.run.resumed event (spec §9) for audit/notification
         paused_node_id = db_run.current_node
         if paused_node_id:
             await runner._emit_resumed_event(

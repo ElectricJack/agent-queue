@@ -297,6 +297,10 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
             "duration_seconds",
         ],
     },
+    "notify.playbook_run_resumed": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id", "node_id"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL, "decision"],
+    },
     # -- Generic text notification --
     "notify.text": {
         "required": [*_NOTIFY_BASE_FIELDS],
@@ -360,6 +364,10 @@ _PLAYBOOK_SCHEMAS: dict[str, EventSchema] = {
             "tokens_used",
             "project_id",
         ],
+    },
+    "playbook.run.resumed": {
+        "required": ["playbook_id", "run_id", "node_id", "decision"],
+        "optional": ["project_id"],
     },
 }
 

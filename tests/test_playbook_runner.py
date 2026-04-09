@@ -5997,7 +5997,7 @@ class TestDailyPlaybookTokenCap:
 
 
 class TestHumanInTheLoopEvents:
-    """Tests for playbook.run.paused and human.review.completed event emission."""
+    """Tests for playbook.run.paused and playbook.run.resumed event emission."""
 
     async def test_pause_emits_playbook_run_paused_event(
         self, mock_supervisor, human_review_graph, event_data, mock_db
@@ -6061,10 +6061,15 @@ class TestHumanInTheLoopEvents:
         result = await runner.run()
         assert result.status == "paused"  # No error, just no event emitted
 
-    async def test_resume_emits_human_review_completed_event(
+    async def test_resume_emits_playbook_run_resumed_event(
         self, mock_supervisor, human_review_graph, event_data, mock_db
     ):
-        """When a paused run is resumed, a human.review.completed event fires."""
+        """When a paused run is resumed, a playbook.run.resumed event fires.
+
+        Note: prior to roadmap 5.4.3, resume emitted ``human.review.completed``.
+        That event is now the *trigger* (fired externally); ``playbook.run.resumed``
+        is the *notification* confirming the resume occurred.
+        """
         paused_run = PlaybookRun(
             run_id="evt-test-1",
             playbook_id="human-review-playbook",
@@ -6118,21 +6123,89 @@ class TestHumanInTheLoopEvents:
 
         assert result.status == "completed"
 
-        # Find the human.review.completed event
-        review_calls = [
-            c for c in event_bus.emit.call_args_list if c.args[0] == "human.review.completed"
+        # Find the playbook.run.resumed event (5.4.3: replaces human.review.completed)
+        resumed_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "playbook.run.resumed"
         ]
-        assert len(review_calls) == 1
-        payload = review_calls[0].args[1]
+        assert len(resumed_calls) == 1
+        payload = resumed_calls[0].args[1]
         assert payload["playbook_id"] == "human-review-playbook"
         assert payload["run_id"] == "evt-test-1"
         assert payload["node_id"] == "review"
         assert payload["decision"] == "Approved, proceed."
 
+    async def test_resume_emits_notification_event(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """Resume emits notify.playbook_run_resumed for notification transports."""
+        paused_run = PlaybookRun(
+            run_id="evt-notify-1",
+            playbook_id="human-review-playbook",
+            playbook_version=1,
+            trigger_event=json.dumps(event_data),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event."},
+                    {"role": "assistant", "content": "Analysis."},
+                    {"role": "user", "content": "Review."},
+                    {"role": "assistant", "content": "For review."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100,
+                        "completed_at": 101,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": 102,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=50,
+            started_at=100.0,
+        )
+
+        responses = iter(["1", "Executed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=human_review_graph,
+            supervisor=mock_supervisor,
+            human_input="Approved, proceed.",
+            db=mock_db,
+            event_bus=event_bus,
+        )
+
+        notify_calls = [
+            c
+            for c in event_bus.emit.call_args_list
+            if c.args[0] == "notify.playbook_run_resumed"
+        ]
+        assert len(notify_calls) == 1
+        payload = notify_calls[0].args[1]
+        assert payload["playbook_id"] == "human-review-playbook"
+        assert payload["run_id"] == "evt-notify-1"
+        assert payload["node_id"] == "review"
+        assert payload["decision"] == "Approved, proceed."
+        assert payload["event_type"] == "notify.playbook_run_resumed"
+        assert payload["category"] == "interaction"
+
     async def test_resume_also_emits_completion_event(
         self, mock_supervisor, human_review_graph, event_data, mock_db
     ):
-        """A resumed run that completes emits both human.review.completed and playbook.run.completed."""
+        """A resumed run that completes emits both playbook.run.resumed and playbook.run.completed."""
         paused_run = PlaybookRun(
             run_id="evt-test-2",
             playbook_id="human-review-playbook",
@@ -6184,7 +6257,7 @@ class TestHumanInTheLoopEvents:
         )
 
         event_types = [c.args[0] for c in event_bus.emit.call_args_list]
-        assert "human.review.completed" in event_types
+        assert "playbook.run.resumed" in event_types
         assert "playbook.run.completed" in event_types
 
     async def test_pause_event_caps_long_response(self, mock_supervisor, mock_db):
@@ -6229,7 +6302,7 @@ class TestHumanInTheLoopEvents:
     async def test_resume_caps_long_human_input_in_event(
         self, mock_supervisor, human_review_graph, event_data, mock_db
     ):
-        """The decision field in human.review.completed is capped at 2000 chars."""
+        """The decision field in playbook.run.resumed is capped at 2000 chars."""
         paused_run = PlaybookRun(
             run_id="cap-test-1",
             playbook_id="human-review-playbook",
@@ -6281,11 +6354,11 @@ class TestHumanInTheLoopEvents:
             event_bus=event_bus,
         )
 
-        review_calls = [
-            c for c in event_bus.emit.call_args_list if c.args[0] == "human.review.completed"
+        resumed_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "playbook.run.resumed"
         ]
-        assert len(review_calls) == 1
-        decision = review_calls[0].args[1]["decision"]
+        assert len(resumed_calls) == 1
+        decision = resumed_calls[0].args[1]["decision"]
         assert len(decision) <= 2000
 
 
