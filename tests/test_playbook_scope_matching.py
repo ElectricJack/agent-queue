@@ -1,4 +1,4 @@
-"""Tests for PlaybookManager event-to-scope matching (roadmap 5.3.3).
+"""Tests for PlaybookManager event-to-scope matching (roadmap 5.3.3, 5.3.8).
 
 Tests cover the spec §7 "Event-to-Scope Matching" requirements:
   - System-scoped playbooks match all events (with or without project_id)
@@ -9,6 +9,15 @@ Tests cover the spec §7 "Event-to-Scope Matching" requirements:
   - Agent-type-scoped playbooks skip events with wrong agent_type
   - Scope identifiers are tracked through load_from_store, compile, and remove
   - Cooldown scope keys are derived from playbook scope, not event data
+
+Roadmap 5.3.8 test cases:
+  (a) task.completed with project_id triggers both project-scoped AND system-scoped
+  (b) task.completed with project_id does NOT trigger project-scoped for different project
+  (c) event without project_id triggers only system-scoped playbooks
+  (d) agent-type-scoped triggers only when event's agent matches
+  (e) multiple playbooks subscribed to same event type all trigger
+  (f) playbook with trigger that never fires does not interfere with others
+  (g) unrecognized event type does not cause errors
 """
 
 from __future__ import annotations
@@ -554,3 +563,233 @@ class TestScopeMatchingEventBusIntegration:
 
         assert len(trigger_log) == 1
         assert trigger_log[0][0] == "sys-timer"
+
+    # -------------------------------------------------------------------
+    # Roadmap 5.3.8 — dedicated test cases (a)-(g)
+    # -------------------------------------------------------------------
+
+    async def test_538a_project_event_triggers_both_project_and_system(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(a): task.completed with project_id triggers BOTH
+        project-scoped playbook for that project AND system-scoped playbooks.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        system_pb = _make_playbook(
+            playbook_id="sys-monitor",
+            scope="system",
+            triggers=["task.completed"],
+        )
+        project_pb = _make_playbook(
+            playbook_id="myapp-gate",
+            scope="project",
+            triggers=["task.completed"],
+        )
+
+        for pb in [system_pb, project_pb]:
+            mgr._active[pb.id] = pb
+            mgr._index_triggers(pb)
+
+        mgr._scope_identifiers["myapp-gate"] = "myapp"
+        mgr.subscribe_to_events()
+
+        await event_bus.emit("task.completed", {"project_id": "myapp"})
+
+        triggered_ids = {entry[0] for entry in trigger_log}
+        assert "sys-monitor" in triggered_ids, "System-scoped playbook should fire"
+        assert "myapp-gate" in triggered_ids, "Project-scoped playbook should fire"
+        assert len(trigger_log) == 2
+
+    async def test_538b_project_event_skips_different_project_playbook(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(b): task.completed with project_id="myapp" does NOT trigger
+        project-scoped playbook for a different project.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        other_pb = _make_playbook(
+            playbook_id="other-gate",
+            scope="project",
+            triggers=["task.completed"],
+        )
+        mgr._active[other_pb.id] = other_pb
+        mgr._index_triggers(other_pb)
+        mgr._scope_identifiers["other-gate"] = "other-project"
+        mgr.subscribe_to_events()
+
+        await event_bus.emit("task.completed", {"project_id": "myapp"})
+
+        assert len(trigger_log) == 0
+
+    async def test_538c_no_project_id_triggers_only_system(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(c): event without project_id triggers only system-scoped playbooks."""
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        system_pb = _make_playbook(
+            playbook_id="sys-pb",
+            scope="system",
+            triggers=["task.completed"],
+        )
+        project_pb = _make_playbook(
+            playbook_id="proj-pb",
+            scope="project",
+            triggers=["task.completed"],
+        )
+        agent_pb = _make_playbook(
+            playbook_id="agent-pb",
+            scope="agent-type:coding",
+            triggers=["task.completed"],
+        )
+
+        for pb in [system_pb, project_pb, agent_pb]:
+            mgr._active[pb.id] = pb
+            mgr._index_triggers(pb)
+
+        mgr._scope_identifiers["proj-pb"] = "myapp"
+        mgr.subscribe_to_events()
+
+        await event_bus.emit("task.completed", {})
+
+        assert len(trigger_log) == 1
+        assert trigger_log[0][0] == "sys-pb"
+
+    async def test_538d_agent_type_triggers_only_matching_type(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(d): agent-type-scoped playbook triggers only when event's
+        agent_type matches, not for other agent types.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        coding_pb = _make_playbook(
+            playbook_id="coding-reflection",
+            scope="agent-type:coding",
+            triggers=["task.completed"],
+        )
+        review_pb = _make_playbook(
+            playbook_id="review-reflection",
+            scope="agent-type:review",
+            triggers=["task.completed"],
+        )
+
+        for pb in [coding_pb, review_pb]:
+            mgr._active[pb.id] = pb
+            mgr._index_triggers(pb)
+
+        mgr.subscribe_to_events()
+
+        # Emit event with agent_type=coding
+        await event_bus.emit(
+            "task.completed",
+            {"project_id": "myapp", "agent_type": "coding"},
+        )
+
+        assert len(trigger_log) == 1
+        assert trigger_log[0][0] == "coding-reflection"
+
+    async def test_538e_multiple_playbooks_same_event_all_trigger(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(e): multiple playbooks subscribed to same event type all
+        trigger (not just the first one).
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        # Three system-scoped playbooks all subscribing to the same event
+        pb_a = _make_playbook(
+            playbook_id="monitor-a",
+            scope="system",
+            triggers=["task.completed"],
+        )
+        pb_b = _make_playbook(
+            playbook_id="monitor-b",
+            scope="system",
+            triggers=["task.completed"],
+        )
+        pb_c = _make_playbook(
+            playbook_id="monitor-c",
+            scope="system",
+            triggers=["task.completed"],
+        )
+
+        for pb in [pb_a, pb_b, pb_c]:
+            mgr._active[pb.id] = pb
+            mgr._index_triggers(pb)
+
+        mgr.subscribe_to_events()
+
+        await event_bus.emit("task.completed", {"project_id": "myapp"})
+
+        triggered_ids = {entry[0] for entry in trigger_log}
+        assert "monitor-a" in triggered_ids
+        assert "monitor-b" in triggered_ids
+        assert "monitor-c" in triggered_ids
+        assert len(trigger_log) == 3
+
+    async def test_538f_unused_trigger_does_not_interfere(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(f): playbook with trigger event type that never fires does
+        not interfere with other playbooks that do fire.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        # This playbook subscribes to an event that is never emitted
+        idle_pb = _make_playbook(
+            playbook_id="idle-pb",
+            scope="system",
+            triggers=["some.rare.event"],
+        )
+        # This playbook subscribes to an event that IS emitted
+        active_pb = _make_playbook(
+            playbook_id="active-pb",
+            scope="system",
+            triggers=["task.completed"],
+        )
+
+        for pb in [idle_pb, active_pb]:
+            mgr._active[pb.id] = pb
+            mgr._index_triggers(pb)
+
+        mgr.subscribe_to_events()
+
+        # Emit only task.completed — the idle playbook's trigger never fires
+        await event_bus.emit("task.completed", {"project_id": "myapp"})
+
+        assert len(trigger_log) == 1
+        assert trigger_log[0][0] == "active-pb"
+
+        # Verify idle playbook is still registered and functional
+        assert "idle-pb" in mgr._active
+
+    async def test_538g_unrecognized_event_type_no_errors(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """5.3.8(g): unrecognized event type does not cause errors in
+        PlaybookManager — the manager should handle unknown events gracefully.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        pb = _make_playbook(
+            playbook_id="normal-pb",
+            scope="system",
+            triggers=["task.completed"],
+        )
+        mgr._active[pb.id] = pb
+        mgr._index_triggers(pb)
+        mgr.subscribe_to_events()
+
+        # Emit an event type that no playbook subscribes to — should not raise
+        await event_bus.emit("totally.unknown.event.type", {"foo": "bar"})
+
+        # No playbook triggered
+        assert len(trigger_log) == 0
+
+        # Manager is still functional — emitting the real event still works
+        await event_bus.emit("task.completed", {"project_id": "myapp"})
+        assert len(trigger_log) == 1
+        assert trigger_log[0][0] == "normal-pb"
