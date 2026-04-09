@@ -550,14 +550,18 @@ class MemoryV2Plugin(InternalPlugin):
         self._ctx = ctx
         self._log = ctx.logger
 
-        # Services will be wired up when memsearch backend is implemented.
-        # self._db = ctx.get_service("db")
-        # self._memsearch = None  # TODO: initialize memsearch client
+        # MemoryServiceImpl wraps MemoryManager — provides both
+        # single-project MemSearch instances and the shared
+        # CollectionRouter for multi-scope search.
+        try:
+            self._memory_service = ctx.get_service("memory")
+        except (ValueError, PermissionError):
+            self._memory_service = None
 
-        # CollectionRouter for cross-scope tag search.  Initialized lazily
-        # when the memsearch backend is fully wired up.  Until then,
-        # commands that need it return a "not implemented" response.
-        self._router = None  # TODO: CollectionRouter(milvus_uri=..., dimension=...)
+        # CollectionRouter for cross-scope tag search.  Obtained lazily
+        # from the MemoryManager when first needed (it creates the router
+        # on demand with the configured Milvus URI and embedding dimension).
+        self._router = None
 
         # -- Map command names to handlers --
         # Full command table — includes both v2-only and overlapping names.
@@ -621,6 +625,24 @@ class MemoryV2Plugin(InternalPlugin):
             "plugin": "memory_v2",
         }
 
+    @staticmethod
+    def _format_result(r: dict) -> dict:
+        """Format a raw search result for the tool response."""
+        return {
+            "content": r.get("content", ""),
+            "source": r.get("source", ""),
+            "heading": r.get("heading", ""),
+            "score": r.get("score", 0.0),
+            "weighted_score": r.get("weighted_score", 0.0),
+            "scope": r.get("_scope", ""),
+            "scope_id": r.get("_scope_id"),
+            "weight": r.get("_weight", 0.0),
+            "collection": r.get("_collection", ""),
+            "chunk_hash": r.get("chunk_hash", ""),
+            "topic": r.get("topic", ""),
+            "topic_fallback": r.get("topic_fallback", False),
+        }
+
     def _resolve_scope(self, project_id: str, scope: str | None = None) -> str:
         """Resolve scope string to a Milvus collection name.
 
@@ -646,7 +668,13 @@ class MemoryV2Plugin(InternalPlugin):
     # -----------------------------------------------------------------
 
     async def cmd_memory_search(self, args: dict) -> dict:
-        """Semantic vector search across a scoped collection."""
+        """Semantic vector search across scoped collections.
+
+        Uses :meth:`MemoryManager.scoped_search` for multi-scope weighted
+        merge per spec §6.  Searches project, agent-type, and system
+        collections in parallel and merges results weighted by specificity
+        (project=1.0, agent-type=0.7, system=0.4).
+        """
         project_id = args.get("project_id")
         if not project_id:
             return {"error": "project_id is required"}
@@ -656,12 +684,70 @@ class MemoryV2Plugin(InternalPlugin):
         if not query and not queries:
             return {"error": "Either 'query' or 'queries' is required"}
 
-        _scope = self._resolve_scope(project_id, args.get("scope"))
-        _topic = args.get("topic")
-        _top_k = args.get("top_k", 10)
+        topic = args.get("topic")
+        top_k = args.get("top_k", 10)
+        # The scope field can hint at an agent_type for cross-scope search.
+        # When scope starts with "agenttype_", extract the agent type ID.
+        scope = args.get("scope")
+        agent_type = None
+        if scope and scope.startswith("agenttype_"):
+            agent_type = scope.removeprefix("agenttype_")
 
-        # TODO: delegate to memsearch vector search
-        return self._not_implemented("memory_search")
+        svc = self._memory_service
+        if svc is None:
+            return self._not_implemented("memory_search")
+
+        try:
+            if queries:
+                # Batch multi-scope search
+                results_map = await svc.scoped_batch_search(
+                    queries,
+                    project_id=project_id,
+                    agent_type=agent_type,
+                    topic=topic,
+                    top_k=top_k,
+                )
+                return {
+                    "success": True,
+                    "queries": {
+                        q: [self._format_result(r) for r in hits] for q, hits in results_map.items()
+                    },
+                }
+            else:
+                # Single multi-scope search
+                results = await svc.scoped_search(
+                    query,
+                    project_id=project_id,
+                    agent_type=agent_type,
+                    topic=topic,
+                    top_k=top_k,
+                )
+                return {
+                    "success": True,
+                    "query": query,
+                    "count": len(results),
+                    "results": [self._format_result(r) for r in results],
+                }
+        except Exception as e:
+            self._log.error("memory_search failed: %s", e, exc_info=True)
+            return {"error": f"Search failed: {e}"}
+
+    async def _get_router(self) -> object | None:
+        """Lazily obtain the CollectionRouter from MemoryManager.
+
+        The MemoryServiceImpl wraps MemoryManager; the router is
+        accessible via ``_mm._get_router()`` on the underlying manager.
+        """
+        if self._router is not None:
+            return self._router
+        svc = self._memory_service
+        if svc is None or not hasattr(svc, "_mm") or svc._mm is None:
+            return None
+        try:
+            self._router = await svc._mm._get_router()
+        except Exception:
+            return None
+        return self._router
 
     async def cmd_memory_search_by_tag(self, args: dict) -> dict:
         """Cross-scope search by tag across all collections.
@@ -677,11 +763,12 @@ class MemoryV2Plugin(InternalPlugin):
         topic = args.get("topic")
         limit = args.get("limit", 10)
 
-        if not self._router:
+        router = await self._get_router()
+        if not router:
             return self._not_implemented("memory_search_by_tag")
 
         try:
-            results = await self._router.search_by_tag_async(
+            results = await router.search_by_tag_async(
                 tag,
                 entry_type=entry_type,
                 topic=topic,

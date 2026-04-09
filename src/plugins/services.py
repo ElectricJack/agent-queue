@@ -40,11 +40,26 @@ class GitService(Protocol):
     async def status(self, checkout_path: str) -> dict: ...
     async def commit_all(self, checkout_path: str, message: str) -> bool: ...
     async def pull(self, checkout_path: str, branch: str | None = None) -> str: ...
-    async def push(self, checkout_path: str, branch: str, *, force_with_lease: bool = False) -> str: ...
-    async def create_branch(self, checkout_path: str, name: str, *, base: str | None = None) -> None: ...
+    async def push(
+        self, checkout_path: str, branch: str, *, force_with_lease: bool = False
+    ) -> str: ...
+    async def create_branch(
+        self, checkout_path: str, name: str, *, base: str | None = None
+    ) -> None: ...
     async def checkout(self, checkout_path: str, branch: str) -> None: ...
-    async def merge(self, checkout_path: str, source: str, *, target: str | None = None) -> dict: ...
-    async def create_pr(self, checkout_path: str, *, title: str, body: str, base: str | None = None, head: str | None = None, draft: bool = False) -> dict: ...
+    async def merge(
+        self, checkout_path: str, source: str, *, target: str | None = None
+    ) -> dict: ...
+    async def create_pr(
+        self,
+        checkout_path: str,
+        *,
+        title: str,
+        body: str,
+        base: str | None = None,
+        head: str | None = None,
+        draft: bool = False,
+    ) -> dict: ...
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]: ...
     async def diff(self, checkout_path: str, base: str, head: str | None = None) -> str: ...
     async def changed_files(self, checkout_path: str, base: str) -> list[str]: ...
@@ -77,29 +92,57 @@ class DatabaseService(Protocol):
 class MemoryService(Protocol):
     """Semantic search and memory management."""
 
-    async def search(self, project_id: str, workspace: str, query: str, *, top_k: int = 10) -> list[dict]: ...
-    async def batch_search(self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10) -> dict[str, list[dict]]: ...
+    async def search(
+        self, project_id: str, workspace: str, query: str, *, top_k: int = 10
+    ) -> list[dict]: ...
+    async def batch_search(
+        self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10
+    ) -> dict[str, list[dict]]: ...
     async def reindex(self, project_id: str, workspace: str) -> int: ...
     async def compact(self, project_id: str, workspace: str) -> dict: ...
     async def stats(self, project_id: str, workspace: str) -> dict: ...
-    async def write_memory(self, project_id: str, workspace: str, key: str, content: str) -> str | None: ...
+    async def write_memory(
+        self, project_id: str, workspace: str, key: str, content: str
+    ) -> str | None: ...
     async def read_memory(self, project_id: str, key: str) -> str | None: ...
     async def get_profile(self, project_id: str) -> str | None: ...
-    async def promote_note(self, project_id: str, note_filename: str, note_content: str, workspace: str) -> str | None: ...
+    async def promote_note(
+        self, project_id: str, note_filename: str, note_content: str, workspace: str
+    ) -> str | None: ...
     async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None: ...
     async def regenerate_profile(self, project_id: str, workspace: str) -> str | None: ...
     # Consolidation
     async def run_daily_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
     async def run_deep_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
-    async def bootstrap_consolidation(self, project_id: str, workspace_path: str = "", *, project_name: str = "", repo_url: str = "") -> dict: ...
+    async def bootstrap_consolidation(
+        self,
+        project_id: str,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> dict: ...
     # Factsheet & knowledge
     async def read_factsheet_raw(self, project_id: str) -> str | None: ...
     def parse_factsheet_yaml(self, content: str) -> dict: ...
-    async def write_factsheet_raw(self, project_id: str, content: str, workspace_path: str = "") -> str | None: ...
-    async def update_factsheet_field(self, project_id: str, dotted_key: str, value: Any, workspace_path: str = "", *, project_name: str = "", repo_url: str = "") -> str | None: ...
+    async def write_factsheet_raw(
+        self, project_id: str, content: str, workspace_path: str = ""
+    ) -> str | None: ...
+    async def update_factsheet_field(
+        self,
+        project_id: str,
+        dotted_key: str,
+        value: Any,
+        workspace_path: str = "",
+        *,
+        project_name: str = "",
+        repo_url: str = "",
+    ) -> str | None: ...
     async def list_knowledge_topics(self, project_id: str) -> list[dict]: ...
     async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None: ...
-    async def search_all_project_factsheets(self, project_ids: list[str], query: str = "", field: str = "") -> list[dict]: ...
+    async def search_all_project_factsheets(
+        self, project_ids: list[str], query: str = "", field: str = ""
+    ) -> list[dict]: ...
     @property
     def notes_inform_profile(self) -> bool: ...
 
@@ -108,8 +151,12 @@ class MemoryService(Protocol):
 class WorkspaceService(Protocol):
     """Path resolution, validation, and workspace helpers."""
 
-    async def resolve_repo_path(self, args: dict, active_project_id: str | None = None) -> tuple[str | None, Any, dict | None]: ...
-    async def resolve_workspace(self, project_id: str, workspace: str | None) -> tuple[Any, dict | None]: ...
+    async def resolve_repo_path(
+        self, args: dict, active_project_id: str | None = None
+    ) -> tuple[str | None, Any, dict | None]: ...
+    async def resolve_workspace(
+        self, project_id: str, workspace: str | None
+    ) -> tuple[Any, dict | None]: ...
     async def validate_path(self, path: str) -> str | None: ...
     def get_notes_dir(self, project_id: str) -> str: ...
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None: ...
@@ -153,7 +200,9 @@ class GitServiceImpl:
     async def push(self, checkout_path: str, branch: str, *, force_with_lease: bool = False) -> str:
         return await self._git.apush(checkout_path, branch, force_with_lease=force_with_lease)
 
-    async def create_branch(self, checkout_path: str, name: str, *, base: str | None = None) -> None:
+    async def create_branch(
+        self, checkout_path: str, name: str, *, base: str | None = None
+    ) -> None:
         await self._git.acreate_branch(checkout_path, name, base=base)
 
     async def checkout(self, checkout_path: str, branch: str) -> None:
@@ -162,8 +211,19 @@ class GitServiceImpl:
     async def merge(self, checkout_path: str, source: str, *, target: str | None = None) -> dict:
         return await self._git.amerge(checkout_path, source, target=target)
 
-    async def create_pr(self, checkout_path: str, *, title: str, body: str, base: str | None = None, head: str | None = None, draft: bool = False) -> dict:
-        return await self._git.acreate_pr(checkout_path, title=title, body=body, base=base, head=head, draft=draft)
+    async def create_pr(
+        self,
+        checkout_path: str,
+        *,
+        title: str,
+        body: str,
+        base: str | None = None,
+        head: str | None = None,
+        draft: bool = False,
+    ) -> dict:
+        return await self._git.acreate_pr(
+            checkout_path, title=title, body=body, base=base, head=head, draft=draft
+        )
 
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]:
         return await self._git.alog(checkout_path, limit=limit)
@@ -239,7 +299,9 @@ class MemoryServiceImpl:
     def __init__(self, memory_manager: Any) -> None:
         self._mm = memory_manager
 
-    async def search(self, project_id: str, workspace: str, query: str, *, top_k: int = 10) -> list[dict]:
+    async def search(
+        self, project_id: str, workspace: str, query: str, *, top_k: int = 10
+    ) -> list[dict]:
         if not self._mm:
             return []
         return await self._mm.search(project_id, workspace, query, top_k=top_k)
@@ -250,6 +312,54 @@ class MemoryServiceImpl:
         if not self._mm:
             return {q: [] for q in queries}
         return await self._mm.batch_search(project_id, workspace, queries, top_k=top_k)
+
+    async def scoped_search(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+        weights: dict | None = None,
+        full: bool = False,
+    ) -> list[dict]:
+        """Multi-scope weighted search per spec §6."""
+        if not self._mm:
+            return []
+        return await self._mm.scoped_search(
+            query,
+            project_id=project_id,
+            agent_type=agent_type,
+            topic=topic,
+            top_k=top_k,
+            weights=weights,
+            full=full,
+        )
+
+    async def scoped_batch_search(
+        self,
+        queries: list[str],
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+        weights: dict | None = None,
+        full: bool = False,
+    ) -> dict[str, list[dict]]:
+        """Multi-scope weighted batch search per spec §6."""
+        if not self._mm:
+            return {q: [] for q in queries}
+        return await self._mm.scoped_batch_search(
+            queries,
+            project_id=project_id,
+            agent_type=agent_type,
+            topic=topic,
+            top_k=top_k,
+            weights=weights,
+            full=full,
+        )
 
     async def write_memory(
         self, project_id: str, workspace: str, key: str, content: str
@@ -289,7 +399,9 @@ class MemoryServiceImpl:
             return None
         return await self._mm.get_profile(project_id)
 
-    async def promote_note(self, project_id: str, note_filename: str, note_content: str, workspace: str) -> str | None:
+    async def promote_note(
+        self, project_id: str, note_filename: str, note_content: str, workspace: str
+    ) -> str | None:
         if not self._mm:
             return None
         return await self._mm.promote_note(project_id, note_filename, note_content, workspace)
@@ -362,8 +474,12 @@ class MemoryServiceImpl:
         if not self._mm:
             return None
         return await self._mm.update_factsheet_field(
-            project_id, dotted_key, value, workspace_path,
-            project_name=project_name, repo_url=repo_url,
+            project_id,
+            dotted_key,
+            value,
+            workspace_path,
+            project_name=project_name,
+            repo_url=repo_url,
         )
 
     async def list_knowledge_topics(self, project_id: str) -> list[dict]:
@@ -445,16 +561,23 @@ class WorkspaceServiceImpl:
                 repo = repos[0]
                 if repo.source_type == RepoSourceType.LINK and repo.source_path:
                     checkout_path = repo.source_path
-                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                elif (
+                    repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT)
+                    and repo.checkout_base_path
+                ):
                     checkout_path = repo.checkout_base_path
 
         if not checkout_path:
             if not project:
                 return None, None, {"error": "No workspace found and no project context"}
-            return None, None, {
-                "error": f"Project '{project_id}' has no workspaces. "
-                f"Use /add-workspace to create one."
-            }
+            return (
+                None,
+                None,
+                {
+                    "error": f"Project '{project_id}' has no workspaces. "
+                    f"Use /add-workspace to create one."
+                },
+            )
 
         if not os.path.isdir(checkout_path):
             return None, project, {"error": f"Path not found: {checkout_path}"}
@@ -464,7 +587,9 @@ class WorkspaceServiceImpl:
         return checkout_path, project, None
 
     async def resolve_workspace(
-        self, project_id: str, workspace: str | None,
+        self,
+        project_id: str,
+        workspace: str | None,
     ) -> tuple[Any, dict | None]:
         """Resolve a workspace by ID or name within a project."""
         if not workspace:
@@ -503,9 +628,7 @@ class WorkspaceServiceImpl:
 
         Notes live in the vault at ``vault/projects/{project_id}/notes/``.
         """
-        return os.path.join(
-            self._config.data_dir, "vault", "projects", project_id, "notes"
-        )
+        return os.path.join(self._config.data_dir, "vault", "projects", project_id, "notes")
 
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.

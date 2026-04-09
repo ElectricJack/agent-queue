@@ -42,11 +42,16 @@ from src.models import MemoryContext, ProjectFactsheet
 logger = logging.getLogger(__name__)
 
 try:
-    from memsearch import MemSearch
+    from memsearch import MemSearch, CollectionRouter, merge_and_rank
+    from memsearch.embeddings import EmbeddingProvider, get_provider as get_embedding_provider
 
     MEMSEARCH_AVAILABLE = True
 except ImportError:
     MemSearch = None  # type: ignore[assignment,misc]
+    CollectionRouter = None  # type: ignore[assignment,misc]
+    merge_and_rank = None  # type: ignore[assignment]
+    EmbeddingProvider = None  # type: ignore[assignment,misc]
+    get_embedding_provider = None  # type: ignore[assignment]
     MEMSEARCH_AVAILABLE = False
 
 
@@ -72,6 +77,9 @@ class MemoryManager:
         self._watchers: dict[str, Any] = {}
         self._last_compact: dict[str, float] = {}  # project_id -> timestamp
         self._doc_file_mtimes: dict[str, float] = {}  # "workspace:relpath" -> mtime
+        # Multi-scope search (spec §6): shared router and embedder, lazily initialised.
+        self._router: Any | None = None  # CollectionRouter
+        self._embedder: Any | None = None  # EmbeddingProvider
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -156,8 +164,7 @@ class MemoryManager:
 
         if migrated:
             logger.info(
-                "Migrated %d task record(s) from legacy memory/tasks/ to tasks/ "
-                "for project %s",
+                "Migrated %d task record(s) from legacy memory/tasks/ to tasks/ for project %s",
                 migrated,
                 project_id,
             )
@@ -184,9 +191,7 @@ class MemoryManager:
 
         Notes live in the vault at ``vault/projects/{project_id}/notes/``.
         """
-        return os.path.join(
-            self._storage_root, "vault", "projects", project_id, "notes"
-        )
+        return os.path.join(self._storage_root, "vault", "projects", project_id, "notes")
 
     def _factsheet_path(self, project_id: str) -> str:
         """Path to the project factsheet file.
@@ -268,6 +273,74 @@ class MemoryManager:
         if not uri.startswith("http"):
             os.makedirs(os.path.dirname(uri), exist_ok=True)
         return uri
+
+    # ------------------------------------------------------------------
+    # Multi-scope search infrastructure (spec §6)
+    # ------------------------------------------------------------------
+
+    async def _get_embedder(self) -> Any | None:
+        """Get or create the shared embedding provider.
+
+        Returns ``None`` when memsearch is unavailable or the subsystem is
+        disabled.  The embedder is created once and reused across all
+        multi-scope searches.
+
+        The provider constructor may make synchronous network calls (e.g.
+        to discover the embedding dimension from Ollama), so we run it in
+        a thread to avoid blocking the asyncio event loop.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            return None
+        if self._embedder is not None:
+            return self._embedder
+        try:
+            self._embedder = await asyncio.to_thread(
+                get_embedding_provider,
+                self.config.embedding_provider,
+                model=self.config.embedding_model or None,
+                base_url=self.config.embedding_base_url or None,
+                api_key=self.config.embedding_api_key or None,
+            )
+            logger.info(
+                "Initialised shared embedding provider: %s (dim=%d)",
+                self._embedder.model_name,
+                self._embedder.dimension,
+            )
+            return self._embedder
+        except Exception as e:
+            logger.error("Failed to create embedding provider: %s", e)
+            return None
+
+    async def _get_router(self) -> Any | None:
+        """Get or create the shared :class:`CollectionRouter`.
+
+        The router manages lazy ``MilvusStore`` instances per scope
+        (``aq_system``, ``aq_agenttype_{type}``, ``aq_project_{id}``)
+        and provides parallel multi-scope search with weighted merging.
+
+        Requires a working embedding provider to determine vector
+        dimension.  Returns ``None`` when memsearch is unavailable or
+        the embedding provider cannot be initialised.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            return None
+        if self._router is not None:
+            return self._router
+        embedder = await self._get_embedder()
+        if embedder is None:
+            return None
+        try:
+            uri = self._resolve_milvus_uri()
+            self._router = CollectionRouter(
+                milvus_uri=uri,
+                token=self.config.milvus_token or None,
+                dimension=embedder.dimension,
+            )
+            logger.info("Initialised CollectionRouter (uri=%s, dim=%d)", uri, embedder.dimension)
+            return self._router
+        except Exception as e:
+            logger.error("Failed to create CollectionRouter: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # Instance management
@@ -540,9 +613,7 @@ class MemoryManager:
         Returns the file path on success, ``None`` on failure.
         """
         # Update the timestamp
-        factsheet.raw_yaml["last_updated"] = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-        )
+        factsheet.raw_yaml["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         content = self._serialize_factsheet(factsheet)
         path = self._factsheet_path(project_id)
@@ -713,16 +784,16 @@ class MemoryManager:
             size = 0
             if has_content:
                 try:
-                    size = os.path.getsize(
-                        os.path.join(knowledge_dir, f"{topic}.md")
-                    )
+                    size = os.path.getsize(os.path.join(knowledge_dir, f"{topic}.md"))
                 except OSError:
                     pass
-            topics.append({
-                "topic": topic,
-                "has_content": has_content,
-                "size_bytes": size,
-            })
+            topics.append(
+                {
+                    "topic": topic,
+                    "has_content": has_content,
+                    "size_bytes": size,
+                }
+            )
 
         # Include any extra topics found on disk but not in config
         for topic in sorted(found_on_disk - configured):
@@ -730,12 +801,14 @@ class MemoryManager:
                 size = os.path.getsize(os.path.join(knowledge_dir, f"{topic}.md"))
             except OSError:
                 size = 0
-            topics.append({
-                "topic": topic,
-                "has_content": True,
-                "size_bytes": size,
-                "extra": True,
-            })
+            topics.append(
+                {
+                    "topic": topic,
+                    "has_content": True,
+                    "size_bytes": size,
+                    "extra": True,
+                }
+            )
 
         return topics
 
@@ -1333,8 +1406,13 @@ class MemoryManager:
 
             # Validate fact structure — keep only well-formed entries
             valid_categories = {
-                "url", "tech_stack", "decision", "convention",
-                "architecture", "config", "contact",
+                "url",
+                "tech_stack",
+                "decision",
+                "convention",
+                "architecture",
+                "config",
+                "contact",
             }
             validated_facts = []
             for fact in facts:
@@ -1344,11 +1422,13 @@ class MemoryManager:
                 key = fact.get("key", "")
                 value = fact.get("value", "")
                 if category in valid_categories and key and value:
-                    validated_facts.append({
-                        "category": category,
-                        "key": key,
-                        "value": value,
-                    })
+                    validated_facts.append(
+                        {
+                            "category": category,
+                            "key": key,
+                            "value": value,
+                        }
+                    )
 
             # Build staging document
             staging_doc = {
@@ -1428,7 +1508,9 @@ class MemoryManager:
             with open(path) as f:
                 return f.read()
         except Exception as e:
-            logger.warning(f"Failed to read knowledge topic '{topic}' for project {project_id}: {e}")
+            logger.warning(
+                f"Failed to read knowledge topic '{topic}' for project {project_id}: {e}"
+            )
             return None
 
     async def write_knowledge_topic(
@@ -1603,15 +1685,9 @@ class MemoryManager:
             from src.config import ChatProviderConfig
 
             provider_name = (
-                self.config.consolidation_provider
-                or self.config.revision_provider
-                or "anthropic"
+                self.config.consolidation_provider or self.config.revision_provider or "anthropic"
             )
-            model_name = (
-                self.config.consolidation_model
-                or self.config.revision_model
-                or ""
-            )
+            model_name = self.config.consolidation_model or self.config.revision_model or ""
 
             provider_config = ChatProviderConfig(
                 provider=provider_name,
@@ -1726,6 +1802,7 @@ class MemoryManager:
         if factsheet:
             try:
                 import yaml as _yaml
+
                 factsheet_yaml = _yaml.dump(
                     factsheet.raw_yaml,
                     default_flow_style=False,
@@ -1752,7 +1829,8 @@ class MemoryManager:
                     knowledge_sections.append(f"### {topic}\n```markdown\n{content}\n```")
 
         knowledge_topics_section = (
-            "\n\n".join(knowledge_sections) if knowledge_sections
+            "\n\n".join(knowledge_sections)
+            if knowledge_sections
             else "(no knowledge topics to update)"
         )
 
@@ -1858,6 +1936,7 @@ class MemoryManager:
                     new_yaml = new_yaml_data
                 else:
                     import yaml as _yaml
+
                     new_yaml = _yaml.safe_load(new_yaml_data)
                 if isinstance(new_yaml, dict):
                     factsheet.raw_yaml = new_yaml
@@ -1894,8 +1973,7 @@ class MemoryManager:
             "factsheet_updated": factsheet_updated,
         }
         logger.info(
-            "Consolidation for %s: %d facts from %d staging files, "
-            "%d topics updated, factsheet %s",
+            "Consolidation for %s: %d facts from %d staging files, %d topics updated, factsheet %s",
             project_id,
             len(unique_facts),
             moved,
@@ -1987,9 +2065,7 @@ class MemoryManager:
         processed_dir = self._staging_processed_dir(project_id)
         processed_count = 0
         if os.path.isdir(processed_dir):
-            processed_count = len(
-                [f for f in os.listdir(processed_dir) if f.endswith(".json")]
-            )
+            processed_count = len([f for f in os.listdir(processed_dir) if f.endswith(".json")])
 
         # 4. Call LLM for deep consolidation
         from src.prompts.memory_consolidation import (
@@ -2063,9 +2139,7 @@ class MemoryManager:
                 "pruned_facts": [],
             }
         except Exception as e:
-            logger.warning(
-                "Deep consolidation LLM call failed for project %s: %s", project_id, e
-            )
+            logger.warning("Deep consolidation LLM call failed for project %s: %s", project_id, e)
             return {
                 "status": "error",
                 "error": str(e),
@@ -2252,9 +2326,7 @@ class MemoryManager:
             seed_yaml = str(seed_factsheet.raw_yaml)
 
         # 4. Format available topics
-        available_topics = "\n".join(
-            f"- `{topic}`" for topic in self.config.knowledge_topics
-        )
+        available_topics = "\n".join(f"- `{topic}`" for topic in self.config.knowledge_topics)
 
         # 5. Limit task summaries to avoid exceeding context window
         # Keep most recent tasks, truncate older ones
@@ -2343,9 +2415,7 @@ class MemoryManager:
                 "factsheet_created": False,
             }
         except Exception as e:
-            logger.warning(
-                "Bootstrap LLM call failed for project %s: %s", project_id, e
-            )
+            logger.warning("Bootstrap LLM call failed for project %s: %s", project_id, e)
             return {
                 "status": "error",
                 "error": str(e),
@@ -2405,8 +2475,7 @@ class MemoryManager:
             "factsheet_created": factsheet_created,
         }
         logger.info(
-            "Bootstrap consolidation for %s: %d tasks processed, "
-            "factsheet %s, %d topics created",
+            "Bootstrap consolidation for %s: %d tasks processed, factsheet %s, %d topics created",
             project_id,
             len(task_summaries),
             "created" if factsheet_created else "updated",
@@ -2934,6 +3003,145 @@ class MemoryManager:
         pairs = await asyncio.gather(*[_single(q) for q in queries])
         return dict(pairs)
 
+    # ------------------------------------------------------------------
+    # Multi-scope weighted search (spec §6)
+    # ------------------------------------------------------------------
+
+    async def scoped_search(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+        weights: dict | None = None,
+        full: bool = False,
+    ) -> list[dict]:
+        """Semantic search with weighted merge across scopes.
+
+        Implements spec §6 (Multi-Scope Query): searches project,
+        agent-type, and system collections in parallel and merges results
+        weighted by scope specificity (project=1.0, agent-type=0.7,
+        system=0.4).
+
+        A moderately relevant project-specific memory outranks a highly
+        relevant system memory because the scope weight amplifies raw
+        similarity scores.
+
+        Parameters
+        ----------
+        query:
+            Natural-language search query.
+        project_id:
+            When set, includes the project collection (weight 1.0).
+        agent_type:
+            When set, includes the agent-type collection (weight 0.7).
+        topic:
+            Optional topic pre-filter.  Falls back to unfiltered search
+            when fewer than 3 results match the topic.
+        top_k:
+            Maximum results after merging.
+        weights:
+            Override default scope weights.  Keys are
+            :class:`memsearch.MemoryScope` enum values.
+        full:
+            When ``True``, include ``original`` field in results.
+
+        Returns
+        -------
+        list[dict]
+            Results sorted by ``weighted_score`` descending.  Each result
+            includes ``_scope``, ``_scope_id``, ``_weight``, and
+            ``weighted_score`` annotations.
+        """
+        router = await self._get_router()
+        embedder = await self._get_embedder()
+        if router is None or embedder is None:
+            return []
+
+        try:
+            embeddings = await embedder.embed([query])
+            query_embedding = embeddings[0]
+        except Exception as e:
+            logger.warning("Failed to embed query for scoped_search: %s", e)
+            return []
+
+        try:
+            results = await router.search(
+                query_embedding,
+                query_text=query,
+                project_id=project_id,
+                agent_type=agent_type,
+                topic=topic,
+                top_k=top_k,
+                weights=weights,
+                full=full,
+            )
+            return results if results else []
+        except Exception as e:
+            logger.warning(
+                "Scoped search failed (project=%s, agent_type=%s): %s",
+                project_id,
+                agent_type,
+                e,
+            )
+            return []
+
+    async def scoped_batch_search(
+        self,
+        queries: list[str],
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+        weights: dict | None = None,
+        full: bool = False,
+    ) -> dict[str, list[dict]]:
+        """Run multiple multi-scope searches concurrently.
+
+        Like :meth:`scoped_search` but accepts a list of queries.
+        Embeddings are computed in a single batch for efficiency, then
+        each query is searched in parallel across all scopes.
+
+        Returns a dict mapping each query string to its merged results.
+        """
+        router = await self._get_router()
+        embedder = await self._get_embedder()
+        if router is None or embedder is None:
+            return {q: [] for q in queries}
+
+        if not queries:
+            return {}
+
+        # Batch-embed all queries at once for efficiency
+        try:
+            all_embeddings = await embedder.embed(queries)
+        except Exception as e:
+            logger.warning("Failed to batch-embed queries for scoped_batch_search: %s", e)
+            return {q: [] for q in queries}
+
+        async def _single(q: str, emb: list[float]) -> tuple[str, list[dict]]:
+            try:
+                results = await router.search(
+                    emb,
+                    query_text=q,
+                    project_id=project_id,
+                    agent_type=agent_type,
+                    topic=topic,
+                    top_k=top_k,
+                    weights=weights,
+                    full=full,
+                )
+                return (q, results if results else [])
+            except Exception as e:
+                logger.warning("Scoped batch_search query %r failed: %s", q, e)
+                return (q, [])
+
+        pairs = await asyncio.gather(*[_single(q, emb) for q, emb in zip(queries, all_embeddings)])
+        return dict(pairs)
+
     async def reindex(self, project_id: str, workspace_path: str) -> int:
         """Force a full reindex of a project's memory.
 
@@ -3024,7 +3232,7 @@ class MemoryManager:
         }
 
     async def close(self) -> None:
-        """Shutdown all MemSearch instances and file watchers."""
+        """Shutdown all MemSearch instances, file watchers, and router."""
         for watcher in self._watchers.values():
             try:
                 watcher.stop()
@@ -3035,6 +3243,13 @@ class MemoryManager:
                 instance.close()
             except Exception as e:
                 logger.debug(f"Error closing MemSearch for project {project_id}: {e}")
+        if self._router is not None:
+            try:
+                self._router.close()
+            except Exception as e:
+                logger.debug(f"Error closing CollectionRouter: {e}")
+            self._router = None
+        self._embedder = None
         self._instances.clear()
         self._watchers.clear()
 
