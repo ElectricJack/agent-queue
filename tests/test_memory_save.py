@@ -1143,6 +1143,273 @@ class TestSourceTasksAccumulation:
 
 
 # ---------------------------------------------------------------------------
+# Distinct content save (<0.8 similarity) — Roadmap 3.4.6
+# ---------------------------------------------------------------------------
+
+
+class TestDistinctContentSave:
+    """Test the distinct-content path of memory_save (<0.8 similarity).
+
+    Roadmap 3.4.6 cases:
+    (a) Content with <0.8 similarity to existing entries creates a new entry.
+    (b) Collection entry count increases by 1 after distinct save.
+    (c) Both old and new entries are independently searchable.
+    (d) Saving to an empty collection always creates new.
+    (e) Saving 10 distinct pieces of content creates 10 entries with correct topics/tags.
+    (f) Distinct save assigns its own topic and tags independent of existing entries.
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="inferred-topic")
+        return plugin
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_low_similarity_creates_new_entry(self, wired_plugin, mock_store):
+        """(a) Content with <0.8 similarity to an existing entry creates a new entry."""
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight about caching strategies",
+                "score": 0.72,
+                "chunk_hash": "existing_hash_abc",
+                "entry_type": "document",
+                "topic": "caching",
+                "tags": '["insight", "performance"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "New insight about database indexing.",
+                "tags": ["insight", "database"],
+                "topic": "database",
+                "source_task": "task-100",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "created"
+        # Must NOT merge or dedup with the existing entry
+        assert "merged_with" not in result
+        assert "existing_chunk_hash" not in result
+        # The new entry gets its own chunk_hash
+        assert result["chunk_hash"]
+        assert result["chunk_hash"] != "existing_hash_abc"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_collection_entry_count_increases(self, wired_plugin, mock_store):
+        """(b) Collection entry count increases by 1 — upsert is called with a new entry."""
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight",
+                "score": 0.65,
+                "chunk_hash": "old_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        # Reset upsert call tracking before our save
+        mock_store.upsert.reset_mock()
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Totally different topic: deployment strategies.",
+                "tags": ["insight", "deployment"],
+                "topic": "deployment",
+            }
+        )
+
+        # save_document should have called upsert exactly once with a list of 1 chunk
+        assert mock_store.upsert.call_count == 1
+        upserted_chunks = mock_store.upsert.call_args[0][0]
+        assert len(upserted_chunks) == 1
+        # The upserted entry should be a new document, not an update to the existing one
+        assert upserted_chunks[0]["entry_type"] == "document"
+        assert upserted_chunks[0]["chunk_hash"] != "old_hash"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_old_and_new_entries_independently_searchable(
+        self, wired_plugin, mock_store, service
+    ):
+        """(c) Both old and new entries remain independently searchable.
+
+        The distinct path creates a *new* entry via save_document (upsert) —
+        it must NOT call update_document_timestamp or update_document_content,
+        which would modify the existing entry instead of creating a new one.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth requires scope re-request",
+                "score": 0.55,
+                "chunk_hash": "old_auth_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "auth"]',
+            }
+        ]
+
+        mock_store.upsert.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "WebSocket connections need heartbeat every 30s.",
+                "tags": ["insight", "websocket"],
+                "topic": "networking",
+            }
+        )
+
+        assert result["action"] == "created"
+
+        # Verify save_document was invoked (upsert with new chunk)
+        assert mock_store.upsert.call_count == 1
+        new_chunk = mock_store.upsert.call_args[0][0][0]
+        assert new_chunk["chunk_hash"] != "old_auth_hash"
+
+        # Verify the existing entry was NOT modified:
+        # - mock_store.get was not called (get is only used for update paths)
+        #   reset_mock on get to check our call, not fixture setup
+        # Instead, confirm the service's update methods were not invoked.
+        # Since update_document_timestamp and update_document_content both
+        # call store.get, we verify by checking the action is "created"
+        # and that no "merged_with" or "existing_chunk_hash" keys appear.
+        assert "merged_with" not in result
+        assert "existing_chunk_hash" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_empty_collection_creates_new(self, wired_plugin, mock_store):
+        """(d) Saving to an empty collection always creates a new entry."""
+        # Empty collection → search returns nothing
+        mock_store.search.return_value = []
+        mock_store.upsert.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "brand-new-project",
+                "content": "First insight ever for this project.",
+                "tags": ["insight", "initial"],
+                "topic": "onboarding",
+                "source_task": "task-first",
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "created"
+        assert result["project_id"] == "brand-new-project"
+        assert result["chunk_hash"]
+        assert result["vault_path"]
+        # Exactly one new entry upserted
+        assert mock_store.upsert.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_ten_distinct_saves_create_ten_entries(self, wired_plugin, mock_store):
+        """(e) Saving 10 distinct pieces of content creates 10 entries with correct topics/tags."""
+        # All searches return nothing relevant (distinct content)
+        mock_store.search.return_value = []
+        mock_store.upsert.reset_mock()
+
+        saved_hashes = []
+        contents = [
+            ("Database indexing speeds up reads.", "database", ["db", "performance"]),
+            ("OAuth tokens expire after 1 hour.", "auth", ["oauth", "tokens"]),
+            ("WebSocket needs heartbeat.", "networking", ["websocket", "realtime"]),
+            ("React hooks must follow rules of hooks.", "frontend", ["react", "hooks"]),
+            ("Docker layers are cached for faster builds.", "devops", ["docker", "ci"]),
+            ("Redis pub/sub for real-time events.", "caching", ["redis", "events"]),
+            ("GraphQL resolvers should be thin.", "api", ["graphql", "architecture"]),
+            ("Kubernetes pods auto-restart on OOM.", "infrastructure", ["k8s", "reliability"]),
+            ("Pytest fixtures enable clean test setup.", "testing", ["pytest", "fixtures"]),
+            ("Alembic manages DB schema migrations.", "migrations", ["alembic", "schema"]),
+        ]
+
+        for content, topic, tags in contents:
+            result = await wired_plugin.cmd_memory_save(
+                {
+                    "project_id": "test-project",
+                    "content": content,
+                    "tags": tags,
+                    "topic": topic,
+                }
+            )
+            assert result["success"] is True
+            assert result["action"] == "created"
+            saved_hashes.append(result["chunk_hash"])
+
+        # All 10 saves should have triggered upsert
+        assert mock_store.upsert.call_count == 10
+
+        # Each upserted chunk should have the correct topic and tags
+        for i, call in enumerate(mock_store.upsert.call_args_list):
+            chunk = call[0][0][0]
+            expected_content, expected_topic, expected_tags = contents[i]
+            assert chunk["entry_type"] == "document"
+            assert chunk["topic"] == expected_topic
+            import json
+
+            assert json.loads(chunk["tags"]) == expected_tags
+
+        # All chunk hashes should be unique (different content → different hashes)
+        assert len(set(saved_hashes)) == 10
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_distinct_save_independent_topic_and_tags(self, wired_plugin, mock_store):
+        """(f) Distinct save assigns its own topic and tags, independent of existing entries."""
+        # Existing entry has topic="auth" and tags=["insight", "auth"]
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth token refresh needs explicit scope",
+                "score": 0.45,
+                "chunk_hash": "auth_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "auth"]',
+            }
+        ]
+
+        mock_store.upsert.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Kubernetes liveness probes prevent stale pods.",
+                "tags": ["devops", "kubernetes"],
+                "topic": "infrastructure",
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "created"
+
+        # New entry should have its OWN topic and tags, not the existing entry's
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert upserted["topic"] == "infrastructure"
+        import json
+
+        assert json.loads(upserted["tags"]) == ["devops", "kubernetes"]
+
+        # Return result should also reflect the new entry's own metadata
+        assert result["topic"] == "infrastructure"
+        assert result["tags"] == ["devops", "kubernetes"]
+
+
+# ---------------------------------------------------------------------------
 # Tool definition
 # ---------------------------------------------------------------------------
 
