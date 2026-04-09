@@ -968,6 +968,215 @@ class TestPlaybookValidation:
 
 
 # ---------------------------------------------------------------------------
+# Roadmap 5.1.11 — Graph validation test cases (a)-(h)
+# ---------------------------------------------------------------------------
+
+
+class TestRoadmapGraphValidation:
+    """Roadmap 5.1.11: Graph validation test cases per §19 Q6.
+
+    Each test maps to a specific case from the roadmap:
+      (a) unreachable node names the node in the error
+      (b) no entry node → validation error
+      (c) nonexistent transition target names the invalid target
+      (d) cycle without exit condition → validation error
+      (e) cycle WITH exit condition passes
+      (f) valid graph passes silently
+      (g) single node (entry = terminal) is valid
+      (h) duplicate node names → validation error
+    """
+
+    def test_a_unreachable_node_produces_error_naming_node(self):
+        """(a) Graph with unreachable node produces error naming the unreachable node."""
+        pb = CompiledPlaybook(
+            id="test-a",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "entry": PlaybookNode(entry=True, prompt="Start.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+                "island": PlaybookNode(prompt="No one reaches me.", goto="end"),
+            },
+        )
+        errors = pb.validate()
+        # Must mention the unreachable node by name
+        unreachable_errors = [e for e in errors if "unreachable" in e.lower()]
+        assert len(unreachable_errors) == 1
+        assert "island" in unreachable_errors[0]
+
+    def test_b_no_entry_node_produces_error(self):
+        """(b) Graph with no entry node defined produces validation error."""
+        pb = CompiledPlaybook(
+            id="test-b",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "step": PlaybookNode(prompt="Go.", goto="end"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        entry_errors = [e for e in errors if "entry" in e.lower()]
+        assert len(entry_errors) >= 1, f"Expected entry error, got: {errors}"
+
+    def test_c_nonexistent_target_names_invalid_target(self):
+        """(c) Transition referencing non-existent target names the invalid target."""
+        pb = CompiledPlaybook(
+            id="test-c",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(
+                    entry=True,
+                    prompt="Check.",
+                    transitions=[
+                        PlaybookTransition(goto="real_end", when="ok"),
+                        PlaybookTransition(goto="ghost_node", when="bad"),
+                    ],
+                ),
+                "real_end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        # Must mention the invalid target name
+        target_errors = [e for e in errors if "ghost_node" in e]
+        assert len(target_errors) >= 1, f"Expected error naming 'ghost_node', got: {errors}"
+
+    def test_c_nonexistent_goto_target_names_invalid_target(self):
+        """(c) Node goto referencing non-existent target names the invalid target."""
+        pb = CompiledPlaybook(
+            id="test-c2",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "start": PlaybookNode(entry=True, prompt="Go.", goto="missing_target"),
+                "end": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        target_errors = [e for e in errors if "missing_target" in e]
+        assert len(target_errors) >= 1, f"Expected error naming 'missing_target', got: {errors}"
+
+    def test_d_cycle_without_exit_produces_error(self):
+        """(d) Graph with cycle but no exit condition produces validation error."""
+        pb = CompiledPlaybook(
+            id="test-d",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "a": PlaybookNode(entry=True, prompt="Step A.", goto="b"),
+                "b": PlaybookNode(prompt="Step B.", goto="a"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        cycle_errors = [e for e in errors if "cycle" in e.lower()]
+        assert len(cycle_errors) >= 1, f"Expected cycle error, got: {errors}"
+        # Both trapped nodes should be mentioned
+        assert "a" in cycle_errors[0]
+        assert "b" in cycle_errors[0]
+
+    def test_e_cycle_with_exit_passes(self):
+        """(e) Graph with cycle AND exit condition passes validation."""
+        pb = CompiledPlaybook(
+            id="test-e",
+            version=1,
+            source_hash="abc",
+            triggers=["test.event"],
+            scope="system",
+            nodes={
+                "check": PlaybookNode(
+                    entry=True,
+                    prompt="Run the check.",
+                    transitions=[
+                        PlaybookTransition(goto="done", when="all clear"),
+                        PlaybookTransition(goto="fix", when="issues found"),
+                    ],
+                ),
+                "fix": PlaybookNode(prompt="Fix issues.", goto="check"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Cycle with exit should pass, got: {errors}"
+
+    def test_f_valid_graph_passes_silently(self):
+        """(f) Valid graph (all nodes reachable, entry exists, all targets valid) passes."""
+        pb = CompiledPlaybook(
+            id="test-f",
+            version=1,
+            source_hash="abc",
+            triggers=["git.push"],
+            scope="project",
+            nodes={
+                "scan": PlaybookNode(
+                    entry=True,
+                    prompt="Scan for issues.",
+                    transitions=[
+                        PlaybookTransition(goto="report", when="findings"),
+                        PlaybookTransition(goto="done", otherwise=True),
+                    ],
+                ),
+                "report": PlaybookNode(prompt="Generate report.", goto="done"),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Valid graph should pass silently, got: {errors}"
+
+    def test_g_single_node_entry_terminal_is_valid(self):
+        """(g) Graph with single node (entry = terminal) is valid."""
+        pb = CompiledPlaybook(
+            id="test-g",
+            version=1,
+            source_hash="abc",
+            triggers=["timer.5m"],
+            scope="system",
+            nodes={
+                "only": PlaybookNode(entry=True, terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert errors == [], f"Single entry+terminal node should be valid, got: {errors}"
+
+    def test_h_duplicate_node_names_produces_error(self):
+        """(h) Graph with duplicate node names in JSON produces validation error.
+
+        Python's ``json.loads`` silently keeps the last value for duplicate
+        keys.  ``CompiledPlaybook.from_json`` detects this and reports it
+        as a parse-level error.
+        """
+        # Manually construct JSON with duplicate node keys — json.dumps can't do this
+        # because Python dicts already enforce unique keys.
+        raw_json = (
+            '{"id": "test-h", "version": 1, "source_hash": "abc", '
+            '"triggers": ["test.event"], "scope": "system", '
+            '"nodes": {'
+            '  "step": {"entry": true, "prompt": "First definition.", "goto": "end"},'
+            '  "end": {"terminal": true},'
+            '  "step": {"prompt": "Second definition — overwrites first!", "goto": "end"}'
+            "}}"
+        )
+        pb, parse_errors = CompiledPlaybook.from_json(raw_json)
+        # Must report duplicate key
+        assert len(parse_errors) >= 1
+        assert any("step" in e.lower() or "duplicate" in e.lower() for e in parse_errors)
+        # The resulting playbook is also structurally broken (lost entry node)
+        validation_errors = pb.validate()
+        assert any("entry" in e.lower() for e in validation_errors)
+
+
+# ---------------------------------------------------------------------------
 # Graph helper: nodes_reaching_terminal
 # ---------------------------------------------------------------------------
 

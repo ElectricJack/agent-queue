@@ -517,6 +517,47 @@ class CompiledPlaybook:
             compiled_at=data.get("compiled_at"),
         )
 
+    @classmethod
+    def from_json(cls, json_string: str) -> tuple[CompiledPlaybook, list[str]]:
+        """Parse from a JSON string with duplicate key detection.
+
+        Unlike ``from_dict(json.loads(s))``, this method detects duplicate
+        keys in the JSON source — which Python's ``json.loads`` silently
+        discards (keeping only the last value).  Duplicate node names are
+        reported as parse-level errors in the returned list.
+
+        Returns
+        -------
+        tuple[CompiledPlaybook, list[str]]
+            The parsed playbook and a list of parse-level error strings
+            (empty if no issues).  Call :meth:`validate` separately for
+            structural graph validation.
+        """
+        import json as json_mod
+
+        duplicate_keys: list[str] = []
+
+        def _check_pairs(pairs: list[tuple[str, Any]]) -> dict:
+            seen: set[str] = set()
+            for key, _ in pairs:
+                if key in seen:
+                    duplicate_keys.append(key)
+                seen.add(key)
+            return dict(pairs)
+
+        data = json_mod.loads(json_string, object_pairs_hook=_check_pairs)
+        pb = cls.from_dict(data)
+
+        errors: list[str] = []
+        if duplicate_keys:
+            unique_dups = sorted(set(duplicate_keys))
+            errors.append(
+                f"Duplicate node/key names in JSON: {unique_dups} "
+                "(last definition wins, earlier definitions are lost)"
+            )
+
+        return pb, errors
+
 
 # ---------------------------------------------------------------------------
 # Playbook Run (execution record)
