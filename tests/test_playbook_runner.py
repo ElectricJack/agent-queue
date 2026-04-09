@@ -735,6 +735,187 @@ class TestDBPersistence:
         result = await runner.run()
         assert result.status == "completed"
 
+    async def test_persisted_conversation_history_content(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """Verify the actual JSON content of persisted conversation history."""
+        graph = {
+            "id": "history-persist",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Scan for issues.", "goto": "b"},
+                "b": {"prompt": "Fix the issues.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Found 3 issues.", "All fixed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # Check the final completion update has full conversation history
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        history = json.loads(final_call.kwargs["conversation_history"])
+
+        # Should have: seed + node_a_prompt + node_a_response + node_b_prompt + node_b_response
+        assert len(history) == 5
+        assert history[0]["role"] == "user"  # seed
+        assert "Event received" in history[0]["content"]
+        assert history[1] == {"role": "user", "content": "Scan for issues."}
+        assert history[2] == {"role": "assistant", "content": "Found 3 issues."}
+        assert history[3] == {"role": "user", "content": "Fix the issues."}
+        assert history[4] == {"role": "assistant", "content": "All fixed."}
+
+    async def test_persisted_node_trace_content(self, mock_supervisor, event_data, mock_db):
+        """Verify the actual JSON content of persisted node trace."""
+        graph = {
+            "id": "trace-persist",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # Check the final completion update has full node trace
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        trace = json.loads(final_call.kwargs["node_trace"])
+
+        assert len(trace) == 2
+        assert trace[0]["node_id"] == "a"
+        assert trace[0]["status"] == "completed"
+        assert trace[0]["started_at"] is not None
+        assert trace[0]["completed_at"] is not None
+        assert trace[0]["completed_at"] >= trace[0]["started_at"]
+        assert trace[1]["node_id"] == "b"
+        assert trace[1]["status"] == "completed"
+
+    async def test_intermediate_updates_have_partial_state(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """Each intermediate update should reflect the state at that point."""
+        graph = {
+            "id": "partial-state",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        # First node update (after node "a")
+        first_update = mock_db.update_playbook_run.call_args_list[0]
+        assert first_update.kwargs["current_node"] == "a"
+        trace_after_a = json.loads(first_update.kwargs["node_trace"])
+        assert len(trace_after_a) == 1
+        assert trace_after_a[0]["node_id"] == "a"
+
+        history_after_a = json.loads(first_update.kwargs["conversation_history"])
+        assert len(history_after_a) == 3  # seed + prompt + response
+
+        # Second node update (after node "b")
+        second_update = mock_db.update_playbook_run.call_args_list[1]
+        assert second_update.kwargs["current_node"] == "b"
+        trace_after_b = json.loads(second_update.kwargs["node_trace"])
+        assert len(trace_after_b) == 2
+
+        history_after_b = json.loads(second_update.kwargs["conversation_history"])
+        assert len(history_after_b) == 5  # seed + 2*(prompt + response)
+
+    async def test_failed_run_persists_error_and_partial_state(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """A failed run should persist the error, partial history, and trace."""
+        graph = {
+            "id": "fail-persist",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        call_count = 0
+
+        async def fail_on_second(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("LLM timeout")
+            return "Step A done."
+
+        mock_supervisor.chat.side_effect = fail_on_second
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "failed"
+
+        # Find the failure update call
+        fail_call = None
+        for call in mock_db.update_playbook_run.call_args_list:
+            if call.kwargs.get("status") == "failed":
+                fail_call = call
+                break
+
+        assert fail_call is not None
+        assert "LLM timeout" in fail_call.kwargs["error"]
+        assert fail_call.kwargs["current_node"] == "b"
+        assert fail_call.kwargs["completed_at"] is not None
+
+        # Conversation history should contain what completed before failure
+        history = json.loads(fail_call.kwargs["conversation_history"])
+        assert len(history) == 3  # seed + node_a_prompt + node_a_response
+
+        # Node trace should show node A completed and B failed
+        trace = json.loads(fail_call.kwargs["node_trace"])
+        assert len(trace) == 2
+        assert trace[0]["node_id"] == "a"
+        assert trace[0]["status"] == "completed"
+        assert trace[1]["node_id"] == "b"
+        assert trace[1]["status"] == "failed"
+
+    async def test_timed_out_run_persists_status(self, mock_supervisor, event_data, mock_db):
+        """Token budget exhaustion should persist timed_out status."""
+        graph = {
+            "id": "timeout-persist",
+            "version": 1,
+            "max_tokens": 10,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
+                "b": {"prompt": "Step B", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "x" * 200
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "timed_out"
+
+        # Find the timed_out update
+        timeout_call = None
+        for call in mock_db.update_playbook_run.call_args_list:
+            if call.kwargs.get("status") == "timed_out":
+                timeout_call = call
+                break
+
+        assert timeout_call is not None
+        assert "Token budget exceeded" in timeout_call.kwargs["error"]
+
 
 # ---------------------------------------------------------------------------
 # Progress callbacks

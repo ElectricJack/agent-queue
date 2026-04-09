@@ -7,6 +7,8 @@ Verifies that:
 4. The abstraction layer works with mock adapters
 """
 
+import json
+
 import pytest
 import time
 
@@ -18,6 +20,7 @@ from src.models import (
     AgentState,
     Hook,
     HookRun,
+    PlaybookRun,
     Project,
     ProjectStatus,
     RepoConfig,
@@ -813,6 +816,409 @@ class TestAtomicOperations:
 
 
 # ── Mock Adapter Test ────────────────────────────────────────────────────
+
+
+# ── Playbook Run Queries ────────────────────────────────────────────────
+
+
+def _make_playbook_run(
+    run_id: str = "run-1",
+    playbook_id: str = "pb-test",
+    version: int = 1,
+    status: str = "running",
+    conversation_history: list | None = None,
+    node_trace: list | None = None,
+    **kwargs,
+) -> PlaybookRun:
+    """Helper to build a PlaybookRun with sensible defaults."""
+    return PlaybookRun(
+        run_id=run_id,
+        playbook_id=playbook_id,
+        playbook_version=version,
+        trigger_event=json.dumps(kwargs.get("trigger_event", {"type": "test"})),
+        status=status,
+        current_node=kwargs.get("current_node"),
+        conversation_history=json.dumps(conversation_history or []),
+        node_trace=json.dumps(node_trace or []),
+        tokens_used=kwargs.get("tokens_used", 0),
+        started_at=kwargs.get("started_at", time.time()),
+        completed_at=kwargs.get("completed_at"),
+        error=kwargs.get("error"),
+    )
+
+
+class TestPlaybookRunQueries:
+    """Integration tests for PlaybookRun CRUD — real SQLite, not mocks."""
+
+    async def test_create_and_get_run(self, db):
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        assert fetched.run_id == "run-1"
+        assert fetched.playbook_id == "pb-test"
+        assert fetched.playbook_version == 1
+        assert fetched.status == "running"
+
+    async def test_get_nonexistent_returns_none(self, db):
+        assert await db.get_playbook_run("nope") is None
+
+    async def test_conversation_history_json_round_trip(self, db):
+        """Conversation history must survive serialization through the DB."""
+        messages = [
+            {"role": "user", "content": 'Event received: {"type": "git.push"}'},
+            {"role": "user", "content": "Scan the repository for issues."},
+            {"role": "assistant", "content": "Found 3 issues in src/main.py."},
+            {"role": "user", "content": "Triage the findings by severity."},
+            {"role": "assistant", "content": "Critical: 1, Warning: 2."},
+        ]
+        run = _make_playbook_run(conversation_history=messages)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        restored = json.loads(fetched.conversation_history)
+        assert restored == messages
+        assert len(restored) == 5
+        assert restored[2]["role"] == "assistant"
+        assert "3 issues" in restored[2]["content"]
+
+    async def test_node_trace_json_round_trip(self, db):
+        """Node trace entries must survive serialization through the DB."""
+        trace = [
+            {
+                "node_id": "scan",
+                "started_at": 1000.0,
+                "completed_at": 1001.5,
+                "status": "completed",
+            },
+            {
+                "node_id": "triage",
+                "started_at": 1001.5,
+                "completed_at": 1003.0,
+                "status": "completed",
+            },
+            {
+                "node_id": "fix",
+                "started_at": 1003.0,
+                "completed_at": None,
+                "status": "failed",
+            },
+        ]
+        run = _make_playbook_run(node_trace=trace, current_node="fix", status="failed")
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        restored = json.loads(fetched.node_trace)
+        assert restored == trace
+        assert restored[2]["status"] == "failed"
+        assert restored[2]["completed_at"] is None
+
+    async def test_trigger_event_json_round_trip(self, db):
+        event = {"type": "git.push", "project_id": "proj-1", "ref": "refs/heads/main"}
+        run = _make_playbook_run(trigger_event=event)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.trigger_event)
+        assert restored == event
+
+    async def test_update_status_and_fields(self, db):
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+
+        completed_at = time.time()
+        await db.update_playbook_run(
+            "run-1",
+            status="completed",
+            tokens_used=1500,
+            completed_at=completed_at,
+        )
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched.status == "completed"
+        assert fetched.tokens_used == 1500
+        assert fetched.completed_at == completed_at
+
+    async def test_update_conversation_history(self, db):
+        """Conversation history can be incrementally updated after each node."""
+        run = _make_playbook_run(conversation_history=[{"role": "user", "content": "seed"}])
+        await db.create_playbook_run(run)
+
+        # Simulate adding messages after node execution
+        new_history = [
+            {"role": "user", "content": "seed"},
+            {"role": "user", "content": "Step A"},
+            {"role": "assistant", "content": "Result A"},
+        ]
+        await db.update_playbook_run("run-1", conversation_history=json.dumps(new_history))
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.conversation_history)
+        assert len(restored) == 3
+        assert restored[2]["content"] == "Result A"
+
+    async def test_update_node_trace(self, db):
+        """Node trace grows as each node completes."""
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+
+        trace = [
+            {"node_id": "a", "started_at": 100.0, "completed_at": 101.0, "status": "completed"}
+        ]
+        await db.update_playbook_run("run-1", node_trace=json.dumps(trace), current_node="a")
+
+        trace.append(
+            {"node_id": "b", "started_at": 101.0, "completed_at": 102.0, "status": "completed"}
+        )
+        await db.update_playbook_run("run-1", node_trace=json.dumps(trace), current_node="b")
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.node_trace)
+        assert len(restored) == 2
+        assert restored[1]["node_id"] == "b"
+        assert fetched.current_node == "b"
+
+    async def test_list_runs_newest_first(self, db):
+        for i in range(3):
+            run = _make_playbook_run(
+                run_id=f"run-{i}",
+                started_at=1000.0 + i,
+            )
+            await db.create_playbook_run(run)
+
+        runs = await db.list_playbook_runs()
+        assert len(runs) == 3
+        # Newest first
+        assert runs[0].run_id == "run-2"
+        assert runs[2].run_id == "run-0"
+
+    async def test_list_filter_by_playbook_id(self, db):
+        await db.create_playbook_run(_make_playbook_run(run_id="r1", playbook_id="pb-a"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r2", playbook_id="pb-b"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r3", playbook_id="pb-a"))
+
+        runs = await db.list_playbook_runs(playbook_id="pb-a")
+        assert len(runs) == 2
+        assert all(r.playbook_id == "pb-a" for r in runs)
+
+    async def test_list_filter_by_status(self, db):
+        await db.create_playbook_run(_make_playbook_run(run_id="r1", status="running"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r2", status="completed"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r3", status="paused"))
+
+        running = await db.list_playbook_runs(status="running")
+        assert len(running) == 1
+        assert running[0].run_id == "r1"
+
+        paused = await db.list_playbook_runs(status="paused")
+        assert len(paused) == 1
+        assert paused[0].run_id == "r3"
+
+    async def test_list_with_limit(self, db):
+        for i in range(5):
+            await db.create_playbook_run(
+                _make_playbook_run(run_id=f"run-{i}", started_at=1000.0 + i)
+            )
+
+        runs = await db.list_playbook_runs(limit=2)
+        assert len(runs) == 2
+        assert runs[0].run_id == "run-4"  # newest
+
+    async def test_list_combined_filters(self, db):
+        """Filter by both playbook_id and status simultaneously."""
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r1", playbook_id="pb-a", status="completed")
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r2", playbook_id="pb-a", status="running")
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r3", playbook_id="pb-b", status="completed")
+        )
+
+        runs = await db.list_playbook_runs(playbook_id="pb-a", status="completed")
+        assert len(runs) == 1
+        assert runs[0].run_id == "r1"
+
+    async def test_delete_run(self, db):
+        await db.create_playbook_run(_make_playbook_run())
+        await db.delete_playbook_run("run-1")
+        assert await db.get_playbook_run("run-1") is None
+
+    async def test_delete_nonexistent_is_noop(self, db):
+        # Should not raise
+        await db.delete_playbook_run("nonexistent")
+
+    async def test_error_field_persisted(self, db):
+        run = _make_playbook_run(
+            status="failed",
+            error="Node 'scan' failed: LLM provider down",
+            completed_at=time.time(),
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched.status == "failed"
+        assert fetched.error == "Node 'scan' failed: LLM provider down"
+
+    async def test_paused_run_full_state_round_trip(self, db):
+        """A paused run must persist all state needed for resume.
+
+        This is the critical path for human-in-the-loop: the full conversation
+        history, node trace, current_node, and tokens_used must all survive
+        a write→read cycle so PlaybookRunner.resume() can reconstruct state.
+        """
+        messages = [
+            {"role": "user", "content": "Event: git.push on proj-1"},
+            {"role": "user", "content": "Analyse the issue."},
+            {"role": "assistant", "content": "Analysis: found 2 issues."},
+            {"role": "user", "content": "Present for human review."},
+            {"role": "assistant", "content": "Please review: 2 issues found."},
+        ]
+        trace = [
+            {
+                "node_id": "analyse",
+                "started_at": 1000.0,
+                "completed_at": 1005.0,
+                "status": "completed",
+            },
+            {
+                "node_id": "review",
+                "started_at": 1005.0,
+                "completed_at": 1010.0,
+                "status": "completed",
+            },
+        ]
+        event = {"type": "git.push", "project_id": "proj-1"}
+
+        run = _make_playbook_run(
+            run_id="paused-1",
+            playbook_id="review-playbook",
+            version=3,
+            status="paused",
+            conversation_history=messages,
+            node_trace=trace,
+            trigger_event=event,
+            current_node="review",
+            tokens_used=750,
+            started_at=1000.0,
+        )
+        await db.create_playbook_run(run)
+
+        # Fetch and verify every field needed for resume
+        fetched = await db.get_playbook_run("paused-1")
+        assert fetched is not None
+        assert fetched.status == "paused"
+        assert fetched.current_node == "review"
+        assert fetched.playbook_id == "review-playbook"
+        assert fetched.playbook_version == 3
+        assert fetched.tokens_used == 750
+        assert fetched.started_at == 1000.0
+        assert fetched.completed_at is None
+        assert fetched.error is None
+
+        # Verify conversation history round-trip
+        restored_history = json.loads(fetched.conversation_history)
+        assert restored_history == messages
+
+        # Verify node trace round-trip
+        restored_trace = json.loads(fetched.node_trace)
+        assert restored_trace == trace
+
+        # Verify trigger event round-trip
+        restored_event = json.loads(fetched.trigger_event)
+        assert restored_event == event
+
+    async def test_full_lifecycle_create_update_complete(self, db):
+        """Simulate the full run lifecycle: create → update per node → complete."""
+        # 1. Create at startup
+        run = _make_playbook_run(
+            run_id="lifecycle-1",
+            playbook_id="ci-pipeline",
+            version=2,
+            started_at=1000.0,
+        )
+        await db.create_playbook_run(run)
+
+        # 2. After node "build" completes
+        history_1 = [
+            {"role": "user", "content": "seed"},
+            {"role": "user", "content": "Build the project."},
+            {"role": "assistant", "content": "Build succeeded."},
+        ]
+        trace_1 = [
+            {
+                "node_id": "build",
+                "started_at": 1000.0,
+                "completed_at": 1010.0,
+                "status": "completed",
+            }
+        ]
+        await db.update_playbook_run(
+            "lifecycle-1",
+            current_node="build",
+            conversation_history=json.dumps(history_1),
+            node_trace=json.dumps(trace_1),
+            tokens_used=200,
+        )
+
+        # 3. After node "test" completes
+        history_2 = history_1 + [
+            {"role": "user", "content": "Run the test suite."},
+            {"role": "assistant", "content": "All 42 tests passed."},
+        ]
+        trace_2 = trace_1 + [
+            {"node_id": "test", "started_at": 1010.0, "completed_at": 1020.0, "status": "completed"}
+        ]
+        await db.update_playbook_run(
+            "lifecycle-1",
+            current_node="test",
+            conversation_history=json.dumps(history_2),
+            node_trace=json.dumps(trace_2),
+            tokens_used=450,
+        )
+
+        # 4. Final completion
+        await db.update_playbook_run(
+            "lifecycle-1",
+            status="completed",
+            conversation_history=json.dumps(history_2),
+            node_trace=json.dumps(trace_2),
+            tokens_used=450,
+            completed_at=1020.0,
+        )
+
+        # Verify final state
+        fetched = await db.get_playbook_run("lifecycle-1")
+        assert fetched.status == "completed"
+        assert fetched.tokens_used == 450
+        assert fetched.completed_at == 1020.0
+        assert fetched.current_node == "test"
+
+        restored_history = json.loads(fetched.conversation_history)
+        assert len(restored_history) == 5
+        assert restored_history[-1]["content"] == "All 42 tests passed."
+
+        restored_trace = json.loads(fetched.node_trace)
+        assert len(restored_trace) == 2
+        assert [t["node_id"] for t in restored_trace] == ["build", "test"]
+
+    async def test_large_conversation_history(self, db):
+        """Verify large conversation histories are stored and retrieved correctly."""
+        messages = []
+        for i in range(50):
+            messages.append({"role": "user", "content": f"Step {i}: do task {i}"})
+            messages.append({"role": "assistant", "content": f"Completed task {i}. " + "x" * 200})
+
+        run = _make_playbook_run(conversation_history=messages)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.conversation_history)
+        assert len(restored) == 100
+        assert restored[99]["content"].startswith("Completed task 49.")
 
 
 class TestMockAdapter:
