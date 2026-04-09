@@ -5347,7 +5347,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
             _rl_attempt += 1
             if _rl_attempt > _rl_max_retries:
-                # Auto-retries exhausted; let the normal PAUSED handling take over.
                 logger.info(
                     "Task %s: rate-limit retries exhausted (%d), pausing task.",
                     task.id,
