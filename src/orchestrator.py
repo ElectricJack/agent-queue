@@ -880,8 +880,8 @@ class Orchestrator:
 
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
-        # can be re-indexed into agent context.  Phase 1 is a logging stub;
-        # actual override indexing is wired in Phase 3.
+        # can be re-indexed into agent context.  The handler callback is
+        # wired to the OverrideIndexer below (after memory collections init).
         from src.override_handler import register_override_handlers
 
         register_override_handlers(self.vault_watcher)
@@ -958,6 +958,26 @@ class Orchestrator:
                 await self.memory_manager.ensure_orchestrator_collection()
             except Exception as e:
                 logger.warning("Memory collection initialization failed: %s", e)
+
+            # Wire the override indexer into the vault watcher callback
+            # (roadmap 3.2.2) so that override file changes detected by the
+            # watcher trigger re-indexing into the project Milvus collection.
+            try:
+                wired = await self.memory_manager.setup_override_watcher()
+                if wired:
+                    logger.info("Override watcher wired to OverrideIndexer")
+            except Exception as e:
+                logger.warning("Override watcher setup failed: %s", e)
+
+            # Index any override files that were created/modified while
+            # the daemon was stopped (startup catch-up).
+            try:
+                vault_root = os.path.join(self.config.data_dir, "vault")
+                n_chunks = await self.memory_manager.index_project_overrides(vault_root)
+                if n_chunks > 0:
+                    logger.info("Startup override indexing: %d chunks indexed", n_chunks)
+            except Exception as e:
+                logger.warning("Startup override indexing failed: %s", e)
 
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)

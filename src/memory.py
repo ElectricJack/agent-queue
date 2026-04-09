@@ -3535,6 +3535,17 @@ class MemoryManager:
         self._instances.clear()
         self._watchers.clear()
 
+        # Clear the module-level override indexer so the watcher handler
+        # reverts to its log-only fallback after shutdown.
+        if self._override_indexer is not None:
+            try:
+                from src.override_handler import set_indexer
+
+                set_indexer(None)
+            except Exception as e:
+                logger.debug("Error clearing override indexer: %s", e)
+            self._override_indexer = None
+
     # ------------------------------------------------------------------
     # Formatting helpers
     # ------------------------------------------------------------------
