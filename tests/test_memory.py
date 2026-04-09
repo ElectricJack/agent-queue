@@ -577,9 +577,7 @@ class TestMemoryManager:
         MockMemSearch.return_value = mock_instance
 
         mgr = self._make_manager()
-        results = await mgr.batch_search(
-            "proj", str(tmp_path), ["query A", "query B"], top_k=5
-        )
+        results = await mgr.batch_search("proj", str(tmp_path), ["query A", "query B"], top_k=5)
 
         assert set(results.keys()) == {"query A", "query B"}
         assert len(results["query A"]) == 1
@@ -612,9 +610,7 @@ class TestMemoryManager:
         MockMemSearch.return_value = mock_instance
 
         mgr = self._make_manager()
-        results = await mgr.batch_search(
-            "proj", str(tmp_path), ["q1", "q2", "q3"], top_k=3
-        )
+        results = await mgr.batch_search("proj", str(tmp_path), ["q1", "q2", "q3"], top_k=3)
 
         assert len(results) == 3
         assert len(results["q1"]) == 1
@@ -1153,10 +1149,12 @@ class TestFactExtraction:
     @patch("src.memory.MemoryManager._get_revision_provider")
     async def test_extract_writes_staging_file(self, mock_provider, tmp_path):
         """extract_task_facts writes a valid JSON staging file."""
-        facts_json = json.dumps([
-            {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
-            {"category": "decision", "key": "token_storage", "value": "httponly cookies"},
-        ])
+        facts_json = json.dumps(
+            [
+                {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
+                {"category": "decision", "key": "token_storage", "value": "httponly cookies"},
+            ]
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=facts_json)]
         provider_instance = AsyncMock()
@@ -1221,11 +1219,13 @@ class TestFactExtraction:
     @patch("src.memory.MemoryManager._get_revision_provider")
     async def test_extract_filters_invalid_categories(self, mock_provider, tmp_path):
         """Facts with invalid categories are dropped during validation."""
-        facts_json = json.dumps([
-            {"category": "tech_stack", "key": "valid", "value": "kept"},
-            {"category": "invalid_cat", "key": "bad", "value": "dropped"},
-            {"category": "url", "key": "repo", "value": "https://example.com"},
-        ])
+        facts_json = json.dumps(
+            [
+                {"category": "tech_stack", "key": "valid", "value": "kept"},
+                {"category": "invalid_cat", "key": "bad", "value": "dropped"},
+                {"category": "url", "key": "repo", "value": "https://example.com"},
+            ]
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=facts_json)]
         provider_instance = AsyncMock()
@@ -1244,12 +1244,14 @@ class TestFactExtraction:
     @patch("src.memory.MemoryManager._get_revision_provider")
     async def test_extract_filters_missing_fields(self, mock_provider, tmp_path):
         """Facts with missing key or value fields are dropped."""
-        facts_json = json.dumps([
-            {"category": "tech_stack", "key": "valid", "value": "kept"},
-            {"category": "decision", "key": "", "value": "no key"},
-            {"category": "url", "key": "no_value", "value": ""},
-            {"category": "config"},  # missing both key and value
-        ])
+        facts_json = json.dumps(
+            [
+                {"category": "tech_stack", "key": "valid", "value": "kept"},
+                {"category": "decision", "key": "", "value": "no key"},
+                {"category": "url", "key": "no_value", "value": ""},
+                {"category": "config"},  # missing both key and value
+            ]
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=facts_json)]
         provider_instance = AsyncMock()
@@ -1267,7 +1269,9 @@ class TestFactExtraction:
     @patch("src.memory.MemoryManager._get_revision_provider")
     async def test_extract_handles_markdown_fences(self, mock_provider, tmp_path):
         """LLM response wrapped in ```json fences is parsed correctly."""
-        facts_json = '```json\n[{"category": "url", "key": "docs", "value": "https://docs.io"}]\n```'
+        facts_json = (
+            '```json\n[{"category": "url", "key": "docs", "value": "https://docs.io"}]\n```'
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=facts_json)]
         provider_instance = AsyncMock()
@@ -1350,15 +1354,17 @@ class TestFactExtraction:
     @patch("src.memory.MemoryManager._get_revision_provider")
     async def test_extract_all_valid_categories(self, mock_provider, tmp_path):
         """All seven valid categories are accepted."""
-        facts_json = json.dumps([
-            {"category": "url", "key": "repo", "value": "https://github.com/test"},
-            {"category": "tech_stack", "key": "db", "value": "PostgreSQL 16"},
-            {"category": "decision", "key": "orm", "value": "Use SQLAlchemy Core"},
-            {"category": "convention", "key": "naming", "value": "snake_case everywhere"},
-            {"category": "architecture", "key": "pattern", "value": "Event-driven"},
-            {"category": "config", "key": "debug", "value": "DEBUG=false in prod"},
-            {"category": "contact", "key": "lead", "value": "Alice (tech lead)"},
-        ])
+        facts_json = json.dumps(
+            [
+                {"category": "url", "key": "repo", "value": "https://github.com/test"},
+                {"category": "tech_stack", "key": "db", "value": "PostgreSQL 16"},
+                {"category": "decision", "key": "orm", "value": "Use SQLAlchemy Core"},
+                {"category": "convention", "key": "naming", "value": "snake_case everywhere"},
+                {"category": "architecture", "key": "pattern", "value": "Event-driven"},
+                {"category": "config", "key": "debug", "value": "DEBUG=false in prod"},
+                {"category": "contact", "key": "lead", "value": "Alice (tech lead)"},
+            ]
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=facts_json)]
         provider_instance = AsyncMock()
@@ -1414,9 +1420,7 @@ class TestKnowledgeBase:
     def test_knowledge_topic_path(self, tmp_path):
         """_knowledge_topic_path returns the correct path for a topic."""
         mgr = self._make_manager(str(tmp_path))
-        expected = os.path.join(
-            str(tmp_path), "memory", "proj", "knowledge", "architecture.md"
-        )
+        expected = os.path.join(str(tmp_path), "memory", "proj", "knowledge", "architecture.md")
         assert mgr._knowledge_topic_path("proj", "architecture") == expected
 
     def test_knowledge_topic_path_sanitizes_traversal(self, tmp_path):
@@ -1756,12 +1760,16 @@ class TestDailyConsolidation:
         """_read_staging_files returns docs sorted by extracted_at."""
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-2",
+            str(tmp_path),
+            "proj",
+            "task-2",
             [{"category": "url", "key": "k", "value": "v"}],
             extracted_at="2026-04-05T12:00:00Z",
         )
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "k2", "value": "v2"}],
             extracted_at="2026-04-05T10:00:00Z",
         )
@@ -1779,7 +1787,9 @@ class TestDailyConsolidation:
 
         # Write a valid file
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "k", "value": "v"}],
         )
 
@@ -1795,7 +1805,9 @@ class TestDailyConsolidation:
         """_read_staging_files ignores non-.json files."""
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "k", "value": "v"}],
         )
         # Create a non-JSON file in staging
@@ -1932,7 +1944,9 @@ class TestDailyConsolidation:
         """_move_to_processed moves staging files to processed/ subdirectory."""
         mgr = self._make_manager(str(tmp_path))
         path = self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "k", "value": "v"}],
         )
         docs = [{"_filepath": path, "project_id": "proj"}]
@@ -1940,7 +1954,9 @@ class TestDailyConsolidation:
 
         assert moved == 1
         assert not os.path.isfile(path)
-        processed = os.path.join(str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json")
+        processed = os.path.join(
+            str(tmp_path), "memory", "proj", "staging", "processed", "task-1.json"
+        )
         assert os.path.isfile(processed)
 
     async def test_move_to_processed_missing_file(self, tmp_path):
@@ -1958,7 +1974,9 @@ class TestDailyConsolidation:
         mock_provider.return_value = None
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
         )
 
@@ -1980,7 +1998,9 @@ class TestDailyConsolidation:
 
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
         )
 
@@ -1998,17 +2018,19 @@ class TestDailyConsolidation:
     ):
         """End-to-end: staging → factsheet update → knowledge base update."""
         # Set up mock LLM response
-        llm_response = json.dumps({
-            "factsheet_yaml": {
-                "last_updated": "2026-04-05T15:00:00Z",
-                "project": {"name": "test", "id": "proj"},
-                "tech_stack": {"language": "python", "key_dependencies": ["PyJWT"]},
-            },
-            "knowledge_updates": {
-                "dependencies": "# Dependencies Knowledge\n\n- PyJWT 2.8.0 (from task: task-1)\n",
-                "decisions": "# Technical Decisions\n\n- Use JWT for auth (from task: task-1)\n",
-            },
-        })
+        llm_response = json.dumps(
+            {
+                "factsheet_yaml": {
+                    "last_updated": "2026-04-05T15:00:00Z",
+                    "project": {"name": "test", "id": "proj"},
+                    "tech_stack": {"language": "python", "key_dependencies": ["PyJWT"]},
+                },
+                "knowledge_updates": {
+                    "dependencies": "# Dependencies Knowledge\n\n- PyJWT 2.8.0 (from task: task-1)\n",
+                    "decisions": "# Technical Decisions\n\n- Use JWT for auth (from task: task-1)\n",
+                },
+            }
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=llm_response)]
         provider_instance = AsyncMock()
@@ -2017,6 +2039,7 @@ class TestDailyConsolidation:
 
         # Mock factsheet read
         from src.models import ProjectFactsheet
+
         mock_read_fs.return_value = ProjectFactsheet(
             raw_yaml={"project": {"name": "test", "id": "proj"}, "tech_stack": {}},
             body_markdown="# Test Project",
@@ -2029,7 +2052,9 @@ class TestDailyConsolidation:
 
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [
                 {"category": "tech_stack", "key": "jwt_lib", "value": "PyJWT 2.8.0"},
                 {"category": "decision", "key": "auth_method", "value": "Use JWT for auth"},
@@ -2059,10 +2084,12 @@ class TestDailyConsolidation:
         self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
     ):
         """Staging files are moved to processed/ after successful consolidation."""
-        llm_response = json.dumps({
-            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
-            "knowledge_updates": {},
-        })
+        llm_response = json.dumps(
+            {
+                "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+                "knowledge_updates": {},
+            }
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=llm_response)]
         provider_instance = AsyncMock()
@@ -2070,6 +2097,7 @@ class TestDailyConsolidation:
         mock_provider.return_value = provider_instance
 
         from src.models import ProjectFactsheet
+
         mock_read_fs.return_value = ProjectFactsheet(
             raw_yaml={"last_updated": "old"},
             body_markdown="",
@@ -2080,7 +2108,9 @@ class TestDailyConsolidation:
 
         mgr = self._make_manager(str(tmp_path))
         staging_path = self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "docs", "value": "https://docs.example.com"}],
         )
 
@@ -2105,10 +2135,12 @@ class TestDailyConsolidation:
         self, mock_provider, mock_read_fs, mock_read_kt, mock_write_fs, mock_write_kt, tmp_path
     ):
         """Consolidation processes multiple staging files and deduplicates."""
-        llm_response = json.dumps({
-            "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
-            "knowledge_updates": {"dependencies": "# Updated deps\n"},
-        })
+        llm_response = json.dumps(
+            {
+                "factsheet_yaml": {"last_updated": "2026-04-05T15:00:00Z"},
+                "knowledge_updates": {"dependencies": "# Updated deps\n"},
+            }
+        )
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=llm_response)]
         provider_instance = AsyncMock()
@@ -2116,6 +2148,7 @@ class TestDailyConsolidation:
         mock_provider.return_value = provider_instance
 
         from src.models import ProjectFactsheet
+
         mock_read_fs.return_value = ProjectFactsheet(
             raw_yaml={"tech_stack": {}},
             body_markdown="",
@@ -2127,12 +2160,16 @@ class TestDailyConsolidation:
         mgr = self._make_manager(str(tmp_path))
         # Same key in two files — later one should win
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "tech_stack", "key": "db", "value": "SQLite"}],
             extracted_at="2026-04-05T10:00:00Z",
         )
         self._write_staging_file(
-            str(tmp_path), "proj", "task-2",
+            str(tmp_path),
+            "proj",
+            "task-2",
             [{"category": "tech_stack", "key": "db", "value": "PostgreSQL"}],
             extracted_at="2026-04-05T12:00:00Z",
         )
@@ -2144,7 +2181,9 @@ class TestDailyConsolidation:
 
         # Check the LLM was called with the newer value
         call_args = provider_instance.create_message.call_args
-        user_prompt = call_args.kwargs.get("messages", call_args[1].get("messages", [{}]))[0].get("content", "")
+        user_prompt = call_args.kwargs.get("messages", call_args[1].get("messages", [{}]))[0].get(
+            "content", ""
+        )
         assert "PostgreSQL" in user_prompt
 
     @patch("src.memory.MemoryManager._get_consolidation_provider")
@@ -2159,7 +2198,9 @@ class TestDailyConsolidation:
 
         mgr = self._make_manager(str(tmp_path))
         self._write_staging_file(
-            str(tmp_path), "proj", "task-1",
+            str(tmp_path),
+            "proj",
+            "task-1",
             [{"category": "url", "key": "docs", "value": "https://example.com"}],
         )
         # Need to set up read_factsheet since it's not mocked
@@ -2220,15 +2261,91 @@ class TestConsolidationProvider:
         staging_dir = os.path.join(str(tmp_path), "memory", "proj", "staging")
         os.makedirs(staging_dir, exist_ok=True)
         with open(os.path.join(staging_dir, "task-1.json"), "w") as f:
-            json.dump({
-                "task_id": "task-1",
-                "project_id": "proj",
-                "task_title": "Test",
-                "task_type": "feature",
-                "extracted_at": "2026-04-05T10:00:00Z",
-                "facts": [{"category": "url", "key": "k", "value": "v"}],
-            }, f)
+            json.dump(
+                {
+                    "task_id": "task-1",
+                    "project_id": "proj",
+                    "task_title": "Test",
+                    "task_type": "feature",
+                    "extracted_at": "2026-04-05T10:00:00Z",
+                    "facts": [{"category": "url", "key": "k", "value": "v"}],
+                },
+                f,
+            )
 
         result = await mgr.run_daily_consolidation("proj")
         assert result["status"] == "error"
         mock_provider.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# EnsureSystemCollection tests (roadmap 3.1.3)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureSystemCollection:
+    """Tests for MemoryManager.ensure_system_collection startup method."""
+
+    def _make_manager(self, storage_root: str = "/tmp/aq-test", **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    async def test_returns_false_when_disabled(self):
+        """ensure_system_collection returns False when memory is disabled."""
+        mgr = MemoryManager(MemoryConfig(enabled=False))
+        result = await mgr.ensure_system_collection()
+        assert result is False
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", False)
+    async def test_returns_false_when_memsearch_unavailable(self):
+        """ensure_system_collection returns False when memsearch not installed."""
+        mgr = self._make_manager()
+        result = await mgr.ensure_system_collection()
+        assert result is False
+
+    async def test_returns_false_when_router_fails(self):
+        """ensure_system_collection returns False when router can't be created."""
+        mgr = self._make_manager()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=None):
+            result = await mgr.ensure_system_collection()
+            assert result is False
+
+    async def test_returns_true_on_success(self):
+        """ensure_system_collection returns True when collection is ensured."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_system_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_system_collection()
+            assert result is True
+            mock_router.ensure_system_collection.assert_called_once()
+
+    async def test_calls_ensure_on_router(self):
+        """ensure_system_collection delegates to router.ensure_system_collection."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_system_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            await mgr.ensure_system_collection()
+            mock_router.ensure_system_collection.assert_called_once()
+
+    async def test_handles_exception_gracefully(self):
+        """ensure_system_collection catches exceptions and returns False."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_system_collection = MagicMock(side_effect=RuntimeError("Milvus down"))
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result = await mgr.ensure_system_collection()
+            assert result is False
+
+    async def test_idempotent(self):
+        """Calling ensure_system_collection twice succeeds both times."""
+        mgr = self._make_manager()
+        mock_router = MagicMock()
+        mock_router.ensure_system_collection = MagicMock()
+        with patch.object(mgr, "_get_router", new_callable=AsyncMock, return_value=mock_router):
+            result1 = await mgr.ensure_system_collection()
+            result2 = await mgr.ensure_system_collection()
+            assert result1 is True
+            assert result2 is True
+            assert mock_router.ensure_system_collection.call_count == 2

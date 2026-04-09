@@ -943,6 +943,18 @@ class Orchestrator:
                 self._memory_v2_service = svc
                 logger.info("Wired MemoryV2Service to facts.md watcher handlers")
 
+        # Ensure the system-level memory collection (aq_system) exists.
+        # Per roadmap 3.1.3: the system collection must be created eagerly on
+        # startup so it's available for writes and searches from the very first
+        # operation.  This is done after the vault structure and memory plugins
+        # are initialized but before hooks/rules, since hooks may trigger
+        # memory operations.
+        if self.memory_manager:
+            try:
+                await self.memory_manager.ensure_system_collection()
+            except Exception as e:
+                logger.warning("System collection initialization failed: %s", e)
+
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)
             self.hooks.set_orchestrator(self)

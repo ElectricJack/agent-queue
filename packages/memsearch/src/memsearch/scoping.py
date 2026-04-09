@@ -526,6 +526,26 @@ class CollectionRouter:
         name = collection_name(scope, scope_id)
         return name in self._stores
 
+    def ensure_system_collection(self) -> MilvusStore:
+        """Ensure the ``aq_system`` collection exists, creating it if needed.
+
+        This is called during startup to eagerly create the system-level
+        collection so it's available for writes and searches from the very
+        first operation.  Unlike the lazy :meth:`get_store` path (which
+        only creates collections on first access), this guarantees the
+        system collection is ready before any tasks run.
+
+        Per roadmap 3.1.3: "Create system-level collection on startup".
+
+        Returns
+        -------
+        MilvusStore
+            The (possibly cached) store for the system scope.
+        """
+        store = self.get_store(MemoryScope.SYSTEM, description="system-wide memories")
+        logger.info("Ensured aq_system collection exists")
+        return store
+
     # ------------------------------------------------------------------
     # Collection listing
     # ------------------------------------------------------------------

@@ -860,6 +860,112 @@ class TestCollectionRouterSearchByTagAsync:
 
 
 @pytestmark_milvus
+class TestEnsureSystemCollection:
+    """Tests for CollectionRouter.ensure_system_collection (roadmap 3.1.3)."""
+
+    def test_creates_system_collection(self, router: CollectionRouter):
+        """ensure_system_collection creates the aq_system collection."""
+        assert not router.has_store(MemoryScope.SYSTEM)
+        store = router.ensure_system_collection()
+        assert store is not None
+        assert store._collection == "aq_system"
+        assert router.has_store(MemoryScope.SYSTEM)
+
+    def test_idempotent(self, router: CollectionRouter):
+        """Calling ensure_system_collection twice returns the same store."""
+        store1 = router.ensure_system_collection()
+        store2 = router.ensure_system_collection()
+        assert store1 is store2
+
+    def test_collection_appears_in_list(self, router: CollectionRouter):
+        """After ensure, aq_system appears in list_collections."""
+        router.ensure_system_collection()
+        names = {name for _, _, name in router.list_collections()}
+        assert "aq_system" in names
+
+    def test_collection_is_writable(self, router: CollectionRouter):
+        """The ensured system collection accepts upserts."""
+        store = router.ensure_system_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "ensure_test_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "System-wide convention",
+                    "source": "system.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        results = store.query(filter_expr='chunk_hash == "ensure_test_1"')
+        assert len(results) == 1
+        assert results[0]["content"] == "System-wide convention"
+
+    def test_collection_is_searchable_after_ensure(self, router: CollectionRouter):
+        """After ensure, the system collection is available in multi-scope search."""
+        store = router.ensure_system_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "ensure_search_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Global pattern for error handling",
+                    "source": "system.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        # Verify it's discoverable via _get_store_if_exists (used by search)
+        found = router._get_store_if_exists(MemoryScope.SYSTEM)
+        assert found is not None
+        assert found is store
+
+    def test_fresh_router_finds_ensured_collection(self, tmp_path: Path):
+        """A fresh router can discover the system collection created by ensure."""
+        db = tmp_path / "ensure_persist.db"
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        store = r1.ensure_system_collection()
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "persist_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Persistent system data",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        r1.close()
+
+        # Fresh router — no cached stores
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0
+        found = r2._get_store_if_exists(MemoryScope.SYSTEM)
+        assert found is not None
+        results = found.query(filter_expr='chunk_hash == "persist_1"')
+        assert len(results) == 1
+        r2.close()
+
+    def test_does_not_affect_other_scopes(self, router: CollectionRouter):
+        """ensure_system_collection only creates the system collection."""
+        router.ensure_system_collection()
+        assert router.has_store(MemoryScope.SYSTEM)
+        assert not router.has_store(MemoryScope.ORCHESTRATOR)
+        assert not router.has_store(MemoryScope.AGENT_TYPE, "coding")
+        assert not router.has_store(MemoryScope.PROJECT, "myapp")
+
+
+@pytestmark_milvus
 class TestCollectionRouterContextManager:
     def test_context_manager(self, tmp_path: Path):
         db = tmp_path / "ctx_test.db"

@@ -343,6 +343,46 @@ class MemoryManager:
             return None
 
     # ------------------------------------------------------------------
+    # Startup initialization
+    # ------------------------------------------------------------------
+
+    async def ensure_system_collection(self) -> bool:
+        """Ensure the ``aq_system`` collection exists in Milvus.
+
+        Called during orchestrator startup (roadmap 3.1.3) so the system-level
+        memory collection is ready before any tasks run.  This makes the
+        system scope available for writes and searches from the very first
+        operation, rather than waiting for lazy creation on first access.
+
+        The system collection stores cross-cutting knowledge that applies
+        across all projects and agent types (e.g., global conventions,
+        organizational patterns).
+
+        Returns
+        -------
+        bool
+            ``True`` if the collection was successfully ensured (created or
+            already existed), ``False`` if memsearch is unavailable or
+            initialization failed.
+        """
+        if not MEMSEARCH_AVAILABLE or not self.config.enabled:
+            logger.debug("Memory disabled or memsearch unavailable — skipping system collection")
+            return False
+
+        router = await self._get_router()
+        if router is None:
+            logger.warning("Could not initialize CollectionRouter — system collection not created")
+            return False
+
+        try:
+            await asyncio.to_thread(router.ensure_system_collection)
+            logger.info("System-level memory collection (aq_system) ensured on startup")
+            return True
+        except Exception as e:
+            logger.warning("Failed to ensure system collection: %s", e)
+            return False
+
+    # ------------------------------------------------------------------
     # Instance management
     # ------------------------------------------------------------------
 
