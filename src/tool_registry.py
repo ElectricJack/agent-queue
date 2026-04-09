@@ -86,7 +86,7 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "playbook": CategoryMeta(
         name="playbook",
-        description=("Playbook run management, human-in-the-loop review and resume"),
+        description=("Playbook compilation, run management, human-in-the-loop review and resume"),
     ),
     "plugin": CategoryMeta(
         name="plugin",
@@ -182,7 +182,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_dependency": "task",
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
-    # playbook — run management, human-in-the-loop resume
+    # playbook — compilation, run management, human-in-the-loop resume
+    "compile_playbook": "playbook",
     "list_playbook_runs": "playbook",
     "resume_playbook": "playbook",
     # plugin — installation, configuration, lifecycle
@@ -2116,6 +2117,45 @@ _ALL_TOOL_DEFINITIONS = [
     # ------------------------------------------------------------------
     # Playbook commands (spec §15)
     # ------------------------------------------------------------------
+    {
+        "name": "compile_playbook",
+        "description": (
+            "Manually trigger compilation of a playbook markdown file. "
+            "Provide the full markdown content (including YAML frontmatter) "
+            "or a file path. Returns the compiled playbook metadata on "
+            "success, or detailed errors on failure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "markdown": {
+                    "type": "string",
+                    "description": (
+                        "Full playbook markdown content including YAML frontmatter. "
+                        "Frontmatter must include: id, triggers (list), scope "
+                        "(system|project|agent-type:xxx). Either this or 'path' "
+                        "is required."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to a playbook .md file on disk. "
+                        "If provided, the file is read and used as the markdown. "
+                        "Either this or 'markdown' is required."
+                    ),
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Force recompilation even if source is unchanged. "
+                        "Defaults to true for manual compilation."
+                    ),
+                    "default": True,
+                },
+            },
+        },
+    },
     {
         "name": "list_playbook_runs",
         "description": (

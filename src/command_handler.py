@@ -6778,6 +6778,89 @@ feature work stuck on feature branches across multiple workspaces.
             resp["error"] = result.error
         return resp
 
+    async def _cmd_compile_playbook(self, args: dict) -> dict:
+        """Manually trigger compilation of a playbook markdown.
+
+        Accepts either inline markdown content or a file path to a ``.md``
+        file.  Delegates to :meth:`PlaybookManager.compile_playbook` which
+        handles source-hash change detection, LLM invocation, validation,
+        and persistence.
+
+        This is the manual trigger (roadmap 5.5.1) — it always sets
+        ``force=True`` so that recompilation happens even if the source
+        hash is unchanged.
+
+        Args:
+            markdown: Full playbook markdown including YAML frontmatter.
+                      Either this or ``path`` must be provided.
+            path: Absolute path to a playbook ``.md`` file on disk.
+                  If provided, the file is read and used as the markdown.
+            force: Force recompilation even if unchanged (default ``True``
+                   for manual trigger).
+        """
+        markdown = args.get("markdown", "").strip()
+        path = args.get("path", "").strip()
+        force = args.get("force", True)  # default True for manual trigger
+        if isinstance(force, str):
+            force = force.lower() in ("true", "1", "yes")
+
+        # Resolve markdown from path if provided
+        if path and not markdown:
+            import pathlib
+
+            p = pathlib.Path(path)
+            if not p.is_file():
+                return {"error": f"File not found: {path}"}
+            try:
+                markdown = p.read_text(encoding="utf-8")
+            except Exception as exc:
+                return {"error": f"Failed to read file: {exc}"}
+
+        if not markdown:
+            return {"error": "Either 'markdown' or 'path' is required"}
+
+        # Ensure playbook manager is available
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            return {"error": "Playbook manager is not initialised"}
+
+        try:
+            result = await pm.compile_playbook(
+                markdown,
+                source_path=path,
+                rel_path=path,
+                force=force,
+            )
+        except Exception as exc:
+            logger.error("Playbook compilation failed: %s", exc, exc_info=True)
+            return {"error": f"Compilation failed: {exc}"}
+
+        if not result.success:
+            return {
+                "error": "Compilation failed",
+                "errors": result.errors,
+                "source_hash": result.source_hash,
+                "retries_used": result.retries_used,
+            }
+
+        # Build success response
+        pb = result.playbook
+        resp: dict = {
+            "compiled": True,
+            "playbook_id": pb.id if pb else "",
+            "version": pb.version if pb else 0,
+            "source_hash": result.source_hash,
+            "skipped": result.skipped,
+            "retries_used": result.retries_used,
+        }
+        if pb:
+            resp["node_count"] = len(pb.nodes)
+            resp["triggers"] = [
+                t.event_type if hasattr(t, "event_type") else str(t) for t in pb.triggers
+            ]
+            resp["scope"] = pb.scope
+        return resp
+
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.
