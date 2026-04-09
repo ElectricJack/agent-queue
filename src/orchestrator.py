@@ -138,6 +138,42 @@ from src.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_reset_time(error_msg: str) -> float | None:
+    """Extract a session-limit reset timestamp from an error message.
+
+    Handles: "You've hit your limit · resets 2pm (America/Los_Angeles)"
+    Returns a Unix timestamp, or None if not found.
+    """
+    import re
+    from datetime import datetime
+
+    match = re.search(
+        r"resets\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*\(([^)]+)\)",
+        error_msg,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    time_str, tz_name = match.group(1), match.group(2)
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        fmt = "%I:%M%p" if ":" in time_str else "%I%p"
+        parsed = datetime.strptime(time_str.strip(), fmt).replace(
+            year=now.year, month=now.month, day=now.day, tzinfo=tz
+        )
+        if parsed <= now:
+            from datetime import timedelta
+
+            parsed += timedelta(days=1)
+        return parsed.timestamp()
+    except Exception:
+        return None
+
+
 # Re-export callback types from the messaging abstraction layer for
 # backward compatibility.  New code should import from src.messaging.types.
 NotifyCallback = _NotifyCallbackType
@@ -218,6 +254,12 @@ class Orchestrator:
         self._task_started_messages: dict[str, Any] = {}
         self._paused: bool = False
         self._restart_requested: bool = False
+        # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
+        # Unix timestamp when scheduling should resume.  Set when a session
+        # limit is detected; the scheduler skips agents of that type until
+        # the cooldown expires.  Supports per-provider limits so exhausting
+        # one provider doesn't block others.
+        self._provider_cooldowns: dict[str, float] = {}
         # Throttle: approval polling runs at most once per 60s.
         self._last_approval_check: float = 0.0
         # LLM interaction logger — records all LLM API calls (both direct
@@ -2250,6 +2292,7 @@ class Orchestrator:
             workspace_locks=workspace_locks,
             global_budget=self.config.global_token_budget_daily,
             global_tokens_used=total_used,
+            provider_cooldowns=self._provider_cooldowns,
         )
 
         return Scheduler.schedule(state)
@@ -5240,6 +5283,17 @@ For EACH workspace listed above, perform these steps IN ORDER:
             if output.result != AgentResult.PAUSED_RATE_LIMIT:
                 break  # Completed, failed, or token-exhausted — leave the loop.
 
+            # Session limits (with a known reset time) should NOT be retried
+            # in-process — go straight to the PAUSED handler which sets the
+            # provider cooldown and waits until the actual reset time.
+            _err = output.error_message or ""
+            if "hit your limit" in _err.lower():
+                logger.info(
+                    "Task %s: session limit detected, skipping in-process retries.",
+                    task.id,
+                )
+                break
+
             _rl_attempt += 1
             if _rl_attempt > _rl_max_retries:
                 # Auto-retries exhausted; let the normal PAUSED handling take over.
@@ -5907,33 +5961,66 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # PAUSED path — the agent hit an API limit (rate or context window).
             # We set a future resume_after timestamp; _resume_paused_tasks()
             # will promote the task back to READY once the backoff expires.
-            # Note: if the in-loop rate-limit retries above were exhausted,
-            # we end up here for PAUSED_RATE_LIMIT as a final fallback.
             retry_secs = (
                 self.config.pause_retry.rate_limit_backoff_seconds
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
                 else self.config.pause_retry.token_exhaustion_retry_seconds
-            )
-            await self.db.transition_task(
-                action.task_id,
-                TaskStatus.PAUSED,
-                context="tokens_exhausted",
-                resume_after=time.time() + retry_secs,
             )
             reason = (
                 "rate limit"
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
                 else "token exhaustion"
             )
+
+            # Session limits include a reset time ("resets 2pm (America/Los_Angeles)").
+            # Parse it to set resume_after to the actual reset time instead of
+            # the short default backoff.
+            error_msg = output.error_message or ""
+            parsed_resume = _parse_reset_time(error_msg)
+            if parsed_resume and parsed_resume > time.time():
+                retry_secs = int(parsed_resume - time.time()) + 60  # +60s buffer
+                reason = "session limit"
+                logger.info(
+                    "Task %s: session limit resets in %ds, will resume then.",
+                    task.id,
+                    retry_secs,
+                )
+
+            resume_at = time.time() + retry_secs
+
+            # Set provider-level cooldown so the scheduler stops assigning
+            # new tasks to agents of this type until the limit resets.
+            # This prevents other tasks from launching just to hit the same
+            # wall.  Keyed by agent_type to support multiple providers.
+            if agent and agent.agent_type:
+                self._provider_cooldowns[agent.agent_type] = resume_at
+                logger.info(
+                    "Provider cooldown set: %s until %.0f (%ds from now)",
+                    agent.agent_type,
+                    resume_at,
+                    retry_secs,
+                )
+
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="tokens_exhausted",
+                resume_after=resume_at,
+            )
             await self._emit_task_event(
                 "task.paused",
                 task,
                 reason=reason,
-                resume_after=time.time() + retry_secs,
+                resume_after=resume_at,
+            )
+            friendly_wait = (
+                f"{retry_secs // 3600}h {(retry_secs % 3600) // 60}m"
+                if retry_secs >= 3600
+                else f"{retry_secs // 60}m"
             )
             await _post(
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
-                f"Reason: {reason}. Will retry in {retry_secs}s."
+                f"Reason: {reason}. Will resume in {friendly_wait}."
             )
 
             # Clean up workspace git state so the next task (or the resumed

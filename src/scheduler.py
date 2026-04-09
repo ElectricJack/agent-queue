@@ -135,6 +135,12 @@ class SchedulerState:
     global_budget: int | None = None
     # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
+    # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
+    # Unix timestamp when the cooldown expires.  Agents of a cooled-down
+    # type are excluded from scheduling until the timestamp passes.
+    # This supports per-provider session limits without affecting other
+    # provider types.
+    provider_cooldowns: dict[str, float] = field(default_factory=dict)
 
 
 def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
@@ -174,7 +180,15 @@ class Scheduler:
         if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
             return []
 
-        idle_agents = [a for a in state.agents if a.state == AgentState.IDLE]
+        import time as _time
+
+        now = _time.time()
+        idle_agents = [
+            a
+            for a in state.agents
+            if a.state == AgentState.IDLE
+            and state.provider_cooldowns.get(a.agent_type, 0) <= now
+        ]
         if not idle_agents:
             return []
 
