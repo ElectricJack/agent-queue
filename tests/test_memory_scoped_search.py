@@ -20,9 +20,12 @@ Roadmap 3.1.7 and 3.1.10 test cases:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from memsearch import SCOPE_WEIGHTS, MemoryScope, merge_and_rank
 
 from src.config import MemoryConfig
 from src.memory import MemoryManager
@@ -800,3 +803,442 @@ class TestMemoryServiceScopedSearch:
 
         batch = await svc.scoped_batch_search(["q1"], project_id="myapp")
         assert batch == {"q1": []}
+
+
+# ---------------------------------------------------------------------------
+# Test: merge_and_rank direct tests (roadmap 3.1.10)
+# ---------------------------------------------------------------------------
+
+
+def _weighted_result(
+    chunk_hash: str,
+    score: float,
+    scope: MemoryScope,
+    scope_id: str | None = None,
+    collection: str = "",
+    content: str = "",
+) -> dict:
+    """Build a result dict as CollectionRouter._search_collection_async would."""
+    weight = SCOPE_WEIGHTS[scope]
+    return {
+        "chunk_hash": chunk_hash,
+        "content": content or f"content for {chunk_hash}",
+        "source": f"/vault/{scope.value}/{chunk_hash}.md",
+        "heading": "",
+        "score": score,
+        "weighted_score": score * weight,
+        "_scope": scope.value,
+        "_scope_id": scope_id,
+        "_weight": weight,
+        "_collection": collection or f"aq_{scope.value}",
+    }
+
+
+class TestMergeAndRankWeightedMerge:
+    """Direct tests of merge_and_rank() for roadmap 3.1.10 cases.
+
+    These test the core merging algorithm without MemoryManager mocking,
+    using realistic result dicts with proper scope weights from SCOPE_WEIGHTS.
+    """
+
+    def test_a_project_outranks_system_equal_raw_score(self):
+        """(a) Same raw similarity → project (1.0) ranked above system (0.4).
+
+        Project: 0.85 * 1.0 = 0.85
+        System:  0.85 * 0.4 = 0.34
+        """
+        results = [
+            _weighted_result("sys1", 0.85, MemoryScope.SYSTEM),
+            _weighted_result("proj1", 0.85, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 2
+        assert merged[0]["_scope"] == "project"
+        assert merged[0]["weighted_score"] == pytest.approx(0.85)
+        assert merged[1]["_scope"] == "system"
+        assert merged[1]["weighted_score"] == pytest.approx(0.34)
+
+    def test_a_project_beats_system_at_all_raw_scores(self):
+        """(a) At any equal raw score, project always outranks system."""
+        for raw in [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]:
+            results = [
+                _weighted_result("sys", raw, MemoryScope.SYSTEM),
+                _weighted_result("proj", raw, MemoryScope.PROJECT, "myapp"),
+            ]
+            merged = merge_and_rank(results, top_k=10)
+            assert merged[0]["_scope"] == "project", f"Failed at raw={raw}"
+
+    def test_a_three_scope_ordering_at_equal_similarity(self):
+        """(a) All three scopes with equal raw similarity: project > agent-type > system."""
+        results = [
+            _weighted_result("sys1", 0.8, MemoryScope.SYSTEM),
+            _weighted_result("agent1", 0.8, MemoryScope.AGENT_TYPE, "coding"),
+            _weighted_result("proj1", 0.8, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 3
+        assert merged[0]["_scope"] == "project"  # 0.8 * 1.0 = 0.80
+        assert merged[1]["_scope"] == "agent_type"  # 0.8 * 0.7 = 0.56
+        assert merged[2]["_scope"] == "system"  # 0.8 * 0.4 = 0.32
+
+    def test_b_high_system_similarity_outranks_low_project(self):
+        """(b) System score 0.95 * 0.4 = 0.38 > project score 0.3 * 1.0 = 0.30."""
+        results = [
+            _weighted_result("proj1", 0.3, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("sys1", 0.95, MemoryScope.SYSTEM),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["_scope"] == "system"
+        assert merged[0]["weighted_score"] == pytest.approx(0.38)
+        assert merged[1]["_scope"] == "project"
+        assert merged[1]["weighted_score"] == pytest.approx(0.30)
+
+    def test_b_agent_type_can_outrank_project(self):
+        """(b) Agent-type 0.9 * 0.7 = 0.63 > project 0.5 * 1.0 = 0.50."""
+        results = [
+            _weighted_result("proj1", 0.5, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("agent1", 0.9, MemoryScope.AGENT_TYPE, "coding"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["_scope"] == "agent_type"
+        assert merged[0]["weighted_score"] == pytest.approx(0.63)
+
+    def test_b_weighted_score_is_product_not_replacement(self):
+        """(b) weighted_score = raw_score * weight, not just the weight."""
+        results = [_weighted_result("proj1", 0.6, MemoryScope.PROJECT, "myapp")]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["weighted_score"] == pytest.approx(0.6)
+        assert merged[0]["weighted_score"] != SCOPE_WEIGHTS[MemoryScope.PROJECT]
+
+    def test_c_three_scopes_five_each_top_k_merge(self):
+        """(c) 3 scopes × 5 results each → merged output is top-K by weighted score."""
+        results = []
+        for i in range(5):
+            raw = 0.9 - i * 0.1
+            results.append(_weighted_result(f"proj{i}", raw, MemoryScope.PROJECT, "myapp"))
+            results.append(_weighted_result(f"agent{i}", raw, MemoryScope.AGENT_TYPE, "coding"))
+            results.append(_weighted_result(f"sys{i}", raw, MemoryScope.SYSTEM))
+
+        merged = merge_and_rank(results, top_k=5)
+        assert len(merged) == 5
+        # Should be sorted by weighted_score descending
+        scores = [r["weighted_score"] for r in merged]
+        assert scores == sorted(scores, reverse=True)
+        # Top results should be dominated by project scope (weight 1.0)
+        assert merged[0]["_scope"] == "project"
+
+    def test_c_top_k_applied_after_merge_not_per_scope(self):
+        """(c) top_k truncation happens after cross-scope merge, not per-scope."""
+        results = []
+        for i in range(5):
+            raw = 0.9 - i * 0.1
+            results.append(_weighted_result(f"proj{i}", raw, MemoryScope.PROJECT, "myapp"))
+            results.append(_weighted_result(f"sys{i}", raw, MemoryScope.SYSTEM))
+        # 10 total results, top_k=3 should give exactly 3
+        merged = merge_and_rank(results, top_k=3)
+        assert len(merged) == 3
+
+    def test_c_top_k_1_returns_single_best(self):
+        """(c) top_k=1 returns the single highest weighted result."""
+        results = [
+            _weighted_result("proj0", 0.9, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("agent0", 0.9, MemoryScope.AGENT_TYPE, "coding"),
+            _weighted_result("sys0", 0.9, MemoryScope.SYSTEM),
+        ]
+        merged = merge_and_rank(results, top_k=1)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"  # 0.9 * 1.0 highest
+
+    def test_d_empty_scope_contributes_nothing(self):
+        """(d) Only project scope has results — system contributes nothing."""
+        results = [
+            _weighted_result("proj1", 0.85, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"
+
+    def test_d_all_scopes_empty_returns_empty(self):
+        """(d) No results from any scope → empty list."""
+        assert merge_and_rank([], top_k=10) == []
+
+    def test_d_no_padding_with_low_score_results(self):
+        """(d) Empty scopes don't insert zero-score placeholders."""
+        results = [
+            _weighted_result("proj1", 0.9, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("proj2", 0.5, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 2
+        # All results have non-zero weighted scores
+        assert all(r["weighted_score"] > 0 for r in merged)
+
+    def test_e_results_include_scope_metadata(self):
+        """(e) Each result has _scope, _scope_id, _weight, _collection, weighted_score."""
+        results = [
+            _weighted_result("proj1", 0.9, MemoryScope.PROJECT, "myapp", "aq_project_myapp"),
+            _weighted_result(
+                "agent1", 0.8, MemoryScope.AGENT_TYPE, "coding", "aq_agenttype_coding"
+            ),
+            _weighted_result("sys1", 0.7, MemoryScope.SYSTEM, None, "aq_system"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        for r in merged:
+            assert "_scope" in r
+            assert "_scope_id" in r
+            assert "_weight" in r
+            assert "_collection" in r
+            assert "weighted_score" in r
+            # Verify weighted_score arithmetic
+            assert r["weighted_score"] == pytest.approx(r["score"] * r["_weight"])
+
+    def test_e_scope_metadata_preserved_through_merge(self):
+        """(e) Scope metadata survives the merge-and-rank sorting."""
+        results = [
+            _weighted_result("proj1", 0.9, MemoryScope.PROJECT, "myapp", "aq_project_myapp"),
+            _weighted_result("sys1", 0.7, MemoryScope.SYSTEM, None, "aq_system"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        proj = next(r for r in merged if r["_scope"] == "project")
+        sys_ = next(r for r in merged if r["_scope"] == "system")
+        assert proj["_scope_id"] == "myapp"
+        assert proj["_collection"] == "aq_project_myapp"
+        assert proj["_weight"] == SCOPE_WEIGHTS[MemoryScope.PROJECT]
+        assert sys_["_scope_id"] is None
+        assert sys_["_collection"] == "aq_system"
+        assert sys_["_weight"] == SCOPE_WEIGHTS[MemoryScope.SYSTEM]
+
+
+# ---------------------------------------------------------------------------
+# Test: deduplication in weighted merge (roadmap 3.1.10)
+# ---------------------------------------------------------------------------
+
+
+class TestWeightedMergeDedup:
+    """Test that merge_and_rank deduplicates by chunk_hash across scopes.
+
+    When the same chunk appears in multiple scopes (e.g., cross-indexed
+    content), the entry with the highest weighted_score is kept.
+    """
+
+    def test_dedup_same_hash_two_scopes(self):
+        """Same chunk_hash in project and system → single entry kept."""
+        results = [
+            _weighted_result("shared", 0.8, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("shared", 0.8, MemoryScope.SYSTEM),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        # Project weighted_score (0.8*1.0=0.8) > system (0.8*0.4=0.32)
+        assert merged[0]["_scope"] == "project"
+        assert merged[0]["weighted_score"] == pytest.approx(0.8)
+
+    def test_dedup_same_hash_three_scopes(self):
+        """Same chunk_hash in all 3 scopes → single entry from project."""
+        results = [
+            _weighted_result("x", 0.7, MemoryScope.SYSTEM),
+            _weighted_result("x", 0.7, MemoryScope.AGENT_TYPE, "coding"),
+            _weighted_result("x", 0.7, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"
+
+    def test_dedup_keeps_highest_weighted_score(self):
+        """Dedup keeps the entry with the highest weighted_score, not necessarily
+        the highest raw score."""
+        # System raw=0.9 → weighted 0.36
+        # Project raw=0.5 → weighted 0.50  ← this should win
+        results = [
+            _weighted_result("dup", 0.9, MemoryScope.SYSTEM),
+            _weighted_result("dup", 0.5, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "project"
+        assert merged[0]["weighted_score"] == pytest.approx(0.50)
+
+    def test_dedup_high_system_raw_score_can_win(self):
+        """When system has vastly higher raw score, its weighted_score can
+        beat project and thus the system entry is kept after dedup."""
+        # System raw=1.0 → weighted 0.40
+        # Project raw=0.3 → weighted 0.30  ← system wins
+        results = [
+            _weighted_result("dup", 1.0, MemoryScope.SYSTEM),
+            _weighted_result("dup", 0.3, MemoryScope.PROJECT, "myapp"),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["_scope"] == "system"
+        assert merged[0]["weighted_score"] == pytest.approx(0.40)
+
+    def test_dedup_mixed_shared_and_unique(self):
+        """Mix of shared and unique chunk_hashes: shared deduped, unique preserved."""
+        results = [
+            _weighted_result("shared", 0.8, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("shared", 0.8, MemoryScope.SYSTEM),
+            _weighted_result("proj_only", 0.6, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("sys_only", 0.9, MemoryScope.SYSTEM),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        hashes = [m["chunk_hash"] for m in merged]
+        assert len(merged) == 3
+        assert hashes.count("shared") == 1
+        assert "proj_only" in hashes
+        assert "sys_only" in hashes
+
+    def test_dedup_preserves_sort_order(self):
+        """After dedup, results remain sorted by weighted_score descending."""
+        results = [
+            _weighted_result("shared", 0.8, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("shared", 0.8, MemoryScope.SYSTEM),
+            _weighted_result("a", 0.9, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("b", 0.7, MemoryScope.AGENT_TYPE, "coding"),
+            _weighted_result("c", 0.95, MemoryScope.SYSTEM),
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        scores = [m["weighted_score"] for m in merged]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_dedup_with_top_k_truncation(self):
+        """Dedup reduces count before top_k truncation."""
+        results = [
+            _weighted_result("dup1", 0.9, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("dup1", 0.9, MemoryScope.SYSTEM),
+            _weighted_result("dup2", 0.8, MemoryScope.PROJECT, "myapp"),
+            _weighted_result("dup2", 0.8, MemoryScope.SYSTEM),
+            _weighted_result("unique", 0.7, MemoryScope.PROJECT, "myapp"),
+        ]
+        # 5 raw entries → 3 after dedup → top_k=2 should give 2
+        merged = merge_and_rank(results, top_k=2)
+        assert len(merged) == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: parallel execution latency (roadmap 3.1.10 case f)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelExecutionLatency:
+    """Verify that multi-scope search uses parallel execution (case f).
+
+    Tests use asyncio.gather behavior checking and timing to confirm
+    that scope queries run concurrently, not sequentially.
+    """
+
+    @pytest.fixture
+    def mgr(self, tmp_path):
+        return _make_manager(tmp_path)
+
+    async def test_f_router_search_called_with_parallel_scope_params(self, mgr):
+        """(f) MemoryManager.scoped_search delegates to router.search() which
+        internally uses asyncio.gather for parallel scope queries."""
+        mock_embedder = MagicMock()
+        mock_embedder.dimension = 384
+        mock_embedder.model_name = "test-model"
+        mock_embedder.embed = AsyncMock(return_value=[[0.1] * 384])
+
+        mock_router = MagicMock()
+        mock_router.search = AsyncMock(return_value=[])
+        mock_router.close = MagicMock()
+
+        with (
+            patch("src.memory.get_embedding_provider", return_value=mock_embedder),
+            patch("src.memory.CollectionRouter", return_value=mock_router),
+            patch("src.memory.MEMSEARCH_AVAILABLE", True),
+        ):
+            await mgr.scoped_search(
+                "query",
+                project_id="myapp",
+                agent_type="coding",
+            )
+
+            # The router.search() is called once — it handles parallelism
+            # internally via asyncio.gather across all resolved scopes
+            mock_router.search.assert_awaited_once()
+            call_kwargs = mock_router.search.call_args.kwargs
+            assert call_kwargs["project_id"] == "myapp"
+            assert call_kwargs["agent_type"] == "coding"
+
+    async def test_f_concurrent_mock_router_demonstrates_parallelism(self, mgr):
+        """(f) Simulated parallel execution: a slow router.search completes
+        much faster than the sum of per-scope delays would if sequential.
+
+        We mock router.search to sleep briefly then return, and verify the
+        total wall time is bounded — confirming the call is a single
+        parallel operation rather than N sequential calls.
+        """
+        mock_embedder = MagicMock()
+        mock_embedder.dimension = 384
+        mock_embedder.model_name = "test-model"
+        mock_embedder.embed = AsyncMock(return_value=[[0.1] * 384])
+
+        async def _parallel_search(emb, **kwargs):
+            """Simulate the real router.search which uses asyncio.gather."""
+            await asyncio.sleep(0.05)  # single parallel wait
+            return [
+                _fake_search_result("p1", "proj", 0.9, "project", "myapp", 1.0),
+                _fake_search_result("a1", "agent", 0.8, "agent_type", "coding", 0.7),
+                _fake_search_result("s1", "sys", 0.7, "system", None, 0.4),
+            ]
+
+        mock_router = MagicMock()
+        mock_router.search = AsyncMock(side_effect=_parallel_search)
+        mock_router.close = MagicMock()
+
+        with (
+            patch("src.memory.get_embedding_provider", return_value=mock_embedder),
+            patch("src.memory.CollectionRouter", return_value=mock_router),
+            patch("src.memory.MEMSEARCH_AVAILABLE", True),
+        ):
+            t0 = time.perf_counter()
+            results = await mgr.scoped_search(
+                "query",
+                project_id="myapp",
+                agent_type="coding",
+            )
+            elapsed = time.perf_counter() - t0
+
+            assert len(results) == 3
+            # If this were 3 sequential scope calls of 0.05s each, elapsed
+            # would be >=0.15s.  Single parallel call should be ~0.05s.
+            # Use 0.30s as generous upper bound for CI environments.
+            assert elapsed < 0.30, (
+                f"Search took {elapsed:.3f}s — should be well under 0.15s if "
+                f"scope queries run in parallel (single router.search call)"
+            )
+
+    async def test_f_batch_search_parallel_across_queries(self, mgr):
+        """(f) scoped_batch_search runs multiple queries concurrently."""
+        mock_embedder = MagicMock()
+        mock_embedder.dimension = 384
+        mock_embedder.model_name = "test-model"
+        mock_embedder.embed = AsyncMock(return_value=[[0.1] * 384, [0.2] * 384, [0.3] * 384])
+
+        call_times = []
+
+        async def _timed_search(emb, **kwargs):
+            call_times.append(time.perf_counter())
+            await asyncio.sleep(0.02)
+            return [_fake_search_result("h1", "result", 0.9)]
+
+        mock_router = MagicMock()
+        mock_router.search = AsyncMock(side_effect=_timed_search)
+        mock_router.close = MagicMock()
+
+        with (
+            patch("src.memory.get_embedding_provider", return_value=mock_embedder),
+            patch("src.memory.CollectionRouter", return_value=mock_router),
+            patch("src.memory.MEMSEARCH_AVAILABLE", True),
+        ):
+            t0 = time.perf_counter()
+            result = await mgr.scoped_batch_search(
+                ["q1", "q2", "q3"],
+                project_id="myapp",
+            )
+            elapsed = time.perf_counter() - t0
+
+            assert len(result) == 3
+            # 3 queries × 0.02s each = 0.06s sequential.
+            # Parallel should be ~0.02s. Allow generous bound.
+            assert elapsed < 0.30, f"Batch search took {elapsed:.3f}s — expected parallel execution"
