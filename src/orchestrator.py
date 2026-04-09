@@ -1034,6 +1034,19 @@ class Orchestrator:
         if self.vault_watcher:
             await self.vault_watcher.check()
 
+        # Startup scan: sync any existing profile.md files from the vault
+        # to the database.  The VaultWatcher's initial check() only takes
+        # a snapshot (no dispatch), so pre-existing profile files would
+        # not be synced without this step.  This ensures profile DB rows
+        # are always consistent with vault files after a daemon restart.
+        from src.profile_sync import scan_and_sync_existing_profiles
+
+        await scan_and_sync_existing_profiles(
+            self.config.vault_root,
+            self.db,
+            event_bus=self.bus,
+        )
+
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
 

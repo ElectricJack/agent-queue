@@ -26,7 +26,9 @@ See ``docs/specs/design/profiles.md`` Section 3 for the full sync model.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -437,3 +439,135 @@ def register_profile_handlers(
         " (DB connected)" if db else " (log-only, no DB)",
     )
     return handler_ids
+
+
+def _find_profile_files(vault_root: str) -> list[tuple[str, str]]:
+    """Find all existing profile files in the vault directory tree.
+
+    Walks the vault tree and returns files matching :data:`PROFILE_PATTERNS`.
+
+    Parameters
+    ----------
+    vault_root:
+        Absolute path to the vault root directory.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        List of ``(absolute_path, relative_path)`` tuples for each
+        matching profile file.
+    """
+    results: list[tuple[str, str]] = []
+
+    if not os.path.isdir(vault_root):
+        return results
+
+    for dirpath, dirnames, filenames in os.walk(vault_root):
+        # Skip hidden directories (.obsidian, .git, etc.)
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+
+            full_path = os.path.join(dirpath, fname)
+            rel_path = os.path.relpath(full_path, vault_root).replace(os.sep, "/")
+
+            for pattern in PROFILE_PATTERNS:
+                if fnmatch.fnmatch(rel_path, pattern):
+                    results.append((full_path, rel_path))
+                    break  # Don't add twice if multiple patterns match
+
+    return results
+
+
+async def scan_and_sync_existing_profiles(
+    vault_root: str,
+    db: Any,
+    *,
+    event_bus: EventBus | None = None,
+) -> list[ProfileSyncResult]:
+    """Scan the vault for existing profile files and sync them all to the DB.
+
+    This is the **startup scan** — called once during orchestrator
+    initialization to ensure profile files that already exist in the
+    vault are reflected in the database.  The
+    :class:`~src.vault_watcher.VaultWatcher` only detects *changes*
+    after its initial snapshot; this function fills the gap by reading
+    and syncing all existing profile files at boot time.
+
+    Each file is read, parsed via :func:`~src.profile_parser.parse_profile`,
+    and synced via :func:`sync_profile_to_db`.  Files that fail to parse
+    or sync produce logged errors (and optional event-bus notifications)
+    but do not prevent other files from being processed.
+
+    Parameters
+    ----------
+    vault_root:
+        Absolute path to the vault root directory.
+    db:
+        A database instance implementing the ``DatabaseBackend`` protocol.
+    event_bus:
+        Optional :class:`~src.event_bus.EventBus` for failure notifications.
+
+    Returns
+    -------
+    list[ProfileSyncResult]
+        One result per profile file found (both successes and failures).
+    """
+    profile_files = _find_profile_files(vault_root)
+    if not profile_files:
+        logger.debug("Startup profile scan: no profile files found in %s", vault_root)
+        return []
+
+    results: list[ProfileSyncResult] = []
+
+    for abs_path, rel_path in profile_files:
+        fallback_id = derive_profile_id(rel_path)
+
+        try:
+            text = Path(abs_path).read_text(encoding="utf-8")
+        except OSError:
+            logger.error("Startup profile scan: could not read %s", abs_path, exc_info=True)
+            results.append(
+                ProfileSyncResult(
+                    success=False,
+                    action="none",
+                    errors=[f"Could not read file: {abs_path}"],
+                )
+            )
+            continue
+
+        parsed = parse_profile(text)
+        result = await sync_profile_to_db(
+            parsed,
+            db,
+            source_path=abs_path,
+            fallback_id=fallback_id,
+        )
+        results.append(result)
+
+        if result.success:
+            logger.info(
+                "Startup profile scan: %s profile id=%s from %s",
+                result.action,
+                result.profile_id,
+                rel_path,
+            )
+        else:
+            logger.error(
+                "Startup profile scan: failed to sync %s: %s",
+                rel_path,
+                result.errors,
+            )
+            await _emit_sync_failed(event_bus, result, rel_path)
+
+    synced = sum(1 for r in results if r.success)
+    failed = len(results) - synced
+    logger.info(
+        "Startup profile scan complete: %d file(s) found, %d synced, %d failed",
+        len(results),
+        synced,
+        failed,
+    )
+    return results

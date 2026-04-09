@@ -31,9 +31,11 @@ from src.profile_parser import ParsedProfile, parse_profile, parsed_profile_to_a
 from src.profile_sync import (
     PROFILE_PATTERNS,
     ProfileSyncResult,
+    _find_profile_files,
     derive_profile_id,
     on_profile_changed,
     register_profile_handlers,
+    scan_and_sync_existing_profiles,
     sync_profile_text_to_db,
     sync_profile_to_db,
 )
@@ -2898,3 +2900,317 @@ name: All Unknown
         assert isinstance(event["warnings"], list)
         # profile_id may be empty if ID couldn't be resolved, but should exist
         assert "profile_id" in event
+
+
+# ---------------------------------------------------------------------------
+# Startup scan — scan_and_sync_existing_profiles
+# ---------------------------------------------------------------------------
+#
+# Roadmap 4.1.7 — Ensures existing vault profile files are synced to the
+# database at startup, before the VaultWatcher begins change detection.
+# ---------------------------------------------------------------------------
+
+
+class TestFindProfileFiles:
+    """Test _find_profile_files vault directory scanning."""
+
+    def test_finds_agent_type_profiles(self, tmp_path):
+        """Discovers profile.md files under agent-types/<type>/."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), MINIMAL_PROFILE)
+        _create_file(str(vault / "agent-types" / "review" / "profile.md"), MINIMAL_PROFILE)
+
+        found = _find_profile_files(str(vault))
+        rel_paths = {r for _, r in found}
+        assert "agent-types/coding/profile.md" in rel_paths
+        assert "agent-types/review/profile.md" in rel_paths
+
+    def test_finds_orchestrator_profile(self, tmp_path):
+        """Discovers orchestrator/profile.md."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "orchestrator" / "profile.md"), MINIMAL_PROFILE)
+
+        found = _find_profile_files(str(vault))
+        rel_paths = {r for _, r in found}
+        assert "orchestrator/profile.md" in rel_paths
+
+    def test_ignores_non_matching_files(self, tmp_path):
+        """Ignores files that don't match any profile pattern."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "projects" / "app" / "profile.md"), "not a profile pattern")
+        _create_file(str(vault / "system" / "facts.md"), "facts")
+        _create_file(str(vault / "random.md"), "random")
+
+        found = _find_profile_files(str(vault))
+        assert len(found) == 0
+
+    def test_returns_empty_for_nonexistent_vault(self, tmp_path):
+        """Returns empty list if vault directory doesn't exist."""
+        found = _find_profile_files(str(tmp_path / "nonexistent"))
+        assert found == []
+
+    def test_returns_empty_for_empty_vault(self, tmp_path):
+        """Returns empty list if vault has no profile files."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        found = _find_profile_files(str(vault))
+        assert found == []
+
+    def test_skips_hidden_directories(self, tmp_path):
+        """Skips files inside hidden directories (.obsidian, .git, etc.)."""
+        vault = tmp_path / "vault"
+        _create_file(
+            str(vault / ".obsidian" / "agent-types" / "coding" / "profile.md"),
+            MINIMAL_PROFILE,
+        )
+        _create_file(
+            str(vault / "agent-types" / ".hidden" / "profile.md"),
+            MINIMAL_PROFILE,
+        )
+
+        found = _find_profile_files(str(vault))
+        assert len(found) == 0
+
+    def test_skips_hidden_files(self, tmp_path):
+        """Skips hidden files (starting with '.')."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / ".profile.md"), MINIMAL_PROFILE)
+
+        found = _find_profile_files(str(vault))
+        assert len(found) == 0
+
+    def test_returns_absolute_and_relative_paths(self, tmp_path):
+        """Each result is a (absolute_path, relative_path) tuple."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), MINIMAL_PROFILE)
+
+        found = _find_profile_files(str(vault))
+        assert len(found) == 1
+        abs_path, rel_path = found[0]
+        assert os.path.isabs(abs_path)
+        assert rel_path == "agent-types/coding/profile.md"
+        assert abs_path.endswith(os.path.join("agent-types", "coding", "profile.md"))
+
+    def test_no_duplicate_entries(self, tmp_path):
+        """Each file appears exactly once even if it matches multiple patterns."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), MINIMAL_PROFILE)
+        _create_file(str(vault / "orchestrator" / "profile.md"), MINIMAL_PROFILE)
+
+        found = _find_profile_files(str(vault))
+        abs_paths = [a for a, _ in found]
+        assert len(abs_paths) == len(set(abs_paths))
+
+
+class TestScanAndSyncExistingProfiles:
+    """Test startup scan: sync existing vault profile files to the database."""
+
+    @pytest.mark.asyncio
+    async def test_syncs_single_profile(self, db, tmp_path):
+        """A single existing profile file is synced to DB on startup scan."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), FULL_PROFILE)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].profile_id == "coding"
+
+        profile = await db.get_profile("coding")
+        assert profile is not None
+        assert profile.name == "Coding Agent"
+        assert profile.model == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_syncs_multiple_profiles(self, db, tmp_path):
+        """Multiple existing profile files are all synced."""
+        vault = tmp_path / "vault"
+        for agent_type in ["coding", "review", "qa"]:
+            text = f"""\
+---
+id: {agent_type}
+name: {agent_type.title()} Agent
+---
+
+## Config
+```json
+{{"model": "claude-sonnet-4-6"}}
+```
+"""
+            _create_file(str(vault / "agent-types" / agent_type / "profile.md"), text)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 3
+        assert all(r.success for r in results)
+
+        for agent_type in ["coding", "review", "qa"]:
+            profile = await db.get_profile(agent_type)
+            assert profile is not None, f"Profile {agent_type} not found"
+
+    @pytest.mark.asyncio
+    async def test_syncs_orchestrator_profile(self, db, tmp_path):
+        """orchestrator/profile.md is synced on startup scan."""
+        vault = tmp_path / "vault"
+        text = """\
+---
+id: orchestrator
+name: Orchestrator
+---
+
+## Role
+You coordinate agents.
+"""
+        _create_file(str(vault / "orchestrator" / "profile.md"), text)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].profile_id == "orchestrator"
+
+        profile = await db.get_profile("orchestrator")
+        assert profile is not None
+        assert profile.name == "Orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_no_profiles(self, db, tmp_path):
+        """Empty result when no profile files exist."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_nonexistent_vault(self, db, tmp_path):
+        """Empty result when vault directory doesn't exist."""
+        results = await scan_and_sync_existing_profiles(str(tmp_path / "nonexistent"), db)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_invalid_profile_reported_as_failure(self, db, tmp_path):
+        """Invalid profile produces a failure result but doesn't crash."""
+        vault = tmp_path / "vault"
+        _create_file(
+            str(vault / "agent-types" / "broken" / "profile.md"),
+            INVALID_JSON_PROFILE,
+        )
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 1
+        assert not results[0].success
+        assert results[0].errors
+
+        # Invalid profile NOT in DB
+        assert await db.get_profile("broken") is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_valid_and_invalid(self, db, tmp_path):
+        """Valid profiles sync successfully; invalid ones fail gracefully."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "good" / "profile.md"), FULL_PROFILE)
+        _create_file(
+            str(vault / "agent-types" / "bad" / "profile.md"),
+            INVALID_JSON_PROFILE,
+        )
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 2
+        successes = [r for r in results if r.success]
+        failures = [r for r in results if not r.success]
+        assert len(successes) == 1
+        assert len(failures) == 1
+
+        # Good profile is in DB
+        assert await db.get_profile("coding") is not None
+        # Bad profile is NOT in DB
+        assert await db.get_profile("broken") is None
+
+    @pytest.mark.asyncio
+    async def test_upsert_semantics(self, db, tmp_path):
+        """Startup scan upserts — existing DB row is updated, not duplicated."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), FULL_PROFILE)
+
+        # First scan: creates
+        r1 = await scan_and_sync_existing_profiles(str(vault), db)
+        assert len(r1) == 1
+        assert r1[0].action == "created"
+
+        # Second scan (simulate restart): updates
+        r2 = await scan_and_sync_existing_profiles(str(vault), db)
+        assert len(r2) == 1
+        assert r2[0].action == "updated"
+
+        # Still only one row
+        profiles = await db.list_profiles()
+        matching = [p for p in profiles if p.id == "coding"]
+        assert len(matching) == 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_id_from_path(self, db, tmp_path):
+        """Profile without frontmatter ID gets ID derived from vault path."""
+        vault = tmp_path / "vault"
+        text = """\
+---
+name: No ID Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        _create_file(str(vault / "agent-types" / "derived" / "profile.md"), text)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].profile_id == "derived"
+
+        profile = await db.get_profile("derived")
+        assert profile is not None
+
+    @pytest.mark.asyncio
+    async def test_emits_notification_on_failure(self, db, tmp_path):
+        """Failed sync during startup scan emits notification if event_bus provided."""
+        from src.event_bus import EventBus
+
+        bus = EventBus(env="dev", validate_events=True)
+        events: list[dict] = []
+        bus.subscribe("notify.profile_sync_failed", lambda data: events.append(data))
+
+        vault = tmp_path / "vault"
+        _create_file(
+            str(vault / "agent-types" / "bad" / "profile.md"),
+            INVALID_JSON_PROFILE,
+        )
+
+        await scan_and_sync_existing_profiles(str(vault), db, event_bus=bus)
+
+        assert len(events) == 1
+        assert events[0]["event_type"] == "notify.profile_sync_failed"
+
+    @pytest.mark.asyncio
+    async def test_full_field_round_trip(self, db, tmp_path):
+        """All parsed fields survive the startup scan pipeline."""
+        vault = tmp_path / "vault"
+        _create_file(str(vault / "agent-types" / "coding" / "profile.md"), FULL_PROFILE)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+        assert len(results) == 1
+        assert results[0].success
+
+        profile = await db.get_profile("coding")
+        assert profile.name == "Coding Agent"
+        assert profile.model == "claude-sonnet-4-6"
+        assert profile.permission_mode == "auto"
+        assert "Read" in profile.allowed_tools
+        assert "github" in profile.mcp_servers
+        assert "software engineering agent" in profile.system_prompt_suffix
+        assert "Always run existing tests" in profile.system_prompt_suffix
