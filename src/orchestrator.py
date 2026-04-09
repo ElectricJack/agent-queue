@@ -1616,6 +1616,11 @@ class Orchestrator:
             # 11. Periodic memory compaction — age out old task memories
             # into weekly digests.  Rate-limited by compact_interval_hours.
             await self._periodic_memory_compact()
+
+            # 12. Check paused playbook runs for timeout (roadmap 5.4.4).
+            #     Sweeps paused runs and handles expired timeouts — either
+            #     transitioning to a timeout node or marking as timed_out.
+            await self._check_paused_playbook_timeouts()
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
 
@@ -2095,6 +2100,33 @@ class Orchestrator:
                     )
             except Exception as e:
                 logger.warning("Memory compaction failed for project %s: %s", project.id, e)
+
+    async def _check_paused_playbook_timeouts(self) -> None:
+        """Sweep paused playbook runs for expired timeouts (roadmap 5.4.4).
+
+        Delegates to :meth:`CommandHandler.check_paused_playbook_timeouts`
+        which resolves per-node and per-playbook timeout configuration and
+        handles the transition (either to a timeout node or to timed_out
+        status).
+
+        Runs every tick (5s) — the query is lightweight (indexed status
+        column) and the actual timeout handling only fires for runs that
+        have genuinely expired.
+        """
+        if not hasattr(self, "command_handler") or self.command_handler is None:
+            return
+        try:
+            results = await self.command_handler.check_paused_playbook_timeouts()
+            for r in results:
+                logger.info(
+                    "Playbook run %s timed out: status=%s, timeout=%ds, on_timeout=%s",
+                    r["run_id"],
+                    r["status"],
+                    r["timeout_seconds"],
+                    r.get("on_timeout"),
+                )
+        except Exception as e:
+            logger.warning("Paused playbook timeout sweep failed: %s", e)
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.

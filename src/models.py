@@ -641,7 +641,8 @@ class PlaybookRunEvent(Enum):
       (transition evaluation error), GRAPH_ERROR (missing entry/node).
     - **Budget:** BUDGET_EXCEEDED — token budget exhausted mid-run.
     - **Human-in-the-loop:** HUMAN_WAIT (node has ``wait_for_human``),
-      HUMAN_RESUMED (human provided input to resume).
+      HUMAN_RESUMED (human provided input to resume),
+      PAUSE_TIMEOUT (pause timeout expired without human input).
     """
 
     TERMINAL_REACHED = "TERMINAL_REACHED"
@@ -651,6 +652,7 @@ class PlaybookRunEvent(Enum):
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     HUMAN_WAIT = "HUMAN_WAIT"
     HUMAN_RESUMED = "HUMAN_RESUMED"
+    PAUSE_TIMEOUT = "PAUSE_TIMEOUT"
 
 
 @dataclass
@@ -681,6 +683,7 @@ class PlaybookRun:
     completed_at: float | None = None
     error: str | None = None
     pinned_graph: str | None = None  # JSON-serialised compiled graph for version pinning
+    paused_at: float | None = None  # Unix timestamp when the run was paused
 
 
 class PhaseResult(Enum):

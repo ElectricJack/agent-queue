@@ -294,6 +294,8 @@ class PlaybookNode:
     goto: str | None = None
     wait_for_human: bool = False
     timeout_seconds: int | None = None
+    pause_timeout_seconds: int | None = None  # Override pause timeout for this node (spec §9)
+    on_timeout: str | None = None  # Node ID to transition to on pause timeout (spec §9)
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
     summarize_before: bool = False
@@ -316,6 +318,10 @@ class PlaybookNode:
             d["wait_for_human"] = True
         if self.timeout_seconds is not None:
             d["timeout_seconds"] = self.timeout_seconds
+        if self.pause_timeout_seconds is not None:
+            d["pause_timeout_seconds"] = self.pause_timeout_seconds
+        if self.on_timeout is not None:
+            d["on_timeout"] = self.on_timeout
         if self.llm_config is not None:
             d["llm_config"] = self.llm_config.to_dict()
         if self.transition_llm_config is not None:
@@ -341,6 +347,8 @@ class PlaybookNode:
             goto=data.get("goto"),
             wait_for_human=data.get("wait_for_human", False),
             timeout_seconds=data.get("timeout_seconds"),
+            pause_timeout_seconds=data.get("pause_timeout_seconds"),
+            on_timeout=data.get("on_timeout"),
             llm_config=llm_cfg,
             transition_llm_config=trans_cfg,
             summarize_before=data.get("summarize_before", False),
@@ -376,6 +384,7 @@ class CompiledPlaybook:
     nodes: dict[str, PlaybookNode] = field(default_factory=dict)
     cooldown_seconds: int | None = None
     max_tokens: int | None = None
+    pause_timeout_seconds: int | None = None  # Default pause timeout for all nodes (spec §9)
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
     compiled_at: str | None = None
@@ -646,6 +655,8 @@ class CompiledPlaybook:
             d["cooldown_seconds"] = self.cooldown_seconds
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
+        if self.pause_timeout_seconds is not None:
+            d["pause_timeout_seconds"] = self.pause_timeout_seconds
         if self.llm_config is not None:
             d["llm_config"] = self.llm_config.to_dict()
         if self.transition_llm_config is not None:
@@ -673,6 +684,7 @@ class CompiledPlaybook:
             nodes=nodes,
             cooldown_seconds=data.get("cooldown_seconds"),
             max_tokens=data.get("max_tokens"),
+            pause_timeout_seconds=data.get("pause_timeout_seconds"),
             llm_config=llm_cfg,
             transition_llm_config=trans_cfg,
             compiled_at=data.get("compiled_at"),
