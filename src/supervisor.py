@@ -33,7 +33,7 @@ import structlog
 
 from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.command_handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, ChatProviderConfig
 from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator
 from src.reflection import ReflectionEngine, ReflectionVerdict
@@ -121,6 +121,21 @@ def _tool_label(name: str, input_data: dict) -> str:
     return name
 
 
+def _infer_provider_from_model(model: str) -> str | None:
+    """Infer the chat-provider type from a model name string.
+
+    Returns ``"anthropic"``, ``"gemini"``, or *None* when the provider
+    cannot be reliably determined (e.g. an Ollama model name).
+    """
+    m = model.lower()
+    # Anthropic models: "claude-*" or Vertex-style "claude-*@date"
+    if m.startswith("claude"):
+        return "anthropic"
+    if m.startswith("gemini"):
+        return "gemini"
+    return None
+
+
 class Supervisor:
     """Platform-agnostic LLM supervisor for managing the AgentQueue system.
 
@@ -181,6 +196,92 @@ class Supervisor:
     @property
     def model(self) -> str | None:
         return self._provider.model_name if self._provider else None
+
+    def _resolve_call_provider(self, llm_config: dict | None) -> ChatProvider | None:
+        """Create a one-shot provider when *llm_config* requests a different model.
+
+        Returns a ready-to-use :class:`ChatProvider` (wrapped with
+        :class:`LoggedChatProvider` when logging is enabled) or *None* when no
+        swap is needed — i.e. the caller should fall back to the default
+        provider.
+
+        The returned provider is **not** stored on ``self`` — it lives only
+        for the duration of the ``_chat_inner`` call that requested it.
+
+        Supported ``llm_config`` keys:
+
+        * ``model`` — model name to use (e.g. ``"gemini-2.5-flash"``).
+        * ``provider`` — explicit provider type (``"anthropic"``,
+          ``"gemini"``, ``"ollama"``).  If omitted, inferred from
+          ``model`` via :func:`_infer_provider_from_model`, falling back
+          to the current default provider type.
+        * ``base_url`` — Ollama base URL override.
+        * ``api_key`` — Gemini API key override.
+
+        ``max_tokens`` and ``temperature`` are *not* handled here; they
+        are applied directly at the ``create_message()`` call site.
+        """
+        if not llm_config:
+            return None
+
+        requested_model = llm_config.get("model")
+        requested_provider = llm_config.get("provider")
+
+        # Nothing to swap if no model/provider override was specified.
+        if not requested_model and not requested_provider:
+            return None
+
+        # Determine the effective provider type.
+        default_cfg = self.config.chat_provider
+        if requested_provider:
+            eff_provider = requested_provider
+        elif requested_model:
+            eff_provider = _infer_provider_from_model(requested_model) or default_cfg.provider
+        else:
+            eff_provider = default_cfg.provider
+
+        eff_model = requested_model or default_cfg.model
+
+        # Short-circuit: if effective provider+model match the current
+        # default, no swap is needed.
+        if eff_provider == default_cfg.provider and eff_model == (
+            self._provider.model_name if self._provider else default_cfg.model
+        ):
+            return None
+
+        cfg = ChatProviderConfig(
+            provider=eff_provider,
+            model=str(eff_model) if eff_model else "",
+            base_url=llm_config.get("base_url", default_cfg.base_url),
+            api_key=llm_config.get("api_key", default_cfg.api_key),
+            keep_alive=default_cfg.keep_alive,
+            num_ctx=default_cfg.num_ctx,
+        )
+
+        provider = create_chat_provider(cfg)
+        if provider is None:
+            logger.warning(
+                "llm_config requested provider %s / model %s but create_chat_provider "
+                "returned None — falling back to default provider",
+                eff_provider,
+                eff_model,
+            )
+            return None
+
+        # Wrap with logging if enabled (mirrors initialize()).
+        if self._llm_logger and self._llm_logger._enabled:
+            provider = LoggedChatProvider(
+                provider,
+                self._llm_logger,
+                caller="supervisor.chat:llm_config_override",
+            )
+
+        logger.info(
+            "llm_config override: using provider=%s model=%s for this call",
+            eff_provider,
+            provider.model_name,
+        )
+        return provider
 
     def set_active_project(self, project_id: str | None) -> None:
         self.handler.set_active_project(project_id)
@@ -373,12 +474,21 @@ class Supervisor:
 
         Args:
             llm_config: Optional dict to override LLM parameters for this
-                call.  Supported keys: ``model``, ``temperature``,
-                ``max_tokens``.  When *None* (the default), the
-                configured provider is used unchanged.  The actual
-                provider swap based on ``model`` is implemented in a
-                follow-up task (0.4.2); for now only ``max_tokens`` is
-                applied.
+                single call.  Supported keys:
+
+                * ``model`` — model name (e.g. ``"gemini-2.5-flash"``).
+                  When specified, a one-shot provider is created for
+                  this call; subsequent calls without ``llm_config``
+                  revert to the default provider.
+                * ``provider`` — explicit provider type
+                  (``"anthropic"``, ``"gemini"``, ``"ollama"``).  If
+                  omitted, inferred from ``model``.
+                * ``max_tokens`` — per-call token limit (default 1024).
+                * ``base_url`` — Ollama base-URL override.
+                * ``api_key`` — Gemini API-key override.
+
+                When *None* (the default), the configured provider is
+                used unchanged.
             tool_overrides: Optional list of tool names to make available
                 for this call.  When *None* (the default), the full
                 default tool set is used (backward compatible).  An empty
@@ -501,8 +611,30 @@ class Supervisor:
         """
         registry = self._registry
 
+        # Resolve a per-call provider override from llm_config.  This is
+        # created once and used for *all* rounds in the multi-turn loop,
+        # but is not stored on `self` — subsequent calls without llm_config
+        # will use the default provider.
+        call_provider = self._resolve_call_provider(llm_config)
+
+        # Determine which provider name governs schema compression.
+        # When a per-call provider is active, check *its* identity instead
+        # of the static config so that e.g. an ollama override still gets
+        # compressed schemas.
+        effective_provider_name = self.config.chat_provider.provider
+        if llm_config:
+            effective_provider_name = (
+                llm_config.get("provider")
+                or (
+                    _infer_provider_from_model(llm_config["model"])
+                    if llm_config.get("model")
+                    else None
+                )
+                or self.config.chat_provider.provider
+            )
+
         # Use compressed schemas for local LLMs with small context windows
-        compressed = self.config.chat_provider.provider == "ollama"
+        compressed = effective_provider_name == "ollama"
 
         if tool_overrides is not None:
             # Validate all requested tool names exist in the registry.
@@ -574,11 +706,11 @@ class Supervisor:
                 else:
                     await on_progress("thinking", f"round {round_num + 1}")
 
-            active_provider = _hook_provider_override.get() or self._provider
+            # Provider priority: per-call llm_config override > per-hook
+            # contextvar override > default self._provider.
+            active_provider = call_provider or _hook_provider_override.get() or self._provider
 
-            # Apply llm_config overrides for this call.
-            # Currently only max_tokens is honoured; model/temperature
-            # support requires provider swap logic (task 0.4.2).
+            # Apply max_tokens from llm_config (or default 1024).
             effective_max_tokens = llm_config.get("max_tokens", 1024) if llm_config else 1024
 
             resp = await active_provider.create_message(
