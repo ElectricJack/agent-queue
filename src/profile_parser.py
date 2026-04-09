@@ -139,9 +139,16 @@ class ParsedProfile:
     # Parse errors
     errors: list[str] = field(default_factory=list)
 
+    # Warnings (non-fatal issues, e.g. unknown tool names)
+    warnings: list[str] = field(default_factory=list)
+
     @property
     def is_valid(self) -> bool:
-        """True if no parse errors occurred."""
+        """True if no parse errors occurred.
+
+        Warnings do not affect validity — they indicate non-fatal issues
+        such as unknown tool names (the tool may not be loaded yet).
+        """
         return len(self.errors) == 0
 
 
@@ -458,7 +465,125 @@ def _validate_config(config: dict) -> list[str]:
     return errors
 
 
-def parse_profile(text: str) -> ParsedProfile:
+# Known keys in the Tools block.
+TOOLS_KNOWN_KEYS = frozenset({"allowed", "denied"})
+
+
+def _validate_tools(
+    tools: dict,
+    known_tools: set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Validate the structure and tool names of the ``## Tools`` block.
+
+    Validates:
+
+    - **allowed** — must be a list of strings (when present).
+    - **denied** — must be a list of strings (when present).
+    - **unknown keys** — keys other than ``allowed`` and ``denied`` produce
+      a warning.
+    - **unknown tool names** — if *known_tools* is provided, tool names
+      not in that set produce a warning (not a hard failure — the tool
+      may not be loaded yet, per spec §2).
+    - **duplicates** — tool names appearing in both ``allowed`` and
+      ``denied`` produce a warning.
+
+    Parameters
+    ----------
+    tools:
+        The parsed Tools dict from the ``## Tools`` JSON block.
+    known_tools:
+        Optional set of recognised tool names.  When ``None``, tool-name
+        validation is skipped.  Use :func:`get_registry_tool_names` to
+        obtain the set from a :class:`~src.tool_registry.ToolRegistry`.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        ``(errors, warnings)`` — structural issues are errors;
+        unknown/ambiguous tool names are warnings.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Warn about unknown top-level keys
+    unknown_keys = set(tools.keys()) - TOOLS_KNOWN_KEYS
+    for key in sorted(unknown_keys):
+        warnings.append(f"Tools: unknown key '{key}' (expected 'allowed' and/or 'denied')")
+
+    # --- allowed ---
+    allowed_names: set[str] = set()
+    if "allowed" in tools:
+        allowed = tools["allowed"]
+        if not isinstance(allowed, list):
+            errors.append(f"Tools 'allowed' must be an array, got {type(allowed).__name__}")
+        else:
+            for i, item in enumerate(allowed):
+                if not isinstance(item, str):
+                    errors.append(f"Tools allowed[{i}] must be a string, got {type(item).__name__}")
+                elif not item.strip():
+                    errors.append(f"Tools allowed[{i}] must not be empty")
+                else:
+                    allowed_names.add(item)
+
+    # --- denied ---
+    denied_names: set[str] = set()
+    if "denied" in tools:
+        denied = tools["denied"]
+        if not isinstance(denied, list):
+            errors.append(f"Tools 'denied' must be an array, got {type(denied).__name__}")
+        else:
+            for i, item in enumerate(denied):
+                if not isinstance(item, str):
+                    errors.append(f"Tools denied[{i}] must be a string, got {type(item).__name__}")
+                elif not item.strip():
+                    errors.append(f"Tools denied[{i}] must not be empty")
+                else:
+                    denied_names.add(item)
+
+    # --- Duplicates between allowed and denied ---
+    overlap = allowed_names & denied_names
+    for name in sorted(overlap):
+        warnings.append(f"Tools: '{name}' appears in both 'allowed' and 'denied'")
+
+    # --- Unknown tool names (warning, not error — tool may not be loaded yet) ---
+    if known_tools is not None:
+        for name in sorted(allowed_names - known_tools):
+            warnings.append(f"Tools: unknown tool '{name}' in 'allowed'")
+        for name in sorted(denied_names - known_tools):
+            warnings.append(f"Tools: unknown tool '{name}' in 'denied'")
+
+    return errors, warnings
+
+
+def get_registry_tool_names(registry=None) -> set[str]:
+    """Return the set of all known tool names from a ToolRegistry.
+
+    This is a convenience function for obtaining the *known_tools* set
+    to pass to :func:`parse_profile` or :func:`_validate_tools`.
+
+    Parameters
+    ----------
+    registry:
+        A :class:`~src.tool_registry.ToolRegistry` instance.  If ``None``,
+        a fresh default registry is instantiated (built-in tools only,
+        no plugins).
+
+    Returns
+    -------
+    set[str]
+        Set of tool name strings.
+    """
+    if registry is None:
+        from src.tool_registry import ToolRegistry
+
+        registry = ToolRegistry()
+    return {t["name"] for t in registry.get_all_tools()}
+
+
+def parse_profile(
+    text: str,
+    known_tools: set[str] | None = None,
+) -> ParsedProfile:
     """Parse a markdown profile file into structured data.
 
     This is the main entry point for profile parsing.  Given the raw
@@ -472,12 +597,19 @@ def parse_profile(text: str) -> ParsedProfile:
     ----------
     text:
         Raw content of a profile.md file (UTF-8 string).
+    known_tools:
+        Optional set of recognised tool names for validation.  When
+        provided, tool names in the ``## Tools`` block that are not
+        in this set produce a warning (not an error — the tool may
+        not be loaded yet).  Use :func:`get_registry_tool_names` to
+        obtain the set from a :class:`~src.tool_registry.ToolRegistry`.
 
     Returns
     -------
     ParsedProfile
         The parsed profile.  Check ``result.is_valid`` and ``result.errors``
-        to determine if parsing succeeded.
+        to determine if parsing succeeded.  Warnings (e.g. unknown tool
+        names) are in ``result.warnings`` and do not affect validity.
 
     Examples
     --------
@@ -535,6 +667,12 @@ def parse_profile(text: str) -> ParsedProfile:
         elif heading_lower == "tools" and section.json_data is not None:
             if isinstance(section.json_data, dict):
                 result.tools = section.json_data
+                # Validate structure and tool names
+                tool_errors, tool_warnings = _validate_tools(
+                    section.json_data, known_tools=known_tools
+                )
+                result.errors.extend(tool_errors)
+                result.warnings.extend(tool_warnings)
             else:
                 result.errors.append(
                     f"## Tools JSON must be an object, got {type(section.json_data).__name__}"

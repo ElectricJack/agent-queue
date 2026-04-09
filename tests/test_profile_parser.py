@@ -20,6 +20,7 @@ from src.profile_parser import (
     KNOWN_SECTIONS,
     PROMPT_SECTIONS,
     STRUCTURED_SECTIONS,
+    TOOLS_KNOWN_KEYS,
     VALID_PERMISSION_MODES,
     _extract_json_block,
     _extract_prompt_text,
@@ -27,6 +28,8 @@ from src.profile_parser import (
     _split_sections,
     _validate_config,
     _validate_mcp_servers,
+    _validate_tools,
+    get_registry_tool_names,
     parse_frontmatter,
     parse_profile,
     parsed_profile_to_agent_profile,
@@ -1769,3 +1772,473 @@ class TestValidateConfig:
         assert any("'model'" in e for e in result.errors)
         assert any("'permission_mode'" in e for e in result.errors)
         assert any("'max_tokens_per_task'" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# Tools validation (_validate_tools)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateTools:
+    """Test structural validation and tool name checking for ## Tools.
+
+    Per the spec (docs/specs/design/profiles.md §2): Tool names in ## Tools
+    are validated against the tool registry.  Unknown tools produce a
+    **warning** (not a hard failure — the tool may not be loaded yet).
+    """
+
+    # -- Valid structures --
+
+    def test_valid_allowed_and_denied(self):
+        """Fully populated allowed and denied lists pass."""
+        tools = {"allowed": ["create_task", "list_tasks"], "denied": ["stop_task"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert warnings == []
+
+    def test_valid_allowed_only(self):
+        """Allowed list without denied is valid."""
+        tools = {"allowed": ["create_task"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert warnings == []
+
+    def test_valid_denied_only(self):
+        """Denied list without allowed is valid."""
+        tools = {"denied": ["stop_task"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert warnings == []
+
+    def test_valid_empty_lists(self):
+        """Empty allowed and denied lists are valid."""
+        tools = {"allowed": [], "denied": []}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert warnings == []
+
+    def test_valid_empty_dict(self):
+        """Empty tools dict is valid (no restrictions specified)."""
+        errors, warnings = _validate_tools({})
+        assert errors == []
+        assert warnings == []
+
+    # -- Invalid: allowed wrong type --
+
+    def test_allowed_is_string(self):
+        """'allowed' must be a list, not a string."""
+        tools = {"allowed": "create_task"}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'allowed' must be an array" in errors[0]
+        assert "str" in errors[0]
+
+    def test_allowed_is_dict(self):
+        """'allowed' must be a list, not a dict."""
+        tools = {"allowed": {"create_task": True}}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'allowed' must be an array" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_allowed_is_number(self):
+        """'allowed' must be a list, not a number."""
+        tools = {"allowed": 42}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'allowed' must be an array" in errors[0]
+        assert "int" in errors[0]
+
+    def test_allowed_is_bool(self):
+        """'allowed' must be a list, not a boolean."""
+        tools = {"allowed": True}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'allowed' must be an array" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_allowed_is_null(self):
+        """'allowed' must be a list, not null."""
+        tools = {"allowed": None}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'allowed' must be an array" in errors[0]
+
+    # -- Invalid: denied wrong type --
+
+    def test_denied_is_string(self):
+        """'denied' must be a list, not a string."""
+        tools = {"denied": "stop_task"}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'denied' must be an array" in errors[0]
+        assert "str" in errors[0]
+
+    def test_denied_is_dict(self):
+        """'denied' must be a list, not a dict."""
+        tools = {"denied": {"stop_task": True}}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'denied' must be an array" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_denied_is_number(self):
+        """'denied' must be a list, not a number."""
+        tools = {"denied": 99}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "'denied' must be an array" in errors[0]
+        assert "int" in errors[0]
+
+    # -- Invalid: non-string items in lists --
+
+    def test_allowed_item_is_number(self):
+        """Items in allowed must be strings."""
+        tools = {"allowed": ["create_task", 42, "list_tasks"]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[1]" in errors[0]
+        assert "must be a string" in errors[0]
+        assert "int" in errors[0]
+
+    def test_allowed_item_is_bool(self):
+        """Boolean items in allowed produce an error."""
+        tools = {"allowed": [True]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_allowed_item_is_dict(self):
+        """Dict items in allowed produce an error."""
+        tools = {"allowed": [{"name": "create_task"}]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "dict" in errors[0]
+
+    def test_allowed_item_is_null(self):
+        """Null items in allowed produce an error."""
+        tools = {"allowed": [None]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "NoneType" in errors[0]
+
+    def test_allowed_item_is_list(self):
+        """List items in allowed produce an error."""
+        tools = {"allowed": [["nested"]]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "list" in errors[0]
+
+    def test_denied_item_is_number(self):
+        """Items in denied must be strings."""
+        tools = {"denied": [123]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "denied[0]" in errors[0]
+        assert "must be a string" in errors[0]
+
+    def test_denied_item_is_bool(self):
+        """Boolean items in denied produce an error."""
+        tools = {"denied": [False]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "denied[0]" in errors[0]
+        assert "bool" in errors[0]
+
+    def test_multiple_invalid_items(self):
+        """Multiple invalid items produce multiple errors."""
+        tools = {"allowed": [42, True], "denied": [None]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 3
+
+    # -- Invalid: empty string items --
+
+    def test_allowed_empty_string(self):
+        """Empty string in allowed produces an error."""
+        tools = {"allowed": [""]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "must not be empty" in errors[0]
+
+    def test_allowed_whitespace_only(self):
+        """Whitespace-only string in allowed produces an error."""
+        tools = {"allowed": ["   "]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "allowed[0]" in errors[0]
+        assert "must not be empty" in errors[0]
+
+    def test_denied_empty_string(self):
+        """Empty string in denied produces an error."""
+        tools = {"denied": [""]}
+        errors, warnings = _validate_tools(tools)
+        assert len(errors) == 1
+        assert "denied[0]" in errors[0]
+        assert "must not be empty" in errors[0]
+
+    # -- Warnings: unknown keys --
+
+    def test_unknown_key_warning(self):
+        """Unknown top-level keys produce warnings, not errors."""
+        tools = {"allowed": ["create_task"], "blocked": ["stop_task"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert len(warnings) == 1
+        assert "unknown key 'blocked'" in warnings[0]
+
+    def test_multiple_unknown_keys(self):
+        """Multiple unknown keys each produce a warning."""
+        tools = {"allow_list": [], "block_list": [], "enabled": True}
+        errors, warnings = _validate_tools(tools)
+        # 'enabled' is not a list, but it's also an unknown key — the unknown-key
+        # warning triggers before type checks on allowed/denied (which aren't present)
+        assert errors == []
+        assert len(warnings) == 3
+        assert any("'allow_list'" in w for w in warnings)
+        assert any("'block_list'" in w for w in warnings)
+        assert any("'enabled'" in w for w in warnings)
+
+    # -- Warnings: tool name validation --
+
+    def test_unknown_allowed_tool(self):
+        """Unknown tool name in allowed produces a warning."""
+        known = {"create_task", "list_tasks", "stop_task"}
+        tools = {"allowed": ["create_task", "nonexistent_tool"]}
+        errors, warnings = _validate_tools(tools, known_tools=known)
+        assert errors == []
+        assert len(warnings) == 1
+        assert "unknown tool 'nonexistent_tool'" in warnings[0]
+        assert "'allowed'" in warnings[0]
+
+    def test_unknown_denied_tool(self):
+        """Unknown tool name in denied produces a warning."""
+        known = {"create_task", "list_tasks", "stop_task"}
+        tools = {"denied": ["fake_tool"]}
+        errors, warnings = _validate_tools(tools, known_tools=known)
+        assert errors == []
+        assert len(warnings) == 1
+        assert "unknown tool 'fake_tool'" in warnings[0]
+        assert "'denied'" in warnings[0]
+
+    def test_all_tools_known(self):
+        """No warnings when all tool names are recognised."""
+        known = {"create_task", "list_tasks", "stop_task"}
+        tools = {"allowed": ["create_task", "list_tasks"], "denied": ["stop_task"]}
+        errors, warnings = _validate_tools(tools, known_tools=known)
+        assert errors == []
+        assert warnings == []
+
+    def test_multiple_unknown_tools(self):
+        """Multiple unknown tools each produce a warning."""
+        known = {"create_task"}
+        tools = {"allowed": ["create_task", "foo_tool", "bar_tool"]}
+        errors, warnings = _validate_tools(tools, known_tools=known)
+        assert errors == []
+        assert len(warnings) == 2
+        assert any("'bar_tool'" in w for w in warnings)
+        assert any("'foo_tool'" in w for w in warnings)
+
+    def test_no_known_tools_skips_name_validation(self):
+        """When known_tools is None, tool name validation is skipped."""
+        tools = {"allowed": ["totally_fake_tool"]}
+        errors, warnings = _validate_tools(tools, known_tools=None)
+        assert errors == []
+        assert warnings == []
+
+    def test_empty_known_tools_set(self):
+        """Empty known_tools set means all tool names are unknown."""
+        tools = {"allowed": ["create_task"]}
+        errors, warnings = _validate_tools(tools, known_tools=set())
+        assert errors == []
+        assert len(warnings) == 1
+        assert "unknown tool 'create_task'" in warnings[0]
+
+    # -- Warnings: duplicates between allowed and denied --
+
+    def test_duplicate_in_allowed_and_denied(self):
+        """Tool in both allowed and denied produces a warning."""
+        tools = {"allowed": ["create_task", "list_tasks"], "denied": ["create_task"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert len(warnings) == 1
+        assert "'create_task'" in warnings[0]
+        assert "both 'allowed' and 'denied'" in warnings[0]
+
+    def test_multiple_duplicates(self):
+        """Multiple tools in both lists each produce a warning."""
+        tools = {"allowed": ["a", "b", "c"], "denied": ["b", "c", "d"]}
+        errors, warnings = _validate_tools(tools)
+        assert errors == []
+        assert len(warnings) == 2
+        assert any("'b'" in w for w in warnings)
+        assert any("'c'" in w for w in warnings)
+
+    # -- Mixed errors and warnings --
+
+    def test_errors_and_warnings_together(self):
+        """Structural errors and name warnings are reported independently."""
+        known = {"create_task"}
+        tools = {
+            "allowed": [42, "unknown_tool"],
+            "denied": ["create_task"],
+            "extra_key": True,
+        }
+        errors, warnings = _validate_tools(tools, known_tools=known)
+        assert len(errors) == 1  # allowed[0] is not a string
+        assert "allowed[0]" in errors[0]
+        # Warnings: unknown key, unknown tool name
+        assert any("'extra_key'" in w for w in warnings)
+        assert any("'unknown_tool'" in w for w in warnings)
+
+    # -- TOOLS_KNOWN_KEYS constant --
+
+    def test_tools_known_keys_constant(self):
+        """TOOLS_KNOWN_KEYS contains exactly 'allowed' and 'denied'."""
+        assert TOOLS_KNOWN_KEYS == {"allowed", "denied"}
+
+
+# ---------------------------------------------------------------------------
+# Tools validation integration with parse_profile
+# ---------------------------------------------------------------------------
+
+
+class TestToolsValidationIntegration:
+    """Test that _validate_tools is correctly wired into parse_profile.
+
+    The spec says unknown tools produce warnings, not errors, so the
+    profile should remain valid (is_valid=True) even with unknown tools.
+    """
+
+    def test_valid_tools_section(self):
+        """A well-formed tools section with known tools passes."""
+        known = {"shell", "git", "file_read"}
+        text = '## Tools\n```json\n{"allowed": ["shell", "git"], "denied": []}\n```\n'
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid
+        assert result.warnings == []
+        assert result.tools["allowed"] == ["shell", "git"]
+
+    def test_unknown_tool_produces_warning_not_error(self):
+        """Unknown tool names produce warnings; profile remains valid."""
+        known = {"shell", "git"}
+        text = '## Tools\n```json\n{"allowed": ["shell", "vibecop_scan"], "denied": []}\n```\n'
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid, f"Unexpected errors: {result.errors}"
+        assert len(result.warnings) == 1
+        assert "unknown tool 'vibecop_scan'" in result.warnings[0]
+
+    def test_structural_error_makes_profile_invalid(self):
+        """Non-string items in allowed make the profile invalid."""
+        text = '## Tools\n```json\n{"allowed": [42]}\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("allowed[0]" in e for e in result.errors)
+
+    def test_no_known_tools_no_warnings(self):
+        """Without known_tools, no name validation occurs."""
+        text = '## Tools\n```json\n{"allowed": ["completely_fake_tool"]}\n```\n'
+        result = parse_profile(text)
+        assert result.is_valid
+        assert result.warnings == []
+
+    def test_tools_section_preserves_data_despite_warnings(self):
+        """Data is stored even when warnings are generated."""
+        known = {"create_task"}
+        text = (
+            "## Tools\n```json\n"
+            '{"allowed": ["create_task", "unknown_1"], '
+            '"denied": ["unknown_2"]}\n```\n'
+        )
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid
+        assert result.tools["allowed"] == ["create_task", "unknown_1"]
+        assert result.tools["denied"] == ["unknown_2"]
+        assert len(result.warnings) == 2
+
+    def test_spec_example_with_known_tools(self):
+        """The spec example tools section validates against a tools set."""
+        known = {"shell", "file_read", "file_write", "git", "vibecop_scan", "vibecop_check"}
+        text = (
+            "## Tools\n```json\n"
+            '{"allowed": ["shell", "file_read", "file_write", "git", '
+            '"vibecop_scan", "vibecop_check"], "denied": []}\n```\n'
+        )
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid
+        assert result.warnings == []
+
+    def test_spec_example_partially_known(self):
+        """Spec example with some tools not yet loaded produces warnings."""
+        known = {"shell", "file_read", "file_write", "git"}
+        text = (
+            "## Tools\n```json\n"
+            '{"allowed": ["shell", "file_read", "file_write", "git", '
+            '"vibecop_scan", "vibecop_check"], "denied": []}\n```\n'
+        )
+        result = parse_profile(text, known_tools=known)
+        assert result.is_valid
+        assert len(result.warnings) == 2
+        assert any("vibecop_scan" in w for w in result.warnings)
+        assert any("vibecop_check" in w for w in result.warnings)
+
+    def test_duplicate_tools_warning_in_integration(self):
+        """Duplicates between allowed and denied produce warnings via parse_profile."""
+        text = '## Tools\n```json\n{"allowed": ["create_task"], "denied": ["create_task"]}\n```\n'
+        result = parse_profile(text)
+        assert result.is_valid
+        assert len(result.warnings) == 1
+        assert "both 'allowed' and 'denied'" in result.warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# get_registry_tool_names
+# ---------------------------------------------------------------------------
+
+
+class TestGetRegistryToolNames:
+    """Test the convenience function for getting known tool names."""
+
+    def test_returns_set_of_strings(self):
+        """get_registry_tool_names returns a set of string tool names."""
+        names = get_registry_tool_names()
+        assert isinstance(names, set)
+        assert len(names) > 0
+        assert all(isinstance(n, str) for n in names)
+
+    def test_contains_known_tools(self):
+        """Result includes well-known built-in tool names."""
+        names = get_registry_tool_names()
+        # These are core tools that should always exist
+        assert "create_task" in names
+        assert "list_tasks" in names
+        assert "list_projects" in names
+
+    def test_with_explicit_registry(self):
+        """Passing an explicit ToolRegistry works."""
+        from src.tool_registry import ToolRegistry
+
+        registry = ToolRegistry()
+        names = get_registry_tool_names(registry)
+        assert isinstance(names, set)
+        assert "create_task" in names
+
+    def test_custom_registry_with_limited_tools(self):
+        """A custom registry with limited tools returns only those names."""
+        from src.tool_registry import ToolRegistry
+
+        registry = ToolRegistry(
+            tools=[
+                {"name": "alpha", "description": "a", "input_schema": {}},
+                {"name": "beta", "description": "b", "input_schema": {}},
+            ]
+        )
+        names = get_registry_tool_names(registry)
+        # Custom registry creates navigation tools automatically,
+        # but our custom tools should be there
+        assert "alpha" in names
+        assert "beta" in names
