@@ -855,13 +855,12 @@ class Orchestrator:
 
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
-        # can be synced to the KV backend.  When the MemoryV2Service is
-        # available, the handler parses the file and upserts KV entries;
-        # otherwise it falls back to logging only.
+        # can be synced to the KV backend.  Initially registered with no
+        # service (log-only fallback); re-registered with the live
+        # MemoryV2Service after plugins load — see post-plugin wiring below.
         from src.facts_handler import register_facts_handlers
 
-        memory_v2_svc = getattr(self, "_memory_v2_service", None)
-        register_facts_handlers(self.vault_watcher, service=memory_v2_svc)
+        register_facts_handlers(self.vault_watcher)
 
         # Register memory/*.md watcher handlers (vault spec §5).
         # Detects changes to memory markdown files across all vault scopes
@@ -924,6 +923,25 @@ class Orchestrator:
                 logger.info("Loaded %d plugins", loaded)
         except Exception as e:
             logger.error("Plugin initialization failed: %s", e, exc_info=True)
+
+        # Wire MemoryV2Service to facts.md watcher handlers (spec §7).
+        #
+        # The facts handlers were registered earlier (before plugins loaded)
+        # with service=None — the handler falls back to logging only.  Now
+        # that the MemoryV2Plugin has been loaded and owns a live service,
+        # re-register the handlers with the actual service so KV sync works.
+        # register_facts_handlers() is idempotent (same handler IDs are
+        # reused), so this is safe.
+        self._memory_v2_service = None
+        mem_v2_plugin = self.plugin_registry.get_plugin_instance("memory_v2")
+        if mem_v2_plugin:
+            svc = getattr(mem_v2_plugin, "service", None)
+            if svc and getattr(svc, "available", False):
+                from src.facts_handler import register_facts_handlers
+
+                register_facts_handlers(self.vault_watcher, service=svc)
+                self._memory_v2_service = svc
+                logger.info("Wired MemoryV2Service to facts.md watcher handlers")
 
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)

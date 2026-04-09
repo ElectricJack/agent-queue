@@ -528,6 +528,65 @@ class TestRegisterFactsHandlers:
 
         assert any("log-only" in r.message for r in caplog.records)
 
+    def test_reregister_with_service_upgrades_handler(self, tmp_path, caplog):
+        """Re-registering with a service should upgrade from log-only to syncing."""
+        watcher = VaultWatcher(vault_root=str(tmp_path))
+
+        # Initial registration — no service
+        with caplog.at_level(logging.INFO, logger="src.facts_handler"):
+            ids1 = register_facts_handlers(watcher)
+        assert any("log-only" in r.message for r in caplog.records)
+
+        caplog.clear()
+
+        # Re-register with service — should indicate service connected
+        service = MagicMock()
+        with caplog.at_level(logging.INFO, logger="src.facts_handler"):
+            ids2 = register_facts_handlers(watcher, service=service)
+
+        assert ids1 == ids2
+        assert watcher.get_handler_count() == len(FACTS_PATTERNS)
+        assert any("service connected" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_reregister_end_to_end_sync(self, tmp_path):
+        """After re-registration with service, file changes should trigger kv_set."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        # Phase 1: register without service
+        register_facts_handlers(watcher)
+
+        # Initial snapshot
+        await watcher.check()
+
+        # Phase 2: re-register WITH service (simulates post-plugin-load wiring)
+        service = AsyncMock()
+        service.available = True
+        service.kv_set = AsyncMock(return_value={})
+
+        register_facts_handlers(watcher, service=service)
+
+        # Create a project facts file
+        project_dir = vault / "projects" / "app"
+        project_dir.mkdir(parents=True)
+        facts_file = project_dir / "facts.md"
+        facts_file.write_text("## project\ntech_stack: Python\ndb: SQLite\n")
+
+        # Detect and dispatch
+        await watcher.check()
+
+        # kv_set should have been called — the re-registered handler is active
+        assert service.kv_set.call_count == 2
+        call_keys = {c.args[2] for c in service.kv_set.call_args_list}
+        assert call_keys == {"tech_stack", "db"}
+
 
 # ---------------------------------------------------------------------------
 # Integration: patterns match the expected paths

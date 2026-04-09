@@ -880,6 +880,15 @@ class MemoryV2Plugin(InternalPlugin):
     # are active: v1 owns existing tool names, v2 owns new ones.
     _internal: bool = True
 
+    @property
+    def service(self) -> MemoryV2Service | None:
+        """The :class:`MemoryV2Service` backend, or ``None`` if unavailable.
+
+        Exposed so the orchestrator can wire the service to subsystems
+        that need it after plugin initialization (e.g. facts.md KV sync).
+        """
+        return self._service
+
     async def initialize(self, ctx: PluginContext) -> None:
         self._ctx = ctx
         self._log = ctx.logger

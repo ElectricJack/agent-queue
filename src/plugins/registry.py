@@ -1020,6 +1020,21 @@ class PluginRegistry:
         """Check if a plugin is currently loaded."""
         return name in self._plugins
 
+    def get_plugin_instance(self, name: str) -> Plugin | None:
+        """Return the raw plugin instance for a loaded plugin.
+
+        This gives the caller direct access to the plugin object (e.g. to
+        read a ``service`` property).  Returns ``None`` if the plugin is
+        not loaded.
+
+        Parameters
+        ----------
+        name:
+            Plugin name (e.g. ``"memory_v2"``).
+        """
+        loaded = self._plugins.get(name)
+        return loaded.instance if loaded else None
+
     # ------------------------------------------------------------------
     # Circuit Breaker
     # ------------------------------------------------------------------
