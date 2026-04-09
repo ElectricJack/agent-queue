@@ -9,15 +9,23 @@ Covers:
 - Poll interval throttling
 - Multiple handlers with different patterns
 - Start/stop lifecycle
+- Path-based dispatch isolation (each handler category receives only its own files)
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 import pytest
 
+from src.facts_handler import FACTS_PATTERNS, register_facts_handlers
+from src.memory_handler import MEMORY_PATTERNS, register_memory_handlers
+from src.override_handler import OVERRIDE_PATTERN, register_override_handlers
+from src.playbook_handler import PLAYBOOK_PATTERNS, register_playbook_handlers
+from src.profile_sync import PROFILE_PATTERNS, register_profile_handlers
+from src.readme_handler import README_PATTERN, register_readme_handlers
 from src.vault_watcher import VaultChange, VaultWatcher
 
 
@@ -1014,3 +1022,1070 @@ class TestVaultChange:
         change = VaultChange(path="/a/b.md", rel_path="b.md", operation="created")
         s = {change}
         assert change in s
+
+
+# ---------------------------------------------------------------------------
+# Path-based dispatch isolation tests (roadmap 1.3.9)
+# ---------------------------------------------------------------------------
+#
+# These tests register ALL handler categories simultaneously and verify that
+# each file change is dispatched to the correct handler(s) and ONLY those
+# handlers.  This is the cross-category dispatch guarantee described in
+# the playbooks spec Section 17.
+
+
+@pytest.fixture
+def dispatch_env(tmp_path):
+    """Set up a vault with ALL handler categories registered.
+
+    Returns (vault_path, watcher, collectors) where *collectors* is a dict
+    mapping category names to ChangeCollector instances.  Each category's
+    patterns are registered with its own collector so we can assert which
+    categories received dispatch.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    watcher = VaultWatcher(
+        vault_root=str(vault),
+        poll_interval=0,
+        debounce_seconds=0,
+    )
+
+    collectors: dict[str, ChangeCollector] = {
+        "playbook": ChangeCollector(),
+        "profile": ChangeCollector(),
+        "memory": ChangeCollector(),
+        "facts": ChangeCollector(),
+        "override": ChangeCollector(),
+        "readme": ChangeCollector(),
+    }
+
+    # Register all patterns from every handler category
+    for pattern in PLAYBOOK_PATTERNS:
+        watcher.register_handler(pattern, collectors["playbook"], handler_id=f"t-pb:{pattern}")
+    for pattern in PROFILE_PATTERNS:
+        watcher.register_handler(pattern, collectors["profile"], handler_id=f"t-pf:{pattern}")
+    for pattern in MEMORY_PATTERNS:
+        watcher.register_handler(pattern, collectors["memory"], handler_id=f"t-mem:{pattern}")
+    for pattern in FACTS_PATTERNS:
+        watcher.register_handler(pattern, collectors["facts"], handler_id=f"t-facts:{pattern}")
+    watcher.register_handler(OVERRIDE_PATTERN, collectors["override"], handler_id="t-override")
+    watcher.register_handler(README_PATTERN, collectors["readme"], handler_id="t-readme")
+
+    return vault, watcher, collectors
+
+
+def _assert_only_collector_fired(
+    collectors: dict[str, ChangeCollector],
+    expected_category: str,
+    *,
+    min_changes: int = 1,
+) -> None:
+    """Assert that exactly *expected_category* received changes and all others are empty."""
+    for category, collector in collectors.items():
+        if category == expected_category:
+            assert len(collector.all_changes) >= min_changes, (
+                f"Expected {expected_category} collector to have >= {min_changes} "
+                f"change(s), got {len(collector.all_changes)}"
+            )
+        else:
+            assert len(collector.all_changes) == 0, (
+                f"Expected {category} collector to be empty, but it received "
+                f"{len(collector.all_changes)} change(s): "
+                f"{[c.rel_path for c in collector.all_changes]}"
+            )
+
+
+def _assert_no_collector_fired(collectors: dict[str, ChangeCollector]) -> None:
+    """Assert that no collector received any changes."""
+    for category, collector in collectors.items():
+        assert len(collector.all_changes) == 0, (
+            f"Expected {category} collector to be empty, but it received "
+            f"{len(collector.all_changes)} change(s): "
+            f"{[c.rel_path for c in collector.all_changes]}"
+        )
+
+
+class TestPlaybookDispatchIsolation:
+    """(a) Creating/editing */playbooks/*.md triggers playbook handler only."""
+
+    @pytest.mark.asyncio
+    async def test_system_playbook_triggers_playbook_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()  # initial snapshot
+
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        (vault / "system" / "playbooks" / "deploy.md").write_text("# Deploy\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+        assert collectors["playbook"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_playbook_triggers_playbook_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "orchestrator" / "playbooks").mkdir(parents=True)
+        (vault / "orchestrator" / "playbooks" / "routing.md").write_text("# Routing\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+
+    @pytest.mark.asyncio
+    async def test_project_playbook_triggers_playbook_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "my-app" / "playbooks").mkdir(parents=True)
+        (vault / "projects" / "my-app" / "playbooks" / "review.md").write_text("# Review\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+
+    @pytest.mark.asyncio
+    async def test_agent_type_playbook_triggers_playbook_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "agent-types" / "coding" / "playbooks").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "playbooks" / "quality.md").write_text("# QA\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+
+    @pytest.mark.asyncio
+    async def test_modified_playbook_triggers_playbook_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        playbook_dir = vault / "system" / "playbooks"
+        playbook_dir.mkdir(parents=True)
+        playbook_file = playbook_dir / "deploy.md"
+        playbook_file.write_text("# Deploy v1\n")
+        await watcher.check()  # snapshot includes file
+
+        time.sleep(0.05)
+        playbook_file.write_text("# Deploy v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+        assert collectors["playbook"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_multiple_playbooks_across_scopes(self, dispatch_env):
+        """Creating playbooks in all 4 scopes triggers only the playbook handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        for scope_path in [
+            "system/playbooks",
+            "orchestrator/playbooks",
+            "projects/app/playbooks",
+            "agent-types/coder/playbooks",
+        ]:
+            d = vault / scope_path
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "test.md").write_text("# Test\n")
+
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook", min_changes=4)
+
+
+class TestProfileDispatchIsolation:
+    """(b) Creating/editing */profile.md triggers profile sync handler only."""
+
+    @pytest.mark.asyncio
+    async def test_agent_type_profile_triggers_profile_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "agent-types" / "coding").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "profile.md").write_text("# Coding Profile\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "profile")
+        assert collectors["profile"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_profile_triggers_profile_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "orchestrator").mkdir(parents=True)
+        (vault / "orchestrator" / "profile.md").write_text("# Orchestrator Profile\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "profile")
+
+    @pytest.mark.asyncio
+    async def test_modified_profile_triggers_profile_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        profile_dir = vault / "agent-types" / "review"
+        profile_dir.mkdir(parents=True)
+        profile_file = profile_dir / "profile.md"
+        profile_file.write_text("# Review v1\n")
+        await watcher.check()
+
+        time.sleep(0.05)
+        profile_file.write_text("# Review v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "profile")
+        assert collectors["profile"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_profile_in_both_scopes(self, dispatch_env):
+        """Profiles in agent-types and orchestrator both go to profile handler only."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "agent-types" / "coding").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "profile.md").write_text("# Coding\n")
+        (vault / "orchestrator").mkdir(parents=True)
+        (vault / "orchestrator" / "profile.md").write_text("# Orchestrator\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "profile", min_changes=2)
+
+
+class TestMemoryDispatchIsolation:
+    """(c) Creating/editing */memory/**/*.md triggers memory re-index handler only."""
+
+    @pytest.mark.asyncio
+    async def test_system_memory_triggers_memory_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system" / "memory").mkdir(parents=True)
+        (vault / "system" / "memory" / "conventions.md").write_text("# Conventions\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_memory_triggers_memory_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "orchestrator" / "memory").mkdir(parents=True)
+        (vault / "orchestrator" / "memory" / "notes.md").write_text("# Notes\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_agent_type_memory_triggers_memory_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "agent-types" / "coding" / "memory").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "memory" / "patterns.md").write_text("# Patterns\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_project_memory_flat_triggers_memory_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "app" / "memory").mkdir(parents=True)
+        (vault / "projects" / "app" / "memory" / "arch.md").write_text("# Arch\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_project_memory_nested_triggers_memory_only(self, dispatch_env):
+        """Project memory uses ** pattern and supports nested subdirectories."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "app" / "memory" / "knowledge").mkdir(parents=True)
+        (vault / "projects" / "app" / "memory" / "knowledge" / "api.md").write_text("# API\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_project_memory_deeply_nested_triggers_memory_only(self, dispatch_env):
+        """Deeply nested project memory files still dispatch correctly."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        deep = vault / "projects" / "app" / "memory" / "knowledge" / "subsystem" / "details"
+        deep.mkdir(parents=True)
+        (deep / "internals.md").write_text("# Internals\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+
+    @pytest.mark.asyncio
+    async def test_modified_memory_triggers_memory_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        mem_dir = vault / "system" / "memory"
+        mem_dir.mkdir(parents=True)
+        mem_file = mem_dir / "conventions.md"
+        mem_file.write_text("# v1\n")
+        await watcher.check()
+
+        time.sleep(0.05)
+        mem_file.write_text("# v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+        assert collectors["memory"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_memory_across_all_scopes(self, dispatch_env):
+        """Memory files in all 4 scopes go to memory handler only."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system" / "memory").mkdir(parents=True)
+        (vault / "system" / "memory" / "global.md").write_text("# Global\n")
+        (vault / "orchestrator" / "memory").mkdir(parents=True)
+        (vault / "orchestrator" / "memory" / "ops.md").write_text("# Ops\n")
+        (vault / "agent-types" / "coder" / "memory").mkdir(parents=True)
+        (vault / "agent-types" / "coder" / "memory" / "tips.md").write_text("# Tips\n")
+        (vault / "projects" / "app" / "memory" / "knowledge").mkdir(parents=True)
+        (vault / "projects" / "app" / "memory" / "knowledge" / "arch.md").write_text("# Arch\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory", min_changes=4)
+
+
+class TestReadmeDispatchIsolation:
+    """(d) Creating/editing projects/*/README.md triggers readme handler only."""
+
+    @pytest.mark.asyncio
+    async def test_project_readme_triggers_readme_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "my-app").mkdir(parents=True)
+        (vault / "projects" / "my-app" / "README.md").write_text("# My App\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "readme")
+        assert collectors["readme"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_modified_readme_triggers_readme_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        readme_dir = vault / "projects" / "my-app"
+        readme_dir.mkdir(parents=True)
+        readme_file = readme_dir / "README.md"
+        readme_file.write_text("# My App v1\n")
+        await watcher.check()
+
+        time.sleep(0.05)
+        readme_file.write_text("# My App v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "readme")
+        assert collectors["readme"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_multiple_project_readmes(self, dispatch_env):
+        """READMEs in different projects go to readme handler only."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        for proj in ["app-one", "app-two", "app-three"]:
+            (vault / "projects" / proj).mkdir(parents=True)
+            (vault / "projects" / proj / "README.md").write_text(f"# {proj}\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "readme", min_changes=3)
+
+
+class TestOverrideDispatchIsolation:
+    """(e) Creating/editing projects/*/overrides/*.md triggers override handler only."""
+
+    @pytest.mark.asyncio
+    async def test_override_triggers_override_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "my-app" / "overrides").mkdir(parents=True)
+        (vault / "projects" / "my-app" / "overrides" / "coding.md").write_text("# Override\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "override")
+        assert collectors["override"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_modified_override_triggers_override_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        override_dir = vault / "projects" / "app" / "overrides"
+        override_dir.mkdir(parents=True)
+        override_file = override_dir / "review.md"
+        override_file.write_text("# v1\n")
+        await watcher.check()
+
+        time.sleep(0.05)
+        override_file.write_text("# v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "override")
+        assert collectors["override"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_multiple_overrides_different_projects(self, dispatch_env):
+        """Override files in different projects go to override handler only."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        for proj in ["app-a", "app-b"]:
+            (vault / "projects" / proj / "overrides").mkdir(parents=True)
+            (vault / "projects" / proj / "overrides" / "coding.md").write_text("# Override\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "override", min_changes=2)
+
+
+class TestFactsDispatchIsolation:
+    """(f) Creating/editing */facts.md triggers KV sync handler only."""
+
+    @pytest.mark.asyncio
+    async def test_system_facts_triggers_facts_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system").mkdir(parents=True)
+        (vault / "system" / "facts.md").write_text("# Facts\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_facts_triggers_facts_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "orchestrator").mkdir(parents=True)
+        (vault / "orchestrator" / "facts.md").write_text("# Facts\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+
+    @pytest.mark.asyncio
+    async def test_project_facts_triggers_facts_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "my-app").mkdir(parents=True)
+        (vault / "projects" / "my-app" / "facts.md").write_text("# Facts\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+
+    @pytest.mark.asyncio
+    async def test_agent_type_facts_triggers_facts_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "agent-types" / "coding").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "facts.md").write_text("# Facts\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+
+    @pytest.mark.asyncio
+    async def test_modified_facts_triggers_facts_only(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        facts_dir = vault / "projects" / "app"
+        facts_dir.mkdir(parents=True)
+        facts_file = facts_dir / "facts.md"
+        facts_file.write_text("# v1\n")
+        await watcher.check()
+
+        time.sleep(0.05)
+        facts_file.write_text("# v2\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+        assert collectors["facts"].all_changes[0].operation == "modified"
+
+    @pytest.mark.asyncio
+    async def test_facts_across_all_scopes(self, dispatch_env):
+        """Facts files in all 4 scopes go to facts handler only."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system").mkdir(parents=True)
+        (vault / "system" / "facts.md").write_text("# System\n")
+        (vault / "orchestrator").mkdir(parents=True)
+        (vault / "orchestrator" / "facts.md").write_text("# Orchestrator\n")
+        (vault / "agent-types" / "coder").mkdir(parents=True)
+        (vault / "agent-types" / "coder" / "facts.md").write_text("# Agent\n")
+        (vault / "projects" / "app").mkdir(parents=True)
+        (vault / "projects" / "app" / "facts.md").write_text("# Project\n")
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts", min_changes=4)
+
+
+class TestUnwatchedPathDispatch:
+    """(g) Editing a file outside any watched path triggers NO handler."""
+
+    @pytest.mark.asyncio
+    async def test_random_md_in_project_root(self, dispatch_env):
+        """A .md file directly under projects/<name>/ matches no handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "projects" / "app").mkdir(parents=True)
+        (vault / "projects" / "app" / "notes.md").write_text("# Notes\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_non_md_file_in_playbooks(self, dispatch_env):
+        """A non-.md file in playbooks/ matches no handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        (vault / "system" / "playbooks" / "data.yaml").write_text("key: value\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_config_file_at_root(self, dispatch_env):
+        """A config file at the vault root matches no handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "config.yaml").write_text("setting: true\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_random_file_in_system(self, dispatch_env):
+        """A random file under system/ (not facts/memory/playbooks) matches nothing."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system").mkdir(parents=True)
+        (vault / "system" / "config.md").write_text("# Config\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_readme_in_non_project_scope(self, dispatch_env):
+        """README.md under system/ should not trigger the readme handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system").mkdir(parents=True)
+        (vault / "system" / "README.md").write_text("# System README\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_override_in_non_project_scope(self, dispatch_env):
+        """overrides/ under system/ should not trigger the override handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system" / "overrides").mkdir(parents=True)
+        (vault / "system" / "overrides" / "coding.md").write_text("# Override\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_deeply_nested_unknown_file(self, dispatch_env):
+        """A file deep in an unrelated path matches no handler."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "custom" / "data" / "reports").mkdir(parents=True)
+        (vault / "custom" / "data" / "reports" / "q4.md").write_text("# Q4 Report\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_profile_md_outside_registered_scopes(self, dispatch_env):
+        """profile.md under projects/ is not a registered profile pattern."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        # Profile patterns only cover agent-types/*/profile.md and orchestrator/profile.md
+        # Not projects/*/profile.md or system/profile.md
+        (vault / "projects" / "app").mkdir(parents=True)
+        (vault / "projects" / "app" / "profile.md").write_text("# Profile\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+    @pytest.mark.asyncio
+    async def test_txt_file_in_memory_directory(self, dispatch_env):
+        """A .txt file in a memory directory matches no handler (only .md does)."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        (vault / "system" / "memory").mkdir(parents=True)
+        (vault / "system" / "memory" / "notes.txt").write_text("plain text\n")
+        await watcher.check()
+
+        _assert_no_collector_fired(collectors)
+
+
+class TestDeletionDispatch:
+    """(h) Deleting a watched file triggers the appropriate handler."""
+
+    @pytest.mark.asyncio
+    async def test_deleted_playbook_dispatches_to_playbook(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        pb_dir = vault / "system" / "playbooks"
+        pb_dir.mkdir(parents=True)
+        pb_file = pb_dir / "deploy.md"
+        pb_file.write_text("# Deploy\n")
+        await watcher.check()  # snapshot includes the file
+
+        pb_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "playbook")
+        assert collectors["playbook"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_deleted_profile_dispatches_to_profile(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        prof_dir = vault / "agent-types" / "coding"
+        prof_dir.mkdir(parents=True)
+        prof_file = prof_dir / "profile.md"
+        prof_file.write_text("# Profile\n")
+        await watcher.check()
+
+        prof_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "profile")
+        assert collectors["profile"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_deleted_memory_dispatches_to_memory(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        mem_dir = vault / "projects" / "app" / "memory" / "knowledge"
+        mem_dir.mkdir(parents=True)
+        mem_file = mem_dir / "arch.md"
+        mem_file.write_text("# Architecture\n")
+        await watcher.check()
+
+        mem_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "memory")
+        assert collectors["memory"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_deleted_facts_dispatches_to_facts(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        (vault / "system").mkdir(parents=True)
+        facts_file = vault / "system" / "facts.md"
+        facts_file.write_text("# Facts\n")
+        await watcher.check()
+
+        facts_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "facts")
+        assert collectors["facts"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_deleted_override_dispatches_to_override(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        ovr_dir = vault / "projects" / "app" / "overrides"
+        ovr_dir.mkdir(parents=True)
+        ovr_file = ovr_dir / "coding.md"
+        ovr_file.write_text("# Override\n")
+        await watcher.check()
+
+        ovr_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "override")
+        assert collectors["override"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_deleted_readme_dispatches_to_readme(self, dispatch_env):
+        vault, watcher, collectors = dispatch_env
+        proj_dir = vault / "projects" / "app"
+        proj_dir.mkdir(parents=True)
+        readme_file = proj_dir / "README.md"
+        readme_file.write_text("# App\n")
+        await watcher.check()
+
+        readme_file.unlink()
+        await watcher.check()
+
+        _assert_only_collector_fired(collectors, "readme")
+        assert collectors["readme"].all_changes[0].operation == "deleted"
+
+
+class TestCrossCategoryRename:
+    """(i) Renaming across categories triggers both old-path and new-path handlers.
+
+    VaultWatcher doesn't track renames natively — it sees a deletion at the old
+    path and a creation at the new path.  Both operations should dispatch to
+    their respective handlers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rename_playbook_to_memory(self, dispatch_env):
+        """Moving a file from playbooks/ to memory/ triggers both handlers."""
+        vault, watcher, collectors = dispatch_env
+
+        # Start with a playbook file
+        pb_dir = vault / "system" / "playbooks"
+        pb_dir.mkdir(parents=True)
+        pb_file = pb_dir / "deploy.md"
+        pb_file.write_text("# Deploy\n")
+
+        mem_dir = vault / "system" / "memory"
+        mem_dir.mkdir(parents=True)
+
+        await watcher.check()  # snapshot
+
+        # "Rename" = delete old + create new
+        pb_file.unlink()
+        (mem_dir / "deploy.md").write_text("# Deploy\n")
+        await watcher.check()
+
+        # Playbook handler should see a deletion
+        assert len(collectors["playbook"].all_changes) == 1
+        assert collectors["playbook"].all_changes[0].operation == "deleted"
+        assert "playbooks" in collectors["playbook"].all_changes[0].rel_path
+
+        # Memory handler should see a creation
+        assert len(collectors["memory"].all_changes) == 1
+        assert collectors["memory"].all_changes[0].operation == "created"
+        assert "memory" in collectors["memory"].all_changes[0].rel_path
+
+        # No other handlers should fire
+        assert len(collectors["profile"].all_changes) == 0
+        assert len(collectors["facts"].all_changes) == 0
+        assert len(collectors["override"].all_changes) == 0
+        assert len(collectors["readme"].all_changes) == 0
+
+    @pytest.mark.asyncio
+    async def test_rename_facts_to_override(self, dispatch_env):
+        """Moving a file from facts to overrides triggers both handlers."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "projects" / "app").mkdir(parents=True)
+        facts_file = vault / "projects" / "app" / "facts.md"
+        facts_file.write_text("# Facts\n")
+
+        (vault / "projects" / "app" / "overrides").mkdir(parents=True)
+
+        await watcher.check()
+
+        facts_file.unlink()
+        (vault / "projects" / "app" / "overrides" / "coding.md").write_text("# Override\n")
+        await watcher.check()
+
+        assert len(collectors["facts"].all_changes) == 1
+        assert collectors["facts"].all_changes[0].operation == "deleted"
+
+        assert len(collectors["override"].all_changes) == 1
+        assert collectors["override"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_rename_readme_to_memory(self, dispatch_env):
+        """Moving README.md to memory/ triggers both handlers."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "projects" / "app").mkdir(parents=True)
+        readme = vault / "projects" / "app" / "README.md"
+        readme.write_text("# App\n")
+
+        (vault / "projects" / "app" / "memory").mkdir(parents=True)
+
+        await watcher.check()
+
+        readme.unlink()
+        (vault / "projects" / "app" / "memory" / "readme-backup.md").write_text("# App\n")
+        await watcher.check()
+
+        assert len(collectors["readme"].all_changes) == 1
+        assert collectors["readme"].all_changes[0].operation == "deleted"
+
+        assert len(collectors["memory"].all_changes) == 1
+        assert collectors["memory"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_rename_memory_to_playbook(self, dispatch_env):
+        """Moving a memory file to playbooks/ triggers both handlers."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "orchestrator" / "memory").mkdir(parents=True)
+        mem_file = vault / "orchestrator" / "memory" / "notes.md"
+        mem_file.write_text("# Notes\n")
+
+        (vault / "orchestrator" / "playbooks").mkdir(parents=True)
+
+        await watcher.check()
+
+        mem_file.unlink()
+        (vault / "orchestrator" / "playbooks" / "notes.md").write_text("# Notes\n")
+        await watcher.check()
+
+        assert len(collectors["memory"].all_changes) == 1
+        assert collectors["memory"].all_changes[0].operation == "deleted"
+
+        assert len(collectors["playbook"].all_changes) == 1
+        assert collectors["playbook"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_rename_override_to_playbook_across_projects(self, dispatch_env):
+        """Moving an override from one project to a playbook in another."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "projects" / "app-a" / "overrides").mkdir(parents=True)
+        ovr_file = vault / "projects" / "app-a" / "overrides" / "coding.md"
+        ovr_file.write_text("# Override\n")
+
+        (vault / "projects" / "app-b" / "playbooks").mkdir(parents=True)
+
+        await watcher.check()
+
+        ovr_file.unlink()
+        (vault / "projects" / "app-b" / "playbooks" / "coding.md").write_text("# Playbook\n")
+        await watcher.check()
+
+        assert len(collectors["override"].all_changes) == 1
+        assert collectors["override"].all_changes[0].operation == "deleted"
+
+        assert len(collectors["playbook"].all_changes) == 1
+        assert collectors["playbook"].all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_rename_from_watched_to_unwatched(self, dispatch_env):
+        """Moving from a watched path to an unwatched one triggers only old handler."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        pb_file = vault / "system" / "playbooks" / "deploy.md"
+        pb_file.write_text("# Deploy\n")
+
+        (vault / "system" / "archive").mkdir(parents=True)
+
+        await watcher.check()
+
+        pb_file.unlink()
+        (vault / "system" / "archive" / "deploy.md").write_text("# Deploy\n")
+        await watcher.check()
+
+        # Only playbook handler fires (deletion), no handler for the archive path
+        _assert_only_collector_fired(collectors, "playbook")
+        assert collectors["playbook"].all_changes[0].operation == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_rename_from_unwatched_to_watched(self, dispatch_env):
+        """Moving from an unwatched path to a watched one triggers only new handler."""
+        vault, watcher, collectors = dispatch_env
+
+        (vault / "system" / "drafts").mkdir(parents=True)
+        draft = vault / "system" / "drafts" / "deploy.md"
+        draft.write_text("# Deploy Draft\n")
+
+        (vault / "system" / "playbooks").mkdir(parents=True)
+
+        await watcher.check()
+
+        draft.unlink()
+        (vault / "system" / "playbooks" / "deploy.md").write_text("# Deploy\n")
+        await watcher.check()
+
+        # Only playbook handler fires (creation), no handler for the drafts path
+        _assert_only_collector_fired(collectors, "playbook")
+        assert collectors["playbook"].all_changes[0].operation == "created"
+
+
+class TestMultiCategorySimultaneous:
+    """Test that changes to multiple categories in a single check() cycle
+    are correctly dispatched to their respective handlers."""
+
+    @pytest.mark.asyncio
+    async def test_all_categories_in_single_cycle(self, dispatch_env):
+        """Create one file per category in a single check cycle."""
+        vault, watcher, collectors = dispatch_env
+        await watcher.check()
+
+        # Create exactly one file per handler category
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        (vault / "system" / "playbooks" / "deploy.md").write_text("# Playbook\n")
+
+        (vault / "agent-types" / "coding").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "profile.md").write_text("# Profile\n")
+
+        (vault / "system" / "memory").mkdir(parents=True)
+        (vault / "system" / "memory" / "conventions.md").write_text("# Memory\n")
+
+        (vault / "projects" / "app").mkdir(parents=True)
+        (vault / "projects" / "app" / "README.md").write_text("# README\n")
+
+        (vault / "projects" / "app" / "overrides").mkdir(parents=True)
+        (vault / "projects" / "app" / "overrides" / "coding.md").write_text("# Override\n")
+
+        (vault / "system" / "facts.md").write_text("# Facts\n")
+
+        await watcher.check()
+
+        # Each collector should have exactly 1 change
+        for category, collector in collectors.items():
+            assert len(collector.all_changes) == 1, (
+                f"Expected {category} to have 1 change, "
+                f"got {len(collector.all_changes)}: "
+                f"{[c.rel_path for c in collector.all_changes]}"
+            )
+            assert collector.all_changes[0].operation == "created"
+
+    @pytest.mark.asyncio
+    async def test_mixed_operations_in_single_cycle(self, dispatch_env):
+        """Create, modify, and delete files across different categories in one cycle."""
+        vault, watcher, collectors = dispatch_env
+
+        # Pre-create files for modification and deletion
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        pb_file = vault / "system" / "playbooks" / "existing.md"
+        pb_file.write_text("# Existing Playbook\n")
+
+        (vault / "orchestrator" / "memory").mkdir(parents=True)
+        mem_file = vault / "orchestrator" / "memory" / "old.md"
+        mem_file.write_text("# Old Memory\n")
+
+        await watcher.check()  # snapshot
+
+        # Modify the playbook
+        time.sleep(0.05)
+        pb_file.write_text("# Updated Playbook\n")
+
+        # Delete the memory file
+        mem_file.unlink()
+
+        # Create a new facts file
+        (vault / "orchestrator" / "facts.md").write_text("# Facts\n")
+
+        await watcher.check()
+
+        assert len(collectors["playbook"].all_changes) == 1
+        assert collectors["playbook"].all_changes[0].operation == "modified"
+
+        assert len(collectors["memory"].all_changes) == 1
+        assert collectors["memory"].all_changes[0].operation == "deleted"
+
+        assert len(collectors["facts"].all_changes) == 1
+        assert collectors["facts"].all_changes[0].operation == "created"
+
+        # Profile, override, readme should be untouched
+        assert len(collectors["profile"].all_changes) == 0
+        assert len(collectors["override"].all_changes) == 0
+        assert len(collectors["readme"].all_changes) == 0
+
+
+class TestDispatchWithRealHandlers:
+    """Integration tests using the actual register_*_handlers functions."""
+
+    @pytest.mark.asyncio
+    async def test_all_real_handlers_registered_and_dispatching(self, tmp_path, caplog):
+        """Register all real handlers and verify they log appropriately."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+
+        register_playbook_handlers(watcher)
+        register_profile_handlers(watcher)
+        register_memory_handlers(watcher)
+        register_facts_handlers(watcher)
+        register_override_handlers(watcher)
+        register_readme_handlers(watcher)
+
+        await watcher.check()  # initial snapshot
+
+        # Create one file per category
+        (vault / "system" / "playbooks").mkdir(parents=True)
+        (vault / "system" / "playbooks" / "deploy.md").write_text("# Playbook\n")
+
+        (vault / "agent-types" / "coding").mkdir(parents=True)
+        (vault / "agent-types" / "coding" / "profile.md").write_text("# Profile\n")
+
+        (vault / "system" / "memory").mkdir(parents=True)
+        (vault / "system" / "memory" / "conventions.md").write_text("# Memory\n")
+
+        (vault / "projects" / "app").mkdir(parents=True)
+        (vault / "projects" / "app" / "README.md").write_text("# App\n")
+
+        (vault / "projects" / "app" / "overrides").mkdir(parents=True)
+        (vault / "projects" / "app" / "overrides" / "coding.md").write_text("# Override\n")
+
+        (vault / "system" / "facts.md").write_text("# Facts\n")
+
+        with caplog.at_level(logging.INFO):
+            await watcher.check()
+
+        # Verify each handler type logged
+        messages = [r.message for r in caplog.records]
+
+        # Playbook handler should log
+        assert any("Playbook" in m and "created" in m for m in messages), (
+            f"Expected playbook log, got: {messages}"
+        )
+        # Profile handler should log
+        assert any("Profile" in m and "created" in m for m in messages), (
+            f"Expected profile log, got: {messages}"
+        )
+        # Memory handler should log
+        assert any("memory.md" in m and "created" in m for m in messages), (
+            f"Expected memory log, got: {messages}"
+        )
+        # README handler should log
+        assert any("README" in m and "created" in m for m in messages), (
+            f"Expected readme log, got: {messages}"
+        )
+        # Override handler should log
+        assert any("override.md" in m and "created" in m for m in messages), (
+            f"Expected override log, got: {messages}"
+        )
+        # Facts handler should log
+        assert any("facts.md" in m and "created" in m for m in messages), (
+            f"Expected facts log, got: {messages}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_total_handler_count_with_all_registered(self, tmp_path):
+        """Verify the expected total handler count when all categories are registered."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+
+        register_playbook_handlers(watcher)
+        register_profile_handlers(watcher)
+        register_memory_handlers(watcher)
+        register_facts_handlers(watcher)
+        register_override_handlers(watcher)
+        register_readme_handlers(watcher)
+
+        expected = (
+            len(PLAYBOOK_PATTERNS)
+            + len(PROFILE_PATTERNS)
+            + len(MEMORY_PATTERNS)
+            + len(FACTS_PATTERNS)
+            + 1  # override (single pattern)
+            + 1  # readme (single pattern)
+        )
+        assert watcher.get_handler_count() == expected
