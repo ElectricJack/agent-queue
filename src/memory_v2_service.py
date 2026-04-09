@@ -666,6 +666,42 @@ class MemoryV2Service:
             content=f"fact/{key}: {value}",
         )
 
+    async def fact_list(
+        self,
+        project_id: str,
+        namespace: str = "",
+        *,
+        current_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """List all temporal fact entries in a namespace.
+
+        Pure scalar query — no vector search.
+
+        Parameters
+        ----------
+        project_id:
+            Project whose collection to query.
+        namespace:
+            Namespace filter (exact match).  Empty string returns entries
+            with no namespace.
+        current_only:
+            If ``True`` (default), only return currently-open entries
+            (``valid_to == 0``).  If ``False``, return all entries
+            including closed (superseded) ones.
+
+        Returns
+        -------
+        list[dict]
+            All matching temporal entries sorted by key then valid_from.
+        """
+        if not self.available:
+            return []
+
+        store = self._get_store(project_id)
+        return await asyncio.to_thread(
+            store.list_temporal, namespace=namespace, current_only=current_only
+        )
+
     async def fact_history(
         self,
         project_id: str,

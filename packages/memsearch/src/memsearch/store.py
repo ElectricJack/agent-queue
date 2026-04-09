@@ -1057,6 +1057,43 @@ class MilvusStore:
 
         return closed
 
+    def list_temporal(
+        self,
+        *,
+        namespace: str = "",
+        current_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List all temporal fact entries in a namespace.
+
+        Pure scalar query — no vector search.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+            Empty string returns temporal entries with no namespace.
+        current_only:
+            If ``True``, only return entries that are currently open
+            (``valid_to == 0``).  If ``False`` (default), return all
+            entries (open and closed).
+
+        Returns
+        -------
+        list[dict]
+            All matching temporal entries, sorted by ``kv_key`` then
+            ``valid_from`` ascending.
+        """
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+        results = []
+        for entry in all_temporal:
+            if entry["kv_namespace"] != namespace:
+                continue
+            if current_only and entry["valid_to"] != 0:
+                continue
+            results.append(entry)
+        results.sort(key=lambda e: (e["kv_key"], e.get("valid_from", 0)))
+        return results
+
     def list_temporal_keys(
         self,
         *,

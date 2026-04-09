@@ -128,6 +128,28 @@ def mock_store():
             "source": "",
         },
     ]
+    store.list_temporal.return_value = [
+        {
+            "kv_key": "deploy_branch",
+            "kv_namespace": "",
+            "kv_value": '"main"',
+            "valid_from": 100,
+            "valid_to": 0,
+            "updated_at": 100,
+            "tags": "[]",
+            "source": "",
+        },
+        {
+            "kv_key": "python_version",
+            "kv_namespace": "",
+            "kv_value": '"3.12"',
+            "valid_from": 150,
+            "valid_to": 0,
+            "updated_at": 150,
+            "tags": "[]",
+            "source": "",
+        },
+    ]
 
     # Search
     store.search.return_value = [
@@ -703,6 +725,36 @@ class TestTemporalFacts:
             await svc.fact_set("proj", "key", "val")
 
     @pytest.mark.asyncio
+    async def test_fact_list(self, service, mock_store):
+        results = await service.fact_list("test-project")
+        assert len(results) == 2
+        assert results[0]["kv_key"] == "deploy_branch"
+        assert results[1]["kv_key"] == "python_version"
+        mock_store.list_temporal.assert_called_once_with(
+            namespace="", current_only=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_fact_list_with_namespace(self, service, mock_store):
+        await service.fact_list("test-project", "config")
+        mock_store.list_temporal.assert_called_once_with(
+            namespace="config", current_only=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_fact_list_include_closed(self, service, mock_store):
+        await service.fact_list("test-project", current_only=False)
+        mock_store.list_temporal.assert_called_once_with(
+            namespace="", current_only=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_fact_list_unavailable(self):
+        svc = MemoryV2Service()
+        result = await svc.fact_list("proj")
+        assert result == []
+
+    @pytest.mark.asyncio
     async def test_fact_history_unavailable(self):
         svc = MemoryV2Service()
         result = await svc.fact_history("proj", "key")
@@ -994,6 +1046,42 @@ class TestPluginHandlers:
         )
         assert result["success"] is True
         assert result["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_fact_list_handler(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_fact_list(
+            {"project_id": "proj"}
+        )
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert result["namespace"] == ""
+        assert result["current_only"] is True
+        # Verify entries are formatted via _format_temporal_entry
+        assert result["entries"][0]["key"] == "deploy_branch"
+        assert result["entries"][1]["key"] == "python_version"
+
+    @pytest.mark.asyncio
+    async def test_fact_list_handler_with_namespace(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_fact_list(
+            {"project_id": "proj", "namespace": "config", "current_only": False}
+        )
+        assert result["success"] is True
+        assert result["namespace"] == "config"
+        assert result["current_only"] is False
+
+    @pytest.mark.asyncio
+    async def test_fact_list_handler_missing_project_id(self, wired_plugin):
+        result = await wired_plugin.cmd_memory_fact_list({})
+        assert "error" in result
+        assert "project_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_fact_list_handler_unavailable(self, plugin):
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_fact_list({"project_id": "proj"})
+        assert "error" in result
+        assert "not available" in result["error"]
 
     @pytest.mark.asyncio
     async def test_search_by_tag_handler(self, wired_plugin):

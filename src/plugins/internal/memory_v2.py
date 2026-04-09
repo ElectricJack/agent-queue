@@ -66,6 +66,7 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_kv_list",
         "memory_fact_get",
         "memory_fact_set",
+        "memory_fact_list",
         "memory_fact_history",
         "memory_list",
     }
@@ -384,6 +385,42 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["project_id", "key"],
+        },
+    },
+    {
+        "name": "memory_fact_list",
+        "description": (
+            "List all temporal fact entries in a scope/namespace.  Returns "
+            "keys and their current values without vector search — pure "
+            "scalar query.  By default only currently-active facts are "
+            "returned; set current_only=false to include superseded entries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (determines scope collection).",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": (
+                        "Namespace to list facts from.  Empty string "
+                        "(default) returns facts with no namespace."
+                    ),
+                    "default": "",
+                },
+                "current_only": {
+                    "type": "boolean",
+                    "description": (
+                        "If true (default), only return currently-active "
+                        "facts (valid_to == 0).  If false, include all "
+                        "entries including superseded ones."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["project_id"],
         },
     },
     # ---- Browse / List ----
@@ -710,6 +747,7 @@ class MemoryV2Plugin(InternalPlugin):
             # Temporal facts
             "memory_fact_get": self.cmd_memory_fact_get,
             "memory_fact_set": self.cmd_memory_fact_set,
+            "memory_fact_list": self.cmd_memory_fact_list,
             "memory_fact_history": self.cmd_memory_fact_history,
             # Index management
             "memory_reindex": self.cmd_memory_reindex,
@@ -1586,6 +1624,34 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_fact_history failed: %s", e, exc_info=True)
             return {"error": f"Fact history failed: {e}"}
+
+    async def cmd_memory_fact_list(self, args: dict) -> dict:
+        """List all temporal fact entries in a namespace."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_fact_list")
+
+        namespace = args.get("namespace", "")
+        current_only = args.get("current_only", True)
+
+        try:
+            entries = await self._service.fact_list(
+                project_id, namespace, current_only=current_only
+            )
+            return {
+                "success": True,
+                "project_id": project_id,
+                "namespace": namespace,
+                "current_only": current_only,
+                "count": len(entries),
+                "entries": [self._format_temporal_entry(e) for e in entries],
+            }
+        except Exception as e:
+            self._log.error("memory_fact_list failed: %s", e, exc_info=True)
+            return {"error": f"Fact list failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command handlers — Index Management
