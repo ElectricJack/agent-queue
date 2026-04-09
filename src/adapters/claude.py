@@ -535,11 +535,18 @@ class ClaudeAdapter(AgentAdapter):
                         else:
                             logger.error("Claude adapter error: %s", error_msg)
                         logger.debug("Full traceback:\n%s", full_traceback)
+                        # The SDK often throws a generic ProcessError ("exit code 1")
+                        # AFTER the CLI already sent a specific error via ResultMessage
+                        # (stored in cli_error).  Check cli_error first since it has
+                        # the real reason (e.g. "You've hit your limit").
+                        classify_input = cli_error or error_msg
                         full_error = f"{error_msg}\n{full_traceback}"
-                        result = _classify_error_result(full_error)
+                        result = _classify_error_result(classify_input)
                         output = AgentOutput(
                             result=result,
-                            error_message=full_error if result == AgentResult.FAILED else error_msg,
+                            error_message=full_error if result == AgentResult.FAILED else (
+                                cli_error or error_msg
+                            ),
                         )
                         self._log_session(current_prompt, output, _wait_start, _time)
                         return output
