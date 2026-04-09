@@ -554,6 +554,11 @@ class MemoryV2Plugin(InternalPlugin):
         # self._db = ctx.get_service("db")
         # self._memsearch = None  # TODO: initialize memsearch client
 
+        # CollectionRouter for cross-scope tag search.  Initialized lazily
+        # when the memsearch backend is fully wired up.  Until then,
+        # commands that need it return a "not implemented" response.
+        self._router = None  # TODO: CollectionRouter(milvus_uri=..., dimension=...)
+
         # -- Map command names to handlers --
         # Full command table — includes both v2-only and overlapping names.
         # During transition only V2_ONLY_TOOLS are registered; overlapping
@@ -659,16 +664,48 @@ class MemoryV2Plugin(InternalPlugin):
         return self._not_implemented("memory_search")
 
     async def cmd_memory_search_by_tag(self, args: dict) -> dict:
-        """Cross-scope search by tag across all collections."""
+        """Cross-scope search by tag across all collections.
+
+        Uses CollectionRouter.search_by_tag_async to query ALL aq_*
+        collections in the Milvus instance filtered by tag.  Per spec §7.3.
+        """
         tag = args.get("tag")
         if not tag:
             return {"error": "tag is required"}
 
-        _entry_type = args.get("entry_type")
-        _limit = args.get("limit", 10)
+        entry_type = args.get("entry_type")
+        limit = args.get("limit", 10)
 
-        # TODO: query all Milvus collections with scalar tag filter
-        return self._not_implemented("memory_search_by_tag")
+        if not self._router:
+            return self._not_implemented("memory_search_by_tag")
+
+        try:
+            results = await self._router.search_by_tag_async(
+                tag,
+                entry_type=entry_type,
+                limit=limit,
+            )
+            return {
+                "success": True,
+                "tag": tag,
+                "count": len(results),
+                "results": [
+                    {
+                        "content": r.get("content", ""),
+                        "source": r.get("source", ""),
+                        "entry_type": r.get("entry_type", "document"),
+                        "tags": r.get("tags", "[]"),
+                        "scope": r.get("_scope", ""),
+                        "scope_id": r.get("_scope_id"),
+                        "collection": r.get("_collection", ""),
+                        "chunk_hash": r.get("chunk_hash", ""),
+                    }
+                    for r in results
+                ],
+            }
+        except Exception as e:
+            self._log.error("memory_search_by_tag failed: %s", e, exc_info=True)
+            return {"error": f"Tag search failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command stubs — KV Operations

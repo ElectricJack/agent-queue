@@ -177,10 +177,7 @@ def collection_name(scope: MemoryScope, scope_id: str | None = None) -> str:
         raise ValueError(f"Unknown scope: {scope}")
 
     if len(name) > _MAX_COLLECTION_NAME_LEN:
-        raise ValueError(
-            f"Collection name too long ({len(name)} > {_MAX_COLLECTION_NAME_LEN}): "
-            f"{name!r}"
-        )
+        raise ValueError(f"Collection name too long ({len(name)} > {_MAX_COLLECTION_NAME_LEN}): {name!r}")
     return name
 
 
@@ -287,9 +284,7 @@ def merge_and_rank(
         if not key:
             key = str(id(r))  # fallback for entries without chunk_hash
         existing = seen.get(key)
-        if existing is None or r.get("weighted_score", 0.0) > existing.get(
-            "weighted_score", 0.0
-        ):
+        if existing is None or r.get("weighted_score", 0.0) > existing.get("weighted_score", 0.0):
             seen[key] = r
 
     # Sort by weighted score descending
@@ -383,9 +378,7 @@ class CollectionRouter:
                 dimension=self._dimension,
                 description=desc,
             )
-            logger.info(
-                "Opened collection %s (scope=%s, id=%s)", name, scope.value, scope_id
-            )
+            logger.info("Opened collection %s (scope=%s, id=%s)", name, scope.value, scope_id)
         return self._stores[name]
 
     def has_store(self, scope: MemoryScope, scope_id: str | None = None) -> bool:
@@ -495,6 +488,7 @@ class CollectionRouter:
         tag: str,
         *,
         scopes: list[tuple[MemoryScope, str | None]] | None = None,
+        entry_type: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         """Search for entries with a specific tag across collections.
@@ -502,14 +496,24 @@ class CollectionRouter:
         Per spec section 7.3: cross-scope tag-based discovery using scalar
         filters on the ``tags`` JSON array field.
 
+        When *scopes* is ``None``, discovers **all** ``aq_*`` collections
+        in the Milvus instance (not just currently-cached ones) and
+        searches each one.  This is the cross-cutting search the spec
+        describes for queries like "what do we know about SQLite across
+        all projects and agent types?"
+
         Parameters
         ----------
         tag:
             Tag to search for (matched as substring in the JSON array).
         scopes:
             Optional list of ``(scope, scope_id)`` tuples to restrict
-            the search.  If ``None``, searches all currently-open
-            (cached) collections.
+            the search.  If ``None``, searches **all** ``aq_*``
+            collections discovered via :meth:`list_collections`.
+        entry_type:
+            Optional entry type filter (``"document"``, ``"kv"``, or
+            ``"temporal"``).  When set, only entries of this type are
+            returned.
         limit:
             Maximum results per collection.
 
@@ -522,15 +526,11 @@ class CollectionRouter:
         """
         escaped_tag = _escape_filter_value(tag)
         filter_expr = f'tags like "%\\"{escaped_tag}\\"%"'
+        if entry_type:
+            escaped_type = _escape_filter_value(entry_type)
+            filter_expr += f' and entry_type == "{escaped_type}"'
 
-        stores_to_search: dict[str, MilvusStore] = {}
-        if scopes is not None:
-            for scope, scope_id in scopes:
-                name = collection_name(scope, scope_id)
-                if name in self._stores:
-                    stores_to_search[name] = self._stores[name]
-        else:
-            stores_to_search = dict(self._stores)
+        stores_to_search = self._resolve_stores(scopes)
 
         results: list[dict[str, Any]] = []
         for coll_name, store in stores_to_search.items():
@@ -538,6 +538,102 @@ class CollectionRouter:
             results.extend(hits)
 
         return results
+
+    async def search_by_tag_async(
+        self,
+        tag: str,
+        *,
+        scopes: list[tuple[MemoryScope, str | None]] | None = None,
+        entry_type: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Async cross-collection tag search with parallel execution.
+
+        Behaves identically to :meth:`search_by_tag` but queries
+        collections in parallel using ``asyncio.to_thread``.
+
+        Per spec §7.3::
+
+            async def search_by_tag(tag: str, limit: int = 10) -> list[MemoryResult]:
+                \"\"\"Search across ALL collections for memories with a specific tag.\"\"\"
+                # Uses Milvus scalar filter: tags LIKE '%"sqlite"%'
+
+        Parameters
+        ----------
+        tag:
+            Tag to search for.
+        scopes:
+            Restrict to specific ``(scope, scope_id)`` pairs.
+            ``None`` means search **all** ``aq_*`` collections.
+        entry_type:
+            Optional entry type filter.
+        limit:
+            Maximum results per collection.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Combined results annotated with ``_collection``, ``_scope``,
+            ``_scope_id``.
+        """
+        escaped_tag = _escape_filter_value(tag)
+        filter_expr = f'tags like "%\\"{escaped_tag}\\"%"'
+        if entry_type:
+            escaped_type = _escape_filter_value(entry_type)
+            filter_expr += f' and entry_type == "{escaped_type}"'
+
+        stores_to_search = self._resolve_stores(scopes)
+
+        if not stores_to_search:
+            return []
+
+        # Query all collections in parallel
+        tasks = [
+            asyncio.to_thread(self._tag_search_collection, coll_name, store, filter_expr, limit)
+            for coll_name, store in stores_to_search.items()
+        ]
+        scope_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: list[dict[str, Any]] = []
+        for i, result in enumerate(scope_results):
+            if isinstance(result, BaseException):
+                coll_name = list(stores_to_search.keys())[i]
+                logger.warning(
+                    "Async tag search failed for collection %s: %s",
+                    coll_name,
+                    result,
+                )
+                continue
+            results.extend(result)
+
+        return results
+
+    def _resolve_stores(
+        self,
+        scopes: list[tuple[MemoryScope, str | None]] | None,
+    ) -> dict[str, MilvusStore]:
+        """Resolve which stores to search for cross-collection queries.
+
+        When *scopes* is ``None``, discovers all ``aq_*`` collections in
+        the Milvus instance and opens each one (if not already cached).
+        When *scopes* is provided, only includes those specific
+        collections (opening them if they exist in Milvus).
+
+        Returns a ``{collection_name: MilvusStore}`` mapping.
+        """
+        stores: dict[str, MilvusStore] = {}
+        if scopes is not None:
+            for scope, scope_id in scopes:
+                store = self._get_store_if_exists(scope, scope_id)
+                if store is not None:
+                    stores[collection_name(scope, scope_id)] = store
+        else:
+            # Discover ALL aq_* collections in the Milvus instance
+            for scope, scope_id, name in self.list_collections():
+                store = self._get_store_if_exists(scope, scope_id)
+                if store is not None:
+                    stores[name] = store
+        return stores
 
     def _tag_search_collection(
         self,
@@ -550,9 +646,7 @@ class CollectionRouter:
         try:
             hits = store.query(filter_expr=filter_expr)
         except Exception:
-            logger.warning(
-                "Tag search failed for collection %s", coll_name, exc_info=True
-            )
+            logger.warning("Tag search failed for collection %s", coll_name, exc_info=True)
             return []
 
         for hit in hits[:limit]:
@@ -625,9 +719,7 @@ class CollectionRouter:
             w = effective_weights.get(MemoryScope.PROJECT, SCOPE_WEIGHTS[MemoryScope.PROJECT])
             scopes_to_search.append((MemoryScope.PROJECT, project_id, w))
         if agent_type:
-            w = effective_weights.get(
-                MemoryScope.AGENT_TYPE, SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE]
-            )
+            w = effective_weights.get(MemoryScope.AGENT_TYPE, SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE])
             scopes_to_search.append((MemoryScope.AGENT_TYPE, agent_type, w))
         w = effective_weights.get(MemoryScope.SYSTEM, SCOPE_WEIGHTS[MemoryScope.SYSTEM])
         scopes_to_search.append((MemoryScope.SYSTEM, None, w))
@@ -673,8 +765,7 @@ class CollectionRouter:
         # Topic fallback: if too few results, retry without topic filter
         if topic and len(all_results) < _TOPIC_FALLBACK_THRESHOLD:
             logger.debug(
-                "Topic filter '%s' returned %d results (< %d), falling back "
-                "to unfiltered search",
+                "Topic filter '%s' returned %d results (< %d), falling back to unfiltered search",
                 topic,
                 len(all_results),
                 _TOPIC_FALLBACK_THRESHOLD,

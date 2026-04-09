@@ -74,10 +74,7 @@ class TestCollectionName:
         assert collection_name(MemoryScope.AGENT_TYPE, "coding") == "aq_agenttype_coding"
 
     def test_agent_type_sanitized(self):
-        assert (
-            collection_name(MemoryScope.AGENT_TYPE, "code-review")
-            == "aq_agenttype_code_review"
-        )
+        assert collection_name(MemoryScope.AGENT_TYPE, "code-review") == "aq_agenttype_code_review"
 
     def test_agent_type_requires_id(self):
         with pytest.raises(ValueError, match="scope_id is required"):
@@ -91,20 +88,14 @@ class TestCollectionName:
         assert collection_name(MemoryScope.PROJECT, "myapp") == "aq_project_myapp"
 
     def test_project_sanitized(self):
-        assert (
-            collection_name(MemoryScope.PROJECT, "mech-fighters")
-            == "aq_project_mech_fighters"
-        )
+        assert collection_name(MemoryScope.PROJECT, "mech-fighters") == "aq_project_mech_fighters"
 
     def test_project_requires_id(self):
         with pytest.raises(ValueError, match="scope_id is required"):
             collection_name(MemoryScope.PROJECT)
 
     def test_project_complex_id(self):
-        assert (
-            collection_name(MemoryScope.PROJECT, "My Cool App v2.0!")
-            == "aq_project_my_cool_app_v2_0"
-        )
+        assert collection_name(MemoryScope.PROJECT, "My Cool App v2.0!") == "aq_project_my_cool_app_v2_0"
 
     def test_all_start_with_prefix(self):
         names = [
@@ -278,30 +269,34 @@ class TestCollectionRouterUpsertAndSearch:
         proj_store = router.get_store(MemoryScope.PROJECT, "alpha")
         sys_store = router.get_store(MemoryScope.SYSTEM)
 
-        proj_store.upsert([
-            {
-                "chunk_hash": "proj_1",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "Project alpha config",
-                "source": "alpha.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-            },
-        ])
-        sys_store.upsert([
-            {
-                "chunk_hash": "sys_1",
-                "embedding": [0.0, 1.0, 0.0, 0.0],
-                "content": "System global config",
-                "source": "system.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-            },
-        ])
+        proj_store.upsert(
+            [
+                {
+                    "chunk_hash": "proj_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Project alpha config",
+                    "source": "alpha.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
+        sys_store.upsert(
+            [
+                {
+                    "chunk_hash": "sys_1",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "System global config",
+                    "source": "system.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
 
         # Each scope only sees its own data
         proj_results = proj_store.query(filter_expr='chunk_hash != ""')
@@ -335,11 +330,7 @@ class TestCollectionRouterListCollections:
     def test_returns_parsed_scopes(self, router: CollectionRouter):
         router.get_store(MemoryScope.PROJECT, "beta")
         result = router.list_collections()
-        found = [
-            (scope, scope_id)
-            for scope, scope_id, name in result
-            if name == "aq_project_beta"
-        ]
+        found = [(scope, scope_id) for scope, scope_id, name in result if name == "aq_project_beta"]
         assert len(found) == 1
         assert found[0] == (MemoryScope.PROJECT, "beta")
 
@@ -373,18 +364,20 @@ class TestCollectionRouterDropAndCleanup:
     def test_drop_then_recreate(self, router: CollectionRouter):
         """After dropping, the same scope can be recreated."""
         store1 = router.get_store(MemoryScope.PROJECT, "cycle")
-        store1.upsert([
-            {
-                "chunk_hash": "old_data",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "old",
-                "source": "old.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-            },
-        ])
+        store1.upsert(
+            [
+                {
+                    "chunk_hash": "old_data",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "old",
+                    "source": "old.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                },
+            ]
+        )
 
         router.drop_collection(MemoryScope.PROJECT, "cycle")
 
@@ -400,32 +393,36 @@ class TestCollectionRouterSearchByTag:
         proj_store = router.get_store(MemoryScope.PROJECT, "alpha")
         sys_store = router.get_store(MemoryScope.SYSTEM)
 
-        proj_store.upsert([
-            {
-                "chunk_hash": "proj_tagged",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "Project uses SQLite",
-                "source": "proj.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "tags": '["sqlite", "database"]',
-            },
-        ])
-        sys_store.upsert([
-            {
-                "chunk_hash": "sys_tagged",
-                "embedding": [0.0, 1.0, 0.0, 0.0],
-                "content": "System SQLite config",
-                "source": "sys.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "tags": '["sqlite", "config"]',
-            },
-        ])
+        proj_store.upsert(
+            [
+                {
+                    "chunk_hash": "proj_tagged",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Project uses SQLite",
+                    "source": "proj.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["sqlite", "database"]',
+                },
+            ]
+        )
+        sys_store.upsert(
+            [
+                {
+                    "chunk_hash": "sys_tagged",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "System SQLite config",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["sqlite", "config"]',
+                },
+            ]
+        )
 
         results = router.search_by_tag("sqlite")
         hashes = {r["chunk_hash"] for r in results}
@@ -439,32 +436,36 @@ class TestCollectionRouterSearchByTag:
 
     def test_tag_search_scoped(self, router: CollectionRouter):
         """Restricting scopes filters out other collections."""
-        router.get_store(MemoryScope.PROJECT, "alpha").upsert([
-            {
-                "chunk_hash": "alpha_1",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "Alpha data",
-                "source": "a.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "tags": '["shared"]',
-            },
-        ])
-        router.get_store(MemoryScope.PROJECT, "beta").upsert([
-            {
-                "chunk_hash": "beta_1",
-                "embedding": [0.0, 1.0, 0.0, 0.0],
-                "content": "Beta data",
-                "source": "b.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "tags": '["shared"]',
-            },
-        ])
+        router.get_store(MemoryScope.PROJECT, "alpha").upsert(
+            [
+                {
+                    "chunk_hash": "alpha_1",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Alpha data",
+                    "source": "a.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["shared"]',
+                },
+            ]
+        )
+        router.get_store(MemoryScope.PROJECT, "beta").upsert(
+            [
+                {
+                    "chunk_hash": "beta_1",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "Beta data",
+                    "source": "b.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["shared"]',
+                },
+            ]
+        )
 
         # Search only alpha scope
         results = router.search_by_tag(
@@ -476,21 +477,383 @@ class TestCollectionRouterSearchByTag:
         assert "beta_1" not in hashes
 
     def test_tag_search_no_results(self, router: CollectionRouter):
-        router.get_store(MemoryScope.SYSTEM).upsert([
+        router.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                {
+                    "chunk_hash": "untagged",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "No relevant tags",
+                    "source": "test.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["unrelated"]',
+                },
+            ]
+        )
+        results = router.search_by_tag("nonexistent")
+        assert len(results) == 0
+
+    def test_tag_search_discovers_all_collections(self, tmp_path: Path):
+        """search_by_tag with scopes=None discovers ALL aq_* collections,
+        not just cached ones (spec §7.3 cross-scope discovery)."""
+        db = tmp_path / "discover_test.db"
+
+        # Create and populate collections with one router, then close it
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        r1.get_store(MemoryScope.PROJECT, "alpha").upsert(
+            [
+                {
+                    "chunk_hash": "alpha_discover",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Alpha project uses SQLite",
+                    "source": "alpha.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["sqlite", "database"]',
+                },
+            ]
+        )
+        r1.get_store(MemoryScope.PROJECT, "beta").upsert(
+            [
+                {
+                    "chunk_hash": "beta_discover",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "Beta project also uses SQLite",
+                    "source": "beta.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["sqlite", "config"]',
+                },
+            ]
+        )
+        r1.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                {
+                    "chunk_hash": "sys_discover",
+                    "embedding": [0.0, 0.0, 1.0, 0.0],
+                    "content": "System SQLite defaults",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["sqlite"]',
+                },
+            ]
+        )
+        r1.close()
+
+        # Open a FRESH router with NO cached stores.  search_by_tag must
+        # discover the three collections on its own via list_collections.
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0  # nothing cached yet
+
+        results = r2.search_by_tag("sqlite")
+        hashes = {r["chunk_hash"] for r in results}
+        assert "alpha_discover" in hashes
+        assert "beta_discover" in hashes
+        assert "sys_discover" in hashes
+        assert len(hashes) == 3
+
+        # Each result is annotated with scope metadata
+        for r in results:
+            assert "_collection" in r
+            assert "_scope" in r
+            assert "_scope_id" in r
+
+        r2.close()
+
+    def test_tag_search_entry_type_filter(self, router: CollectionRouter):
+        """entry_type parameter filters results to a specific type."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "doc_entry",
+                    "entry_type": "document",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Document about auth",
+                    "source": "auth.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["auth"]',
+                },
+                {
+                    "chunk_hash": "kv_entry",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "source": "facts.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                    "kv_namespace": "conventions",
+                    "kv_key": "auth_method",
+                    "kv_value": '"jwt"',
+                    "tags": '["auth"]',
+                },
+            ]
+        )
+
+        # Without filter — both returned
+        all_results = router.search_by_tag("auth")
+        assert len(all_results) == 2
+
+        # With entry_type filter — only documents
+        doc_results = router.search_by_tag("auth", entry_type="document")
+        assert len(doc_results) == 1
+        assert doc_results[0]["chunk_hash"] == "doc_entry"
+
+        # With entry_type filter — only KV
+        kv_results = router.search_by_tag("auth", entry_type="kv")
+        assert len(kv_results) == 1
+        assert kv_results[0]["chunk_hash"] == "kv_entry"
+
+    def test_tag_search_limit(self, router: CollectionRouter):
+        """limit parameter caps results per collection."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        chunks = [
             {
-                "chunk_hash": "untagged",
+                "chunk_hash": f"limit_test_{i}",
                 "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "No relevant tags",
+                "content": f"Item {i}",
                 "source": "test.md",
                 "heading": "",
                 "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "tags": '["unrelated"]',
-            },
-        ])
-        results = router.search_by_tag("nonexistent")
-        assert len(results) == 0
+                "start_line": i,
+                "end_line": i,
+                "tags": '["bulk"]',
+            }
+            for i in range(5)
+        ]
+        store.upsert(chunks)
+
+        results = router.search_by_tag("bulk", limit=2)
+        assert len(results) == 2
+
+    def test_tag_search_special_characters(self, router: CollectionRouter):
+        """Tags with special characters are escaped properly."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "special_tag",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Special char tag",
+                    "source": "test.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["c++", "node.js"]',
+                },
+            ]
+        )
+        # Search for a tag that needs no special escaping
+        results = router.search_by_tag("node.js")
+        # Milvus LIKE uses % as wildcard, . is literal
+        assert len(results) >= 1
+        assert results[0]["chunk_hash"] == "special_tag"
+
+
+@pytestmark_milvus
+class TestCollectionRouterSearchByTagAsync:
+    """Integration tests for async cross-collection tag search."""
+
+    @pytest.mark.asyncio
+    async def test_async_tag_search_basic(self, router: CollectionRouter):
+        """Async search_by_tag finds entries across multiple collections."""
+        router.get_store(MemoryScope.PROJECT, "alpha").upsert(
+            [
+                {
+                    "chunk_hash": "async_proj",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Project uses Redis",
+                    "source": "proj.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["redis", "cache"]',
+                },
+            ]
+        )
+        router.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                {
+                    "chunk_hash": "async_sys",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "System Redis config",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["redis", "config"]',
+                },
+            ]
+        )
+
+        results = await router.search_by_tag_async("redis")
+        hashes = {r["chunk_hash"] for r in results}
+        assert "async_proj" in hashes
+        assert "async_sys" in hashes
+        for r in results:
+            assert "_collection" in r
+            assert "_scope" in r
+
+    @pytest.mark.asyncio
+    async def test_async_tag_search_discovers_all(self, tmp_path: Path):
+        """Async variant also discovers non-cached collections."""
+        db = tmp_path / "async_discover.db"
+
+        # Populate with one router
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        r1.get_store(MemoryScope.PROJECT, "gamma").upsert(
+            [
+                {
+                    "chunk_hash": "gamma_async",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Gamma project auth",
+                    "source": "gamma.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["auth"]',
+                },
+            ]
+        )
+        r1.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                {
+                    "chunk_hash": "sys_async",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "System auth defaults",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["auth"]',
+                },
+            ]
+        )
+        r1.close()
+
+        # Fresh router — no cached stores
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0
+
+        results = await r2.search_by_tag_async("auth")
+        hashes = {r["chunk_hash"] for r in results}
+        assert "gamma_async" in hashes
+        assert "sys_async" in hashes
+        r2.close()
+
+    @pytest.mark.asyncio
+    async def test_async_entry_type_filter(self, router: CollectionRouter):
+        """Async variant supports entry_type filtering."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                {
+                    "chunk_hash": "async_doc",
+                    "entry_type": "document",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "A document",
+                    "source": "test.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["shared"]',
+                },
+                {
+                    "chunk_hash": "async_kv",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "source": "facts.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                    "tags": '["shared"]',
+                },
+            ]
+        )
+
+        doc_results = await router.search_by_tag_async("shared", entry_type="document")
+        assert len(doc_results) == 1
+        assert doc_results[0]["entry_type"] == "document"
+
+    @pytest.mark.asyncio
+    async def test_async_scoped_restriction(self, router: CollectionRouter):
+        """Async variant respects scope restrictions."""
+        router.get_store(MemoryScope.PROJECT, "alpha").upsert(
+            [
+                {
+                    "chunk_hash": "async_alpha",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Alpha",
+                    "source": "a.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["common"]',
+                },
+            ]
+        )
+        router.get_store(MemoryScope.PROJECT, "beta").upsert(
+            [
+                {
+                    "chunk_hash": "async_beta",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "Beta",
+                    "source": "b.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "tags": '["common"]',
+                },
+            ]
+        )
+
+        results = await router.search_by_tag_async(
+            "common",
+            scopes=[(MemoryScope.PROJECT, "alpha")],
+        )
+        hashes = {r["chunk_hash"] for r in results}
+        assert "async_alpha" in hashes
+        assert "async_beta" not in hashes
+
+    @pytest.mark.asyncio
+    async def test_async_no_results(self, router: CollectionRouter):
+        """Async returns empty list when no matches."""
+        router.get_store(MemoryScope.SYSTEM)
+        results = await router.search_by_tag_async("nonexistent_tag")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_async_empty_router(self, tmp_path: Path):
+        """Async on empty Milvus with no collections returns empty list."""
+        db = tmp_path / "empty_async.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+        results = await r.search_by_tag_async("anything")
+        assert results == []
+        r.close()
 
 
 @pytestmark_milvus
@@ -499,18 +862,20 @@ class TestCollectionRouterContextManager:
         db = tmp_path / "ctx_test.db"
         with CollectionRouter(milvus_uri=str(db), dimension=4) as router:
             store = router.get_store(MemoryScope.SYSTEM)
-            store.upsert([
-                {
-                    "chunk_hash": "ctx_1",
-                    "embedding": [1.0, 0.0, 0.0, 0.0],
-                    "content": "Context manager test",
-                    "source": "test.md",
-                    "heading": "",
-                    "heading_level": 0,
-                    "start_line": 1,
-                    "end_line": 1,
-                },
-            ])
+            store.upsert(
+                [
+                    {
+                        "chunk_hash": "ctx_1",
+                        "embedding": [1.0, 0.0, 0.0, 0.0],
+                        "content": "Context manager test",
+                        "source": "test.md",
+                        "heading": "",
+                        "heading_level": 0,
+                        "start_line": 1,
+                        "end_line": 1,
+                    },
+                ]
+            )
             assert store.count() == 1
         # After exit, stores are cleared
         assert len(router._stores) == 0
@@ -553,8 +918,7 @@ class TestMergeAndRank:
 
     def test_top_k_truncation(self):
         results = [
-            {"chunk_hash": f"item_{i}", "score": 1.0 - i * 0.1, "weighted_score": 1.0 - i * 0.1}
-            for i in range(10)
+            {"chunk_hash": f"item_{i}", "score": 1.0 - i * 0.1, "weighted_score": 1.0 - i * 0.1} for i in range(10)
         ]
         merged = merge_and_rank(results, top_k=3)
         assert len(merged) == 3
@@ -621,16 +985,18 @@ def _make_chunks(prefix: str, embeddings: list[list[float]], contents: list[str]
     """Helper to create chunk dicts for upsert."""
     chunks = []
     for i, (emb, content) in enumerate(zip(embeddings, contents, strict=True)):
-        chunks.append({
-            "chunk_hash": f"{prefix}_{i}",
-            "embedding": emb,
-            "content": content,
-            "source": f"{prefix}.md",
-            "heading": "",
-            "heading_level": 0,
-            "start_line": i + 1,
-            "end_line": i + 1,
-        })
+        chunks.append(
+            {
+                "chunk_hash": f"{prefix}_{i}",
+                "embedding": emb,
+                "content": content,
+                "source": f"{prefix}.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": i + 1,
+                "end_line": i + 1,
+            }
+        )
     return chunks
 
 
@@ -642,25 +1008,31 @@ class TestCollectionRouterSearch:
     def populated_router(self, router: CollectionRouter):
         """Router with data in project, agent-type, and system collections."""
         proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
-        proj_store.upsert(_make_chunks(
-            "proj",
-            [[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0]],
-            ["Project authentication guide", "Project database schema"],
-        ))
+        proj_store.upsert(
+            _make_chunks(
+                "proj",
+                [[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0]],
+                ["Project authentication guide", "Project database schema"],
+            )
+        )
 
         at_store = router.get_store(MemoryScope.AGENT_TYPE, "coding")
-        at_store.upsert(_make_chunks(
-            "agenttype",
-            [[0.0, 1.0, 0.0, 0.0], [0.0, 0.9, 0.1, 0.0]],
-            ["Coding best practices for testing", "Code review checklist"],
-        ))
+        at_store.upsert(
+            _make_chunks(
+                "agenttype",
+                [[0.0, 1.0, 0.0, 0.0], [0.0, 0.9, 0.1, 0.0]],
+                ["Coding best practices for testing", "Code review checklist"],
+            )
+        )
 
         sys_store = router.get_store(MemoryScope.SYSTEM)
-        sys_store.upsert(_make_chunks(
-            "sys",
-            [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.9, 0.1]],
-            ["System-wide logging configuration", "System error handling patterns"],
-        ))
+        sys_store.upsert(
+            _make_chunks(
+                "sys",
+                [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.9, 0.1]],
+                ["System-wide logging configuration", "System error handling patterns"],
+            )
+        )
 
         return router
 
@@ -748,11 +1120,13 @@ class TestCollectionRouterSearch:
     async def test_search_missing_collection(self, router: CollectionRouter):
         """Search gracefully handles non-existent collections."""
         # Only system exists
-        router.get_store(MemoryScope.SYSTEM).upsert(_make_chunks(
-            "sys",
-            [[0.0, 0.0, 1.0, 0.0]],
-            ["System config"],
-        ))
+        router.get_store(MemoryScope.SYSTEM).upsert(
+            _make_chunks(
+                "sys",
+                [[0.0, 0.0, 1.0, 0.0]],
+                ["System config"],
+            )
+        )
         results = await router.search(
             [0.0, 0.0, 1.0, 0.0],
             query_text="config",
@@ -826,67 +1200,71 @@ class TestCollectionRouterSearchTopic:
     def topic_router(self, router: CollectionRouter):
         """Router with topic-tagged data in project and system scopes."""
         proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
-        proj_store.upsert([
-            {
-                "chunk_hash": "proj_auth_0",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "OAuth token refresh flow for auth",
-                "source": "auth.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "authentication",
-            },
-            {
-                "chunk_hash": "proj_db_0",
-                "embedding": [0.0, 1.0, 0.0, 0.0],
-                "content": "Database schema migration patterns",
-                "source": "db.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "database",
-            },
-            {
-                "chunk_hash": "proj_untagged_0",
-                "embedding": [0.5, 0.5, 0.0, 0.0],
-                "content": "General project notes",
-                "source": "notes.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "",
-            },
-        ])
+        proj_store.upsert(
+            [
+                {
+                    "chunk_hash": "proj_auth_0",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "OAuth token refresh flow for auth",
+                    "source": "auth.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "authentication",
+                },
+                {
+                    "chunk_hash": "proj_db_0",
+                    "embedding": [0.0, 1.0, 0.0, 0.0],
+                    "content": "Database schema migration patterns",
+                    "source": "db.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "database",
+                },
+                {
+                    "chunk_hash": "proj_untagged_0",
+                    "embedding": [0.5, 0.5, 0.0, 0.0],
+                    "content": "General project notes",
+                    "source": "notes.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "",
+                },
+            ]
+        )
 
         sys_store = router.get_store(MemoryScope.SYSTEM)
-        sys_store.upsert([
-            {
-                "chunk_hash": "sys_auth_0",
-                "embedding": [0.9, 0.0, 0.1, 0.0],
-                "content": "System auth best practices",
-                "source": "sys_auth.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "authentication",
-            },
-            {
-                "chunk_hash": "sys_generic_0",
-                "embedding": [0.0, 0.0, 1.0, 0.0],
-                "content": "Generic system configuration",
-                "source": "sys_config.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "",
-            },
-        ])
+        sys_store.upsert(
+            [
+                {
+                    "chunk_hash": "sys_auth_0",
+                    "embedding": [0.9, 0.0, 0.1, 0.0],
+                    "content": "System auth best practices",
+                    "source": "sys_auth.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "authentication",
+                },
+                {
+                    "chunk_hash": "sys_generic_0",
+                    "embedding": [0.0, 0.0, 1.0, 0.0],
+                    "content": "Generic system configuration",
+                    "source": "sys_config.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "",
+                },
+            ]
+        )
         return router
 
     @pytest.mark.asyncio
@@ -910,19 +1288,21 @@ class TestCollectionRouterSearchTopic:
         and results are marked with topic_fallback=True."""
         sys_store = router.get_store(MemoryScope.SYSTEM)
         # Only add entries with a different topic (not matching our query topic)
-        sys_store.upsert([
-            {
-                "chunk_hash": "sys_only_0",
-                "embedding": [1.0, 0.0, 0.0, 0.0],
-                "content": "Some system data",
-                "source": "sys.md",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 1,
-                "end_line": 1,
-                "topic": "unrelated",
-            },
-        ])
+        sys_store.upsert(
+            [
+                {
+                    "chunk_hash": "sys_only_0",
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Some system data",
+                    "source": "sys.md",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "topic": "unrelated",
+                },
+            ]
+        )
         # Search with a topic that has no matches → triggers fallback
         results = await router.search(
             [1.0, 0.0, 0.0, 0.0],
@@ -943,100 +1323,106 @@ class TestCollectionRouterRecall:
     def kv_router(self, router: CollectionRouter):
         """Router with KV entries in project, agent-type, and system scopes."""
         proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
-        proj_store.upsert([
-            {
-                "chunk_hash": "kv_proj_tech",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "project",
-                "kv_key": "tech_stack",
-                "kv_value": '["Python", "SQLAlchemy"]',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-            {
-                "chunk_hash": "kv_proj_branch",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "project",
-                "kv_key": "deploy_branch",
-                "kv_value": '"main"',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-        ])
+        proj_store.upsert(
+            [
+                {
+                    "chunk_hash": "kv_proj_tech",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "project",
+                    "kv_key": "tech_stack",
+                    "kv_value": '["Python", "SQLAlchemy"]',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+                {
+                    "chunk_hash": "kv_proj_branch",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "project",
+                    "kv_key": "deploy_branch",
+                    "kv_value": '"main"',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+            ]
+        )
 
         at_store = router.get_store(MemoryScope.AGENT_TYPE, "coding")
-        at_store.upsert([
-            {
-                "chunk_hash": "kv_at_test",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "conventions",
-                "kv_key": "test_command",
-                "kv_value": '"pytest tests/ -v"',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-            {
-                "chunk_hash": "kv_at_tech",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "project",
-                "kv_key": "tech_stack",
-                "kv_value": '["Python"]',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-        ])
+        at_store.upsert(
+            [
+                {
+                    "chunk_hash": "kv_at_test",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "conventions",
+                    "kv_key": "test_command",
+                    "kv_value": '"pytest tests/ -v"',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+                {
+                    "chunk_hash": "kv_at_tech",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "project",
+                    "kv_key": "tech_stack",
+                    "kv_value": '["Python"]',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+            ]
+        )
 
         sys_store = router.get_store(MemoryScope.SYSTEM)
-        sys_store.upsert([
-            {
-                "chunk_hash": "kv_sys_version",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "system",
-                "kv_key": "version",
-                "kv_value": '"1.0"',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-            {
-                "chunk_hash": "kv_sys_tech",
-                "entry_type": "kv",
-                "embedding": [0.0, 0.0, 0.0, 0.0],
-                "content": "",
-                "kv_namespace": "project",
-                "kv_key": "tech_stack",
-                "kv_value": '["Generic"]',
-                "source": "",
-                "heading": "",
-                "heading_level": 0,
-                "start_line": 0,
-                "end_line": 0,
-            },
-        ])
+        sys_store.upsert(
+            [
+                {
+                    "chunk_hash": "kv_sys_version",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "system",
+                    "kv_key": "version",
+                    "kv_value": '"1.0"',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+                {
+                    "chunk_hash": "kv_sys_tech",
+                    "entry_type": "kv",
+                    "embedding": [0.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "kv_namespace": "project",
+                    "kv_key": "tech_stack",
+                    "kv_value": '["Generic"]',
+                    "source": "",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+            ]
+        )
         return router
 
     @pytest.mark.asyncio

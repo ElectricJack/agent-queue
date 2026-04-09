@@ -542,6 +542,74 @@ def compact(
         ms.close()
 
 
+@cli.command("search-by-tag")
+@click.argument("tag")
+@click.option("--limit", "-l", default=10, type=int, help="Max results per collection.")
+@click.option(
+    "--entry-type",
+    default=None,
+    type=click.Choice(["document", "kv", "temporal"]),
+    help="Filter by entry type.",
+)
+@click.option("--json-output", "-j", is_flag=True, help="Output as JSON.")
+@click.option("--milvus-uri", default=None, help="Milvus connection URI.")
+@click.option("--milvus-token", default=None, help="Milvus auth token.")
+def search_by_tag(
+    tag: str,
+    limit: int,
+    entry_type: str | None,
+    json_output: bool,
+    milvus_uri: str | None,
+    milvus_token: str | None,
+) -> None:
+    """Search ALL collections for entries with TAG.
+
+    Cross-scope discovery: finds memories tagged with TAG across every
+    aq_* collection in the Milvus instance.  Per spec section 7.3.
+    """
+    from .scoping import CollectionRouter
+
+    cfg = resolve_config(
+        _build_cli_overrides(
+            milvus_uri=milvus_uri,
+            milvus_token=milvus_token,
+        )
+    )
+    router = CollectionRouter(
+        milvus_uri=cfg.milvus.uri,
+        token=cfg.milvus.token or None,
+        dimension=None,  # read-only — don't create collections
+    )
+    try:
+        results = router.search_by_tag(tag, entry_type=entry_type, limit=limit)
+        if json_output:
+            click.echo(json.dumps(results, indent=2, ensure_ascii=False))
+        else:
+            if not results:
+                click.echo(f'No results found for tag "{tag}".')
+                return
+            click.echo(f'Found {len(results)} result(s) for tag "{tag}":\n')
+            for i, r in enumerate(results, 1):
+                scope = r.get("_scope", "?")
+                scope_id = r.get("_scope_id", "")
+                source = r.get("source", "?")
+                content = r.get("content", "")
+                entry = r.get("entry_type", "document")
+                tags = r.get("tags", "[]")
+                scope_label = f"{scope}/{scope_id}" if scope_id else scope
+                click.echo(f"--- Result {i} [{scope_label}] ({entry}) ---")
+                click.echo(f"Source: {source}")
+                click.echo(f"Tags: {tags}")
+                if content:
+                    if len(content) > 300:
+                        click.echo(content[:300] + "  ... [truncated]")
+                    else:
+                        click.echo(content)
+                click.echo()
+    finally:
+        router.close()
+
+
 @cli.command()
 @click.option("--collection", "-c", default=None, help="Milvus collection name.")
 @click.option("--milvus-uri", default=None, help="Milvus connection URI.")
