@@ -807,6 +807,10 @@ class Orchestrator:
         # the vault at ~/.agent-queue/tasks/{project_id}/.
         await self._ensure_task_directories()
 
+        # Create the vault directory structure (vault spec §2).
+        # Static dirs first, then per-profile and per-project subdirs.
+        await self._ensure_vault_structure()
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
@@ -960,6 +964,44 @@ class Orchestrator:
                 "Ensured task directories for %d projects under %s",
                 len(all_projects),
                 tasks_root,
+            )
+
+    async def _ensure_vault_structure(self) -> None:
+        """Create the vault directory tree at ``{data_dir}/vault/``.
+
+        See ``docs/specs/design/vault.md`` §2 for the full layout.
+
+        1. Create the static top-level structure (system, orchestrator,
+           agent-types, projects, templates).
+        2. Create per-profile subdirectories under ``vault/agent-types/``.
+        3. Create per-project subdirectories under ``vault/projects/``.
+
+        All operations are idempotent — safe to call on every startup.
+        Called during ``initialize()`` after the database is ready.
+        """
+        from src.vault import (
+            ensure_vault_layout,
+            ensure_vault_profile_dirs,
+            ensure_vault_project_dirs,
+        )
+
+        ensure_vault_layout(self.config.data_dir)
+
+        # Per-profile directories (vault/agent-types/{profile_id}/)
+        all_profiles = await self.db.list_profiles()
+        for profile in all_profiles:
+            ensure_vault_profile_dirs(self.config.data_dir, profile.id)
+
+        # Per-project directories (vault/projects/{project_id}/)
+        all_projects = await self.db.list_projects()
+        for project in all_projects:
+            ensure_vault_project_dirs(self.config.data_dir, project.id)
+
+        if all_profiles or all_projects:
+            logger.info(
+                "Vault structure ensured: %d profiles, %d projects",
+                len(all_profiles),
+                len(all_projects),
             )
 
     async def wait_for_running_tasks(self, timeout: float | None = None) -> None:

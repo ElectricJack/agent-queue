@@ -1329,6 +1329,11 @@ class CommandHandler:
         project_tasks_dir = os.path.join(self.config.data_dir, "tasks", project_id)
         os.makedirs(project_tasks_dir, exist_ok=True)
 
+        # Create vault subdirectories for the new project (vault spec §2).
+        from src.vault import ensure_vault_project_dirs
+
+        ensure_vault_project_dirs(self.config.data_dir, project_id)
+
         # Determine whether auto-channel creation should happen.
         # An explicit ``auto_create_channels`` arg takes precedence;
         # otherwise fall back to the per-project-channels config flag.
@@ -5617,6 +5622,12 @@ feature work stuck on feature branches across multiple workspaces.
             install=args.get("install", {}),
         )
         await self.db.create_profile(profile)
+
+        # Create vault subdirectories for the new profile (vault spec §2).
+        from src.vault import ensure_vault_profile_dirs
+
+        ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+
         result: dict = {"created": profile_id, "name": name}
         # Soft validation — warn about unrecognized tool names
         from src.known_tools import validate_tool_names
