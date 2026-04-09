@@ -877,6 +877,14 @@ class Orchestrator:
 
         register_playbook_handlers(self.vault_watcher)
 
+        # Register override file watcher handlers (memory-scoping spec §5).
+        # Detects changes to per-project agent-type override files so they
+        # can be re-indexed into agent context.  Phase 1 is a logging stub;
+        # actual override indexing is wired in Phase 3.
+        from src.override_handler import register_override_handlers
+
+        register_override_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
