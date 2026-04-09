@@ -6606,6 +6606,92 @@ feature work stuck on feature branches across multiple workspaces.
             "count": len(runs),
         }
 
+    async def _cmd_inspect_playbook_run(self, args: dict) -> dict:
+        """Inspect a playbook run: full node trace, conversation, and token usage.
+
+        Returns the complete state of a playbook run including the parsed
+        node trace (with per-node timing and transition data), the full
+        conversation history, token usage, trigger event, and run metadata.
+
+        This is the detailed inspection counterpart to ``list_playbook_runs``
+        which returns only summary data.  Spec §15, roadmap 5.5.6.
+
+        Args:
+            run_id: The playbook run ID to inspect.
+        """
+        run_id = args.get("run_id")
+        if not run_id:
+            return {"error": "run_id is required"}
+
+        db_run = await self.db.get_playbook_run(run_id)
+        if not db_run:
+            return {"error": f"Playbook run '{run_id}' not found"}
+
+        # Parse JSON fields — they're stored as serialised strings
+        try:
+            node_trace = (
+                json.loads(db_run.node_trace)
+                if isinstance(db_run.node_trace, str)
+                else db_run.node_trace or []
+            )
+        except (json.JSONDecodeError, TypeError):
+            node_trace = []
+
+        try:
+            conversation_history = (
+                json.loads(db_run.conversation_history)
+                if isinstance(db_run.conversation_history, str)
+                else db_run.conversation_history or []
+            )
+        except (json.JSONDecodeError, TypeError):
+            conversation_history = []
+
+        try:
+            trigger_event = (
+                json.loads(db_run.trigger_event)
+                if isinstance(db_run.trigger_event, str)
+                else db_run.trigger_event or {}
+            )
+        except (json.JSONDecodeError, TypeError):
+            trigger_event = {}
+
+        # Compute per-node durations from the trace
+        enriched_trace = []
+        for entry in node_trace:
+            enriched = dict(entry)
+            started = entry.get("started_at")
+            completed = entry.get("completed_at")
+            if started is not None and completed is not None:
+                enriched["duration_seconds"] = round(completed - started, 3)
+            enriched_trace.append(enriched)
+
+        # Build the response
+        result: dict = {
+            "run_id": db_run.run_id,
+            "playbook_id": db_run.playbook_id,
+            "playbook_version": db_run.playbook_version,
+            "status": db_run.status,
+            "current_node": db_run.current_node,
+            "started_at": db_run.started_at,
+            "completed_at": db_run.completed_at,
+            "tokens_used": db_run.tokens_used,
+            "node_trace": enriched_trace,
+            "node_count": len(enriched_trace),
+            "conversation_history": conversation_history,
+            "message_count": len(conversation_history),
+            "trigger_event": trigger_event,
+        }
+        if db_run.error:
+            result["error"] = db_run.error
+        if db_run.paused_at:
+            result["paused_at"] = db_run.paused_at
+
+        # Compute total run duration if completed
+        if db_run.started_at and db_run.completed_at:
+            result["total_duration_seconds"] = round(db_run.completed_at - db_run.started_at, 3)
+
+        return result
+
     async def _cmd_resume_playbook(self, args: dict) -> dict:
         """Resume a paused (human-in-the-loop) playbook run.
 

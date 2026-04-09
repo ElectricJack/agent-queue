@@ -6190,9 +6190,7 @@ class TestHumanInTheLoopEvents:
         )
 
         notify_calls = [
-            c
-            for c in event_bus.emit.call_args_list
-            if c.args[0] == "notify.playbook_run_resumed"
+            c for c in event_bus.emit.call_args_list if c.args[0] == "notify.playbook_run_resumed"
         ]
         assert len(notify_calls) == 1
         payload = notify_calls[0].args[1]
@@ -6478,13 +6476,17 @@ class TestResumePlaybookCommand:
             started_at=time.time() - 60,
             paused_at=time.time() - 30,
             pinned_graph=json.dumps(graph),
-            conversation_history=json.dumps([
-                {"role": "user", "content": "Review this code"},
-                {"role": "assistant", "content": "I found issues."},
-            ]),
-            node_trace=json.dumps([
-                {"node_id": "review", "started_at": time.time() - 60, "status": "paused"},
-            ]),
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Review this code"},
+                    {"role": "assistant", "content": "I found issues."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {"node_id": "review", "started_at": time.time() - 60, "status": "paused"},
+                ]
+            ),
             tokens_used=100,
         )
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
@@ -6559,8 +6561,11 @@ class TestResumePlaybookCommand:
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
         mock_result = RunResult(
-            run_id="run-pinned", status="completed",
-            node_trace=[], tokens_used=50, error=None,
+            run_id="run-pinned",
+            status="completed",
+            node_trace=[],
+            tokens_used=50,
+            error=None,
         )
 
         with (
@@ -6626,8 +6631,11 @@ class TestResumePlaybookCommand:
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
         mock_result = RunResult(
-            run_id="run-no-pin", status="completed",
-            node_trace=[], tokens_used=75, error=None,
+            run_id="run-no-pin",
+            status="completed",
+            node_trace=[],
+            tokens_used=75,
+            error=None,
         )
 
         with (
@@ -6772,8 +6780,11 @@ class TestResumePlaybookCommand:
         handler.db.update_playbook_run = AsyncMock()
 
         timed_out_result = RunResult(
-            run_id="run-expired", status="timed_out",
-            node_trace=[], tokens_used=0, error="Pause timeout exceeded",
+            run_id="run-expired",
+            status="timed_out",
+            node_trace=[],
+            tokens_used=0,
+            error="Pause timeout exceeded",
         )
 
         with patch("src.playbook_runner.PlaybookRunner") as MockRunner:
@@ -6831,9 +6842,7 @@ class TestResumePlaybookCommand:
             MockRunner.resume = AsyncMock(side_effect=RuntimeError("LLM provider crashed"))
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
 
-            result = await handler._cmd_resume_playbook(
-                {"run_id": "run-err", "human_input": "go"}
-            )
+            result = await handler._cmd_resume_playbook({"run_id": "run-err", "human_input": "go"})
 
         assert "error" in result
         assert "Resume failed" in result["error"]
@@ -6942,6 +6951,362 @@ class TestListPlaybookRunsCommand:
         handler.db.list_playbook_runs.assert_called_once_with(
             playbook_id=None, status=None, limit=5
         )
+
+
+# ---------------------------------------------------------------------------
+# Inspect playbook run (spec §15, roadmap 5.5.6)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdInspectPlaybookRun:
+    """Tests for the _cmd_inspect_playbook_run command handler method."""
+
+    async def test_inspect_missing_run_id(self):
+        """inspect_playbook_run returns error when run_id is missing."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+
+        result = await handler._cmd_inspect_playbook_run({})
+        assert "error" in result
+        assert "run_id is required" in result["error"]
+
+    async def test_inspect_nonexistent_run(self):
+        """inspect_playbook_run returns error when run doesn't exist."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+        handler.db.get_playbook_run = AsyncMock(return_value=None)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "nonexistent"})
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    async def test_inspect_completed_run_full_data(self):
+        """inspect_playbook_run returns full trace, conversation, and tokens for a completed run."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        node_trace = [
+            {
+                "node_id": "start",
+                "started_at": 1000.0,
+                "completed_at": 1005.0,
+                "status": "completed",
+                "transition_to": "analyze",
+                "transition_method": "goto",
+            },
+            {
+                "node_id": "analyze",
+                "started_at": 1005.0,
+                "completed_at": 1020.0,
+                "status": "completed",
+                "transition_to": "done",
+                "transition_method": "llm",
+            },
+            {
+                "node_id": "done",
+                "started_at": 1020.0,
+                "completed_at": 1022.0,
+                "status": "completed",
+            },
+        ]
+        conversation = [
+            {"role": "user", "content": "Seed prompt for start node"},
+            {"role": "assistant", "content": "Analysis complete."},
+            {"role": "user", "content": "Prompt for analyze node"},
+            {"role": "assistant", "content": "Done processing."},
+        ]
+        trigger = {"type": "task.completed", "task_id": "t-123"}
+
+        run = PlaybookRun(
+            run_id="r-inspect-1",
+            playbook_id="pb-analyze",
+            playbook_version=2,
+            status="completed",
+            current_node="done",
+            node_trace=json.dumps(node_trace),
+            conversation_history=json.dumps(conversation),
+            trigger_event=json.dumps(trigger),
+            tokens_used=1500,
+            started_at=1000.0,
+            completed_at=1022.0,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-inspect-1"})
+
+        # Core fields
+        assert result["run_id"] == "r-inspect-1"
+        assert result["playbook_id"] == "pb-analyze"
+        assert result["playbook_version"] == 2
+        assert result["status"] == "completed"
+        assert result["current_node"] == "done"
+        assert result["tokens_used"] == 1500
+        assert result["started_at"] == 1000.0
+        assert result["completed_at"] == 1022.0
+
+        # Node trace — enriched with duration_seconds
+        assert result["node_count"] == 3
+        assert len(result["node_trace"]) == 3
+        assert result["node_trace"][0]["node_id"] == "start"
+        assert result["node_trace"][0]["duration_seconds"] == 5.0
+        assert result["node_trace"][0]["transition_to"] == "analyze"
+        assert result["node_trace"][0]["transition_method"] == "goto"
+        assert result["node_trace"][1]["node_id"] == "analyze"
+        assert result["node_trace"][1]["duration_seconds"] == 15.0
+        assert result["node_trace"][1]["transition_method"] == "llm"
+        assert result["node_trace"][2]["node_id"] == "done"
+        assert result["node_trace"][2]["duration_seconds"] == 2.0
+
+        # Conversation history
+        assert result["message_count"] == 4
+        assert len(result["conversation_history"]) == 4
+        assert result["conversation_history"][0]["role"] == "user"
+        assert result["conversation_history"][1]["role"] == "assistant"
+
+        # Trigger event
+        assert result["trigger_event"]["type"] == "task.completed"
+        assert result["trigger_event"]["task_id"] == "t-123"
+
+        # Total run duration
+        assert result["total_duration_seconds"] == 22.0
+
+        # No error field for successful runs
+        assert "error" not in result
+
+    async def test_inspect_failed_run_includes_error(self):
+        """inspect_playbook_run includes error field for failed runs."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        node_trace = [
+            {
+                "node_id": "start",
+                "started_at": 2000.0,
+                "completed_at": 2010.0,
+                "status": "completed",
+                "transition_to": "process",
+            },
+            {
+                "node_id": "process",
+                "started_at": 2010.0,
+                "completed_at": 2015.0,
+                "status": "failed",
+            },
+        ]
+
+        run = PlaybookRun(
+            run_id="r-fail-1",
+            playbook_id="pb-process",
+            playbook_version=1,
+            status="failed",
+            current_node="process",
+            node_trace=json.dumps(node_trace),
+            conversation_history=json.dumps([{"role": "user", "content": "hello"}]),
+            tokens_used=300,
+            started_at=2000.0,
+            completed_at=2015.0,
+            error="Node 'process' raised ValueError: invalid input",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-fail-1"})
+
+        assert result["status"] == "failed"
+        assert result["error"] == "Node 'process' raised ValueError: invalid input"
+        assert result["node_count"] == 2
+        assert result["node_trace"][1]["status"] == "failed"
+        assert result["total_duration_seconds"] == 15.0
+
+    async def test_inspect_paused_run_includes_paused_at(self):
+        """inspect_playbook_run includes paused_at for paused runs."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        run = PlaybookRun(
+            run_id="r-pause-1",
+            playbook_id="pb-review",
+            playbook_version=1,
+            status="paused",
+            current_node="human_review",
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "start",
+                        "started_at": 3000.0,
+                        "completed_at": 3005.0,
+                        "status": "completed",
+                        "transition_to": "human_review",
+                    },
+                    {
+                        "node_id": "human_review",
+                        "started_at": 3005.0,
+                        "completed_at": None,
+                        "status": "running",
+                    },
+                ]
+            ),
+            conversation_history=json.dumps([{"role": "user", "content": "Review needed"}]),
+            tokens_used=200,
+            started_at=3000.0,
+            paused_at=3005.0,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-pause-1"})
+
+        assert result["status"] == "paused"
+        assert result["paused_at"] == 3005.0
+        assert result["current_node"] == "human_review"
+        # No total_duration_seconds since not completed
+        assert "total_duration_seconds" not in result
+        # Second node has no duration_seconds since completed_at is None
+        assert "duration_seconds" not in result["node_trace"][1]
+
+    async def test_inspect_run_with_empty_json_fields(self):
+        """inspect_playbook_run handles runs with empty/default JSON fields gracefully."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        run = PlaybookRun(
+            run_id="r-empty-1",
+            playbook_id="pb-minimal",
+            playbook_version=1,
+            status="running",
+            node_trace="[]",
+            conversation_history="[]",
+            trigger_event="{}",
+            tokens_used=0,
+            started_at=4000.0,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-empty-1"})
+
+        assert result["node_trace"] == []
+        assert result["node_count"] == 0
+        assert result["conversation_history"] == []
+        assert result["message_count"] == 0
+        assert result["trigger_event"] == {}
+        assert result["tokens_used"] == 0
+
+    async def test_inspect_run_with_malformed_json(self):
+        """inspect_playbook_run handles malformed JSON fields without crashing."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        run = PlaybookRun(
+            run_id="r-bad-1",
+            playbook_id="pb-broken",
+            playbook_version=1,
+            status="failed",
+            node_trace="{invalid json",
+            conversation_history="not json either",
+            trigger_event="<<<>>>",
+            tokens_used=100,
+            started_at=5000.0,
+            completed_at=5010.0,
+            error="Something went wrong",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-bad-1"})
+
+        # Should gracefully default to empty collections
+        assert result["node_trace"] == []
+        assert result["node_count"] == 0
+        assert result["conversation_history"] == []
+        assert result["message_count"] == 0
+        assert result["trigger_event"] == {}
+
+    async def test_inspect_timed_out_run(self):
+        """inspect_playbook_run returns correct data for a timed_out run."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
+            handler
+        )
+        handler.db = AsyncMock()
+
+        node_trace = [
+            {
+                "node_id": "start",
+                "started_at": 6000.0,
+                "completed_at": 6050.0,
+                "status": "completed",
+                "transition_to": "long_process",
+            },
+            {
+                "node_id": "long_process",
+                "started_at": 6050.0,
+                "completed_at": 6500.0,
+                "status": "completed",
+            },
+        ]
+
+        run = PlaybookRun(
+            run_id="r-timeout-1",
+            playbook_id="pb-slow",
+            playbook_version=1,
+            status="timed_out",
+            current_node="long_process",
+            node_trace=json.dumps(node_trace),
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Start processing"},
+                    {"role": "assistant", "content": "Working..."},
+                ]
+            ),
+            tokens_used=5000,
+            started_at=6000.0,
+            completed_at=6500.0,
+            error="Token budget exceeded",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "r-timeout-1"})
+
+        assert result["status"] == "timed_out"
+        assert result["error"] == "Token budget exceeded"
+        assert result["tokens_used"] == 5000
+        assert result["node_trace"][0]["duration_seconds"] == 50.0
+        assert result["node_trace"][1]["duration_seconds"] == 450.0
+        assert result["total_duration_seconds"] == 500.0
+        assert result["message_count"] == 2
 
 
 # ---------------------------------------------------------------------------

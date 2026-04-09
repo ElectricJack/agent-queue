@@ -185,6 +185,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "list_playbook_runs": "playbook",
+    "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
@@ -2182,6 +2183,25 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": 20,
                 },
             },
+        },
+    },
+    {
+        "name": "inspect_playbook_run",
+        "description": (
+            "Inspect a playbook run in detail. Returns full node trace "
+            "(with per-node timing, transitions, and status), complete "
+            "conversation history, token usage, and trigger event. "
+            "Use list_playbook_runs first to find run IDs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The playbook run ID to inspect",
+                },
+            },
+            "required": ["run_id"],
         },
     },
     {
