@@ -88,11 +88,11 @@ class TestValidTransitions:
         target = playbook_run_transition(PlaybookRunStatus.RUNNING, PlaybookRunEvent.GRAPH_ERROR)
         assert target == PlaybookRunStatus.FAILED
 
-    def test_running_to_timed_out(self):
+    def test_running_to_failed_on_budget_exceeded(self):
         target = playbook_run_transition(
             PlaybookRunStatus.RUNNING, PlaybookRunEvent.BUDGET_EXCEEDED
         )
-        assert target == PlaybookRunStatus.TIMED_OUT
+        assert target == PlaybookRunStatus.FAILED
 
     def test_running_to_paused(self):
         target = playbook_run_transition(PlaybookRunStatus.RUNNING, PlaybookRunEvent.HUMAN_WAIT)
@@ -111,7 +111,7 @@ class TestTransitionTableCompleteness:
         assert len(VALID_PLAYBOOK_RUN_TRANSITIONS) == 7
 
     def test_running_has_six_outgoing_transitions(self):
-        """RUNNING can transition to COMPLETED, FAILED (x3), TIMED_OUT, PAUSED."""
+        """RUNNING can transition to COMPLETED, FAILED (x4), PAUSED."""
         running_transitions = [
             (s, e) for (s, e) in VALID_PLAYBOOK_RUN_TRANSITIONS if s == PlaybookRunStatus.RUNNING
         ]
@@ -217,8 +217,9 @@ class TestStatusOnlyValidation:
     def test_running_to_failed_is_valid(self):
         assert is_valid_playbook_run_transition(PlaybookRunStatus.RUNNING, PlaybookRunStatus.FAILED)
 
-    def test_running_to_timed_out_is_valid(self):
-        assert is_valid_playbook_run_transition(
+    def test_running_to_timed_out_is_no_longer_valid(self):
+        """BUDGET_EXCEEDED now maps to FAILED, so RUNNING→TIMED_OUT is unused."""
+        assert not is_valid_playbook_run_transition(
             PlaybookRunStatus.RUNNING, PlaybookRunStatus.TIMED_OUT
         )
 
@@ -245,9 +246,9 @@ class TestStatusOnlyValidation:
         )
 
     def test_derived_set_count(self):
-        """The derived status transition set should have 5 unique pairs."""
-        # running→completed, running→failed, running→timed_out, running→paused, paused→running
-        assert len(VALID_PLAYBOOK_RUN_STATUS_TRANSITIONS) == 5
+        """The derived status transition set should have 4 unique pairs."""
+        # running→completed, running→failed, running→paused, paused→running
+        assert len(VALID_PLAYBOOK_RUN_STATUS_TRANSITIONS) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +321,10 @@ class TestRunnerStateMachineIntegration:
         assert result.status == "failed"
         assert runner._status == PlaybookRunStatus.FAILED
 
-    async def test_timed_out_run_transitions_running_to_timed_out(
+    async def test_budget_exceeded_transitions_running_to_failed(
         self, mock_supervisor, mock_db, event_data
     ):
-        """Budget exceeded: status goes running → timed_out."""
+        """Budget exceeded: status goes running → failed (spec §6)."""
         graph = {
             "id": "sm-timeout",
             "version": 1,
@@ -338,8 +339,8 @@ class TestRunnerStateMachineIntegration:
         runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
 
         result = await runner.run()
-        assert result.status == "timed_out"
-        assert runner._status == PlaybookRunStatus.TIMED_OUT
+        assert result.status == "failed"
+        assert runner._status == PlaybookRunStatus.FAILED
 
     async def test_paused_run_transitions_running_to_paused(
         self, mock_supervisor, mock_db, event_data
@@ -642,7 +643,9 @@ class TestRunnerStatusPersistedCorrectly:
                 break
         assert fail_call is not None
 
-    async def test_timed_out_status_persisted_via_enum(self, mock_supervisor, mock_db, event_data):
+    async def test_budget_exceeded_status_persisted_via_enum(
+        self, mock_supervisor, mock_db, event_data
+    ):
         graph = {
             "id": "persist-timeout",
             "version": 1,
@@ -657,12 +660,14 @@ class TestRunnerStatusPersistedCorrectly:
         runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
         await runner.run()
 
-        timeout_call = None
+        budget_call = None
         for call in mock_db.update_playbook_run.call_args_list:
-            if call.kwargs.get("status") == "timed_out":
-                timeout_call = call
+            if call.kwargs.get("status") == "failed" and "token_budget_exceeded" in (
+                call.kwargs.get("error") or ""
+            ):
+                budget_call = call
                 break
-        assert timeout_call is not None
+        assert budget_call is not None
 
     async def test_paused_status_persisted_via_enum(self, mock_supervisor, mock_db, event_data):
         graph = {
