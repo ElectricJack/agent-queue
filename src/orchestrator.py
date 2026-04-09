@@ -853,6 +853,14 @@ class Orchestrator:
 
         register_profile_handlers(self.vault_watcher)
 
+        # Register facts.md watcher handlers (memory-plugin spec §7).
+        # Detects changes to facts files across all vault scopes so they
+        # can be synced to the KV backend.  Phase 1 is a logging stub;
+        # actual KV sync is wired in Phase 2.
+        from src.facts_handler import register_facts_handlers
+
+        register_facts_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
