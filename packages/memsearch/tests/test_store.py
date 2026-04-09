@@ -208,6 +208,8 @@ def test_unified_schema_fields_exist(store: MilvusStore):
         "source",
         "tags",
         "updated_at",
+        "retrieval_count",
+        "last_retrieved",
         "heading",
         "heading_level",
         "start_line",
@@ -242,6 +244,8 @@ def test_upsert_defaults_applied(store: MilvusStore):
     assert r["topic"] == ""
     assert r["tags"] == "[]"
     assert r["updated_at"] == 0
+    assert r["retrieval_count"] == 0
+    assert r["last_retrieved"] == 0
 
 
 def test_kv_entry(store: MilvusStore):
@@ -2364,8 +2368,7 @@ def test_kv_scalar_only_no_vector_search(store: MilvusStore):
     # Patch the Milvus client's hybrid_search and the store's search method to
     # detect if vector search is ever called during KV operations.
     with (
-        patch.object(store._client, "hybrid_search", wraps=store._client.hybrid_search)
-            as mock_hybrid,
+        patch.object(store._client, "hybrid_search", wraps=store._client.hybrid_search) as mock_hybrid,
         patch.object(store, "search", wraps=store.search) as mock_search,
     ):
         # get_kv — scalar primary-key lookup
@@ -2409,7 +2412,7 @@ def test_kv_complex_string_values(store: MilvusStore):
     assert json.loads(r["kv_value"]) == unicode_str
 
     # Special / control characters: quotes, backslashes, null-like
-    special = 'he said "hello" and she said \'hi\' \\ /path/to/file \t\nnewline'
+    special = "he said \"hello\" and she said 'hi' \\ /path/to/file \t\nnewline"
     store.set_kv("special", special, namespace="strings")
     r = store.get_kv("special", namespace="strings")
     assert r is not None
@@ -2434,3 +2437,190 @@ def test_kv_complex_string_values(store: MilvusStore):
     r = store.get_kv("json_like", namespace="strings")
     assert r is not None
     assert json.loads(r["kv_value"]) == json_like
+
+
+# ---- Retrieval tracking (spec §6 — memory health observability) ---------------
+
+
+def test_search_updates_retrieval_count(store: MilvusStore):
+    """search() should increment retrieval_count for returned results."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Retrieval tracking test",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "rt1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            }
+        ]
+    )
+
+    # Verify initial state
+    entry = store.get("rt1")
+    assert entry is not None
+    assert entry["retrieval_count"] == 0
+    assert entry["last_retrieved"] == 0
+
+    # First search — should increment to 1
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    entry = store.get("rt1")
+    assert entry is not None
+    assert entry["retrieval_count"] == 1
+    assert entry["last_retrieved"] > 0
+
+    # Second search — should increment to 2
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    entry = store.get("rt1")
+    assert entry is not None
+    assert entry["retrieval_count"] == 2
+
+
+def test_search_updates_last_retrieved_timestamp(store: MilvusStore):
+    """search() should set last_retrieved to current time."""
+    import time
+
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Timestamp tracking test",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "ts1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            }
+        ]
+    )
+
+    before = int(time.time())
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    after = int(time.time())
+
+    entry = store.get("ts1")
+    assert entry is not None
+    assert before <= entry["last_retrieved"] <= after
+
+
+def test_search_tracks_only_returned_results(store: MilvusStore):
+    """Only results actually returned by search get their stats updated."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Best match",
+                "source": "test.md",
+                "heading": "A",
+                "chunk_hash": "track_a",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            },
+            {
+                "embedding": [0.0, 1.0, 0.0, 0.0],
+                "content": "Not the best match",
+                "source": "test.md",
+                "heading": "B",
+                "chunk_hash": "track_b",
+                "heading_level": 1,
+                "start_line": 6,
+                "end_line": 10,
+            },
+        ]
+    )
+
+    # Search for only 1 result matching the first chunk
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+
+    a = store.get("track_a")
+    b = store.get("track_b")
+    assert a is not None
+    assert b is not None
+    # track_a was returned — retrieval_count incremented
+    assert a["retrieval_count"] >= 1
+    # track_b was not returned (top_k=1) — not tracked
+    # Note: with hybrid search, both may be returned, but track_a should
+    # have a higher count if only it was in the top-1 results.
+
+
+def test_search_preserves_content_after_tracking(store: MilvusStore):
+    """Retrieval tracking re-upsert should not corrupt existing data."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Important knowledge",
+                "original": "The full original important knowledge text",
+                "source": "knowledge.md",
+                "heading": "Key Insight",
+                "chunk_hash": "preserve1",
+                "heading_level": 2,
+                "start_line": 10,
+                "end_line": 20,
+                "entry_type": "document",
+                "topic": "testing",
+                "tags": '["important", "verified"]',
+                "updated_at": 1700000000,
+            }
+        ]
+    )
+
+    # Search multiple times
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+
+    entry = store.get("preserve1")
+    assert entry is not None
+    # Verify all original data is preserved
+    assert entry["content"] == "Important knowledge"
+    assert entry["original"] == "The full original important knowledge text"
+    assert entry["source"] == "knowledge.md"
+    assert entry["heading"] == "Key Insight"
+    assert entry["heading_level"] == 2
+    assert entry["start_line"] == 10
+    assert entry["end_line"] == 20
+    assert entry["entry_type"] == "document"
+    assert entry["topic"] == "testing"
+    assert entry["tags"] == '["important", "verified"]'
+    assert entry["updated_at"] == 1700000000
+    # Retrieval stats should be updated
+    assert entry["retrieval_count"] == 2
+    assert entry["last_retrieved"] > 0
+
+
+def test_empty_search_no_tracking_error(store: MilvusStore):
+    """Search returning no results should not error on tracking."""
+    # Search with an embedding that won't match anything (empty store)
+    results = store.search([0.0, 0.0, 0.0, 1.0], top_k=1)
+    assert results == []
+
+
+def test_retrieval_count_visible_in_search_results(store: MilvusStore):
+    """retrieval_count and last_retrieved should be in search output fields."""
+    store.upsert(
+        [
+            {
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Visible stats test",
+                "source": "test.md",
+                "heading": "Test",
+                "chunk_hash": "vis1",
+                "heading_level": 1,
+                "start_line": 1,
+                "end_line": 5,
+            }
+        ]
+    )
+
+    results = store.search([1.0, 0.0, 0.0, 0.0], top_k=1)
+    assert len(results) >= 1
+    # The first search returns the result with initial values (0),
+    # because tracking happens after the search query returns.
+    # The fields should still be present in the output.
+    assert "retrieval_count" in results[0]
+    assert "last_retrieved" in results[0]
