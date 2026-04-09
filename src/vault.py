@@ -536,26 +536,97 @@ a starter template — update it as you refine your review process.
 - Does the code do what the PR description claims?
 - Are edge cases handled (empty inputs, nulls, boundary values)?
 - Are error paths handled gracefully (no silent swallowing)?
+- Are return values and types consistent with the function contract?
+- Is state mutation intentional and clearly documented?
 
 ## Security
 - No hardcoded secrets, tokens, or credentials?
 - Input validation present for external data?
 - SQL queries parameterized (no string interpolation)?
+- Authentication and authorization checks in place for protected paths?
+- Sensitive data not leaked in logs, error messages, or stack traces?
 
 ## Performance
 - No unnecessary database queries in loops (N+1 problem)?
 - Large collections handled with pagination or streaming?
-- Async operations used where appropriate?
+- Async operations used where appropriate (no blocking in event loops)?
+- Expensive computations cached or deferred where practical?
+- Resource handles (files, connections, cursors) properly closed/released?
 
 ## Maintainability
 - Code is readable without requiring author explanation?
 - Functions and variables have clear, descriptive names?
 - No dead code, commented-out blocks, or TODO items left behind?
+- Functions have a single responsibility and reasonable length?
+- Complex logic has explanatory comments for *why*, not just *what*?
+
+## Error Handling
+- Exceptions are specific (no bare `except:` or `except Exception`)?
+- Error messages are actionable and include relevant context?
+- Partial failures leave the system in a consistent state?
+- External service calls have timeouts and retry/fallback logic?
+
+## API and Interface Design
+- Public APIs are backward-compatible (no breaking changes without notice)?
+- Method signatures are consistent with project conventions?
+- New configuration options have sensible defaults?
+- Breaking changes are documented and versioned?
+
+## Dependencies
+- New dependencies are justified and widely maintained?
+- Dependency versions are pinned or constrained appropriately?
+- No duplicate functionality with existing dependencies?
 
 ## Testing
 - New functionality has corresponding tests?
 - Tests cover both happy path and error cases?
 - Existing tests still pass (no regressions)?
+- Tests are deterministic (no reliance on timing, external services, or order)?
+- Test names clearly describe the scenario and expected outcome?
+""",
+        "review-process.md": """\
+---
+tags: [starter, code-review, process]
+---
+
+# Review Process
+
+Guidelines for conducting effective code reviews. This file is seeded
+from a starter template — update it as you develop project-specific
+review conventions.
+
+## Before You Start
+- Read the PR description and linked issue/task to understand intent
+- Check the diff size — large PRs may need to be reviewed file-by-file
+  or split into smaller reviews
+- Identify which files are structural changes vs. cosmetic/mechanical
+
+## Review Order
+- Start with the most critical files (public APIs, data models, security
+  boundaries) before moving to implementation details
+- Review tests alongside the code they exercise, not as an afterthought
+- Read new files top-down; read modified files by focusing on the diff
+  hunks in context
+
+## Giving Feedback
+- Distinguish blocking issues from suggestions — prefix with "nit:" or
+  "suggestion:" for non-blocking comments
+- Explain *why* something is a problem, not just *what* to change
+- Offer concrete alternatives when requesting changes
+- Acknowledge good patterns — positive feedback reinforces quality
+
+## Scope Discipline
+- Review only what's in the PR — don't request unrelated refactors
+- If you notice pre-existing issues, file them separately rather than
+  blocking the current review
+- Style preferences that aren't in the linter/formatter config are
+  suggestions, not requirements
+
+## Common Review Pitfalls
+- Nitpicking formatting that the linter should enforce automatically
+- Requesting changes that contradict the project's established patterns
+- Approving without reading tests or verifying edge case coverage
+- Failing to check for missing error handling in new code paths
 """,
     },
     "qa": {

@@ -146,6 +146,7 @@ vault/templates/knowledge/
     git-conventions.md           # "Prefer small commits, meaningful messages..."
   code-review/
     review-checklist.md          # "Check for: error handling, edge cases..."
+    review-process.md            # "Review order, giving feedback, scope..."
   qa/
     testing-patterns.md          # "Prefer integration tests for critical paths..."
 ```
