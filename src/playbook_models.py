@@ -80,21 +80,41 @@ class LlmConfig:
     Allows cost control: transition evaluation can use a fast/cheap model while
     complex reasoning nodes use the most capable model.  When omitted, the
     system default chat provider is used.
+
+    Fields:
+
+    * ``provider`` — chat provider name (e.g. ``"anthropic"``, ``"gemini"``).
+    * ``model`` — model identifier (e.g. ``"claude-sonnet-4-20250514"``).
+    * ``max_tokens`` — maximum response tokens per LLM call.
+    * ``temperature`` — sampling temperature (0.0–1.0).
     """
 
     provider: str = ""  # e.g. "anthropic", "google", "openai"
     model: str = ""  # e.g. "claude-sonnet-4-20250514", "gemini-2.0-flash"
+    max_tokens: int | None = None  # e.g. 1024, 4096
+    temperature: float | None = None  # e.g. 0.0, 0.7
 
     # -- serialization -------------------------------------------------------
 
-    def to_dict(self) -> dict[str, str]:
-        return {k: v for k, v in {"provider": self.provider, "model": self.model}.items() if v}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.provider:
+            d["provider"] = self.provider
+        if self.model:
+            d["model"] = self.model
+        if self.max_tokens is not None:
+            d["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            d["temperature"] = self.temperature
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LlmConfig:
         return cls(
             provider=data.get("provider", ""),
             model=data.get("model", ""),
+            max_tokens=data.get("max_tokens"),
+            temperature=data.get("temperature"),
         )
 
 
@@ -174,6 +194,7 @@ class PlaybookNode:
     wait_for_human: bool = False
     timeout_seconds: int | None = None
     llm_config: LlmConfig | None = None
+    transition_llm_config: LlmConfig | None = None
     summarize_before: bool = False
 
     # -- serialization -------------------------------------------------------
@@ -196,6 +217,8 @@ class PlaybookNode:
             d["timeout_seconds"] = self.timeout_seconds
         if self.llm_config is not None:
             d["llm_config"] = self.llm_config.to_dict()
+        if self.transition_llm_config is not None:
+            d["transition_llm_config"] = self.transition_llm_config.to_dict()
         if self.summarize_before:
             d["summarize_before"] = True
         return d
@@ -204,6 +227,11 @@ class PlaybookNode:
     def from_dict(cls, data: dict[str, Any]) -> PlaybookNode:
         transitions = [PlaybookTransition.from_dict(t) for t in data.get("transitions", [])]
         llm_cfg = LlmConfig.from_dict(data["llm_config"]) if "llm_config" in data else None
+        trans_cfg = (
+            LlmConfig.from_dict(data["transition_llm_config"])
+            if "transition_llm_config" in data
+            else None
+        )
         return cls(
             prompt=data.get("prompt", ""),
             entry=data.get("entry", False),
@@ -213,6 +241,7 @@ class PlaybookNode:
             wait_for_human=data.get("wait_for_human", False),
             timeout_seconds=data.get("timeout_seconds"),
             llm_config=llm_cfg,
+            transition_llm_config=trans_cfg,
             summarize_before=data.get("summarize_before", False),
         )
 
@@ -235,7 +264,7 @@ class CompiledPlaybook:
     **Identity & provenance** — ``id``, ``version``, ``source_hash``, ``compiled_at``
     **Trigger & scope** — ``triggers``, ``scope``, ``cooldown_seconds``
     **Graph** — ``nodes`` (the directed graph of LLM decision points)
-    **Budget & config** — ``max_tokens``, ``llm_config``
+    **Budget & config** — ``max_tokens``, ``llm_config``, ``transition_llm_config``
     """
 
     id: str
@@ -247,6 +276,7 @@ class CompiledPlaybook:
     cooldown_seconds: int | None = None
     max_tokens: int | None = None
     llm_config: LlmConfig | None = None
+    transition_llm_config: LlmConfig | None = None
     compiled_at: str | None = None
 
     # -- scope helpers -------------------------------------------------------
@@ -495,6 +525,8 @@ class CompiledPlaybook:
             d["max_tokens"] = self.max_tokens
         if self.llm_config is not None:
             d["llm_config"] = self.llm_config.to_dict()
+        if self.transition_llm_config is not None:
+            d["transition_llm_config"] = self.transition_llm_config.to_dict()
         if self.compiled_at is not None:
             d["compiled_at"] = self.compiled_at
         return d
@@ -504,6 +536,11 @@ class CompiledPlaybook:
         """Deserialize from a plain dict (e.g. parsed JSON)."""
         nodes = {nid: PlaybookNode.from_dict(nd) for nid, nd in data.get("nodes", {}).items()}
         llm_cfg = LlmConfig.from_dict(data["llm_config"]) if "llm_config" in data else None
+        trans_cfg = (
+            LlmConfig.from_dict(data["transition_llm_config"])
+            if "transition_llm_config" in data
+            else None
+        )
         return cls(
             id=data["id"],
             version=data.get("version", 1),
@@ -514,6 +551,7 @@ class CompiledPlaybook:
             cooldown_seconds=data.get("cooldown_seconds"),
             max_tokens=data.get("max_tokens"),
             llm_config=llm_cfg,
+            transition_llm_config=trans_cfg,
             compiled_at=data.get("compiled_at"),
         )
 
@@ -740,6 +778,14 @@ def generate_json_schema() -> dict[str, Any]:
                 "description": "ISO-8601 UTC timestamp of when this version was compiled.",
             },
             "llm_config": {"$ref": "#/$defs/llm_config"},
+            "transition_llm_config": {
+                "$ref": "#/$defs/llm_config",
+                "description": (
+                    "Default LLM config for transition classification calls. "
+                    "Allows routing transitions to a cheaper/faster model "
+                    "while keeping node execution on a capable model."
+                ),
+            },
             "nodes": {
                 "type": "object",
                 "description": (
@@ -763,6 +809,17 @@ def generate_json_schema() -> dict[str, Any]:
                     "model": {
                         "type": "string",
                         "description": ("Model identifier (e.g. 'claude-sonnet-4-20250514')."),
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum response tokens per LLM call.",
+                        "minimum": 1,
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Sampling temperature (0.0-1.0).",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
                     },
                 },
             },
@@ -820,6 +877,15 @@ def generate_json_schema() -> dict[str, Any]:
                         "minimum": 1,
                     },
                     "llm_config": {"$ref": "#/$defs/llm_config"},
+                    "transition_llm_config": {
+                        "$ref": "#/$defs/llm_config",
+                        "description": (
+                            "LLM config override for transition classification "
+                            "calls from this node. Falls back to playbook-level "
+                            "transition_llm_config, then node llm_config, then "
+                            "playbook llm_config."
+                        ),
+                    },
                     "summarize_before": {
                         "type": "boolean",
                         "description": (

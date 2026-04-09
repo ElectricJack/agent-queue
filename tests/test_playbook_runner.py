@@ -518,13 +518,10 @@ class TestSummarization:
         assert len(runner.messages) == 5
         # No summary message injected
         assert not any(
-            "[Context summary of prior steps]" in m.get("content", "")
-            for m in runner.messages
+            "[Context summary of prior steps]" in m.get("content", "") for m in runner.messages
         )
 
-    async def test_summarize_skipped_when_insufficient_history(
-        self, mock_supervisor, event_data
-    ):
+    async def test_summarize_skipped_when_insufficient_history(self, mock_supervisor, event_data):
         """summarize_before on a node with ≤2 messages is a no-op."""
         graph = {
             "id": "skip-test",
@@ -641,18 +638,14 @@ class TestSummarization:
         async def capture_progress(event_type: str, detail: str):
             progress_events.append((event_type, detail))
 
-        runner = PlaybookRunner(
-            graph, event_data, mock_supervisor, on_progress=capture_progress
-        )
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, on_progress=capture_progress)
         await runner.run()
 
         # There should be a node_summarizing event
         summarizing_events = [e for e in progress_events if e[0] == "node_summarizing"]
         assert len(summarizing_events) == 1
 
-    async def test_summarize_transcript_includes_all_messages(
-        self, mock_supervisor, event_data
-    ):
+    async def test_summarize_transcript_includes_all_messages(self, mock_supervisor, event_data):
         """The transcript passed to summarize includes content from all prior messages."""
         graph = {
             "id": "transcript-test",
@@ -871,6 +864,113 @@ class TestLLMConfigOverrides:
         call_kwargs = mock_supervisor.chat.call_args.kwargs
         # Node-level config should override playbook-level
         assert call_kwargs["llm_config"] == {"model": "claude-sonnet-4-20250514"}
+
+    async def test_llm_config_with_max_tokens_and_temperature(self, mock_supervisor, event_data):
+        """max_tokens and temperature in llm_config are passed through to supervisor."""
+        graph = {
+            "id": "config-extras",
+            "version": 1,
+            "llm_config": {
+                "model": "gemini-2.5-flash",
+                "max_tokens": 2048,
+                "temperature": 0.3,
+            },
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["llm_config"] == {
+            "model": "gemini-2.5-flash",
+            "max_tokens": 2048,
+            "temperature": 0.3,
+        }
+
+    async def test_transition_llm_config_playbook_level(self, mock_supervisor, event_data):
+        """Playbook-level transition_llm_config is used for transition classification."""
+        graph = {
+            "id": "transition-config",
+            "version": 1,
+            "llm_config": {"model": "sonnet"},
+            "transition_llm_config": {"model": "haiku"},
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Step A",
+                    "transitions": [
+                        {"when": "success", "goto": "done"},
+                        {"otherwise": True, "goto": "done"},
+                    ],
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        # First call is node execution (returns "success")
+        # Second call is transition classification (returns "1")
+        mock_supervisor.chat.side_effect = ["success result", "1"]
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # First call (node execution) uses playbook llm_config
+        node_call = mock_supervisor.chat.call_args_list[0]
+        assert node_call.kwargs["llm_config"] == {"model": "sonnet"}
+
+        # Second call (transition) uses transition_llm_config
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["llm_config"] == {"model": "haiku"}
+
+    async def test_node_transition_llm_config_overrides_playbook(self, mock_supervisor, event_data):
+        """Node-level transition_llm_config overrides playbook-level."""
+        graph = {
+            "id": "node-trans-config",
+            "version": 1,
+            "transition_llm_config": {"model": "playbook-haiku"},
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Step A",
+                    "transition_llm_config": {"model": "node-flash"},
+                    "transitions": [
+                        {"when": "pass", "goto": "done"},
+                        {"otherwise": True, "goto": "done"},
+                    ],
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.side_effect = ["result", "1"]
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Transition call should use node-level transition_llm_config
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["llm_config"] == {"model": "node-flash"}
+
+    async def test_no_config_passes_none(self, mock_supervisor, event_data):
+        """When no llm_config is set anywhere, None is passed to supervisor."""
+        graph = {
+            "id": "no-config",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Step A", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        call_kwargs = mock_supervisor.chat.call_args.kwargs
+        assert call_kwargs["llm_config"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -2189,9 +2289,7 @@ class TestBranchingTransitionEvaluation:
     classification for branching playbook graphs.
     """
 
-    async def test_two_conditional_transitions_correct_branch(
-        self, mock_supervisor, event_data
-    ):
+    async def test_two_conditional_transitions_correct_branch(self, mock_supervisor, event_data):
         """(a) Node with two conditional transitions — LLM picks correct branch."""
         graph = {
             "id": "two-branch-test",
@@ -2211,11 +2309,13 @@ class TestBranchingTransitionEvaluation:
         }
 
         # analyse → outputs issues → LLM picks "2" (issues found → fix) → fix → done
-        responses = iter([
-            "Found 5 critical issues in the auth module",
-            "2",
-            "All issues fixed.",
-        ])
+        responses = iter(
+            [
+                "Found 5 critical issues in the auth module",
+                "2",
+                "All issues fixed.",
+            ]
+        )
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
@@ -2228,9 +2328,7 @@ class TestBranchingTransitionEvaluation:
         assert result.node_trace[0]["transition_method"] == "llm"
         assert result.node_trace[1]["node_id"] == "fix"
 
-    async def test_two_conditional_transitions_other_branch(
-        self, mock_supervisor, event_data
-    ):
+    async def test_two_conditional_transitions_other_branch(self, mock_supervisor, event_data):
         """(a) extended — LLM picks the other branch when prior output differs."""
         graph = {
             "id": "two-branch-other",
@@ -2285,11 +2383,13 @@ class TestBranchingTransitionEvaluation:
         }
 
         # triage → moderate finding → LLM picks "2" (schedule)
-        responses = iter([
-            "Found moderate memory leak in connection pooling.",
-            "2",
-            "Scheduled fix for next sprint.",
-        ])
+        responses = iter(
+            [
+                "Found moderate memory leak in connection pooling.",
+                "2",
+                "Scheduled fix for next sprint.",
+            ]
+        )
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
@@ -2386,11 +2486,13 @@ class TestBranchingTransitionEvaluation:
         }
 
         # check → ambiguous output → LLM returns "0" (no match) → otherwise → escalate
-        responses = iter([
-            "Deployment status unclear, possible network issue.",
-            "0",
-            "Escalated to on-call team.",
-        ])
+        responses = iter(
+            [
+                "Deployment status unclear, possible network issue.",
+                "0",
+                "Escalated to on-call team.",
+            ]
+        )
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
@@ -2749,9 +2851,13 @@ class TestBranchingTransitionEvaluation:
 
         assert result.status == "failed"
         assert "check" in result.error
-        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        assert (
+            "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        )
 
-    async def test_no_match_no_default_descriptive_error(self, mock_supervisor, event_data, mock_db):
+    async def test_no_match_no_default_descriptive_error(
+        self, mock_supervisor, event_data, mock_db
+    ):
         """(g) extended — error message includes conditions and is persisted."""
         graph = {
             "id": "descriptive-error",
@@ -2824,7 +2930,9 @@ class TestBranchingTransitionEvaluation:
 
         assert result.status == "failed"
         assert "check" in result.error
-        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        assert (
+            "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        )
 
     async def test_implicit_terminal_still_works(self, mock_supervisor, event_data):
         """(g) guard — nodes with no transitions defined still complete (implicit terminal)."""
@@ -3631,9 +3739,7 @@ class TestExpressionTransitions:
             },
         }
 
-        mock_supervisor.chat.return_value = json.dumps(
-            {"approval": "yes", "comment": "Looks good"}
-        )
+        mock_supervisor.chat.return_value = json.dumps({"approval": "yes", "comment": "Looks good"})
         runner = PlaybookRunner(graph, event, mock_supervisor)
         result = await runner.run()
 
@@ -4285,7 +4391,9 @@ class TestTransitionEdgeCases:
 
         # Transitions were defined but none matched and no otherwise → failure
         assert result.status == "failed"
-        assert "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        assert (
+            "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4333,11 +4441,13 @@ class TestPlaybookExecutionHappyPath:
         self, mock_supervisor, three_node_graph, event_data
     ):
         """(a) start → middle → end executes in order with status 'completed'."""
-        responses = iter([
-            "Found 5 issues in the codebase.",
-            "Grouped: 2 critical, 2 warnings, 1 info.",
-            "Report: 5 total findings across 3 severity levels.",
-        ])
+        responses = iter(
+            [
+                "Found 5 issues in the codebase.",
+                "Grouped: 2 critical, 2 warnings, 1 info.",
+                "Report: 5 total findings across 3 severity levels.",
+            ]
+        )
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
@@ -4418,9 +4528,7 @@ class TestPlaybookExecutionHappyPath:
         assert calls[1].kwargs["text"] == (
             "Based on the analysis above, group findings by severity."
         )
-        assert calls[2].kwargs["text"] == (
-            "Generate a summary report of the grouped findings."
-        )
+        assert calls[2].kwargs["text"] == ("Generate a summary report of the grouped findings.")
 
     # (d) Supervisor.chat() is invoked once per node with correct parameters
     async def test_supervisor_chat_invoked_once_per_node(
@@ -4462,11 +4570,13 @@ class TestPlaybookExecutionHappyPath:
         self, mock_supervisor, three_node_graph, event_data
     ):
         """(e) Total tokens > 0; each trace entry has valid started_at/completed_at."""
-        responses = iter([
-            "Analysis: found 5 issues.",
-            "Grouped into 3 categories.",
-            "Summary report generated.",
-        ])
+        responses = iter(
+            [
+                "Analysis: found 5 issues.",
+                "Grouped into 3 categories.",
+                "Summary report generated.",
+            ]
+        )
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
@@ -4540,9 +4650,7 @@ class TestPlaybookExecutionHappyPath:
             assert persisted_history[i + 1]["role"] == "assistant"
 
     # (g) Playbook with single node (entry = terminal) executes and completes
-    async def test_single_node_playbook_executes_and_completes(
-        self, mock_supervisor, event_data
-    ):
+    async def test_single_node_playbook_executes_and_completes(self, mock_supervisor, event_data):
         """(g) A single-node playbook (entry, no goto/transitions) executes and completes."""
         graph = {
             "id": "single-node-playbook",
@@ -4567,9 +4675,7 @@ class TestPlaybookExecutionHappyPath:
         assert result.final_response == "One-shot analysis complete."
         mock_supervisor.chat.assert_called_once()
 
-    async def test_single_node_with_db_persistence(
-        self, mock_supervisor, event_data, mock_db
-    ):
+    async def test_single_node_with_db_persistence(self, mock_supervisor, event_data, mock_db):
         """(g) extended — single-node playbook persists correctly to DB."""
         graph = {
             "id": "single-node-playbook",

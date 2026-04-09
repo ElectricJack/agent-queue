@@ -367,6 +367,61 @@ class TestMergeFrontmatter:
         PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
         assert compiled == original_compiled
 
+    def test_llm_config_from_frontmatter(self):
+        """llm_config in frontmatter is authoritative and overrides LLM output."""
+        compiled = {"nodes": {}, "llm_config": {"model": "wrong"}}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "system",
+            "llm_config": {"provider": "anthropic", "model": "sonnet"},
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["llm_config"] == {"provider": "anthropic", "model": "sonnet"}
+
+    def test_transition_llm_config_from_frontmatter(self):
+        """transition_llm_config from frontmatter is injected."""
+        compiled = {"nodes": {}}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "system",
+            "transition_llm_config": {"model": "haiku"},
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["transition_llm_config"] == {"model": "haiku"}
+
+    def test_max_tokens_from_frontmatter(self):
+        """max_tokens in frontmatter overrides LLM output."""
+        compiled = {"nodes": {}, "max_tokens": 99999}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "system",
+            "max_tokens": 50000,
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["max_tokens"] == 50000
+
+    def test_no_llm_config_without_frontmatter(self):
+        """LLM-generated llm_config is preserved when frontmatter doesn't override."""
+        compiled = {"nodes": {}, "llm_config": {"model": "from-llm"}}
+        fm = {"id": "x", "triggers": ["e"], "scope": "system"}
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["llm_config"] == {"model": "from-llm"}
+
+    def test_invalid_llm_config_type_ignored(self):
+        """Non-dict llm_config in frontmatter is ignored."""
+        compiled = {"nodes": {}}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "system",
+            "llm_config": "not-a-dict",
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert "llm_config" not in result
+
 
 # ---------------------------------------------------------------------------
 # System / user prompt construction

@@ -113,6 +113,43 @@ class TestLlmConfig:
         assert d == {"model": "gemini-2.0-flash"}
         assert "provider" not in d
 
+    def test_max_tokens_round_trip(self):
+        cfg = LlmConfig(model="fast-model", max_tokens=2048)
+        d = cfg.to_dict()
+        assert d == {"model": "fast-model", "max_tokens": 2048}
+        restored = LlmConfig.from_dict(d)
+        assert restored.max_tokens == 2048
+
+    def test_temperature_round_trip(self):
+        cfg = LlmConfig(model="creative-model", temperature=0.7)
+        d = cfg.to_dict()
+        assert d == {"model": "creative-model", "temperature": 0.7}
+        restored = LlmConfig.from_dict(d)
+        assert restored.temperature == 0.7
+
+    def test_full_config_round_trip(self):
+        cfg = LlmConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            temperature=0.3,
+        )
+        d = cfg.to_dict()
+        assert d == {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "temperature": 0.3,
+        }
+        restored = LlmConfig.from_dict(d)
+        assert restored == cfg
+
+    def test_none_optional_fields_omitted(self):
+        cfg = LlmConfig(model="test")
+        d = cfg.to_dict()
+        assert "max_tokens" not in d
+        assert "temperature" not in d
+
 
 # ---------------------------------------------------------------------------
 # PlaybookTransition
@@ -233,7 +270,37 @@ class TestPlaybookNode:
         assert node.wait_for_human is False
         assert node.timeout_seconds is None
         assert node.llm_config is None
+        assert node.transition_llm_config is None
         assert node.summarize_before is False
+
+    def test_transition_llm_config(self):
+        node = PlaybookNode(
+            prompt="Analyze.",
+            goto="next",
+            llm_config=LlmConfig(model="sonnet"),
+            transition_llm_config=LlmConfig(model="haiku"),
+        )
+        d = node.to_dict()
+        assert d["llm_config"] == {"model": "sonnet"}
+        assert d["transition_llm_config"] == {"model": "haiku"}
+
+    def test_transition_llm_config_round_trip(self):
+        node = PlaybookNode(
+            prompt="Step.",
+            entry=True,
+            transitions=[PlaybookTransition(goto="end", when="done")],
+            transition_llm_config=LlmConfig(provider="gemini", model="flash"),
+        )
+        d = node.to_dict()
+        restored = PlaybookNode.from_dict(d)
+        assert restored.transition_llm_config is not None
+        assert restored.transition_llm_config.provider == "gemini"
+        assert restored.transition_llm_config.model == "flash"
+
+    def test_transition_llm_config_omitted_when_none(self):
+        node = PlaybookNode(prompt="Do.", goto="next")
+        d = node.to_dict()
+        assert "transition_llm_config" not in d
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +383,72 @@ class TestCompiledPlaybookSerialization:
         }
         pb = CompiledPlaybook.from_dict(data)
         assert pb.to_dict() == data
+
+    def test_with_transition_llm_config(self):
+        data = {
+            "id": "test-transition",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["test.event"],
+            "scope": "system",
+            "llm_config": {"provider": "anthropic", "model": "sonnet"},
+            "transition_llm_config": {"provider": "anthropic", "model": "haiku"},
+            "nodes": {
+                "start": {"entry": True, "prompt": "Go.", "goto": "end"},
+                "end": {"terminal": True},
+            },
+        }
+        pb = CompiledPlaybook.from_dict(data)
+        assert pb.llm_config is not None
+        assert pb.llm_config.model == "sonnet"
+        assert pb.transition_llm_config is not None
+        assert pb.transition_llm_config.model == "haiku"
+        result = pb.to_dict()
+        assert result["llm_config"] == {"provider": "anthropic", "model": "sonnet"}
+        assert result["transition_llm_config"] == {"provider": "anthropic", "model": "haiku"}
+
+    def test_transition_llm_config_absent_by_default(self):
+        data = {
+            "id": "no-trans-cfg",
+            "version": 1,
+            "source_hash": "xyz",
+            "triggers": ["x"],
+            "scope": "system",
+            "nodes": {
+                "s": {"entry": True, "prompt": "Go.", "goto": "e"},
+                "e": {"terminal": True},
+            },
+        }
+        pb = CompiledPlaybook.from_dict(data)
+        assert pb.transition_llm_config is None
+        assert "transition_llm_config" not in pb.to_dict()
+
+    def test_full_llm_config_with_all_fields(self):
+        """Playbook with llm_config including max_tokens and temperature."""
+        data = {
+            "id": "full-config",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["test.event"],
+            "scope": "system",
+            "llm_config": {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4096,
+                "temperature": 0.3,
+            },
+            "nodes": {
+                "start": {"entry": True, "prompt": "Go.", "goto": "end"},
+                "end": {"terminal": True},
+            },
+        }
+        pb = CompiledPlaybook.from_dict(data)
+        assert pb.llm_config is not None
+        assert pb.llm_config.max_tokens == 4096
+        assert pb.llm_config.temperature == 0.3
+        result = pb.to_dict()
+        assert result["llm_config"]["max_tokens"] == 4096
+        assert result["llm_config"]["temperature"] == 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -1465,6 +1598,84 @@ class TestJsonSchema:
             "triggers": ["x"],
             "scope": "agent-type:coding",
             "nodes": {"s": {"entry": True, "prompt": "Go.", "goto": "e"}, "e": {"terminal": True}},
+        }
+        jsonschema.validate(instance=valid, schema=schema)
+
+    def test_schema_llm_config_has_max_tokens_and_temperature(self):
+        """The llm_config schema should include max_tokens and temperature."""
+        schema = generate_json_schema()
+        llm_props = schema["$defs"]["llm_config"]["properties"]
+        assert "max_tokens" in llm_props
+        assert llm_props["max_tokens"]["type"] == "integer"
+        assert llm_props["max_tokens"]["minimum"] == 1
+        assert "temperature" in llm_props
+        assert llm_props["temperature"]["type"] == "number"
+        assert llm_props["temperature"]["minimum"] == 0.0
+        assert llm_props["temperature"]["maximum"] == 1.0
+
+    def test_schema_has_transition_llm_config_top_level(self):
+        """The top-level schema should include transition_llm_config."""
+        schema = generate_json_schema()
+        assert "transition_llm_config" in schema["properties"]
+
+    def test_schema_has_transition_llm_config_in_node(self):
+        """The node schema should include transition_llm_config."""
+        schema = generate_json_schema()
+        node_props = schema["$defs"]["node"]["properties"]
+        assert "transition_llm_config" in node_props
+
+    def test_schema_validates_llm_config_with_all_fields(self):
+        """Schema should accept llm_config with max_tokens and temperature."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        valid = {
+            "id": "test",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["x"],
+            "scope": "system",
+            "llm_config": {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 2048,
+                "temperature": 0.5,
+            },
+            "transition_llm_config": {"model": "haiku", "max_tokens": 512},
+            "nodes": {
+                "s": {"entry": True, "prompt": "Go.", "goto": "e"},
+                "e": {"terminal": True},
+            },
+        }
+        jsonschema.validate(instance=valid, schema=schema)
+
+    def test_schema_validates_node_transition_llm_config(self):
+        """Schema should accept transition_llm_config on nodes."""
+        try:
+            import jsonschema
+        except ImportError:
+            pytest.skip("jsonschema not installed")
+
+        schema = generate_json_schema()
+        valid = {
+            "id": "test",
+            "version": 1,
+            "source_hash": "abc",
+            "triggers": ["x"],
+            "scope": "system",
+            "nodes": {
+                "s": {
+                    "entry": True,
+                    "prompt": "Go.",
+                    "goto": "e",
+                    "llm_config": {"model": "sonnet"},
+                    "transition_llm_config": {"model": "haiku"},
+                },
+                "e": {"terminal": True},
+            },
         }
         jsonschema.validate(instance=valid, schema=schema)
 

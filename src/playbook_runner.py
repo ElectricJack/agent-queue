@@ -723,6 +723,12 @@ class PlaybookRunner:
 
         # Resolve per-node LLM config (node overrides playbook-level)
         node_llm_config = self._resolve_node_llm_config(node)
+        if node_llm_config:
+            logger.debug(
+                "Node '%s': using LLM config override %s",
+                node_id,
+                node_llm_config,
+            )
 
         # Build a progress bridge so the caller can observe tool usage
         # inside this node's supervisor call
@@ -1296,6 +1302,12 @@ class PlaybookRunner:
 
         # Resolve LLM config: prefer transition-specific, then general
         transition_llm_config = self._resolve_transition_llm_config(node)
+        if transition_llm_config:
+            logger.debug(
+                "Node '%s': transition classification using LLM config %s",
+                node_id,
+                transition_llm_config,
+            )
 
         # Make the classification call with full conversation context
         decision = await self.supervisor.chat(

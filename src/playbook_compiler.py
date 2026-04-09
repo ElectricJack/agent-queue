@@ -539,4 +539,15 @@ class PlaybookCompiler:
         if "cooldown" in frontmatter:
             result["cooldown_seconds"] = int(frontmatter["cooldown"])
 
+        # LLM config overrides from frontmatter (authoritative — playbook
+        # author controls which model/provider is used, not the LLM compiler).
+        if "llm_config" in frontmatter and isinstance(frontmatter["llm_config"], dict):
+            result["llm_config"] = frontmatter["llm_config"]
+        if "transition_llm_config" in frontmatter and isinstance(
+            frontmatter["transition_llm_config"], dict
+        ):
+            result["transition_llm_config"] = frontmatter["transition_llm_config"]
+        if "max_tokens" in frontmatter:
+            result["max_tokens"] = int(frontmatter["max_tokens"])
+
         return result
