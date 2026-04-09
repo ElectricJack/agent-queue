@@ -522,6 +522,7 @@ class MilvusStore:
             The newly created entry (without the ``embedding`` field).
         """
         import hashlib
+        import os
         import time
 
         now = timestamp if timestamp is not None else int(time.time())
@@ -533,7 +534,11 @@ class MilvusStore:
         # reliably; subsequent clauses may be silently ignored.
         all_temporal = self.query(filter_expr='entry_type == "temporal"')
         open_entries = [
-            e for e in all_temporal if e["kv_key"] == key and e["kv_namespace"] == namespace and e["valid_to"] == 0
+            e
+            for e in all_temporal
+            if e["kv_key"] == key
+            and e["kv_namespace"] == namespace
+            and e["valid_to"] == 0
         ]
 
         # Close each open entry by re-upserting with valid_to = now
@@ -548,8 +553,12 @@ class MilvusStore:
                 ]
             )
 
-        # Create new entry with a deterministic hash
-        chunk_hash = hashlib.sha256(f"temporal:{namespace}:{key}:{now}".encode()).hexdigest()[:32]
+        # Create new entry with a unique hash.  Random entropy prevents
+        # collisions when two updates land in the same integer-second.
+        nonce = os.urandom(8).hex()
+        chunk_hash = hashlib.sha256(
+            f"temporal:{namespace}:{key}:{now}:{nonce}".encode()
+        ).hexdigest()[:32]
 
         new_entry: dict[str, Any] = {
             "chunk_hash": chunk_hash,
@@ -651,6 +660,94 @@ class MilvusStore:
         results = [r for r in all_temporal if r["kv_key"] == key and r["kv_namespace"] == namespace]
         results.sort(key=lambda r: r["valid_from"])
         return results
+
+    def delete_temporal(
+        self,
+        key: str,
+        *,
+        namespace: str = "",
+        timestamp: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Close the current temporal fact without creating a replacement.
+
+        This is the "end of life" operation in the temporal fact lifecycle:
+        the fact is expired (its ``valid_to`` is set to *now*) but no new
+        entry is created.  The history chain is preserved — callers can
+        still retrieve past values via :meth:`get_temporal` with an
+        explicit ``at`` timestamp or :meth:`get_temporal_history`.
+
+        Parameters
+        ----------
+        key:
+            The fact key to expire (``kv_key``).
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+        timestamp:
+            Explicit Unix timestamp for the close time.  ``None`` means
+            ``int(time.time())``.
+
+        Returns
+        -------
+        list[dict]
+            The entries that were closed (without the ``embedding`` field).
+            Empty list if no open entry existed for the key.
+        """
+        import time
+
+        now = timestamp if timestamp is not None else int(time.time())
+
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+        open_entries = [
+            e
+            for e in all_temporal
+            if e["kv_key"] == key
+            and e["kv_namespace"] == namespace
+            and e["valid_to"] == 0
+        ]
+
+        closed: list[dict[str, Any]] = []
+        for entry in open_entries:
+            updated = {
+                **entry,
+                "embedding": self._zero_embedding(),
+                "valid_to": now,
+            }
+            self.upsert([updated])
+            closed.append({k: v for k, v in updated.items() if k != "embedding"})
+
+        return closed
+
+    def list_temporal_keys(
+        self,
+        *,
+        namespace: str = "",
+        current_only: bool = False,
+    ) -> list[str]:
+        """List all unique temporal fact keys in a namespace.
+
+        Parameters
+        ----------
+        namespace:
+            Namespace filter (exact match on ``kv_namespace``).
+        current_only:
+            If ``True``, only return keys that have a currently-open entry
+            (``valid_to == 0``).  If ``False`` (default), return keys that
+            have *any* entry (open or closed).
+
+        Returns
+        -------
+        list[str]
+            Sorted list of unique ``kv_key`` values.
+        """
+        all_temporal = self.query(filter_expr='entry_type == "temporal"')
+        keys: set[str] = set()
+        for entry in all_temporal:
+            if entry["kv_namespace"] != namespace:
+                continue
+            if current_only and entry["valid_to"] != 0:
+                continue
+            keys.add(entry["kv_key"])
+        return sorted(keys)
 
     def hashes_by_source(self, source: str) -> set[str]:
         """Return all chunk_hash values for a given source file."""

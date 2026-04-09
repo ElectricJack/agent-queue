@@ -1715,3 +1715,198 @@ def test_set_temporal_returns_entry_without_embedding(store: MilvusStore):
 
     # Embedding excluded
     assert "embedding" not in entry
+
+
+# ---- delete_temporal tests ---------------------------------------------------
+
+
+def test_delete_temporal_closes_open_entry(store: MilvusStore):
+    """delete_temporal closes the current entry without creating a new one."""
+    store.set_temporal("branch", "main", timestamp=1000)
+
+    closed = store.delete_temporal("branch", timestamp=2000)
+    assert len(closed) == 1
+    assert closed[0]["kv_key"] == "branch"
+    assert closed[0]["kv_value"] == '"main"'
+    assert closed[0]["valid_to"] == 2000
+    assert "embedding" not in closed[0]
+
+    # No current value anymore
+    current = store.get_temporal("branch", at=3000)
+    assert current == []
+
+    # History still preserved
+    history = store.get_temporal_history("branch")
+    assert len(history) == 1
+    assert history[0]["valid_to"] == 2000
+
+
+def test_delete_temporal_nonexistent_key(store: MilvusStore):
+    """delete_temporal on a nonexistent key returns empty list."""
+    closed = store.delete_temporal("nonexistent", timestamp=1000)
+    assert closed == []
+
+
+def test_delete_temporal_already_closed(store: MilvusStore):
+    """delete_temporal on an already-closed (superseded) key returns empty."""
+    store.set_temporal("key", "v1", timestamp=1000)
+    store.set_temporal("key", "v2", timestamp=2000)
+
+    # Delete current (v2)
+    closed = store.delete_temporal("key", timestamp=3000)
+    assert len(closed) == 1
+    assert closed[0]["kv_value"] == '"v2"'
+
+    # Deleting again returns empty — no open entries left
+    closed2 = store.delete_temporal("key", timestamp=4000)
+    assert closed2 == []
+
+
+def test_delete_temporal_preserves_full_history(store: MilvusStore):
+    """After delete, full history chain remains queryable."""
+    store.set_temporal("branch", "main", timestamp=1000)
+    store.set_temporal("branch", "develop", timestamp=2000)
+    store.set_temporal("branch", "release", timestamp=3000)
+    store.delete_temporal("branch", timestamp=4000)
+
+    history = store.get_temporal_history("branch")
+    assert len(history) == 3
+
+    # Chain: main [1000,2000) → develop [2000,3000) → release [3000,4000)
+    assert history[0]["kv_value"] == '"main"'
+    assert history[0]["valid_from"] == 1000
+    assert history[0]["valid_to"] == 2000
+
+    assert history[1]["kv_value"] == '"develop"'
+    assert history[1]["valid_from"] == 2000
+    assert history[1]["valid_to"] == 3000
+
+    assert history[2]["kv_value"] == '"release"'
+    assert history[2]["valid_from"] == 3000
+    assert history[2]["valid_to"] == 4000
+
+    # As-of queries still work for the past
+    result = store.get_temporal("branch", at=2500)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"develop"'
+
+    # But nothing is current
+    result = store.get_temporal("branch", at=5000)
+    assert result == []
+
+
+def test_delete_temporal_namespace_isolation(store: MilvusStore):
+    """delete_temporal only affects the specified namespace."""
+    store.set_temporal("key", "a", namespace="ns-a", timestamp=1000)
+    store.set_temporal("key", "b", namespace="ns-b", timestamp=1000)
+
+    store.delete_temporal("key", namespace="ns-a", timestamp=2000)
+
+    # ns-a is deleted
+    assert store.get_temporal("key", namespace="ns-a", at=3000) == []
+
+    # ns-b still active
+    result = store.get_temporal("key", namespace="ns-b", at=3000)
+    assert len(result) == 1
+    assert result[0]["kv_value"] == '"b"'
+
+
+def test_recreate_after_delete(store: MilvusStore):
+    """A fact can be re-created after deletion, extending the history chain."""
+    store.set_temporal("branch", "main", timestamp=1000)
+    store.delete_temporal("branch", timestamp=2000)
+
+    # Re-create — this should not find any open entries to close
+    store.set_temporal("branch", "develop", timestamp=3000)
+
+    history = store.get_temporal_history("branch")
+    assert len(history) == 2
+
+    assert history[0]["kv_value"] == '"main"'
+    assert history[0]["valid_from"] == 1000
+    assert history[0]["valid_to"] == 2000
+
+    assert history[1]["kv_value"] == '"develop"'
+    assert history[1]["valid_from"] == 3000
+    assert history[1]["valid_to"] == 0
+
+    # Current value is the re-created one
+    current = store.get_temporal("branch", at=4000)
+    assert len(current) == 1
+    assert current[0]["kv_value"] == '"develop"'
+
+
+# ---- list_temporal_keys tests ------------------------------------------------
+
+
+def test_list_temporal_keys_basic(store: MilvusStore):
+    """list_temporal_keys returns all unique keys in a namespace."""
+    store.set_temporal("branch", "main", timestamp=1000)
+    store.set_temporal("test_cmd", "pytest", timestamp=1000)
+    store.set_temporal("deploy_target", "prod", timestamp=1000)
+
+    keys = store.list_temporal_keys()
+    assert keys == ["branch", "deploy_target", "test_cmd"]  # sorted
+
+
+def test_list_temporal_keys_namespace_filter(store: MilvusStore):
+    """list_temporal_keys only returns keys from the specified namespace."""
+    store.set_temporal("key1", "v1", namespace="ns-a", timestamp=1000)
+    store.set_temporal("key2", "v2", namespace="ns-b", timestamp=1000)
+    store.set_temporal("key3", "v3", timestamp=1000)  # default namespace
+
+    assert store.list_temporal_keys(namespace="ns-a") == ["key1"]
+    assert store.list_temporal_keys(namespace="ns-b") == ["key2"]
+    assert store.list_temporal_keys(namespace="") == ["key3"]
+
+
+def test_list_temporal_keys_current_only(store: MilvusStore):
+    """current_only=True excludes keys with only closed entries."""
+    store.set_temporal("active", "yes", timestamp=1000)
+    store.set_temporal("expired", "was-here", timestamp=1000)
+    store.delete_temporal("expired", timestamp=2000)
+
+    all_keys = store.list_temporal_keys()
+    assert all_keys == ["active", "expired"]  # both appear
+
+    current_keys = store.list_temporal_keys(current_only=True)
+    assert current_keys == ["active"]  # only the open one
+
+
+def test_list_temporal_keys_empty(store: MilvusStore):
+    """list_temporal_keys returns empty list when no temporal facts exist."""
+    keys = store.list_temporal_keys()
+    assert keys == []
+
+
+def test_list_temporal_keys_includes_superseded(store: MilvusStore):
+    """Keys with updated (superseded) values still have open entries."""
+    store.set_temporal("key", "v1", timestamp=1000)
+    store.set_temporal("key", "v2", timestamp=2000)
+
+    keys = store.list_temporal_keys(current_only=True)
+    assert keys == ["key"]  # still current (v2 is open)
+
+
+# ---- Hash collision resilience -----------------------------------------------
+
+
+def test_same_second_updates_preserve_history(store: MilvusStore):
+    """Two updates at the same timestamp produce distinct entries."""
+    store.set_temporal("key", "first", timestamp=5000)
+    store.set_temporal("key", "second", timestamp=5000)
+
+    history = store.get_temporal_history("key")
+    assert len(history) == 2
+
+    # First entry should be closed
+    values = [h["kv_value"] for h in history]
+    assert '"first"' in values
+    assert '"second"' in values
+
+    # One should be closed, one open
+    closed = [h for h in history if h["valid_to"] != 0]
+    open_entries = [h for h in history if h["valid_to"] == 0]
+    assert len(closed) == 1
+    assert len(open_entries) == 1
+    assert open_entries[0]["kv_value"] == '"second"'
