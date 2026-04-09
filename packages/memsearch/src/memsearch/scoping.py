@@ -489,6 +489,7 @@ class CollectionRouter:
         *,
         scopes: list[tuple[MemoryScope, str | None]] | None = None,
         entry_type: str | None = None,
+        topic: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         """Search for entries with a specific tag across collections.
@@ -502,10 +503,14 @@ class CollectionRouter:
         describes for queries like "what do we know about SQLite across
         all projects and agent types?"
 
+        Tag names are normalized to lowercase for case-insensitive
+        matching (tags should be stored in lowercase).
+
         Parameters
         ----------
         tag:
             Tag to search for (matched as substring in the JSON array).
+            Normalized to lowercase for case-insensitive matching.
         scopes:
             Optional list of ``(scope, scope_id)`` tuples to restrict
             the search.  If ``None``, searches **all** ``aq_*``
@@ -514,6 +519,9 @@ class CollectionRouter:
             Optional entry type filter (``"document"``, ``"kv"``, or
             ``"temporal"``).  When set, only entries of this type are
             returned.
+        topic:
+            Optional topic filter.  When set, only entries matching this
+            topic (or with empty topic) are returned.
         limit:
             Maximum results per collection.
 
@@ -524,11 +532,16 @@ class CollectionRouter:
             dict is augmented with ``_collection``, ``_scope``, and
             ``_scope_id`` keys.
         """
+        # Normalize tag to lowercase for case-insensitive matching
+        tag = tag.lower()
         escaped_tag = _escape_filter_value(tag)
         filter_expr = f'tags like "%\\"{escaped_tag}\\"%"'
         if entry_type:
             escaped_type = _escape_filter_value(entry_type)
             filter_expr += f' and entry_type == "{escaped_type}"'
+        if topic:
+            escaped_topic = _escape_filter_value(topic)
+            filter_expr += f' and (topic == "{escaped_topic}" or topic == "")'
 
         stores_to_search = self._resolve_stores(scopes)
 
@@ -545,6 +558,7 @@ class CollectionRouter:
         *,
         scopes: list[tuple[MemoryScope, str | None]] | None = None,
         entry_type: str | None = None,
+        topic: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         """Async cross-collection tag search with parallel execution.
@@ -558,15 +572,20 @@ class CollectionRouter:
                 \"\"\"Search across ALL collections for memories with a specific tag.\"\"\"
                 # Uses Milvus scalar filter: tags LIKE '%"sqlite"%'
 
+        Tag names are normalized to lowercase for case-insensitive
+        matching.
+
         Parameters
         ----------
         tag:
-            Tag to search for.
+            Tag to search for.  Normalized to lowercase.
         scopes:
             Restrict to specific ``(scope, scope_id)`` pairs.
             ``None`` means search **all** ``aq_*`` collections.
         entry_type:
             Optional entry type filter.
+        topic:
+            Optional topic filter.
         limit:
             Maximum results per collection.
 
@@ -576,11 +595,16 @@ class CollectionRouter:
             Combined results annotated with ``_collection``, ``_scope``,
             ``_scope_id``.
         """
+        # Normalize tag to lowercase for case-insensitive matching
+        tag = tag.lower()
         escaped_tag = _escape_filter_value(tag)
         filter_expr = f'tags like "%\\"{escaped_tag}\\"%"'
         if entry_type:
             escaped_type = _escape_filter_value(entry_type)
             filter_expr += f' and entry_type == "{escaped_type}"'
+        if topic:
+            escaped_topic = _escape_filter_value(topic)
+            filter_expr += f' and (topic == "{escaped_topic}" or topic == "")'
 
         stores_to_search = self._resolve_stores(scopes)
 

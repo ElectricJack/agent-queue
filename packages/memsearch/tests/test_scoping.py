@@ -1,5 +1,6 @@
 """Tests for scope-aware collection naming, routing, and cleanup."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -1539,3 +1540,616 @@ class TestCollectionRouterGetStoreIfExists:
         store = router._get_store_if_exists(MemoryScope.PROJECT, "test")
         assert store is not None
         assert router.has_store(MemoryScope.PROJECT, "test")
+
+
+# ---- Roadmap 2.1.19: Cross-collection tag search test cases (a)-(g) --------
+# Spec: docs/specs/design/memory-plugin.md §7 — Tag-Based Cross-Scope Discovery
+
+
+def _make_tagged_entry(
+    chunk_hash: str,
+    content: str,
+    tags: list[str],
+    *,
+    entry_type: str = "document",
+    topic: str = "",
+    source: str = "test.md",
+    embedding: list[float] | None = None,
+) -> dict:
+    """Helper to build a chunk dict with tags for upsert."""
+    return {
+        "chunk_hash": chunk_hash,
+        "entry_type": entry_type,
+        "embedding": embedding or [0.0, 0.0, 0.0, 0.0],
+        "content": content,
+        "source": source,
+        "heading": "",
+        "heading_level": 0,
+        "start_line": 1,
+        "end_line": 1,
+        "tags": json.dumps(tags),
+        "topic": topic,
+    }
+
+
+@pytestmark_milvus
+class TestCrossCollectionTagSearchRoadmap:
+    """Roadmap 2.1.19 test cases (a)-(g) for cross-collection tag search.
+
+    These tests validate spec §7.3 — Tag-Based Cross-Scope Discovery:
+      (a) Project-scoped tagged memory found by global (cross-scope) search
+      (b) Multi-collection results with correct source attribution
+      (c) Non-existent tag returns empty list (not error)
+      (d) Entry with multiple tags found by search on any single tag
+      (e) Tag search combined with topic filter narrows results
+      (f) Case-insensitive tag matching
+      (g) Special characters in tags (hyphens, underscores)
+    """
+
+    @pytest.fixture
+    def multi_scope_router(self, tmp_path: Path):
+        """Router with tagged data across project, agent-type, and system collections."""
+        db = tmp_path / "roadmap_tag_test.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        # Project collection: api-pattern tagged entries
+        proj_store = r.get_store(MemoryScope.PROJECT, "webapp")
+        proj_store.upsert(
+            [
+                _make_tagged_entry(
+                    "proj_api",
+                    "REST API authentication pattern using JWT tokens",
+                    ["api-pattern", "auth"],
+                    topic="architecture",
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+                _make_tagged_entry(
+                    "proj_db",
+                    "Database connection pooling strategy",
+                    ["database", "performance"],
+                    topic="database",
+                    embedding=[0.0, 1.0, 0.0, 0.0],
+                ),
+                _make_tagged_entry(
+                    "proj_api_v2",
+                    "GraphQL API design patterns",
+                    ["api-pattern", "graphql"],
+                    topic="architecture",
+                    embedding=[0.9, 0.0, 0.1, 0.0],
+                ),
+            ]
+        )
+
+        # Agent-type collection
+        at_store = r.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.upsert(
+            [
+                _make_tagged_entry(
+                    "at_api",
+                    "Best practices for API error handling",
+                    ["api-pattern", "error-handling"],
+                    topic="conventions",
+                    embedding=[0.8, 0.0, 0.0, 0.2],
+                ),
+            ]
+        )
+
+        # System collection
+        sys_store = r.get_store(MemoryScope.SYSTEM)
+        sys_store.upsert(
+            [
+                _make_tagged_entry(
+                    "sys_api",
+                    "System-wide API rate limiting configuration",
+                    ["api-pattern", "config"],
+                    topic="operations",
+                    embedding=[0.0, 0.0, 1.0, 0.0],
+                ),
+                _make_tagged_entry(
+                    "sys_logging",
+                    "Structured logging configuration",
+                    ["config", "logging"],
+                    topic="operations",
+                    embedding=[0.0, 0.0, 0.0, 1.0],
+                ),
+            ]
+        )
+
+        yield r
+        r.close()
+
+    # -- (a) Project-scoped tagged memory found by global search ---------------
+
+    def test_a_project_tag_found_by_global_search(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(a) Memory tagged #api-pattern in project collection is found by
+        tag search from system scope (i.e., global cross-scope search)."""
+        results = multi_scope_router.search_by_tag("api-pattern")
+
+        # Should find project entries via cross-scope discovery
+        hashes = {r["chunk_hash"] for r in results}
+        assert "proj_api" in hashes, "Project-scoped tagged entry not found by global search"
+        assert "proj_api_v2" in hashes, "Second project entry not found"
+
+    def test_a_project_tag_discovered_by_fresh_router(self, tmp_path: Path):
+        """(a) Extended: fresh router with no cache discovers project-scoped
+        tagged entries (spec §7.3 cross-cutting discovery)."""
+        db = tmp_path / "fresh_discover.db"
+
+        # Populate with first router
+        r1 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        r1.get_store(MemoryScope.PROJECT, "webapp").upsert(
+            [
+                _make_tagged_entry(
+                    "proj_fresh",
+                    "Project API pattern for fresh discovery",
+                    ["api-pattern"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+        r1.close()
+
+        # Fresh router discovers the project entry
+        r2 = CollectionRouter(milvus_uri=str(db), dimension=4)
+        assert len(r2._stores) == 0  # no cached stores
+
+        results = r2.search_by_tag("api-pattern")
+        hashes = {r["chunk_hash"] for r in results}
+        assert "proj_fresh" in hashes, "Fresh router failed to discover project entry"
+        r2.close()
+
+    # -- (b) Source attribution across multiple collections --------------------
+
+    def test_b_multi_collection_source_attribution(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(b) Tag search returns results from multiple collections with
+        correct source attribution (_collection, _scope, _scope_id)."""
+        results = multi_scope_router.search_by_tag("api-pattern")
+
+        # Should have results from 3 different collections
+        collections = {r["_collection"] for r in results}
+        assert len(collections) >= 2, (
+            f"Expected results from multiple collections, got: {collections}"
+        )
+
+        # Verify each result has correct source attribution
+        for r in results:
+            assert "_collection" in r, "Missing _collection annotation"
+            assert "_scope" in r, "Missing _scope annotation"
+            assert "_scope_id" in r, "Missing _scope_id annotation"
+            assert r["_collection"].startswith("aq_"), (
+                f"Collection name should start with aq_: {r['_collection']}"
+            )
+
+        # Verify specific scope values
+        scope_map = {r["chunk_hash"]: (r["_scope"], r["_scope_id"]) for r in results}
+        assert scope_map["proj_api"] == ("project", "webapp")
+        assert scope_map["proj_api_v2"] == ("project", "webapp")
+        assert scope_map["at_api"] == ("agent_type", "coding")
+        assert scope_map["sys_api"] == ("system", None)
+
+    def test_b_collection_names_are_correct(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(b) Extended: collection names follow aq_* naming convention."""
+        results = multi_scope_router.search_by_tag("api-pattern")
+
+        collection_map = {r["chunk_hash"]: r["_collection"] for r in results}
+        assert collection_map["proj_api"] == "aq_project_webapp"
+        assert collection_map["at_api"] == "aq_agenttype_coding"
+        assert collection_map["sys_api"] == "aq_system"
+
+    # -- (c) Non-existent tag returns empty (not error) ------------------------
+
+    def test_c_nonexistent_tag_returns_empty(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(c) Tag search with non-existent tag returns empty list (not error)."""
+        results = multi_scope_router.search_by_tag("completely-nonexistent-tag-xyz")
+        assert results == [], f"Expected empty list, got {len(results)} results"
+
+    def test_c_nonexistent_tag_empty_router(self, tmp_path: Path):
+        """(c) Extended: non-existent tag on a router with no collections."""
+        db = tmp_path / "empty_nonexist.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+        results = r.search_by_tag("nonexistent")
+        assert results == []
+        r.close()
+
+    # -- (d) Multiple tags: entry found by any single tag ----------------------
+
+    def test_d_multiple_tags_found_by_any_single_tag(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(d) Memory with multiple tags is found by search on any single tag."""
+        # proj_api has tags: ["api-pattern", "auth"]
+        # Search by "api-pattern"
+        results_api = multi_scope_router.search_by_tag("api-pattern")
+        hashes_api = {r["chunk_hash"] for r in results_api}
+        assert "proj_api" in hashes_api
+
+        # Search by "auth" — should also find proj_api
+        results_auth = multi_scope_router.search_by_tag("auth")
+        hashes_auth = {r["chunk_hash"] for r in results_auth}
+        assert "proj_api" in hashes_auth, (
+            "Entry with multiple tags not found when searching by second tag"
+        )
+
+    def test_d_each_tag_independently_findable(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(d) Extended: every tag on a multi-tagged entry can discover it."""
+        # proj_api_v2 has tags: ["api-pattern", "graphql"]
+        for tag in ["api-pattern", "graphql"]:
+            results = multi_scope_router.search_by_tag(tag)
+            hashes = {r["chunk_hash"] for r in results}
+            assert "proj_api_v2" in hashes, (
+                f"Entry not found when searching by tag '{tag}'"
+            )
+
+    # -- (e) Tag search + topic filter -----------------------------------------
+
+    def test_e_tag_search_with_topic_filter(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(e) Tag search combined with topic filter narrows results correctly."""
+        # Search api-pattern without topic — should get entries from all topics
+        all_results = multi_scope_router.search_by_tag("api-pattern")
+        assert len(all_results) >= 3  # proj_api, proj_api_v2, at_api, sys_api
+
+        # Search api-pattern with topic="architecture" — should only get
+        # entries with topic="architecture" or topic=""
+        filtered = multi_scope_router.search_by_tag(
+            "api-pattern", topic="architecture"
+        )
+        for r in filtered:
+            assert r.get("topic", "") in ("architecture", ""), (
+                f"Topic filter leaked: got topic='{r.get('topic')}'"
+            )
+
+        # The architecture-tagged entries should be found
+        hashes = {r["chunk_hash"] for r in filtered}
+        assert "proj_api" in hashes  # topic="architecture"
+        assert "proj_api_v2" in hashes  # topic="architecture"
+
+    def test_e_topic_filter_excludes_other_topics(
+        self, multi_scope_router: CollectionRouter
+    ):
+        """(e) Extended: topic filter correctly excludes non-matching topics."""
+        # Search api-pattern with topic="conventions" — should only get at_api
+        filtered = multi_scope_router.search_by_tag(
+            "api-pattern", topic="conventions"
+        )
+        hashes = {r["chunk_hash"] for r in filtered}
+        assert "at_api" in hashes  # topic="conventions"
+        # Entries with other topics should be excluded
+        assert "proj_api" not in hashes  # topic="architecture"
+        assert "sys_api" not in hashes  # topic="operations"
+
+    # -- (f) Case-insensitive tag matching -------------------------------------
+
+    def test_f_case_insensitive_tag_search(self, router: CollectionRouter):
+        """(f) Tag names are case-insensitive: searching 'API' matches 'api'."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "case_test",
+                    "API design guidelines",
+                    ["api", "design"],  # tags stored lowercase
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        # Search with uppercase — should match lowercase tags
+        results_upper = router.search_by_tag("API")
+        hashes_upper = {r["chunk_hash"] for r in results_upper}
+        assert "case_test" in hashes_upper, "Uppercase search did not match lowercase tag"
+
+        # Search with mixed case
+        results_mixed = router.search_by_tag("Api")
+        hashes_mixed = {r["chunk_hash"] for r in results_mixed}
+        assert "case_test" in hashes_mixed, "Mixed-case search did not match lowercase tag"
+
+        # Search with lowercase (exact match)
+        results_lower = router.search_by_tag("api")
+        hashes_lower = {r["chunk_hash"] for r in results_lower}
+        assert "case_test" in hashes_lower, "Lowercase search did not match"
+
+    def test_f_case_insensitive_with_hash_prefix(self, router: CollectionRouter):
+        """(f) Extended: tag names with # prefix are case-insensitive."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "hash_case",
+                    "Content with hash-prefixed tag",
+                    ["api-pattern"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        # Various case combinations
+        for variant in ["API-PATTERN", "Api-Pattern", "api-pattern", "API-pattern"]:
+            results = router.search_by_tag(variant)
+            hashes = {r["chunk_hash"] for r in results}
+            assert "hash_case" in hashes, (
+                f"Case variant '{variant}' did not match tag 'api-pattern'"
+            )
+
+    # -- (g) Special characters in tags ----------------------------------------
+
+    def test_g_hyphens_in_tags(self, router: CollectionRouter):
+        """(g) Tags with hyphens work correctly."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "hyphen_tag",
+                    "Content with hyphenated tag",
+                    ["api-pattern", "error-handling", "rate-limiting"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        for tag in ["api-pattern", "error-handling", "rate-limiting"]:
+            results = router.search_by_tag(tag)
+            assert len(results) >= 1, f"Hyphenated tag '{tag}' not found"
+            assert results[0]["chunk_hash"] == "hyphen_tag"
+
+    def test_g_underscores_in_tags(self, router: CollectionRouter):
+        """(g) Tags with underscores work correctly."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "underscore_tag",
+                    "Content with underscore tag",
+                    ["api_pattern", "error_handling"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        for tag in ["api_pattern", "error_handling"]:
+            results = router.search_by_tag(tag)
+            assert len(results) >= 1, f"Underscore tag '{tag}' not found"
+            assert results[0]["chunk_hash"] == "underscore_tag"
+
+    def test_g_dots_in_tags(self, router: CollectionRouter):
+        """(g) Tags with dots (e.g., 'node.js') work correctly."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "dot_tag",
+                    "Content about Node.js",
+                    ["node.js", "v8.engine"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        results = router.search_by_tag("node.js")
+        assert len(results) >= 1, "Dot-containing tag 'node.js' not found"
+        assert results[0]["chunk_hash"] == "dot_tag"
+
+    def test_g_mixed_special_chars(self, router: CollectionRouter):
+        """(g) Tags with mixed special characters all work."""
+        store = router.get_store(MemoryScope.SYSTEM)
+        store.upsert(
+            [
+                _make_tagged_entry(
+                    "mixed_special",
+                    "Content with various special char tags",
+                    ["c++", "c#", ".net-core", "vue_3.x"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        # These tags should all be findable
+        for tag in ["c++", ".net-core", "vue_3.x"]:
+            results = router.search_by_tag(tag)
+            assert len(results) >= 1, f"Special-char tag '{tag}' not found"
+
+
+# ---- Roadmap 2.1.19: Async variants of key test cases -----------------------
+
+
+@pytestmark_milvus
+class TestCrossCollectionTagSearchRoadmapAsync:
+    """Async variants of roadmap 2.1.19 test cases (a), (b), (d), (f)."""
+
+    @pytest.mark.asyncio
+    async def test_a_async_project_tag_found_globally(self, tmp_path: Path):
+        """(a) Async: project-scoped tagged entry discovered by global search."""
+        db = tmp_path / "async_roadmap_a.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.PROJECT, "webapp").upsert(
+            [
+                _make_tagged_entry(
+                    "async_proj_api",
+                    "Project API pattern",
+                    ["api-pattern"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "async_sys_api",
+                    "System API config",
+                    ["api-pattern"],
+                    embedding=[0.0, 1.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        results = await r.search_by_tag_async("api-pattern")
+        hashes = {h["chunk_hash"] for h in results}
+        assert "async_proj_api" in hashes
+        assert "async_sys_api" in hashes
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_b_async_source_attribution(self, tmp_path: Path):
+        """(b) Async: results have correct source attribution."""
+        db = tmp_path / "async_roadmap_b.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.PROJECT, "myapp").upsert(
+            [
+                _make_tagged_entry(
+                    "b_proj",
+                    "Project entry",
+                    ["shared-tag"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "b_sys",
+                    "System entry",
+                    ["shared-tag"],
+                    embedding=[0.0, 1.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        results = await r.search_by_tag_async("shared-tag")
+        scope_map = {h["chunk_hash"]: (h["_scope"], h["_scope_id"]) for h in results}
+        assert scope_map["b_proj"] == ("project", "myapp")
+        assert scope_map["b_sys"] == ("system", None)
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_c_async_nonexistent_tag_empty(self, tmp_path: Path):
+        """(c) Async: non-existent tag returns empty list."""
+        db = tmp_path / "async_roadmap_c.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "c_entry",
+                    "Some content",
+                    ["real-tag"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        results = await r.search_by_tag_async("nonexistent-tag-xyz")
+        assert results == []
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_d_async_multiple_tags(self, tmp_path: Path):
+        """(d) Async: entry with multiple tags found by any single tag."""
+        db = tmp_path / "async_roadmap_d.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "multi_tag",
+                    "Multi-tagged entry",
+                    ["alpha", "beta", "gamma"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        for tag in ["alpha", "beta", "gamma"]:
+            results = await r.search_by_tag_async(tag)
+            hashes = {h["chunk_hash"] for h in results}
+            assert "multi_tag" in hashes, f"Tag '{tag}' did not find multi-tagged entry"
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_e_async_tag_with_topic_filter(self, tmp_path: Path):
+        """(e) Async: tag search combined with topic filter."""
+        db = tmp_path / "async_roadmap_e.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "e_arch",
+                    "Architecture pattern",
+                    ["pattern"],
+                    topic="architecture",
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+                _make_tagged_entry(
+                    "e_ops",
+                    "Operations pattern",
+                    ["pattern"],
+                    topic="operations",
+                    embedding=[0.0, 1.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        # With topic filter
+        results = await r.search_by_tag_async("pattern", topic="architecture")
+        hashes = {h["chunk_hash"] for h in results}
+        assert "e_arch" in hashes
+        assert "e_ops" not in hashes
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_f_async_case_insensitive(self, tmp_path: Path):
+        """(f) Async: case-insensitive tag matching."""
+        db = tmp_path / "async_roadmap_f.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "ci_entry",
+                    "Case insensitive test",
+                    ["api"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        # Uppercase search should find lowercase-tagged entry
+        results = await r.search_by_tag_async("API")
+        hashes = {h["chunk_hash"] for h in results}
+        assert "ci_entry" in hashes, "Async case-insensitive search failed"
+        r.close()
+
+    @pytest.mark.asyncio
+    async def test_g_async_special_chars(self, tmp_path: Path):
+        """(g) Async: special characters in tags work correctly."""
+        db = tmp_path / "async_roadmap_g.db"
+        r = CollectionRouter(milvus_uri=str(db), dimension=4)
+
+        r.get_store(MemoryScope.SYSTEM).upsert(
+            [
+                _make_tagged_entry(
+                    "special_async",
+                    "Special chars async",
+                    ["api-pattern", "node_js", "vue.js"],
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+        for tag in ["api-pattern", "node_js", "vue.js"]:
+            results = await r.search_by_tag_async(tag)
+            hashes = {h["chunk_hash"] for h in results}
+            assert "special_async" in hashes, f"Async special char tag '{tag}' failed"
+        r.close()

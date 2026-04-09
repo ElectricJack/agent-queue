@@ -674,6 +674,7 @@ class MemoryV2Plugin(InternalPlugin):
             return {"error": "tag is required"}
 
         entry_type = args.get("entry_type")
+        topic = args.get("topic")
         limit = args.get("limit", 10)
 
         if not self._router:
@@ -683,6 +684,7 @@ class MemoryV2Plugin(InternalPlugin):
             results = await self._router.search_by_tag_async(
                 tag,
                 entry_type=entry_type,
+                topic=topic,
                 limit=limit,
             )
             return {
