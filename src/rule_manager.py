@@ -51,6 +51,19 @@ logger = logging.getLogger(__name__)
 
 _GLOBAL_SCOPE = "global"
 
+# Phase 2 migration (playbooks spec §13): default rules superseded by playbooks.
+# Maps rule IDs (as installed by install_defaults) to the playbook filename
+# that replaces them.  When the playbook exists in the vault, the rule is
+# redundant and should be removed.
+_DEFAULT_RULE_PLAYBOOK_MAP: dict[str, str] = {
+    "rule-post-action-reflection": "task-outcome.md",
+    "rule-spec-drift-detector": "task-outcome.md",
+    "rule-error-recovery-monitor": "task-outcome.md",
+    "rule-periodic-project-review": "system-health-check.md",
+    "rule-proactive-codebase-inspector": "codebase-inspector.md",
+    "rule-dependency-update-check": "dependency-audit.md",
+}
+
 
 def _compute_source_hash(trigger_config: dict, prompt_content: str) -> str:
     """Compute a stable content hash from trigger config + prompt content.
@@ -1164,14 +1177,27 @@ class RuleManager:
         return stats
 
     # ------------------------------------------------------------------
-    # Default rule installation
+    # Default rule installation / retirement
     # ------------------------------------------------------------------
+
+    def _playbook_exists_in_vault(self, playbook_filename: str) -> bool:
+        """Check whether a playbook file exists in the vault system playbooks dir."""
+        playbooks_dir = os.path.join(self._storage_root, "vault", "system", "playbooks")
+        return os.path.isfile(os.path.join(playbooks_dir, playbook_filename))
 
     def install_defaults(self) -> list[str]:
         """Install default global rules from bundled templates.
 
         Reads markdown files from src/prompts/default_rules/ and saves
-        them as global rules. Skips rules that already exist (idempotent).
+        them as global rules.  Skips rules that already exist (idempotent).
+
+        **Phase 2 (playbooks spec §13):** default rules whose playbook
+        equivalents are present in the vault are no longer installed.
+        All six original default rules have validated playbook replacements,
+        so this method installs nothing when the default playbooks are in
+        place.  It still handles the case where playbooks are somehow
+        missing (e.g. fresh install with custom vault), preserving backward
+        compatibility.
         """
         defaults_dir = os.path.join(os.path.dirname(__file__), "prompts", "default_rules")
         if not os.path.isdir(defaults_dir):
@@ -1187,6 +1213,11 @@ class RuleManager:
 
             # Derive ID from filename
             rule_id = f"rule-{filename[:-3]}"
+
+            # Phase 2: skip if a playbook equivalent exists in the vault
+            playbook_file = _DEFAULT_RULE_PLAYBOOK_MAP.get(rule_id)
+            if playbook_file and self._playbook_exists_in_vault(playbook_file):
+                continue
 
             # Skip if already exists
             if self.load_rule(rule_id):
@@ -1208,6 +1239,47 @@ class RuleManager:
             installed.append(rule_id)
 
         return installed
+
+    def retire_superseded_defaults(self) -> dict:
+        """Remove default rules whose playbook equivalents are present in the vault.
+
+        Phase 2 migration (playbooks spec §13): when a default playbook exists
+        in ``vault/system/playbooks/``, the corresponding default rule is
+        redundant.  This method deletes the rule file and returns information
+        about which rules were retired.
+
+        Returns:
+            Dict with ``retired`` (list of rule IDs removed) and
+            ``hook_ids`` (list of hook IDs that need async cleanup).
+        """
+        retired: list[str] = []
+        hook_ids: list[str] = []
+
+        for rule_id, playbook_file in _DEFAULT_RULE_PLAYBOOK_MAP.items():
+            # Only retire if the playbook replacement actually exists
+            if not self._playbook_exists_in_vault(playbook_file):
+                continue
+
+            # Check if the rule still exists in the vault
+            found = self._find_rule_path(rule_id)
+            if not found:
+                continue
+
+            # Load hook IDs before deleting, so the caller can clean them up
+            loaded = self.load_rule(rule_id)
+            if loaded and loaded.get("hooks"):
+                hook_ids.extend(loaded["hooks"])
+
+            result = self.delete_rule(rule_id)
+            if result["success"]:
+                retired.append(rule_id)
+                logger.info(
+                    "Retired default rule %s (superseded by playbook %s)",
+                    rule_id,
+                    playbook_file,
+                )
+
+        return {"retired": retired, "hook_ids": hook_ids}
 
     # ------------------------------------------------------------------
     # Rule file watcher — auto-reconcile on disk changes

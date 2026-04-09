@@ -1088,7 +1088,33 @@ class Orchestrator:
             orchestrator=self,
         )
 
-        # Install default global rules if not already present
+        # Phase 2 (playbooks spec §13): retire default rules that have been
+        # superseded by default playbooks.  The playbooks were installed
+        # earlier by ensure_vault_layout() → ensure_default_playbooks().
+        # Any default rule whose playbook equivalent exists in the vault is
+        # now redundant and is removed here.
+        try:
+            retirement = self.rule_manager.retire_superseded_defaults()
+            if retirement["retired"]:
+                logger.info(
+                    "Retired %d default rules superseded by playbooks: %s",
+                    len(retirement["retired"]),
+                    retirement["retired"],
+                )
+                # Clean up hooks from retired rules
+                if self.hooks and retirement["hook_ids"]:
+                    for hid in retirement["hook_ids"]:
+                        try:
+                            await self.db.delete_hook(hid)
+                        except Exception as e:
+                            logger.warning("Failed to clean up hook %s: %s", hid, e)
+        except Exception as e:
+            logger.warning("Default rule retirement failed: %s", e)
+
+        # Install any remaining default rules that don't have playbook
+        # equivalents.  As of Phase 2, all 6 original default rules have
+        # playbook replacements, so this is effectively a no-op — but it
+        # preserves backward compatibility if playbooks are missing.
         # (Rule reconciliation happens later in on_ready, after the
         # supervisor is available for LLM prompt expansion.)
         try:

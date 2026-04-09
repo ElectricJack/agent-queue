@@ -741,6 +741,7 @@ def test_install_default_rules(storage_root):
     rm = RuleManager(storage_root=storage_root)
 
     installed = rm.install_defaults()
+    # Phase 2: no playbooks in vault → all default rules are installed as fallback
     assert len(installed) >= 2
 
     # Verify rules are browseable
@@ -763,6 +764,101 @@ def test_install_defaults_idempotent(storage_root):
     # Count rules -- should not have duplicates
     ids = [r["id"] for r in rules]
     assert len(ids) == len(set(ids))
+
+
+def test_install_defaults_skips_when_playbooks_exist(storage_root):
+    """install_defaults skips default rules whose playbook equivalents exist."""
+    from src.rule_manager import RuleManager, _DEFAULT_RULE_PLAYBOOK_MAP
+    from src.vault import ensure_default_playbooks
+
+    # Install default playbooks into the vault first
+    ensure_default_playbooks(storage_root)
+
+    rm = RuleManager(storage_root=storage_root)
+    installed = rm.install_defaults()
+
+    # All 6 default rules have playbook equivalents, so none should be installed
+    assert installed == []
+
+    # Verify no default rules exist in the vault
+    rules = rm.browse_rules(None)
+    rule_ids = {r["id"] for r in rules}
+    for rule_id in _DEFAULT_RULE_PLAYBOOK_MAP:
+        assert rule_id not in rule_ids
+
+
+def test_retire_superseded_defaults(storage_root):
+    """retire_superseded_defaults removes rules whose playbooks are present."""
+    from src.rule_manager import RuleManager, _DEFAULT_RULE_PLAYBOOK_MAP
+    from src.vault import ensure_default_playbooks
+
+    rm = RuleManager(storage_root=storage_root)
+
+    # Install default rules first (no playbooks yet → all installed)
+    installed = rm.install_defaults()
+    assert len(installed) >= 6
+
+    # Verify rules exist
+    rules = rm.browse_rules(None)
+    rule_ids = {r["id"] for r in rules}
+    for rule_id in _DEFAULT_RULE_PLAYBOOK_MAP:
+        assert rule_id in rule_ids
+
+    # Now install playbooks
+    ensure_default_playbooks(storage_root)
+
+    # Retire superseded defaults
+    result = rm.retire_superseded_defaults()
+    assert len(result["retired"]) == 6
+    assert set(result["retired"]) == set(_DEFAULT_RULE_PLAYBOOK_MAP.keys())
+
+    # Verify rules are gone
+    rules = rm.browse_rules(None)
+    rule_ids = {r["id"] for r in rules}
+    for rule_id in _DEFAULT_RULE_PLAYBOOK_MAP:
+        assert rule_id not in rule_ids
+
+
+def test_retire_superseded_defaults_idempotent(storage_root):
+    """retire_superseded_defaults is safe to call multiple times."""
+    from src.rule_manager import RuleManager
+    from src.vault import ensure_default_playbooks
+
+    ensure_default_playbooks(storage_root)
+    rm = RuleManager(storage_root=storage_root)
+
+    # Install then retire
+    rm.install_defaults()  # no-op since playbooks exist
+    rm.retire_superseded_defaults()
+
+    # Second retirement should find nothing to do
+    result2 = rm.retire_superseded_defaults()
+    assert result2["retired"] == []
+    assert result2["hook_ids"] == []
+
+
+def test_retire_superseded_defaults_preserves_user_rules(storage_root):
+    """retire_superseded_defaults does not touch user-created rules."""
+    from src.rule_manager import RuleManager
+    from src.vault import ensure_default_playbooks
+
+    ensure_default_playbooks(storage_root)
+    rm = RuleManager(storage_root=storage_root)
+
+    # Create a user rule
+    rm.save_rule(
+        id="rule-my-custom",
+        project_id=None,
+        rule_type="active",
+        content="# My Custom Rule\n\n## Intent\nCustom behavior.\n\n## Trigger\nOn task.completed",
+    )
+
+    rm.retire_superseded_defaults()
+
+    # User rule should still exist
+    user_rule = rm.load_rule("rule-my-custom")
+    assert user_rule is not None
+    assert user_rule["id"] == "rule-my-custom"
 
 
 # ------------------------------------------------------------------

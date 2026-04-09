@@ -586,30 +586,60 @@ class TestCoexistence:
         ]
         assert sorted(result["created"]) == expected_files
 
-    def test_both_install_to_same_vault(self, tmp_path):
-        """Both default rules and default playbooks install without conflict."""
+    def test_playbooks_supersede_rules_in_vault(self, tmp_path):
+        """Phase 2: default rules are NOT installed when playbooks exist.
+
+        When playbooks are installed first, install_defaults() correctly
+        recognises that all 6 default rules have playbook equivalents and
+        skips them.  Only playbook files should be present in the vault.
+        """
         # Install playbooks first (they go to vault/system/playbooks/)
         playbook_result = ensure_default_playbooks(str(tmp_path))
         assert len(playbook_result["created"]) == 4
 
-        # Install rules (they also go to vault/system/playbooks/ or vault/projects/)
+        # Attempt to install rules — should be a no-op
+        mgr = RuleManager(storage_root=str(tmp_path))
+        installed_rules = mgr.install_defaults()
+        assert installed_rules == [], (
+            "Default rules should not be installed when playbook equivalents exist"
+        )
+
+        # Only playbook files should exist in the vault
+        system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+        all_files = sorted(f.name for f in system_playbooks.iterdir() if f.suffix == ".md")
+
+        for pf in playbook_result["created"]:
+            assert pf in all_files, f"Playbook file {pf} missing"
+
+        # No rule- prefixed files should exist
+        rule_files = [f for f in all_files if f.startswith("rule-")]
+        assert rule_files == [], f"Unexpected rule files in vault: {rule_files}"
+
+    def test_retire_removes_existing_rules(self, tmp_path):
+        """Phase 2: retire_superseded_defaults removes rules when playbooks arrive.
+
+        Simulates the upgrade path: rules installed first (pre-Phase 2),
+        then playbooks installed, then retirement cleans up the rules.
+        """
+        from src.rule_manager import _DEFAULT_RULE_PLAYBOOK_MAP
+
+        # Simulate pre-Phase 2: install rules first (no playbooks)
         mgr = RuleManager(storage_root=str(tmp_path))
         installed_rules = mgr.install_defaults()
         assert len(installed_rules) == 6
 
-        # Both should coexist — playbook .md files and rule .md files
+        # Now install playbooks (simulating upgrade)
+        ensure_default_playbooks(str(tmp_path))
+
+        # Retire superseded defaults
+        result = mgr.retire_superseded_defaults()
+        assert set(result["retired"]) == set(_DEFAULT_RULE_PLAYBOOK_MAP.keys())
+
+        # Only playbook files should remain
         system_playbooks = tmp_path / "vault" / "system" / "playbooks"
-        all_files = sorted(f.name for f in system_playbooks.iterdir() if f.suffix == ".md")
-
-        # Playbook files (installed by ensure_default_playbooks)
-        for pf in playbook_result["created"]:
-            assert pf in all_files, f"Playbook file {pf} missing after both installs"
-
-        # Rule files (installed by RuleManager with rule- prefix)
-        for rule_id in installed_rules:
-            assert f"{rule_id}.md" in all_files, (
-                f"Rule file {rule_id}.md missing after both installs"
-            )
+        remaining = sorted(f.name for f in system_playbooks.iterdir() if f.suffix == ".md")
+        rule_files = [f for f in remaining if f.startswith("rule-")]
+        assert rule_files == [], f"Rule files not retired: {rule_files}"
 
     def test_rule_triggers_parsed_correctly(self, tmp_path):
         """All default rules have parseable triggers."""
