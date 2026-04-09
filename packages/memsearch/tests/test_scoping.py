@@ -7,9 +7,11 @@ import pytest
 
 from memsearch.scoping import (
     _PREFIX,
+    SCOPE_WEIGHTS,
     CollectionRouter,
     MemoryScope,
     collection_name,
+    merge_and_rank,
     parse_collection_name,
     sanitize_id,
     vault_paths,
@@ -521,3 +523,633 @@ class TestCollectionRouterProperties:
 
     def test_dimension_property(self, router: CollectionRouter):
         assert router.dimension == 4
+
+
+# ---- Pure function tests for merge_and_rank ----------------------------------
+
+
+class TestMergeAndRank:
+    def test_basic_merge(self):
+        results = [
+            {"chunk_hash": "a", "score": 0.9, "weighted_score": 0.9},
+            {"chunk_hash": "b", "score": 0.8, "weighted_score": 0.56},
+            {"chunk_hash": "c", "score": 0.7, "weighted_score": 0.28},
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 3
+        assert merged[0]["chunk_hash"] == "a"
+        assert merged[1]["chunk_hash"] == "b"
+        assert merged[2]["chunk_hash"] == "c"
+
+    def test_deduplication_keeps_highest_score(self):
+        results = [
+            {"chunk_hash": "dup", "score": 0.5, "weighted_score": 0.5, "_scope": "project"},
+            {"chunk_hash": "dup", "score": 0.9, "weighted_score": 0.36, "_scope": "system"},
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 1
+        assert merged[0]["weighted_score"] == 0.5
+        assert merged[0]["_scope"] == "project"
+
+    def test_top_k_truncation(self):
+        results = [
+            {"chunk_hash": f"item_{i}", "score": 1.0 - i * 0.1, "weighted_score": 1.0 - i * 0.1}
+            for i in range(10)
+        ]
+        merged = merge_and_rank(results, top_k=3)
+        assert len(merged) == 3
+        assert merged[0]["chunk_hash"] == "item_0"
+
+    def test_empty_input(self):
+        assert merge_and_rank([], top_k=10) == []
+
+    def test_project_outranks_system(self):
+        """A moderately relevant project memory should outrank a highly
+        relevant system memory (spec §4)."""
+        results = [
+            {
+                "chunk_hash": "project_hit",
+                "score": 0.6,
+                "weighted_score": 0.6 * 1.0,  # project weight
+                "_scope": "project",
+            },
+            {
+                "chunk_hash": "system_hit",
+                "score": 0.9,
+                "weighted_score": 0.9 * 0.4,  # system weight
+                "_scope": "system",
+            },
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert merged[0]["chunk_hash"] == "project_hit"
+        assert merged[1]["chunk_hash"] == "system_hit"
+
+    def test_missing_chunk_hash_handled(self):
+        """Results without chunk_hash should not crash."""
+        results = [
+            {"score": 0.9, "weighted_score": 0.9},
+            {"score": 0.8, "weighted_score": 0.8},
+        ]
+        merged = merge_and_rank(results, top_k=10)
+        assert len(merged) == 2
+
+
+class TestScopeWeights:
+    def test_project_is_highest(self):
+        assert SCOPE_WEIGHTS[MemoryScope.PROJECT] == 1.0
+
+    def test_agent_type_weight(self):
+        assert SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE] == 0.7
+
+    def test_system_is_lowest(self):
+        assert SCOPE_WEIGHTS[MemoryScope.SYSTEM] == 0.4
+
+    def test_all_weights_positive(self):
+        for w in SCOPE_WEIGHTS.values():
+            assert w > 0
+
+    def test_specificity_ordering(self):
+        """More specific scopes have higher weights."""
+        assert SCOPE_WEIGHTS[MemoryScope.PROJECT] > SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE]
+        assert SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE] > SCOPE_WEIGHTS[MemoryScope.SYSTEM]
+
+
+# ---- Integration tests for multi-scope search (require Milvus Lite) ----------
+
+
+def _make_chunks(prefix: str, embeddings: list[list[float]], contents: list[str]):
+    """Helper to create chunk dicts for upsert."""
+    chunks = []
+    for i, (emb, content) in enumerate(zip(embeddings, contents, strict=True)):
+        chunks.append({
+            "chunk_hash": f"{prefix}_{i}",
+            "embedding": emb,
+            "content": content,
+            "source": f"{prefix}.md",
+            "heading": "",
+            "heading_level": 0,
+            "start_line": i + 1,
+            "end_line": i + 1,
+        })
+    return chunks
+
+
+@pytestmark_milvus
+class TestCollectionRouterSearch:
+    """Integration tests for multi-scope parallel search."""
+
+    @pytest.fixture
+    def populated_router(self, router: CollectionRouter):
+        """Router with data in project, agent-type, and system collections."""
+        proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.upsert(_make_chunks(
+            "proj",
+            [[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0]],
+            ["Project authentication guide", "Project database schema"],
+        ))
+
+        at_store = router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.upsert(_make_chunks(
+            "agenttype",
+            [[0.0, 1.0, 0.0, 0.0], [0.0, 0.9, 0.1, 0.0]],
+            ["Coding best practices for testing", "Code review checklist"],
+        ))
+
+        sys_store = router.get_store(MemoryScope.SYSTEM)
+        sys_store.upsert(_make_chunks(
+            "sys",
+            [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.9, 0.1]],
+            ["System-wide logging configuration", "System error handling patterns"],
+        ))
+
+        return router
+
+    @pytest.mark.asyncio
+    async def test_search_all_scopes(self, populated_router: CollectionRouter):
+        """Search across all three scopes returns results from each."""
+        results = await populated_router.search(
+            [1.0, 0.5, 0.5, 0.0],
+            query_text="authentication",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+        assert len(results) > 0
+        # Results from multiple scopes
+        scopes_found = {r["_scope"] for r in results}
+        assert "project" in scopes_found
+        assert "system" in scopes_found
+
+    @pytest.mark.asyncio
+    async def test_search_project_only(self, populated_router: CollectionRouter):
+        """Search with only project_id set queries project + system."""
+        results = await populated_router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="authentication",
+            project_id="myapp",
+            top_k=10,
+        )
+        scopes = {r["_scope"] for r in results}
+        assert "project" in scopes
+        assert "system" in scopes
+        assert "agent_type" not in scopes
+
+    @pytest.mark.asyncio
+    async def test_search_system_only(self, populated_router: CollectionRouter):
+        """Search with no project/agent_type queries only system."""
+        results = await populated_router.search(
+            [0.0, 0.0, 1.0, 0.0],
+            query_text="logging",
+            top_k=10,
+        )
+        scopes = {r["_scope"] for r in results}
+        assert scopes == {"system"}
+
+    @pytest.mark.asyncio
+    async def test_weighted_scores_applied(self, populated_router: CollectionRouter):
+        """Results have weighted_score = score * weight."""
+        results = await populated_router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="guide",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+        for r in results:
+            assert "weighted_score" in r
+            assert "_weight" in r
+            assert "_scope" in r
+            assert "_collection" in r
+            expected = r["score"] * r["_weight"]
+            assert abs(r["weighted_score"] - expected) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_project_results_rank_higher(self, populated_router: CollectionRouter):
+        """Project results should rank above system results with similar raw scores
+        due to weight=1.0 vs weight=0.4."""
+        # Query that's equidistant to project and system data
+        results = await populated_router.search(
+            [0.5, 0.0, 0.5, 0.0],
+            query_text="configuration",
+            project_id="myapp",
+            top_k=10,
+        )
+        if len(results) >= 2:
+            project_results = [r for r in results if r["_scope"] == "project"]
+            system_results = [r for r in results if r["_scope"] == "system"]
+            if project_results and system_results:
+                # Best project weighted_score >= best system weighted_score
+                # when raw scores are close (project weight 1.0 > system 0.4)
+                best_proj = max(r["weighted_score"] for r in project_results)
+                best_sys = max(r["weighted_score"] for r in system_results)
+                assert best_proj >= best_sys * 0.9  # allow small margin for RRF
+
+    @pytest.mark.asyncio
+    async def test_search_missing_collection(self, router: CollectionRouter):
+        """Search gracefully handles non-existent collections."""
+        # Only system exists
+        router.get_store(MemoryScope.SYSTEM).upsert(_make_chunks(
+            "sys",
+            [[0.0, 0.0, 1.0, 0.0]],
+            ["System config"],
+        ))
+        results = await router.search(
+            [0.0, 0.0, 1.0, 0.0],
+            query_text="config",
+            project_id="nonexistent",
+            agent_type="nonexistent",
+            top_k=10,
+        )
+        # Should still get system results
+        assert len(results) > 0
+        assert all(r["_scope"] == "system" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_empty_returns_empty(self, router: CollectionRouter):
+        """Search on a router with no collections returns empty."""
+        results = await router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="anything",
+            top_k=10,
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_custom_weights(self, populated_router: CollectionRouter):
+        """Custom weights override the defaults."""
+        custom_weights = {
+            MemoryScope.PROJECT: 0.1,
+            MemoryScope.AGENT_TYPE: 0.1,
+            MemoryScope.SYSTEM: 5.0,
+        }
+        results = await populated_router.search(
+            [0.5, 0.5, 0.5, 0.0],
+            query_text="test",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+            weights=custom_weights,
+        )
+        for r in results:
+            if r["_scope"] == "system":
+                assert r["_weight"] == 5.0
+            elif r["_scope"] == "project":
+                assert r["_weight"] == 0.1
+
+    @pytest.mark.asyncio
+    async def test_scope_metadata_annotations(self, populated_router: CollectionRouter):
+        """Each result is annotated with scope metadata."""
+        results = await populated_router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="auth",
+            project_id="myapp",
+            agent_type="coding",
+            top_k=10,
+        )
+        for r in results:
+            assert "_collection" in r
+            assert r["_collection"].startswith("aq_")
+            assert "_scope" in r
+            assert r["_scope"] in ("project", "agent_type", "system")
+            # _scope_id is None for system, string for others
+            if r["_scope"] == "system":
+                assert r["_scope_id"] is None
+            else:
+                assert isinstance(r["_scope_id"], str)
+
+
+@pytestmark_milvus
+class TestCollectionRouterSearchTopic:
+    """Tests for topic-filtered multi-scope search."""
+
+    @pytest.fixture
+    def topic_router(self, router: CollectionRouter):
+        """Router with topic-tagged data in project and system scopes."""
+        proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.upsert([
+            {
+                "chunk_hash": "proj_auth_0",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "OAuth token refresh flow for auth",
+                "source": "auth.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "authentication",
+            },
+            {
+                "chunk_hash": "proj_db_0",
+                "embedding": [0.0, 1.0, 0.0, 0.0],
+                "content": "Database schema migration patterns",
+                "source": "db.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "database",
+            },
+            {
+                "chunk_hash": "proj_untagged_0",
+                "embedding": [0.5, 0.5, 0.0, 0.0],
+                "content": "General project notes",
+                "source": "notes.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "",
+            },
+        ])
+
+        sys_store = router.get_store(MemoryScope.SYSTEM)
+        sys_store.upsert([
+            {
+                "chunk_hash": "sys_auth_0",
+                "embedding": [0.9, 0.0, 0.1, 0.0],
+                "content": "System auth best practices",
+                "source": "sys_auth.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "authentication",
+            },
+            {
+                "chunk_hash": "sys_generic_0",
+                "embedding": [0.0, 0.0, 1.0, 0.0],
+                "content": "Generic system configuration",
+                "source": "sys_config.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "",
+            },
+        ])
+        return router
+
+    @pytest.mark.asyncio
+    async def test_topic_filter_narrows_results(self, topic_router: CollectionRouter):
+        """Topic filter returns only matching + untagged entries."""
+        results = await topic_router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="auth",
+            project_id="myapp",
+            topic="authentication",
+            top_k=10,
+        )
+        # Should find auth-topic entries and untagged entries, but not database-topic
+        hashes = {r["chunk_hash"] for r in results}
+        assert "proj_auth_0" in hashes or "sys_auth_0" in hashes
+        assert "proj_db_0" not in hashes
+
+    @pytest.mark.asyncio
+    async def test_topic_fallback_marks_results(self, router: CollectionRouter):
+        """When topic filter yields < threshold results, fallback is used
+        and results are marked with topic_fallback=True."""
+        sys_store = router.get_store(MemoryScope.SYSTEM)
+        # Only add entries with a different topic (not matching our query topic)
+        sys_store.upsert([
+            {
+                "chunk_hash": "sys_only_0",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+                "content": "Some system data",
+                "source": "sys.md",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "topic": "unrelated",
+            },
+        ])
+        # Search with a topic that has no matches → triggers fallback
+        results = await router.search(
+            [1.0, 0.0, 0.0, 0.0],
+            query_text="data",
+            topic="nonexistent_topic",
+            top_k=10,
+        )
+        # Fallback results should be marked
+        if results:
+            assert all(r.get("topic_fallback") is True for r in results)
+
+
+@pytestmark_milvus
+class TestCollectionRouterRecall:
+    """Tests for KV lookup with scope resolution."""
+
+    @pytest.fixture
+    def kv_router(self, router: CollectionRouter):
+        """Router with KV entries in project, agent-type, and system scopes."""
+        proj_store = router.get_store(MemoryScope.PROJECT, "myapp")
+        proj_store.upsert([
+            {
+                "chunk_hash": "kv_proj_tech",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "project",
+                "kv_key": "tech_stack",
+                "kv_value": '["Python", "SQLAlchemy"]',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+            {
+                "chunk_hash": "kv_proj_branch",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "project",
+                "kv_key": "deploy_branch",
+                "kv_value": '"main"',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+        ])
+
+        at_store = router.get_store(MemoryScope.AGENT_TYPE, "coding")
+        at_store.upsert([
+            {
+                "chunk_hash": "kv_at_test",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "conventions",
+                "kv_key": "test_command",
+                "kv_value": '"pytest tests/ -v"',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+            {
+                "chunk_hash": "kv_at_tech",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "project",
+                "kv_key": "tech_stack",
+                "kv_value": '["Python"]',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+        ])
+
+        sys_store = router.get_store(MemoryScope.SYSTEM)
+        sys_store.upsert([
+            {
+                "chunk_hash": "kv_sys_version",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "system",
+                "kv_key": "version",
+                "kv_value": '"1.0"',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+            {
+                "chunk_hash": "kv_sys_tech",
+                "entry_type": "kv",
+                "embedding": [0.0, 0.0, 0.0, 0.0],
+                "content": "",
+                "kv_namespace": "project",
+                "kv_key": "tech_stack",
+                "kv_value": '["Generic"]',
+                "source": "",
+                "heading": "",
+                "heading_level": 0,
+                "start_line": 0,
+                "end_line": 0,
+            },
+        ])
+        return router
+
+    @pytest.mark.asyncio
+    async def test_recall_project_first(self, kv_router: CollectionRouter):
+        """KV recall returns project-scope value when available (most specific)."""
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="project",
+        )
+        assert value == '["Python", "SQLAlchemy"]'
+
+    @pytest.mark.asyncio
+    async def test_recall_falls_through_to_agent_type(self, kv_router: CollectionRouter):
+        """When project scope doesn't have the key, falls through to agent-type."""
+        value = await kv_router.recall(
+            "test_command",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="conventions",
+        )
+        assert value == '"pytest tests/ -v"'
+
+    @pytest.mark.asyncio
+    async def test_recall_falls_through_to_system(self, kv_router: CollectionRouter):
+        """When project and agent-type don't have the key, falls to system."""
+        value = await kv_router.recall(
+            "version",
+            project_id="myapp",
+            agent_type="coding",
+            namespace="system",
+        )
+        assert value == '"1.0"'
+
+    @pytest.mark.asyncio
+    async def test_recall_not_found(self, kv_router: CollectionRouter):
+        """Returns None when key is not found in any scope."""
+        value = await kv_router.recall(
+            "nonexistent_key",
+            project_id="myapp",
+            agent_type="coding",
+        )
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_recall_namespace_filter(self, kv_router: CollectionRouter):
+        """Namespace parameter correctly filters results."""
+        # "version" exists in "system" namespace, not in "project" namespace
+        value = await kv_router.recall(
+            "version",
+            project_id="myapp",
+            namespace="project",
+        )
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_recall_missing_scopes(self, kv_router: CollectionRouter):
+        """Recall works when some scopes don't exist."""
+        value = await kv_router.recall(
+            "version",
+            project_id="nonexistent_project",
+            agent_type="nonexistent_type",
+            namespace="system",
+        )
+        # Falls through to system scope
+        assert value == '"1.0"'
+
+    @pytest.mark.asyncio
+    async def test_recall_system_only(self, kv_router: CollectionRouter):
+        """Recall with no project/agent_type searches only system."""
+        value = await kv_router.recall(
+            "version",
+            namespace="system",
+        )
+        assert value == '"1.0"'
+
+    @pytest.mark.asyncio
+    async def test_recall_without_namespace(self, kv_router: CollectionRouter):
+        """Recall without namespace matches any namespace."""
+        value = await kv_router.recall(
+            "tech_stack",
+            project_id="myapp",
+        )
+        # Should find it in project scope (any namespace)
+        assert value is not None
+
+
+@pytestmark_milvus
+class TestCollectionRouterGetStoreIfExists:
+    """Tests for _get_store_if_exists (read-only store access)."""
+
+    def test_returns_none_for_nonexistent(self, router: CollectionRouter):
+        result = router._get_store_if_exists(MemoryScope.PROJECT, "missing")
+        assert result is None
+
+    def test_returns_cached_store(self, router: CollectionRouter):
+        store = router.get_store(MemoryScope.SYSTEM)
+        found = router._get_store_if_exists(MemoryScope.SYSTEM)
+        assert found is store
+
+    def test_opens_existing_uncached_collection(self, router: CollectionRouter):
+        """If a collection exists in Milvus but isn't cached, opens it."""
+        # Create a collection, then clear cache
+        router.get_store(MemoryScope.PROJECT, "test")
+        assert router.has_store(MemoryScope.PROJECT, "test")
+
+        # Remove from cache (simulating a fresh router that shares the db)
+        name = collection_name(MemoryScope.PROJECT, "test")
+        del router._stores[name]
+        assert not router.has_store(MemoryScope.PROJECT, "test")
+
+        # _get_store_if_exists should find and open it
+        store = router._get_store_if_exists(MemoryScope.PROJECT, "test")
+        assert store is not None
+        assert router.has_store(MemoryScope.PROJECT, "test")

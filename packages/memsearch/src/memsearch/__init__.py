@@ -2,19 +2,23 @@
 
 from .core import MemSearch
 from .scoping import (
+    SCOPE_WEIGHTS,
     CollectionRouter,
     MemoryScope,
     collection_name,
+    merge_and_rank,
     parse_collection_name,
     sanitize_id,
     vault_paths,
 )
 
 __all__ = [
+    "SCOPE_WEIGHTS",
     "CollectionRouter",
     "MemSearch",
     "MemoryScope",
     "collection_name",
+    "merge_and_rank",
     "parse_collection_name",
     "sanitize_id",
     "vault_paths",

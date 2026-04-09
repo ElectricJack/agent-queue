@@ -18,6 +18,7 @@ lookup), and temporal entries (validity-windowed facts).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import re
@@ -45,6 +46,22 @@ class MemoryScope(Enum):
     ORCHESTRATOR = "orchestrator"
     AGENT_TYPE = "agent_type"
     PROJECT = "project"
+
+
+# Default specificity weights for multi-scope search.
+# Per spec §4: project is most specific (1.0), system is broadest (0.4).
+# A moderately relevant project-specific memory outranks a highly relevant
+# system memory.
+SCOPE_WEIGHTS: dict[MemoryScope, float] = {
+    MemoryScope.PROJECT: 1.0,
+    MemoryScope.AGENT_TYPE: 0.7,
+    MemoryScope.ORCHESTRATOR: 0.5,
+    MemoryScope.SYSTEM: 0.4,
+}
+
+# Minimum results from a topic-filtered search before falling back to
+# unfiltered search.  Matches MemSearch._TOPIC_FALLBACK_THRESHOLD.
+_TOPIC_FALLBACK_THRESHOLD = 3
 
 
 # Vault directory templates per scope (relative to vault root).
@@ -234,6 +251,54 @@ def vault_paths(scope: MemoryScope, scope_id: str | None = None) -> list[str]:
         safe = sanitize_id(scope_id)
         return [t.replace("{id}", safe) for t in templates]
     return list(templates)
+
+
+def merge_and_rank(
+    results: list[dict[str, Any]],
+    *,
+    top_k: int = 10,
+) -> list[dict[str, Any]]:
+    """Merge results from multiple collections and rank by weighted score.
+
+    Deduplicates by ``chunk_hash`` — when the same chunk appears in multiple
+    scope results (unlikely but possible with cross-indexed data), the entry
+    with the highest ``weighted_score`` is kept.
+
+    Parameters
+    ----------
+    results:
+        Flat list of result dicts from multiple collection searches.
+        Each dict should contain ``chunk_hash``, ``score``, and
+        ``weighted_score`` fields (set by
+        :meth:`CollectionRouter._search_collection`).
+    top_k:
+        Maximum number of results to return.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Deduplicated results sorted by ``weighted_score`` descending,
+        truncated to *top_k*.
+    """
+    # Deduplicate: keep the highest weighted score for each chunk
+    seen: dict[str, dict[str, Any]] = {}
+    for r in results:
+        key = r.get("chunk_hash", "")
+        if not key:
+            key = str(id(r))  # fallback for entries without chunk_hash
+        existing = seen.get(key)
+        if existing is None or r.get("weighted_score", 0.0) > existing.get(
+            "weighted_score", 0.0
+        ):
+            seen[key] = r
+
+    # Sort by weighted score descending
+    ranked = sorted(
+        seen.values(),
+        key=lambda x: x.get("weighted_score", 0.0),
+        reverse=True,
+    )
+    return ranked[:top_k]
 
 
 class CollectionRouter:
@@ -497,6 +562,285 @@ class CollectionRouter:
                 hit["_scope"] = s.value
                 hit["_scope_id"] = sid
         return hits[:limit]
+
+    # ------------------------------------------------------------------
+    # Multi-scope parallel search (spec §4, §6)
+    # ------------------------------------------------------------------
+
+    async def search(
+        self,
+        query_embedding: list[float],
+        *,
+        query_text: str = "",
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+        weights: dict[MemoryScope, float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Multi-collection parallel search with weighted merging.
+
+        Queries project, agent-type, and system collections in parallel,
+        then merges results weighted by scope specificity.
+
+        Per spec §4: project=1.0, agent-type=0.7, system=0.4.  A moderately
+        relevant project-specific memory outranks a highly relevant system
+        memory.
+
+        Parameters
+        ----------
+        query_embedding:
+            Dense vector embedding of the query.
+        query_text:
+            Raw query text for BM25 sparse search.
+        project_id:
+            Project identifier.  When set, includes the project collection
+            in the search.
+        agent_type:
+            Agent type identifier.  When set, includes the agent-type
+            collection in the search.
+        topic:
+            Optional topic pre-filter.  When set, only chunks whose
+            ``topic`` matches *or* whose ``topic`` is empty (untagged)
+            are returned.  Falls back to unfiltered search if too few
+            results (< ``_TOPIC_FALLBACK_THRESHOLD``).
+        top_k:
+            Maximum results to return after merging.
+        weights:
+            Override the default :data:`SCOPE_WEIGHTS`.  Keys are
+            :class:`MemoryScope` values; missing scopes use the default.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Merged results sorted by ``weighted_score`` descending.
+            Each result is annotated with ``_collection``, ``_scope``,
+            ``_scope_id``, ``_weight``, and ``weighted_score`` fields.
+        """
+        effective_weights = weights if weights is not None else SCOPE_WEIGHTS
+
+        # Build list of (scope, scope_id, weight) for scopes to search.
+        scopes_to_search: list[tuple[MemoryScope, str | None, float]] = []
+        if project_id:
+            w = effective_weights.get(MemoryScope.PROJECT, SCOPE_WEIGHTS[MemoryScope.PROJECT])
+            scopes_to_search.append((MemoryScope.PROJECT, project_id, w))
+        if agent_type:
+            w = effective_weights.get(
+                MemoryScope.AGENT_TYPE, SCOPE_WEIGHTS[MemoryScope.AGENT_TYPE]
+            )
+            scopes_to_search.append((MemoryScope.AGENT_TYPE, agent_type, w))
+        w = effective_weights.get(MemoryScope.SYSTEM, SCOPE_WEIGHTS[MemoryScope.SYSTEM])
+        scopes_to_search.append((MemoryScope.SYSTEM, None, w))
+
+        if not scopes_to_search:
+            return []
+
+        # Build topic filter expression
+        topic_filter = ""
+        if topic:
+            escaped_topic = _escape_filter_value(topic)
+            topic_filter = f'(topic == "{escaped_topic}" or topic == "")'
+
+        # Search all scopes in parallel
+        tasks = [
+            self._search_collection_async(
+                scope,
+                scope_id,
+                query_embedding,
+                query_text=query_text,
+                top_k=top_k,
+                filter_expr=topic_filter,
+                weight=weight,
+            )
+            for scope, scope_id, weight in scopes_to_search
+        ]
+        scope_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Flatten results, logging errors
+        all_results: list[dict[str, Any]] = []
+        for i, result in enumerate(scope_results):
+            if isinstance(result, BaseException):
+                scope, scope_id, _ = scopes_to_search[i]
+                logger.warning(
+                    "Search failed for %s/%s: %s",
+                    scope.value,
+                    scope_id,
+                    result,
+                )
+                continue
+            all_results.extend(result)
+
+        # Topic fallback: if too few results, retry without topic filter
+        if topic and len(all_results) < _TOPIC_FALLBACK_THRESHOLD:
+            logger.debug(
+                "Topic filter '%s' returned %d results (< %d), falling back "
+                "to unfiltered search",
+                topic,
+                len(all_results),
+                _TOPIC_FALLBACK_THRESHOLD,
+            )
+            tasks = [
+                self._search_collection_async(
+                    scope,
+                    scope_id,
+                    query_embedding,
+                    query_text=query_text,
+                    top_k=top_k,
+                    filter_expr="",
+                    weight=weight,
+                )
+                for scope, scope_id, weight in scopes_to_search
+            ]
+            scope_results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_results = []
+            for result in scope_results:
+                if isinstance(result, BaseException):
+                    continue
+                for r in result:
+                    r["topic_fallback"] = True
+                all_results.extend(result)
+
+        return merge_and_rank(all_results, top_k=top_k)
+
+    async def _search_collection_async(
+        self,
+        scope: MemoryScope,
+        scope_id: str | None,
+        query_embedding: list[float],
+        *,
+        query_text: str = "",
+        top_k: int = 10,
+        filter_expr: str = "",
+        weight: float = 1.0,
+    ) -> list[dict[str, Any]]:
+        """Search a single collection, annotating results with scope metadata.
+
+        Runs the synchronous :meth:`MilvusStore.search` in a thread to
+        allow parallel execution across collections.
+
+        If the collection does not exist or is not cached, returns an
+        empty list (no collection is created).
+        """
+        store = self._get_store_if_exists(scope, scope_id)
+        if store is None:
+            return []
+
+        # Run sync Milvus call in a thread for true parallelism
+        results = await asyncio.to_thread(
+            store.search,
+            query_embedding,
+            query_text=query_text,
+            top_k=top_k,
+            filter_expr=filter_expr,
+        )
+
+        # Annotate results with scope metadata and apply weight
+        coll_name = collection_name(scope, scope_id)
+        for r in results:
+            r["_collection"] = coll_name
+            r["_scope"] = scope.value
+            r["_scope_id"] = scope_id
+            r["_weight"] = weight
+            r["weighted_score"] = r.get("score", 0.0) * weight
+
+        return results
+
+    async def recall(
+        self,
+        key: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+    ) -> str | None:
+        """KV lookup with scope resolution.  First match wins (most specific).
+
+        Per spec §6: searches project → agent-type → system in order,
+        returning the value from the first scope that has a matching entry.
+
+        Parameters
+        ----------
+        key:
+            The KV key to look up.
+        project_id:
+            Project identifier for the project scope.
+        agent_type:
+            Agent type identifier for the agent-type scope.
+        namespace:
+            Optional KV namespace filter (e.g., ``"project"``,
+            ``"conventions"``).
+
+        Returns
+        -------
+        str | None
+            The ``kv_value`` from the most specific scope that has the
+            key, or ``None`` if not found in any scope.
+        """
+        scopes: list[tuple[MemoryScope, str | None]] = []
+        if project_id:
+            scopes.append((MemoryScope.PROJECT, project_id))
+        if agent_type:
+            scopes.append((MemoryScope.AGENT_TYPE, agent_type))
+        scopes.append((MemoryScope.SYSTEM, None))
+
+        escaped_key = _escape_filter_value(key)
+        for scope, scope_id in scopes:
+            store = self._get_store_if_exists(scope, scope_id)
+            if store is None:
+                continue
+
+            filter_parts = [
+                'entry_type == "kv"',
+                f'kv_key == "{escaped_key}"',
+            ]
+            if namespace:
+                escaped_ns = _escape_filter_value(namespace)
+                filter_parts.append(f'kv_namespace == "{escaped_ns}"')
+            filter_expr = " and ".join(filter_parts)
+
+            try:
+                results = store.query(filter_expr=filter_expr)
+            except Exception:
+                logger.warning(
+                    "KV recall failed for %s/%s",
+                    scope.value,
+                    scope_id,
+                    exc_info=True,
+                )
+                continue
+
+            if results:
+                return results[0].get("kv_value")
+
+        return None
+
+    def _get_store_if_exists(
+        self,
+        scope: MemoryScope,
+        scope_id: str | None = None,
+    ) -> MilvusStore | None:
+        """Get a cached store, or open it if the collection exists in Milvus.
+
+        Unlike :meth:`get_store`, this does **not** create the collection
+        if it doesn't exist.  Returns ``None`` when the collection is
+        absent — safe for read-only paths like search and recall.
+        """
+        name = collection_name(scope, scope_id)
+        if name in self._stores:
+            return self._stores[name]
+
+        # Check existence without creating
+        client = self._get_admin_client()
+        try:
+            exists = client.has_collection(name)
+        finally:
+            self._release_admin_client(client)
+
+        if not exists:
+            return None
+
+        # Collection exists — open it (get_store won't re-create)
+        return self.get_store(scope, scope_id)
 
     # ------------------------------------------------------------------
     # Lifecycle
