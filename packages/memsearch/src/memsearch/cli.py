@@ -569,7 +569,17 @@ def stats(
     )
     try:
         count = store.count()
+        click.echo(f"Collection: {cfg.milvus.collection}")
         click.echo(f"Total indexed chunks: {count}")
+
+        # Show embedding model version info
+        info = store.model_info
+        if info:
+            click.echo(f"Embedding provider: {info['provider']}")
+            click.echo(f"Embedding model: {info['model']}")
+            click.echo(f"Embedding dimension: {info['dimension']}")
+        else:
+            click.echo("Embedding model: (not tracked — legacy collection)")
     finally:
         store.close()
 
