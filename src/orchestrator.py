@@ -861,6 +861,14 @@ class Orchestrator:
 
         register_facts_handlers(self.vault_watcher)
 
+        # Register memory/*.md watcher handlers (vault spec §5).
+        # Detects changes to memory markdown files across all vault scopes
+        # so they can be re-indexed into the vector DB.  Phase 1 is a
+        # logging stub; actual re-indexing is wired in Phase 2/3.
+        from src.memory_handler import register_memory_handlers
+
+        register_memory_handlers(self.vault_watcher)
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
