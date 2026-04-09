@@ -1497,10 +1497,16 @@ class MemoryV2Plugin(InternalPlugin):
                 self._log.info("Auto-detected topic %r for memory_save", topic)
 
         # ----- Step 1: Dedup check via semantic search -----
+        # Resolve target scope so the dedup search is scoped to the same
+        # collection we'll save into.  When *scope* is None the target is
+        # the project scope — we must NOT use multi-scope search (which
+        # would also query the system collection) for dedup.
+        dedup_scope = scope if scope is not None else f"project_{project_id}"
+
         dedup_results = await self._service.search(
             project_id,
             content[:500],  # search using first ~500 chars for efficiency
-            scope=scope,
+            scope=dedup_scope,
             topic=topic,
             top_k=5,
         )
@@ -1526,7 +1532,7 @@ class MemoryV2Plugin(InternalPlugin):
                 source_task=source_task,
                 scope=scope,
             )
-        elif best_match and best_score > self._DEDUP_RELATED:
+        elif best_match and best_score >= self._DEDUP_RELATED:
             # Related: merge via LLM
             result = await self._handle_dedup_merge(
                 project_id=project_id,
@@ -1570,7 +1576,7 @@ class MemoryV2Plugin(InternalPlugin):
         chunk_hash = existing.get("chunk_hash", "")
         if not chunk_hash:
             self._log.warning("Dedup match has no chunk_hash, falling back to create")
-            return {"error": "Dedup match missing chunk_hash"}
+            return {"success": False, "error": "Dedup match missing chunk_hash"}
 
         result = await self._service.update_document_timestamp(
             project_id,

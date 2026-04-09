@@ -454,10 +454,10 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_creates_new_distinct(self, wired_plugin, mock_router):
+    async def test_save_creates_new_distinct(self, wired_plugin, mock_store):
         """When no similar entries exist, create a new entry."""
-        # No search results → distinct content
-        mock_router.search = AsyncMock(return_value=[])
+        # No search results → distinct content (dedup uses single-scope store.search)
+        mock_store.search.return_value = []
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -476,22 +476,20 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_dedup_near_identical(self, wired_plugin, mock_router):
+    async def test_save_dedup_near_identical(self, wired_plugin, mock_store):
         """When similarity > 0.95, deduplicate (update timestamp only)."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Existing insight about auth",
-                    "score": 0.98,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "auth",
-                    "tags": '["insight"]',
-                    "_scope": "project",
-                    "_scope_id": "test",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight about auth",
+                "score": 0.98,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight"]',
+                "_scope": "project",
+                "_scope_id": "test",
+            }
+        ]
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -507,22 +505,20 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_merge_related(self, wired_plugin, mock_router):
+    async def test_save_merge_related(self, wired_plugin, mock_store):
         """When similarity 0.8–0.95, merge via LLM."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "OAuth needs scope on refresh",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "auth",
-                    "tags": '["insight", "auth"]',
-                    "_scope": "project",
-                    "_scope_id": "test",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth needs scope on refresh",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "auth"]',
+                "_scope": "project",
+                "_scope_id": "test",
+            }
+        ]
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -547,9 +543,9 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_creates_summary_for_long_content(self, wired_plugin, mock_router):
+    async def test_save_creates_summary_for_long_content(self, wired_plugin, mock_store):
         """Content > 800 chars should trigger summary generation."""
-        mock_router.search = AsyncMock(return_value=[])
+        mock_store.search.return_value = []
         long_content = "A" * 900  # Exceeds _SUMMARY_CHAR_THRESHOLD
 
         result = await wired_plugin.cmd_memory_save(
@@ -570,9 +566,9 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_no_summary_for_short_content(self, wired_plugin, mock_router):
+    async def test_save_no_summary_for_short_content(self, wired_plugin, mock_store):
         """Content <= 800 chars should not generate a summary."""
-        mock_router.search = AsyncMock(return_value=[])
+        mock_store.search.return_value = []
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -592,19 +588,17 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_llm_merge_fallback(self, wired_plugin, mock_router):
+    async def test_save_llm_merge_fallback(self, wired_plugin, mock_store):
         """When LLM merge fails, fall back to concatenation."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Old content",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "tags": '["insight"]',
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "Old content",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
         # Make LLM fail
         wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
@@ -619,9 +613,9 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_llm_summary_fallback(self, wired_plugin, mock_router):
+    async def test_save_llm_summary_fallback(self, wired_plugin, mock_store):
         """When LLM summary fails, fall back to truncation."""
-        mock_router.search = AsyncMock(return_value=[])
+        mock_store.search.return_value = []
         wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
         result = await wired_plugin.cmd_memory_save(
@@ -636,9 +630,9 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_uses_default_tags(self, wired_plugin, mock_router):
+    async def test_save_uses_default_tags(self, wired_plugin, mock_store):
         """When no tags provided, defaults to ['insight', 'auto-generated']."""
-        mock_router.search = AsyncMock(return_value=[])
+        mock_store.search.return_value = []
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -651,19 +645,17 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_save_ignores_non_document_entries_in_dedup(self, wired_plugin, mock_router):
+    async def test_save_ignores_non_document_entries_in_dedup(self, wired_plugin, mock_store):
         """Only document entries should be considered for dedup, not KV/temporal."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "some kv entry",
-                    "score": 0.99,
-                    "chunk_hash": "kv_hash",
-                    "entry_type": "kv",  # Not a document!
-                    "tags": "[]",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "some kv entry",
+                "score": 0.99,
+                "chunk_hash": "kv_hash",
+                "entry_type": "kv",  # Not a document!
+                "tags": "[]",
+            }
+        ]
 
         result = await wired_plugin.cmd_memory_save(
             {
@@ -693,26 +685,24 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_merge_generates_summary_for_long_merged_content(self, wired_plugin, mock_router):
+    async def test_merge_generates_summary_for_long_merged_content(self, wired_plugin, mock_store):
         """When merged content exceeds ~200 tokens, a summary should be generated.
 
         Per spec §9: summary is embedded/indexed; original is preserved.
         """
         # Return a related match (0.8-0.95 similarity) to trigger merge
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Original short insight about caching",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "topic": "caching",
-                    "tags": '["insight", "caching"]',
-                    "_scope": "project",
-                    "_scope_id": "test",
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "Original short insight about caching",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "topic": "caching",
+                "tags": '["insight", "caching"]',
+                "_scope": "project",
+                "_scope_id": "test",
+            }
+        ]
 
         # Make LLM return different things for merge vs summary calls
         call_count = {"n": 0}
@@ -747,19 +737,17 @@ class TestPluginMemorySave:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
-    async def test_merge_no_summary_for_short_merged_content(self, wired_plugin, mock_router):
+    async def test_merge_no_summary_for_short_merged_content(self, wired_plugin, mock_store):
         """When merged content is short (< ~200 tokens), no summary is generated."""
-        mock_router.search = AsyncMock(
-            return_value=[
-                {
-                    "content": "Short insight",
-                    "score": 0.88,
-                    "chunk_hash": "existing_hash",
-                    "entry_type": "document",
-                    "tags": '["insight"]',
-                }
-            ]
-        )
+        mock_store.search.return_value = [
+            {
+                "content": "Short insight",
+                "score": 0.88,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
 
         async def mock_llm(prompt, **kwargs):
             if "merging two related" in prompt.lower():
@@ -891,6 +879,267 @@ class TestVaultFileOriginal:
         text = filepath.read_text(encoding="utf-8")
         assert "Short merged content" in text
         assert "## Original" not in text
+
+
+# ---------------------------------------------------------------------------
+# Dedup: scoped search (no cross-scope dedup)
+# ---------------------------------------------------------------------------
+
+
+class TestDedupScopedSearch:
+    """Verify dedup search is scoped to the target scope, not multi-scope."""
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="LLM generated summary")
+        return plugin
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_dedup_search_uses_explicit_scope_when_none(
+        self, wired_plugin, mock_router, mock_store
+    ):
+        """When scope=None, dedup search should use 'project_{id}' not multi-scope."""
+        mock_store.search.return_value = []
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "my-project",
+                "content": "Test insight",
+                "topic": "testing",
+            }
+        )
+
+        # The dedup search should go through store.search (single-scope path),
+        # NOT through router.search (multi-scope path). This ensures dedup
+        # only matches within the target scope, not cross-scope.
+        assert mock_store.search.call_count >= 1
+        assert mock_router.search.call_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_dedup_search_uses_provided_scope(self, wired_plugin, mock_router, mock_store):
+        """When an explicit scope is provided, dedup search uses that scope."""
+        mock_store.search.return_value = []
+
+        await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "my-project",
+                "content": "System-level insight",
+                "scope": "system",
+            }
+        )
+
+        # Multi-scope router should not be called
+        assert mock_router.search.call_count == 0
+        assert mock_store.search.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Dedup: boundary conditions at threshold values
+# ---------------------------------------------------------------------------
+
+
+class TestDedupBoundaryConditions:
+    """Test similarity thresholds at exact boundary values."""
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="Merged content")
+        return plugin
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_exactly_0_80_triggers_merge(self, wired_plugin, mock_store):
+        """Similarity == 0.80 should trigger merge (spec says 0.8-0.95 is related)."""
+        mock_store.search.return_value = [
+            {
+                "content": "Existing insight",
+                "score": 0.80,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Related insight at boundary",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"
+        assert result["similarity_score"] == 0.80
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_below_0_80_creates_new(self, wired_plugin, mock_store):
+        """Similarity < 0.80 (e.g. 0.79) should create a new entry."""
+        mock_store.search.return_value = [
+            {
+                "content": "Somewhat related insight",
+                "score": 0.79,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Distinct enough insight",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "created"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_exactly_0_95_triggers_merge_not_dedup(self, wired_plugin, mock_store):
+        """Similarity == 0.95 should trigger merge (spec says >0.95 for near-identical)."""
+        mock_store.search.return_value = [
+            {
+                "content": "Very similar insight",
+                "score": 0.95,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Almost identical insight",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "merged"  # Not deduplicated
+        assert result["similarity_score"] == 0.95
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_above_0_95_triggers_dedup(self, wired_plugin, mock_store):
+        """Similarity > 0.95 (e.g. 0.96) should trigger dedup (timestamp only)."""
+        mock_store.search.return_value = [
+            {
+                "content": "Near-identical insight",
+                "score": 0.96,
+                "chunk_hash": "existing_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Nearly the same insight",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "deduplicated"
+        assert result["similarity_score"] == 0.96
+
+
+# ---------------------------------------------------------------------------
+# Vault: source_tasks_additional accumulation
+# ---------------------------------------------------------------------------
+
+
+class TestSourceTasksAccumulation:
+    """Verify source_tasks_additional accumulates as a JSON array."""
+
+    @pytest.fixture
+    def service_with_tmpdir(self, mock_embedder, mock_router, tmp_data_dir):
+        svc = MemoryV2Service(
+            milvus_uri="/tmp/test.db",
+            embedding_provider="openai",
+            data_dir=tmp_data_dir,
+        )
+        svc._embedder = mock_embedder
+        svc._router = mock_router
+        svc._initialized = True
+        return svc
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_first_additional_source_task_creates_list(self, service_with_tmpdir, tmp_data_dir):
+        """First additional source_task creates a JSON array."""
+        vault_dir = Path(tmp_data_dir) / "tasks_test"
+        filepath = service_with_tmpdir._write_vault_file(
+            vault_dir,
+            content="Test insight",
+            tags=["insight"],
+            source_task="task-001",
+        )
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-002")
+        text = filepath.read_text()
+        assert 'source_tasks_additional: ["task-002"]' in text
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_subsequent_source_tasks_accumulate(self, service_with_tmpdir, tmp_data_dir):
+        """Multiple dedup calls accumulate source tasks in the JSON array."""
+        vault_dir = Path(tmp_data_dir) / "tasks_accum_test"
+        filepath = service_with_tmpdir._write_vault_file(
+            vault_dir,
+            content="Test insight",
+            tags=["insight"],
+            source_task="task-001",
+        )
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-002")
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-003")
+        text = filepath.read_text()
+        assert 'source_tasks_additional: ["task-002", "task-003"]' in text
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_duplicate_source_task_not_added_again(self, service_with_tmpdir, tmp_data_dir):
+        """Adding the same source_task twice doesn't duplicate it."""
+        vault_dir = Path(tmp_data_dir) / "tasks_dedup_test"
+        filepath = service_with_tmpdir._write_vault_file(
+            vault_dir,
+            content="Test insight",
+            tags=["insight"],
+            source_task="task-001",
+        )
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-002")
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-002")
+        text = filepath.read_text()
+        assert text.count("task-002") == 1
+
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    def test_original_source_task_not_added_as_additional(self, service_with_tmpdir, tmp_data_dir):
+        """The original source_task shouldn't be added to additional list."""
+        vault_dir = Path(tmp_data_dir) / "tasks_orig_test"
+        filepath = service_with_tmpdir._write_vault_file(
+            vault_dir,
+            content="Test insight",
+            tags=["insight"],
+            source_task="task-001",
+        )
+        # Try to add the same task that's already the primary source_task
+        service_with_tmpdir._update_vault_file(filepath, source_task="task-001")
+        text = filepath.read_text()
+        assert "source_tasks_additional" not in text
 
 
 # ---------------------------------------------------------------------------

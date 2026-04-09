@@ -1095,16 +1095,32 @@ class MemoryV2Service:
         # Update 'updated' timestamp in frontmatter
         text = re.sub(r"^updated:.*$", f"updated: {now}", text, count=1, flags=re.MULTILINE)
 
-        # Add source_task if not already present
+        # Add source_task as additional reference (accumulated as JSON array)
         if source_task and f"source_task: {source_task}" not in text:
-            # Append source task as additional reference
-            text = re.sub(
-                r"^(updated:.*)$",
-                rf"\1\nsource_tasks_additional: {source_task}",
-                text,
-                count=1,
-                flags=re.MULTILINE,
+            existing_additional = re.search(
+                r"^source_tasks_additional:\s*(\[.*?\])$", text, flags=re.MULTILINE
             )
+            if existing_additional:
+                # Append to existing list (if not already present)
+                try:
+                    tasks = _json.loads(existing_additional.group(1))
+                    if source_task not in tasks:
+                        tasks.append(source_task)
+                        text = text.replace(
+                            existing_additional.group(0),
+                            f"source_tasks_additional: {_json.dumps(tasks)}",
+                        )
+                except _json.JSONDecodeError:
+                    pass
+            else:
+                # Create new list with this task
+                text = re.sub(
+                    r"^(updated:.*)$",
+                    rf'\1\nsource_tasks_additional: ["{source_task}"]',
+                    text,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
 
         # Merge tags if provided
         if tags:
