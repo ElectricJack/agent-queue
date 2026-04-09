@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,6 +33,7 @@ from src.playbook_runner import (
     _compare,
     _dot_get,
     _estimate_tokens,
+    _midnight_today,
     _parse_literal,
 )
 
@@ -4295,9 +4297,7 @@ class TestExpressionTransitions:
         # Only 2 chat calls: start node + fallback node (no LLM transition)
         assert mock_supervisor.chat.call_count == 2
 
-    async def test_undefined_variable_falls_through_with_warning(
-        self, mock_supervisor, caplog
-    ):
+    async def test_undefined_variable_falls_through_with_warning(self, mock_supervisor, caplog):
         """5.2.15d: undefined variable in playbook falls gracefully with descriptive error."""
         event = {"type": "test", "project_id": "proj"}
         graph = {
@@ -4338,9 +4338,7 @@ class TestExpressionTransitions:
         # Only 2 chat calls: start node + fallback node (no LLM transition)
         assert mock_supervisor.chat.call_count == 2
 
-    async def test_undefined_task_field_falls_through_with_warning(
-        self, mock_supervisor, caplog
-    ):
+    async def test_undefined_task_field_falls_through_with_warning(self, mock_supervisor, caplog):
         """5.2.15d: referencing undefined task field falls gracefully with descriptive error."""
         event = {"type": "test", "project_id": "proj"}
         graph = {
@@ -5195,7 +5193,9 @@ class TestRoadmap5217:
 
     # (e) budget-exceeded run → status "failed" with the node where budget was exhausted
 
-    async def test_e_budget_exceeded_run_identifies_node(self, mock_supervisor, event_data, mock_db):
+    async def test_e_budget_exceeded_run_identifies_node(
+        self, mock_supervisor, event_data, mock_db
+    ):
         """(e) Budget-exceeded run has status 'failed' with the node where
         budget was exhausted (spec §6 Token Budget)."""
         # Use a very small token budget so it exhausts after the first node
@@ -5319,6 +5319,328 @@ class TestRoadmap5217:
         # Node ordering in time: each node starts at or after the previous finished
         for i in range(1, len(trace)):
             assert trace[i]["started_at"] >= trace[i - 1]["completed_at"], (
-                f"Node '{trace[i]['node_id']}' started before "
-                f"'{trace[i - 1]['node_id']}' completed"
+                f"Node '{trace[i]['node_id']}' started before '{trace[i - 1]['node_id']}' completed"
             )
+
+
+# ---------------------------------------------------------------------------
+# Daily Playbook Token Cap (roadmap 5.2.8)
+# ---------------------------------------------------------------------------
+
+
+class TestDailyPlaybookTokenCap:
+    """Global daily playbook token cap enforcement (roadmap 5.2.8).
+
+    When ``max_daily_playbook_tokens`` is configured, the runner queries the
+    database for today's cumulative playbook token usage before starting a
+    new run.  If the cap is already reached, the run is immediately failed
+    with ``daily_playbook_token_cap_exceeded``.
+    """
+
+    async def test_daily_cap_blocks_new_run(self, mock_supervisor, mock_db, event_data):
+        """Run is blocked when today's usage already meets the daily cap."""
+        graph = {
+            "id": "daily-cap-test",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # DB reports 50_000 tokens used today; cap is 50_000
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=50_000)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=50_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "daily_playbook_token_cap_exceeded" in result.error
+        assert "50000" in result.error
+        # Supervisor should never be called — blocked before execution
+        mock_supervisor.chat.assert_not_called()
+
+    async def test_daily_cap_allows_under_budget(self, mock_supervisor, mock_db, event_data):
+        """Run proceeds normally when today's usage is under the cap."""
+        graph = {
+            "id": "daily-ok",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=10_000)
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=50_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "completed"
+        mock_supervisor.chat.assert_called_once()
+
+    async def test_no_daily_cap_means_unlimited(self, mock_supervisor, mock_db, event_data):
+        """When max_daily_playbook_tokens is None, no daily check occurs."""
+        graph = {
+            "id": "no-daily-cap",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Should NOT have queried daily usage at all
+        mock_db.get_daily_playbook_token_usage.assert_not_called()
+
+    async def test_daily_cap_without_db_skips_check(self, mock_supervisor, event_data):
+        """When no DB is configured, the daily cap check is skipped."""
+        graph = {
+            "id": "no-db-cap",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=None,
+            max_daily_playbook_tokens=100,
+        )
+        result = await runner.run()
+
+        # No DB means we can't check — run proceeds
+        assert result.status == "completed"
+
+    async def test_daily_cap_exceeded_persists_to_db(self, mock_supervisor, mock_db, event_data):
+        """Daily cap failure is persisted to the database with correct status and error."""
+        graph = {
+            "id": "db-daily-cap",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=100_000)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=80_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+
+        # Verify the DB record was created and then updated with failure
+        mock_db.create_playbook_run.assert_called_once()
+        mock_db.update_playbook_run.assert_called_once()
+        update_kwargs = mock_db.update_playbook_run.call_args.kwargs
+        assert update_kwargs["status"] == "failed"
+        assert "daily_playbook_token_cap_exceeded" in update_kwargs["error"]
+        assert update_kwargs["completed_at"] is not None
+
+    async def test_daily_cap_exceeded_sends_notification(
+        self, mock_supervisor, mock_db, event_data
+    ):
+        """A notification is sent via on_progress when daily cap is exceeded."""
+        graph = {
+            "id": "notify-daily",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=200_000)
+        progress_events: list[tuple[str, str | None]] = []
+
+        async def on_progress(event: str, detail: str | None) -> None:
+            progress_events.append((event, detail))
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            on_progress=on_progress,
+            max_daily_playbook_tokens=100_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        # Should have a playbook_failed event
+        failed_events = [e for e in progress_events if e[0] == "playbook_failed"]
+        assert len(failed_events) == 1
+        assert "daily_playbook_token_cap_exceeded" in failed_events[0][1]
+
+    async def test_daily_cap_exceeded_empty_trace(self, mock_supervisor, mock_db, event_data):
+        """When blocked by daily cap, no nodes execute so trace is empty."""
+        graph = {
+            "id": "empty-trace",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=999_999)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=100_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert result.node_trace == []
+        assert result.tokens_used == 0
+
+    async def test_daily_cap_error_includes_usage_details(
+        self, mock_supervisor, mock_db, event_data
+    ):
+        """Error message includes both the daily cap and the actual usage."""
+        graph = {
+            "id": "error-detail",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=75_000)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=50_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "50000" in result.error  # cap
+        assert "75000" in result.error  # actual
+
+    async def test_daily_cap_boundary_exact_match(self, mock_supervisor, mock_db, event_data):
+        """When usage exactly equals the cap, the run is blocked."""
+        graph = {
+            "id": "boundary",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=100_000)
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=100_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "daily_playbook_token_cap_exceeded" in result.error
+
+    async def test_daily_cap_one_below_allows(self, mock_supervisor, mock_db, event_data):
+        """When usage is one below the cap, the run is allowed to proceed."""
+        graph = {
+            "id": "one-below",
+            "version": 1,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=99_999)
+        mock_supervisor.chat.return_value = "Done."
+
+        runner = PlaybookRunner(
+            graph,
+            event_data,
+            mock_supervisor,
+            db=mock_db,
+            max_daily_playbook_tokens=100_000,
+        )
+        result = await runner.run()
+
+        assert result.status == "completed"
+
+    async def test_check_daily_budget_class_method(self, mock_db):
+        """The static check_daily_budget() method works correctly."""
+        mock_db.get_daily_playbook_token_usage = AsyncMock(return_value=50_000)
+
+        # Exceeded
+        exceeded, used = await PlaybookRunner.check_daily_budget(mock_db, 50_000)
+        assert exceeded is True
+        assert used == 50_000
+
+        # Not exceeded
+        exceeded, used = await PlaybookRunner.check_daily_budget(mock_db, 100_000)
+        assert exceeded is False
+        assert used == 50_000
+
+        # No cap
+        exceeded, used = await PlaybookRunner.check_daily_budget(mock_db, None)
+        assert exceeded is False
+        assert used == 0
+
+    def test_midnight_today_returns_valid_timestamp(self):
+        """_midnight_today returns a timestamp for the start of today."""
+        import datetime
+
+        midnight = _midnight_today()
+        now = time.time()
+
+        # Midnight should be in the past (or exactly now if run at midnight)
+        assert midnight <= now
+        # And within the last 24 hours
+        assert now - midnight < 86400
+
+        # Round-trip check: converting back gives midnight
+        dt = datetime.datetime.fromtimestamp(midnight)
+        assert dt.hour == 0
+        assert dt.minute == 0
+        assert dt.second == 0

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import playbook_runs
 from src.models import PlaybookRun
@@ -81,6 +81,31 @@ class PlaybookQueryMixin:
             await conn.execute(
                 update(playbook_runs).where(playbook_runs.c.run_id == run_id).values(**kwargs)
             )
+
+    async def get_daily_playbook_token_usage(self, since: float) -> int:
+        """Sum ``tokens_used`` across all playbook runs started at or after *since*.
+
+        Used by the daily playbook token cap to determine whether the global
+        ``max_daily_playbook_tokens`` budget has been exhausted.
+
+        Parameters
+        ----------
+        since:
+            Unix timestamp (e.g. midnight today).  Only runs with
+            ``started_at >= since`` are included.
+
+        Returns
+        -------
+        int
+            Total tokens used by matching runs (0 when there are none).
+        """
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(func.coalesce(func.sum(playbook_runs.c.tokens_used), 0)).where(
+                    playbook_runs.c.started_at >= since
+                )
+            )
+            return int(result.scalar())
 
     async def delete_playbook_run(self, run_id: str) -> None:
         """Delete a playbook run record."""

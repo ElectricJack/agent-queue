@@ -770,6 +770,7 @@ class AppConfig:
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
+    max_daily_playbook_tokens: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     _config_path: str = field(default="", repr=False)
 
@@ -960,6 +961,7 @@ class AppConfig:
         updated.monitoring = fresh.monitoring
         updated.hook_engine = fresh.hook_engine
         updated.llm_logging = fresh.llm_logging
+        updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
 
         return updated
 
@@ -979,6 +981,7 @@ HOT_RELOADABLE_SECTIONS = {
     "auto_task",
     "logging",
     "agent_profiles",
+    "max_daily_playbook_tokens",
     "rate_limits",
 }
 """Config sections that can be safely updated at runtime without restart."""
@@ -1021,6 +1024,7 @@ _SECTION_FIELDS = {
     "llm_logging",
     "agent_profiles",
     "global_token_budget_daily",
+    "max_daily_playbook_tokens",
     "rate_limits",
 }
 
@@ -1340,6 +1344,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.database.url = config.database_path
     if "global_token_budget_daily" in raw:
         config.global_token_budget_daily = raw["global_token_budget_daily"]
+    if "max_daily_playbook_tokens" in raw:
+        config.max_daily_playbook_tokens = raw["max_daily_playbook_tokens"]
     if "messaging_platform" in raw:
         config.messaging_platform = raw["messaging_platform"]
 

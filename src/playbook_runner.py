@@ -27,6 +27,7 @@ See also: :mod:`src.playbook_handler` (vault watcher / compilation dispatch).
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import re
@@ -76,6 +77,21 @@ class RunResult:
     tokens_used: int
     error: str | None = None
     final_response: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Daily token cap helper
+# ---------------------------------------------------------------------------
+
+
+def _midnight_today() -> float:
+    """Return the Unix timestamp for midnight (00:00) of the current local day.
+
+    Used by the daily playbook token cap (roadmap 5.2.8) to determine
+    the start of the accounting window.
+    """
+    today = datetime.date.today()
+    return datetime.datetime.combine(today, datetime.time.min).timestamp()
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +258,7 @@ class PlaybookRunner:
         supervisor: Supervisor,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+        max_daily_playbook_tokens: int | None = None,
     ):
         self.graph = graph
         self.event = event
@@ -265,6 +282,57 @@ class PlaybookRunner:
         self._max_tokens: int | None = graph.get("max_tokens")
         self._llm_config: dict | None = graph.get("llm_config")
         self._transition_llm_config: dict | None = graph.get("transition_llm_config")
+
+        # Global daily playbook token cap (roadmap 5.2.8).
+        # When set, ``run()`` checks today's cumulative playbook token usage
+        # before starting and refuses to execute if the cap is already reached.
+        self._max_daily_playbook_tokens: int | None = max_daily_playbook_tokens
+
+    # ------------------------------------------------------------------
+    # Daily playbook token cap (roadmap 5.2.8)
+    # ------------------------------------------------------------------
+
+    async def _get_daily_playbook_tokens(self) -> int:
+        """Query the DB for today's cumulative playbook token usage.
+
+        Returns the sum of ``tokens_used`` for all runs started since
+        midnight (local time) today.  Returns ``0`` when no DB is
+        configured.
+        """
+        if not self.db:
+            return 0
+        midnight = _midnight_today()
+        return await self.db.get_daily_playbook_token_usage(midnight)
+
+    @staticmethod
+    async def check_daily_budget(
+        db: DatabaseBackend,
+        max_daily_playbook_tokens: int | None,
+    ) -> tuple[bool, int]:
+        """Pre-flight check: is the daily playbook token cap exceeded?
+
+        Useful for callers that want to decide whether to create a runner
+        at all, without incurring the cost of instantiation and DB record
+        creation.
+
+        Parameters
+        ----------
+        db:
+            Database backend to query.
+        max_daily_playbook_tokens:
+            The configured cap, or ``None`` for unlimited.
+
+        Returns
+        -------
+        tuple[bool, int]
+            ``(exceeded, daily_used)`` — *exceeded* is ``True`` when the
+            cap is set and today's usage meets or exceeds it.
+        """
+        if max_daily_playbook_tokens is None:
+            return False, 0
+        midnight = _midnight_today()
+        daily_used = await db.get_daily_playbook_token_usage(midnight)
+        return daily_used >= max_daily_playbook_tokens, daily_used
 
     # ------------------------------------------------------------------
     # State machine integration
@@ -324,6 +392,22 @@ class PlaybookRunner:
         )
         if self.db:
             await self.db.create_playbook_run(db_run)
+
+        # Daily playbook token cap check (roadmap 5.2.8).
+        # Query today's cumulative usage before spending any tokens.
+        if self._max_daily_playbook_tokens is not None and self.db:
+            daily_used = await self._get_daily_playbook_tokens()
+            if daily_used >= self._max_daily_playbook_tokens:
+                return await self._fail(
+                    db_run,
+                    (
+                        f"daily_playbook_token_cap_exceeded: limit "
+                        f"{self._max_daily_playbook_tokens} reached "
+                        f"(used today: {daily_used})"
+                    ),
+                    started_at,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
+                )
 
         # Seed conversation with event context
         seed_message = (
