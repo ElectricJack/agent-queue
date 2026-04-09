@@ -6558,4 +6558,178 @@ feature work stuck on feature branches across multiple workspaces.
         count = reset_prompts(loaded.install_path)
         return {"name": name, "reset_count": count, "message": f"Reset {count} prompts"}
 
+    # ------------------------------------------------------------------
+    # Playbook commands (spec §15)
+    # ------------------------------------------------------------------
+
+    async def _cmd_list_playbook_runs(self, args: dict) -> dict:
+        """List recent playbook runs with optional filtering.
+
+        Supports filtering by playbook_id and/or status (e.g. ``"paused"``
+        to find runs awaiting human review).  Returns newest first.
+
+        Args:
+            playbook_id: Optional — filter to a specific playbook.
+            status: Optional — filter by run status
+                (``running``, ``paused``, ``completed``, ``failed``, ``timed_out``).
+            limit: Optional — max results (default 20).
+        """
+        playbook_id = args.get("playbook_id")
+        status = args.get("status")
+        limit = int(args.get("limit", 20))
+
+        valid_statuses = {"running", "paused", "completed", "failed", "timed_out"}
+        if status and status not in valid_statuses:
+            return {
+                "error": f"Invalid status '{status}'. Valid: {', '.join(sorted(valid_statuses))}"
+            }
+
+        runs = await self.db.list_playbook_runs(
+            playbook_id=playbook_id,
+            status=status,
+            limit=limit,
+        )
+        return {
+            "runs": [
+                {
+                    "run_id": r.run_id,
+                    "playbook_id": r.playbook_id,
+                    "status": r.status,
+                    "current_node": r.current_node,
+                    "tokens_used": r.tokens_used,
+                    "started_at": r.started_at,
+                    "completed_at": r.completed_at,
+                    "error": r.error,
+                }
+                for r in runs
+            ],
+            "count": len(runs),
+        }
+
+    async def _cmd_resume_playbook(self, args: dict) -> dict:
+        """Resume a paused (human-in-the-loop) playbook run.
+
+        Fetches the paused run from the database, validates it is in
+        ``paused`` status, creates a Supervisor for LLM calls, and invokes
+        :meth:`PlaybookRunner.resume` with the human's input.
+
+        The human input is injected into the conversation history and the
+        run continues from the paused node, evaluating transitions with
+        the new context.
+
+        A ``human.review.completed`` event is emitted on the EventBus
+        so downstream subscribers can react (spec §9).
+
+        Args:
+            run_id: The playbook run to resume.
+            human_input: The human reviewer's decision / feedback text.
+        """
+        run_id = args.get("run_id")
+        human_input = args.get("human_input", "").strip()
+
+        if not run_id:
+            return {"error": "run_id is required"}
+        if not human_input:
+            return {"error": "human_input is required — provide your review decision or feedback"}
+
+        # Fetch the paused run
+        db_run = await self.db.get_playbook_run(run_id)
+        if not db_run:
+            return {"error": f"Playbook run '{run_id}' not found"}
+        if db_run.status != "paused":
+            return {
+                "error": (
+                    f"Run '{run_id}' has status '{db_run.status}', not 'paused'. "
+                    f"Only paused runs can be resumed."
+                )
+            }
+
+        # Check pause timeout (spec §9: default 24 hours)
+        pause_timeout_seconds = int(args.get("timeout_seconds", 86400))
+        # Determine when the run was paused from the node trace
+        paused_at = self._get_paused_at(db_run)
+        if paused_at and (time.time() - paused_at) > pause_timeout_seconds:
+            # Mark as timed out
+            await self.db.update_playbook_run(
+                run_id,
+                status="timed_out",
+                completed_at=time.time(),
+                error=f"Pause timeout exceeded ({pause_timeout_seconds}s)",
+            )
+            return {
+                "error": (
+                    f"Run '{run_id}' has exceeded its pause timeout "
+                    f"({pause_timeout_seconds}s). The run has been marked as timed_out."
+                )
+            }
+
+        # Resolve the playbook graph — pinned_graph is preferred (version
+        # pinning), but fall back to the current active version if needed.
+        graph = None
+        if db_run.pinned_graph:
+            graph = json.loads(db_run.pinned_graph)
+        elif hasattr(self.orchestrator, "playbook_manager"):
+            pb = self.orchestrator.playbook_manager._active.get(db_run.playbook_id)
+            if pb:
+                graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
+        if not graph:
+            return {
+                "error": (
+                    f"Cannot resolve playbook graph for '{db_run.playbook_id}'. "
+                    f"The playbook may have been removed."
+                )
+            }
+
+        # Create a Supervisor for LLM calls during resume
+        from src.supervisor import Supervisor
+
+        supervisor = Supervisor(self.orchestrator, self.config)
+        if not supervisor.initialize():
+            return {"error": "Failed to initialize LLM provider for playbook resume"}
+
+        # Resolve event_bus
+        event_bus = getattr(self.orchestrator, "bus", None)
+
+        from src.playbook_runner import PlaybookRunner
+
+        try:
+            result = await PlaybookRunner.resume(
+                db_run=db_run,
+                graph=graph,
+                supervisor=supervisor,
+                human_input=human_input,
+                db=self.db,
+                event_bus=event_bus,
+            )
+        except Exception as exc:
+            logger.error("Playbook resume failed for run %s: %s", run_id, exc, exc_info=True)
+            return {"error": f"Resume failed: {exc}"}
+
+        return {
+            "resumed": run_id,
+            "playbook_id": db_run.playbook_id,
+            "status": result.status,
+            "tokens_used": result.tokens_used,
+            "error": result.error,
+        }
+
+    @staticmethod
+    def _get_paused_at(db_run) -> float | None:
+        """Extract the timestamp when a run was paused.
+
+        Looks at the last entry in node_trace for the completed_at time
+        of the paused node, falling back to started_at.
+        """
+        try:
+            trace = json.loads(db_run.node_trace) if isinstance(db_run.node_trace, str) else []
+            if trace:
+                last_entry = trace[-1]
+                # The completed_at of the last node is when the pause happened
+                completed_at = last_entry.get("completed_at")
+                if completed_at:
+                    return completed_at
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return db_run.started_at
+
     # Rule system commands are implemented above (Phase 2).

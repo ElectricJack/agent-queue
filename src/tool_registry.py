@@ -84,6 +84,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="task",
         description=("Task lifecycle, approval, dependencies, archives, and results"),
     ),
+    "playbook": CategoryMeta(
+        name="playbook",
+        description=("Playbook run management, human-in-the-loop review and resume"),
+    ),
     "plugin": CategoryMeta(
         name="plugin",
         description=("Plugin installation, configuration, and lifecycle management"),
@@ -178,6 +182,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_dependency": "task",
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
+    # playbook — run management, human-in-the-loop resume
+    "list_playbook_runs": "playbook",
+    "resume_playbook": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -1991,8 +1998,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "rule_runs",
         "description": (
-            "Show recent execution history for a rule (aggregated across "
-            "all its hooks)."
+            "Show recent execution history for a rule (aggregated across all its hooks)."
         ),
         "input_schema": {
             "type": "object",
@@ -2105,6 +2111,64 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["category"],
+        },
+    },
+    # ------------------------------------------------------------------
+    # Playbook commands (spec §15)
+    # ------------------------------------------------------------------
+    {
+        "name": "list_playbook_runs",
+        "description": (
+            "List recent playbook runs. Filter by playbook_id and/or status "
+            "(e.g. 'paused' to find runs awaiting human review). Returns newest first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "Filter to a specific playbook ID",
+                },
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "Filter by run status: running, paused, completed, failed, timed_out"
+                    ),
+                    "enum": ["running", "paused", "completed", "failed", "timed_out"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default 20)",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "resume_playbook",
+        "description": (
+            "Resume a paused (human-in-the-loop) playbook run. "
+            "Provide your review decision or feedback as human_input — "
+            "it will be injected into the conversation and the playbook "
+            "will continue from where it paused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The playbook run ID to resume",
+                },
+                "human_input": {
+                    "type": "string",
+                    "description": (
+                        "Your review decision or feedback text. This is added "
+                        "to the conversation history and used to determine the "
+                        "next transition."
+                    ),
+                },
+            },
+            "required": ["run_id", "human_input"],
         },
     },
 ]
@@ -2519,9 +2583,7 @@ class ToolRegistry:
         lines: list[str] = []
         for cat_name in CATEGORIES:
             names = sorted(
-                name
-                for name, t in merged.items()
-                if self._tool_category(name, t) == cat_name
+                name for name, t in merged.items() if self._tool_category(name, t) == cat_name
             )
             if names:
                 lines.append(f"**{cat_name}**: {', '.join(names)}")

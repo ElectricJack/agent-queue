@@ -736,7 +736,9 @@ class TestTokenBudget:
         # Run should complete (not fail) — warning is advisory only
         assert result.status == "completed"
         # A warning about approaching budget should have been logged
-        warning_msgs = [r.message for r in caplog.records if "approaching token budget" in r.message]
+        warning_msgs = [
+            r.message for r in caplog.records if "approaching token budget" in r.message
+        ]
         assert len(warning_msgs) >= 1
         assert "warn-test" in warning_msgs[0]
 
@@ -5987,3 +5989,551 @@ class TestDailyPlaybookTokenCap:
         assert dt.hour == 0
         assert dt.minute == 0
         assert dt.second == 0
+
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop: event emission (spec §9, roadmap 5.4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestHumanInTheLoopEvents:
+    """Tests for playbook.run.paused and human.review.completed event emission."""
+
+    async def test_pause_emits_playbook_run_paused_event(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """When a run pauses at a wait_for_human node, a playbook.run.paused event fires."""
+        responses = iter(["Analysis done.", "Ready for review."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        runner = PlaybookRunner(
+            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+        )
+        result = await runner.run()
+
+        assert result.status == "paused"
+
+        # Find the playbook.run.paused event call
+        paused_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "playbook.run.paused"
+        ]
+        assert len(paused_calls) == 1
+        payload = paused_calls[0].args[1]
+        assert payload["playbook_id"] == "human-review-playbook"
+        assert payload["run_id"] == result.run_id
+        assert payload["node_id"] == "review"
+        assert "paused_at" in payload
+        assert "tokens_used" in payload
+
+    async def test_pause_event_includes_last_response(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """The paused event includes the last assistant response as context."""
+        responses = iter(["Analysis complete.", "Here is my analysis for review."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        runner = PlaybookRunner(
+            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+        )
+        await runner.run()
+
+        paused_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "playbook.run.paused"
+        ]
+        assert len(paused_calls) == 1
+        payload = paused_calls[0].args[1]
+        assert payload.get("last_response") == "Here is my analysis for review."
+
+    async def test_pause_event_not_emitted_without_event_bus(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """When no event_bus is configured, pause still works without error."""
+        responses = iter(["Analysis.", "Review context."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+        assert result.status == "paused"  # No error, just no event emitted
+
+    async def test_resume_emits_human_review_completed_event(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """When a paused run is resumed, a human.review.completed event fires."""
+        paused_run = PlaybookRun(
+            run_id="evt-test-1",
+            playbook_id="human-review-playbook",
+            playbook_version=1,
+            trigger_event=json.dumps(event_data),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event received: ..."},
+                    {"role": "user", "content": "Analyse the issue."},
+                    {"role": "assistant", "content": "Analysis done."},
+                    {"role": "user", "content": "Present for review."},
+                    {"role": "assistant", "content": "Here is the review."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100,
+                        "completed_at": 101,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": 102,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=50,
+            started_at=100.0,
+        )
+
+        responses = iter(["1", "Executed."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        result = await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=human_review_graph,
+            supervisor=mock_supervisor,
+            human_input="Approved, proceed.",
+            db=mock_db,
+            event_bus=event_bus,
+        )
+
+        assert result.status == "completed"
+
+        # Find the human.review.completed event
+        review_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "human.review.completed"
+        ]
+        assert len(review_calls) == 1
+        payload = review_calls[0].args[1]
+        assert payload["playbook_id"] == "human-review-playbook"
+        assert payload["run_id"] == "evt-test-1"
+        assert payload["node_id"] == "review"
+        assert payload["decision"] == "Approved, proceed."
+
+    async def test_resume_also_emits_completion_event(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """A resumed run that completes emits both human.review.completed and playbook.run.completed."""
+        paused_run = PlaybookRun(
+            run_id="evt-test-2",
+            playbook_id="human-review-playbook",
+            playbook_version=1,
+            trigger_event=json.dumps(event_data),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event."},
+                    {"role": "assistant", "content": "Analysis."},
+                    {"role": "user", "content": "Review."},
+                    {"role": "assistant", "content": "For review."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100,
+                        "completed_at": 101,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": 102,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=30,
+            started_at=100.0,
+        )
+
+        responses = iter(["1", "Done."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=human_review_graph,
+            supervisor=mock_supervisor,
+            human_input="Go ahead.",
+            db=mock_db,
+            event_bus=event_bus,
+        )
+
+        event_types = [c.args[0] for c in event_bus.emit.call_args_list]
+        assert "human.review.completed" in event_types
+        assert "playbook.run.completed" in event_types
+
+    async def test_pause_event_caps_long_response(self, mock_supervisor, mock_db):
+        """The last_response in the paused event is capped at 2000 chars."""
+        graph = {
+            "id": "cap-test",
+            "version": 1,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Go.",
+                    "goto": "human",
+                },
+                "human": {
+                    "prompt": "Review.",
+                    "wait_for_human": True,
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        long_response = "x" * 5000
+        responses = iter(["short.", long_response])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        runner = PlaybookRunner(
+            graph, {"type": "test"}, mock_supervisor, db=mock_db, event_bus=event_bus
+        )
+        await runner.run()
+
+        paused_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "playbook.run.paused"
+        ]
+        assert len(paused_calls) == 1
+        last_resp = paused_calls[0].args[1].get("last_response", "")
+        assert len(last_resp) <= 2000
+
+    async def test_resume_caps_long_human_input_in_event(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """The decision field in human.review.completed is capped at 2000 chars."""
+        paused_run = PlaybookRun(
+            run_id="cap-test-1",
+            playbook_id="human-review-playbook",
+            playbook_version=1,
+            trigger_event=json.dumps(event_data),
+            status="paused",
+            current_node="review",
+            conversation_history=json.dumps(
+                [
+                    {"role": "user", "content": "Event."},
+                    {"role": "assistant", "content": "Analysis."},
+                    {"role": "user", "content": "Review."},
+                    {"role": "assistant", "content": "Ready."},
+                ]
+            ),
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "analyse",
+                        "started_at": 100,
+                        "completed_at": 101,
+                        "status": "completed",
+                    },
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": 102,
+                        "status": "completed",
+                    },
+                ]
+            ),
+            tokens_used=30,
+            started_at=100.0,
+        )
+
+        long_input = "y" * 5000
+        responses = iter(["1", "Done."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        await PlaybookRunner.resume(
+            db_run=paused_run,
+            graph=human_review_graph,
+            supervisor=mock_supervisor,
+            human_input=long_input,
+            db=mock_db,
+            event_bus=event_bus,
+        )
+
+        review_calls = [
+            c for c in event_bus.emit.call_args_list if c.args[0] == "human.review.completed"
+        ]
+        assert len(review_calls) == 1
+        decision = review_calls[0].args[1]["decision"]
+        assert len(decision) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# Command handler: resume_playbook and list_playbook_runs (roadmap 5.4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestResumePlaybookCommand:
+    """Tests for the _cmd_resume_playbook command handler method."""
+
+    @pytest.fixture
+    def mock_handler(self):
+        """Create a minimal mock CommandHandler for testing."""
+        handler = AsyncMock()
+        handler.db = AsyncMock()
+        handler.orchestrator = AsyncMock()
+        handler.config = AsyncMock()
+        handler.orchestrator.bus = AsyncMock()
+        handler.orchestrator.bus.emit = AsyncMock()
+        return handler
+
+    async def test_resume_requires_run_id(self):
+        """resume_playbook returns error when run_id is missing."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+
+        result = await handler._cmd_resume_playbook({"human_input": "ok"})
+        assert "error" in result
+        assert "run_id" in result["error"]
+
+    async def test_resume_requires_human_input(self):
+        """resume_playbook returns error when human_input is empty."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+
+        result = await handler._cmd_resume_playbook({"run_id": "abc", "human_input": ""})
+        assert "error" in result
+        assert "human_input" in result["error"]
+
+    async def test_resume_run_not_found(self):
+        """resume_playbook returns error when run doesn't exist."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+        handler.db.get_playbook_run = AsyncMock(return_value=None)
+
+        result = await handler._cmd_resume_playbook(
+            {"run_id": "nonexistent", "human_input": "Approved"}
+        )
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    async def test_resume_non_paused_run(self):
+        """resume_playbook returns error when run is not in paused status."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
+        handler._get_paused_at = CommandHandler._get_paused_at
+        handler.db = AsyncMock()
+
+        completed_run = PlaybookRun(
+            run_id="completed-1",
+            playbook_id="test-pb",
+            playbook_version=1,
+            status="completed",
+            started_at=100.0,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=completed_run)
+
+        result = await handler._cmd_resume_playbook(
+            {"run_id": "completed-1", "human_input": "Resume please"}
+        )
+        assert "error" in result
+        assert "completed" in result["error"]
+        assert "not 'paused'" in result["error"]
+
+
+class TestListPlaybookRunsCommand:
+    """Tests for the _cmd_list_playbook_runs command handler method."""
+
+    async def test_list_all_runs(self):
+        """list_playbook_runs returns all runs when no filters given."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
+        handler.db = AsyncMock()
+
+        run1 = PlaybookRun(
+            run_id="r1",
+            playbook_id="pb1",
+            playbook_version=1,
+            status="completed",
+            started_at=100.0,
+            completed_at=200.0,
+            tokens_used=500,
+        )
+        run2 = PlaybookRun(
+            run_id="r2",
+            playbook_id="pb2",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=150.0,
+            tokens_used=300,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[run1, run2])
+
+        result = await handler._cmd_list_playbook_runs({})
+        assert result["count"] == 2
+        assert result["runs"][0]["run_id"] == "r1"
+        assert result["runs"][1]["run_id"] == "r2"
+        assert result["runs"][1]["current_node"] == "review"
+
+    async def test_list_paused_runs_only(self):
+        """list_playbook_runs filters by status."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
+        handler.db = AsyncMock()
+
+        paused_run = PlaybookRun(
+            run_id="r2",
+            playbook_id="pb2",
+            playbook_version=1,
+            status="paused",
+            current_node="review",
+            started_at=150.0,
+            tokens_used=300,
+        )
+        handler.db.list_playbook_runs = AsyncMock(return_value=[paused_run])
+
+        result = await handler._cmd_list_playbook_runs({"status": "paused"})
+        assert result["count"] == 1
+        assert result["runs"][0]["status"] == "paused"
+
+        # Verify the db was called with the correct status filter
+        handler.db.list_playbook_runs.assert_called_once_with(
+            playbook_id=None, status="paused", limit=20
+        )
+
+    async def test_list_invalid_status_rejected(self):
+        """list_playbook_runs rejects invalid status values."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
+        handler.db = AsyncMock()
+
+        result = await handler._cmd_list_playbook_runs({"status": "invalid"})
+        assert "error" in result
+        assert "Invalid status" in result["error"]
+
+    async def test_list_with_limit(self):
+        """list_playbook_runs respects the limit parameter."""
+        from src.command_handler import CommandHandler
+
+        handler = AsyncMock(spec=CommandHandler)
+        handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
+        handler.db = AsyncMock()
+        handler.db.list_playbook_runs = AsyncMock(return_value=[])
+
+        await handler._cmd_list_playbook_runs({"limit": 5})
+        handler.db.list_playbook_runs.assert_called_once_with(
+            playbook_id=None, status=None, limit=5
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pause timeout (spec §9, roadmap 5.4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestPauseTimeout:
+    """Tests for pause timeout enforcement."""
+
+    async def test_get_paused_at_from_node_trace(self):
+        """_get_paused_at extracts the completed_at from the last trace entry."""
+        from src.command_handler import CommandHandler
+
+        run = PlaybookRun(
+            run_id="t1",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            started_at=100.0,
+            node_trace=json.dumps(
+                [
+                    {"node_id": "a", "started_at": 100, "completed_at": 101, "status": "completed"},
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": 150,
+                        "status": "completed",
+                    },
+                ]
+            ),
+        )
+        paused_at = CommandHandler._get_paused_at(run)
+        assert paused_at == 150
+
+    async def test_get_paused_at_falls_back_to_started_at(self):
+        """_get_paused_at falls back to started_at when trace has no completed_at."""
+        from src.command_handler import CommandHandler
+
+        run = PlaybookRun(
+            run_id="t2",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            started_at=100.0,
+            node_trace=json.dumps(
+                [
+                    {
+                        "node_id": "review",
+                        "started_at": 101,
+                        "completed_at": None,
+                        "status": "running",
+                    },
+                ]
+            ),
+        )
+        paused_at = CommandHandler._get_paused_at(run)
+        assert paused_at == 100.0
+
+    async def test_get_paused_at_with_empty_trace(self):
+        """_get_paused_at falls back to started_at when trace is empty."""
+        from src.command_handler import CommandHandler
+
+        run = PlaybookRun(
+            run_id="t3",
+            playbook_id="pb",
+            playbook_version=1,
+            status="paused",
+            started_at=100.0,
+            node_trace="[]",
+        )
+        paused_at = CommandHandler._get_paused_at(run)
+        assert paused_at == 100.0

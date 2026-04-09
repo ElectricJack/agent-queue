@@ -509,6 +509,60 @@ class PlaybookRunner:
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.failed", payload)
 
+    async def _emit_paused_event(
+        self,
+        *,
+        node_id: str,
+        started_at: float | None = None,
+        paused_at: float | None = None,
+    ) -> None:
+        """Emit ``playbook.run.paused`` on the EventBus.
+
+        Fired when execution pauses at a ``wait_for_human`` node (spec §9).
+        Notification subscribers (Discord, dashboard) use this to surface
+        the review request.  The payload includes the node ID, conversation
+        context summary, and timing information so the notification can be
+        informative without requiring a DB lookup.
+        """
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "node_id": node_id,
+        }
+        if started_at is not None:
+            payload["running_seconds"] = round((paused_at or time.time()) - started_at, 2)
+        if paused_at is not None:
+            payload["paused_at"] = paused_at
+        payload["tokens_used"] = self.tokens_used
+        # Include the last assistant response as context for the reviewer
+        for msg in reversed(self.messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    payload["last_response"] = content[:2000]  # cap for event payload
+                    break
+        await self._emit_bus_event("playbook.run.paused", payload)
+
+    async def _emit_resumed_event(
+        self,
+        *,
+        node_id: str,
+        human_input: str,
+    ) -> None:
+        """Emit ``human.review.completed`` on the EventBus.
+
+        Fired when a human provides input to resume a paused run (spec §9).
+        Downstream subscribers can use this for audit logging, dashboards,
+        or chaining further automation.
+        """
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "node_id": node_id,
+            "decision": human_input[:2000],  # cap for event payload
+        }
+        await self._emit_bus_event("human.review.completed", payload)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -830,8 +884,15 @@ class PlaybookRunner:
         if db:
             await db.update_playbook_run(db_run.run_id, status=runner._status.value)
 
-        # Find the next node after the paused one
+        # Emit human.review.completed event (spec §9) for audit/notification
         paused_node_id = db_run.current_node
+        if paused_node_id:
+            await runner._emit_resumed_event(
+                node_id=paused_node_id,
+                human_input=human_input,
+            )
+
+        # Find the next node after the paused one
         if not paused_node_id:
             return await runner._fail(
                 db_run,
@@ -1897,9 +1958,18 @@ class PlaybookRunner:
         node_id: str,
         started_at: float,
     ) -> RunResult:
-        """Mark the run as paused for human review."""
+        """Mark the run as paused for human review.
+
+        Persists the full run state (conversation history, node trace, token
+        usage) so the run can be resumed later via :meth:`resume`.  Emits a
+        ``playbook.run.paused`` event on the EventBus so that notification
+        systems (Discord, dashboard) can surface the review request to a
+        human.  See spec §9.
+        """
         # Validate transition via state machine
         self._transition(PlaybookRunEvent.HUMAN_WAIT)
+
+        paused_at = time.time()
 
         logger.info(
             "Playbook '%s' run %s paused at node '%s' for human review",
@@ -1922,6 +1992,14 @@ class PlaybookRunner:
 
         if self.on_progress:
             await self.on_progress("playbook_paused", node_id)
+
+        # Emit playbook.run.paused event (spec §9) so notification systems
+        # (Discord, dashboard) can surface the review request.
+        await self._emit_paused_event(
+            node_id=node_id,
+            started_at=started_at,
+            paused_at=paused_at,
+        )
 
         return RunResult(
             run_id=self.run_id,
