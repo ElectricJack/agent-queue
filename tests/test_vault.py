@@ -1200,6 +1200,92 @@ def test_ensure_default_playbooks_idempotent_dependency_audit(tmp_path):
     assert "dependency-audit.md" in result["skipped"]
 
 
+def test_ensure_default_playbooks_creates_system_health_check(tmp_path):
+    """ensure_default_playbooks installs system-health-check.md to vault/system/playbooks/."""
+    result = ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md"
+    assert playbook_path.is_file()
+    assert "system-health-check.md" in result["created"]
+
+
+def test_default_system_health_check_frontmatter_valid():
+    """system-health-check.md has valid YAML frontmatter with required fields."""
+    import os
+
+    import yaml
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "system-health-check.md",
+    )
+    content = open(playbook_path).read()
+
+    # Must start with YAML frontmatter
+    assert content.startswith("---")
+    lines = content.strip().splitlines()
+    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
+    fm_text = "\n".join(lines[1:end_idx])
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["id"] == "system-health-check"
+    assert isinstance(fm["triggers"], list)
+    assert "timer.30m" in fm["triggers"]
+    assert fm["scope"] == "system"
+
+
+def test_default_system_health_check_body_covers_spec():
+    """system-health-check.md body covers all areas from the spec."""
+    import os
+
+    playbook_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "src",
+        "prompts",
+        "default_playbooks",
+        "system-health-check.md",
+    )
+    content = open(playbook_path).read()
+
+    # Extract body (after frontmatter)
+    parts = content.split("---", 2)
+    body = parts[2].lower()
+
+    # Stuck tasks
+    assert "stuck" in body
+    assert "assigned" in body or "in_progress" in body
+
+    # Blocked tasks
+    assert "blocked" in body
+    assert "resolution" in body or "unblock" in body
+
+    # Summary posting
+    assert "summary" in body
+    assert "healthy" in body or "nothing" in body or "skip" in body
+
+    # Memory integration (cross-playbook awareness)
+    assert "memory" in body
+
+
+def test_ensure_default_playbooks_idempotent_system_health_check(tmp_path):
+    """Calling ensure_default_playbooks twice does not overwrite system-health-check.md."""
+    ensure_default_playbooks(str(tmp_path))
+
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md"
+    custom_content = (
+        "---\nid: system-health-check\ntriggers:\n  - timer.30m\nscope: system\n---\n"
+    )
+    playbook_path.write_text(custom_content)
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert playbook_path.read_text() == custom_content
+    assert "system-health-check.md" in result["skipped"]
+
+
 def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     """ensure_vault_layout installs default playbooks as part of the layout."""
     ensure_vault_layout(str(tmp_path))
@@ -1207,6 +1293,7 @@ def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     assert (tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md").is_file()
     assert (tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md").is_file()
     assert (tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md").is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md").is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):

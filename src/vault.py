@@ -1062,6 +1062,9 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     - ``task-outcome.md`` — consolidates post-action reflection, spec-drift
       detection, and error-recovery monitoring into a single playbook triggered
       on ``task.completed`` and ``task.failed``.
+    - ``system-health-check.md`` — checks for stuck tasks, blocked tasks with
+      no resolution path, and unresponsive agents every 30 minutes.
+      Triggered on ``timer.30m``.
     - ``codebase-inspector.md`` — periodically inspects a random section of the
       codebase for quality issues, security risks, and documentation gaps.
       Triggered on ``timer.4h``.
