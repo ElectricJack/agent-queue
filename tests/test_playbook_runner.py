@@ -2160,3 +2160,313 @@ class TestTransitionEdgeCases:
         # transition_to is None → omitted from dict; transition_method is "none"
         assert "transition_to" not in result.node_trace[0]
         assert result.node_trace[0]["transition_method"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# 5.2.13: Playbook execution happy path
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookExecutionHappyPath:
+    """Roadmap 5.2.13 — end-to-end happy path tests per playbooks §6.
+
+    Uses a canonical 3-node linear playbook: start → middle → end → done(terminal).
+    Each test case maps to a specific roadmap requirement (a)-(g).
+    """
+
+    # -- Shared graph fixture for (a)-(f) ----------------------------------
+
+    @pytest.fixture
+    def three_node_graph(self):
+        """3-node linear playbook: start → middle → end → done."""
+        return {
+            "id": "happy-path-playbook",
+            "version": 3,
+            "nodes": {
+                "start": {
+                    "entry": True,
+                    "prompt": "Begin the analysis of the codebase.",
+                    "goto": "middle",
+                },
+                "middle": {
+                    "prompt": "Based on the analysis above, group findings by severity.",
+                    "goto": "end",
+                },
+                "end": {
+                    "prompt": "Generate a summary report of the grouped findings.",
+                    "goto": "done",
+                },
+                "done": {
+                    "terminal": True,
+                },
+            },
+        }
+
+    # (a) 3-node linear playbook executes all nodes in order, status "completed"
+    async def test_three_node_linear_executes_in_order(
+        self, mock_supervisor, three_node_graph, event_data
+    ):
+        """(a) start → middle → end executes in order with status 'completed'."""
+        responses = iter([
+            "Found 5 issues in the codebase.",
+            "Grouped: 2 critical, 2 warnings, 1 info.",
+            "Report: 5 total findings across 3 severity levels.",
+        ])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 3
+        assert [t["node_id"] for t in result.node_trace] == ["start", "middle", "end"]
+        for trace_entry in result.node_trace:
+            assert trace_entry["status"] == "completed"
+
+    # (b) Each node receives accumulated conversation history from prior nodes
+    async def test_each_node_receives_accumulated_history(
+        self, mock_supervisor, three_node_graph, event_data
+    ):
+        """(b) History grows: start sees seed; middle sees seed+start; end sees seed+start+middle."""
+        responses = iter(["Result from start.", "Result from middle.", "Result from end."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        calls = mock_supervisor.chat.call_args_list
+        assert len(calls) == 3
+
+        # Node "start" receives only the seed message
+        start_history = calls[0].kwargs["history"]
+        assert len(start_history) == 1
+        assert start_history[0]["role"] == "user"
+        assert "Event received" in start_history[0]["content"]
+
+        # Node "middle" receives seed + start prompt + start response
+        middle_history = calls[1].kwargs["history"]
+        assert len(middle_history) == 3
+        assert middle_history[0]["role"] == "user"  # seed
+        assert middle_history[1] == {
+            "role": "user",
+            "content": "Begin the analysis of the codebase.",
+        }
+        assert middle_history[2] == {
+            "role": "assistant",
+            "content": "Result from start.",
+        }
+
+        # Node "end" receives seed + start exchange + middle exchange
+        end_history = calls[2].kwargs["history"]
+        assert len(end_history) == 5
+        assert end_history[3] == {
+            "role": "user",
+            "content": "Based on the analysis above, group findings by severity.",
+        }
+        assert end_history[4] == {
+            "role": "assistant",
+            "content": "Result from middle.",
+        }
+
+    # (c) Each node's prompt is built with correct context (task data, event context)
+    async def test_node_prompt_built_with_correct_context(
+        self, mock_supervisor, three_node_graph, event_data
+    ):
+        """(c) Seed contains event/task data; each node gets its compiled prompt."""
+        responses = iter(["R1", "R2", "R3"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Seed message includes event context (task data / trigger event)
+        seed = runner.messages[0]
+        assert "Event received:" in seed["content"]
+        assert '"project_id": "test-proj"' in seed["content"]
+        assert '"commit_hash": "abc123"' in seed["content"]
+        assert "happy-path-playbook" in seed["content"]
+
+        # Each node's compiled prompt is passed verbatim
+        calls = mock_supervisor.chat.call_args_list
+        assert calls[0].kwargs["text"] == "Begin the analysis of the codebase."
+        assert calls[1].kwargs["text"] == (
+            "Based on the analysis above, group findings by severity."
+        )
+        assert calls[2].kwargs["text"] == (
+            "Generate a summary report of the grouped findings."
+        )
+
+    # (d) Supervisor.chat() is invoked once per node with correct parameters
+    async def test_supervisor_chat_invoked_once_per_node(
+        self, mock_supervisor, three_node_graph, event_data
+    ):
+        """(d) Exactly 3 supervisor.chat() calls with correct text, user_name, history."""
+        responses = iter(["R1", "R2", "R3"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        assert mock_supervisor.chat.call_count == 3
+
+        expected = [
+            ("Begin the analysis of the codebase.", "playbook-runner:start"),
+            (
+                "Based on the analysis above, group findings by severity.",
+                "playbook-runner:middle",
+            ),
+            (
+                "Generate a summary report of the grouped findings.",
+                "playbook-runner:end",
+            ),
+        ]
+
+        for call, (text, user_name) in zip(
+            mock_supervisor.chat.call_args_list, expected, strict=True
+        ):
+            assert call.kwargs["text"] == text
+            assert call.kwargs["user_name"] == user_name
+            # History should be a list of dicts
+            assert isinstance(call.kwargs["history"], list)
+            # LLM config should be passed (None when not set on graph)
+            assert "llm_config" in call.kwargs
+
+    # (e) Run duration and per-node token usage are recorded
+    async def test_run_duration_and_per_node_tokens_recorded(
+        self, mock_supervisor, three_node_graph, event_data
+    ):
+        """(e) Total tokens > 0; each trace entry has valid started_at/completed_at."""
+        responses = iter([
+            "Analysis: found 5 issues.",
+            "Grouped into 3 categories.",
+            "Summary report generated.",
+        ])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # Total tokens must be positive
+        assert result.tokens_used > 0
+
+        # Each node trace entry must have valid timing
+        for trace_entry in result.node_trace:
+            assert trace_entry["started_at"] is not None
+            assert trace_entry["completed_at"] is not None
+            assert trace_entry["completed_at"] >= trace_entry["started_at"]
+
+        # Node timestamps should be in order (start before middle before end)
+        assert result.node_trace[0]["started_at"] <= result.node_trace[1]["started_at"]
+        assert result.node_trace[1]["started_at"] <= result.node_trace[2]["started_at"]
+
+        # Per-node token contribution: each node adds tokens, so cumulative sum equals total
+        # Verify by computing expected tokens from the prompts + responses
+        prompts = [
+            "Begin the analysis of the codebase.",
+            "Based on the analysis above, group findings by severity.",
+            "Generate a summary report of the grouped findings.",
+        ]
+        resp = [
+            "Analysis: found 5 issues.",
+            "Grouped into 3 categories.",
+            "Summary report generated.",
+        ]
+        expected_tokens = sum(_estimate_tokens(p, r) for p, r in zip(prompts, resp, strict=True))
+        assert result.tokens_used == expected_tokens
+
+    # (f) Final PlaybookRun status "completed" with correct node trace [start, middle, end]
+    async def test_final_run_persisted_completed_with_correct_trace(
+        self, mock_supervisor, three_node_graph, event_data, mock_db
+    ):
+        """(f) DB record has status='completed' and node_trace=[start, middle, end]."""
+        responses = iter(["R1", "R2", "R3"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(three_node_graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+
+        # DB should have been updated with the final state
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        assert final_call.kwargs["status"] == "completed"
+        assert final_call.kwargs["completed_at"] is not None
+        assert final_call.kwargs["tokens_used"] > 0
+
+        # Verify persisted node trace
+        persisted_trace = json.loads(final_call.kwargs["node_trace"])
+        assert len(persisted_trace) == 3
+        assert [t["node_id"] for t in persisted_trace] == ["start", "middle", "end"]
+        for entry in persisted_trace:
+            assert entry["status"] == "completed"
+            assert entry["started_at"] is not None
+            assert entry["completed_at"] is not None
+
+        # Verify persisted conversation history is complete
+        persisted_history = json.loads(final_call.kwargs["conversation_history"])
+        # seed + 3 * (prompt + response) = 7 messages
+        assert len(persisted_history) == 7
+        assert persisted_history[0]["role"] == "user"  # seed
+        assert "Event received" in persisted_history[0]["content"]
+        # Prompts and responses alternate correctly
+        for i in range(1, 7, 2):
+            assert persisted_history[i]["role"] == "user"
+            assert persisted_history[i + 1]["role"] == "assistant"
+
+    # (g) Playbook with single node (entry = terminal) executes and completes
+    async def test_single_node_playbook_executes_and_completes(
+        self, mock_supervisor, event_data
+    ):
+        """(g) A single-node playbook (entry, no goto/transitions) executes and completes."""
+        graph = {
+            "id": "single-node-playbook",
+            "version": 1,
+            "nodes": {
+                "only": {
+                    "entry": True,
+                    "prompt": "Perform a one-shot analysis and return results.",
+                },
+            },
+        }
+
+        mock_supervisor.chat.return_value = "One-shot analysis complete."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 1
+        assert result.node_trace[0]["node_id"] == "only"
+        assert result.node_trace[0]["status"] == "completed"
+        assert result.tokens_used > 0
+        assert result.final_response == "One-shot analysis complete."
+        mock_supervisor.chat.assert_called_once()
+
+    async def test_single_node_with_db_persistence(
+        self, mock_supervisor, event_data, mock_db
+    ):
+        """(g) extended — single-node playbook persists correctly to DB."""
+        graph = {
+            "id": "single-node-playbook",
+            "version": 1,
+            "nodes": {
+                "only": {
+                    "entry": True,
+                    "prompt": "One-shot task.",
+                },
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+
+        # Verify DB record was created and completed
+        mock_db.create_playbook_run.assert_called_once()
+        final_call = mock_db.update_playbook_run.call_args_list[-1]
+        assert final_call.kwargs["status"] == "completed"
+
+        persisted_trace = json.loads(final_call.kwargs["node_trace"])
+        assert len(persisted_trace) == 1
+        assert persisted_trace[0]["node_id"] == "only"
