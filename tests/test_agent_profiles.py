@@ -261,6 +261,7 @@ class TestProfileResolution:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config)
         await o.initialize()
@@ -537,6 +538,7 @@ class TestProfileCommands:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -862,6 +864,7 @@ class TestProfileEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -975,6 +978,7 @@ class TestToolValidation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -997,6 +1001,7 @@ class TestToolValidation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1020,6 +1025,7 @@ class TestToolValidation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1050,6 +1056,7 @@ class TestListAvailableTools:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1076,6 +1083,7 @@ class TestCheckProfile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1099,6 +1107,7 @@ class TestCheckProfile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1123,6 +1132,7 @@ class TestCheckProfile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1144,6 +1154,7 @@ class TestExportImport:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1169,6 +1180,7 @@ class TestExportImport:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1196,6 +1208,7 @@ agent_profile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1237,6 +1250,7 @@ agent_profile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1260,6 +1274,7 @@ agent_profile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1281,6 +1296,7 @@ agent_profile:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()

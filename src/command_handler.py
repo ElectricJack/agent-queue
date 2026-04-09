@@ -41,8 +41,6 @@ from src.config import AppConfig
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.models import (
-    AgentProfile,
-    Hook,
     Project,
     ProjectStatus,
     RepoSourceType,
@@ -4683,7 +4681,8 @@ class CommandHandler:
             exclude_statuses={TaskStatus.COMPLETED, TaskStatus.FAILED},
         )
         existing_sync = [
-            t for t in active_tasks
+            t
+            for t in active_tasks
             if t.task_type == TaskType.SYNC
             and t.status in (TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         ]
@@ -4718,15 +4717,11 @@ class CommandHandler:
                 # alist_branches returns lines like "* main", "  feature-x"
                 # Strip the leading "* " or "  " to get clean branch names.
                 clean_branches = [b.lstrip("* ").strip() for b in branches if b.strip()]
-                non_default = [
-                    b for b in clean_branches
-                    if b and b != default_branch
-                ]
+                non_default = [b for b in clean_branches if b and b != default_branch]
                 if current != default_branch or non_default:
                     needs_sync = True
                     workspace_details.append(
-                        f"  - {ws_path}: branch={current}, "
-                        f"other_branches={non_default or '(none)'}"
+                        f"  - {ws_path}: branch={current}, other_branches={non_default or '(none)'}"
                     )
                     break
                 workspace_details.append(f"  - {ws_path}: on {default_branch}, no feature branches")
@@ -5021,7 +5016,9 @@ feature work stuck on feature branches across multiple workspaces.
                 all_enabled = all(h.enabled for h in rule_hooks)
                 all_disabled = all(not h.enabled for h in rule_hooks)
                 last_runs = [h.last_triggered_at for h in rule_hooks if h.last_triggered_at]
-                rule["enabled"] = all_enabled if all_enabled else (False if all_disabled else "mixed")
+                rule["enabled"] = (
+                    all_enabled if all_enabled else (False if all_disabled else "mixed")
+                )
                 rule["last_run"] = max(last_runs) if last_runs else None
             else:
                 rule["enabled"] = None
@@ -5144,17 +5141,19 @@ feature work stuck on feature branches across multiple workspaces.
 
         run_list = []
         for r in runs:
-            run_list.append({
-                "id": r.id,
-                "hook_id": r.hook_id,
-                "project_id": r.project_id,
-                "status": r.status,
-                "trigger_reason": r.trigger_reason,
-                "tokens_used": r.tokens_used,
-                "skipped_reason": r.skipped_reason,
-                "started_at": r.started_at,
-                "completed_at": r.completed_at,
-            })
+            run_list.append(
+                {
+                    "id": r.id,
+                    "hook_id": r.hook_id,
+                    "project_id": r.project_id,
+                    "status": r.status,
+                    "trigger_reason": r.trigger_reason,
+                    "tokens_used": r.tokens_used,
+                    "skipped_reason": r.skipped_reason,
+                    "started_at": r.started_at,
+                    "completed_at": r.completed_at,
+                }
+            )
 
         return {
             "rule_id": rule_id,
@@ -5207,9 +5206,7 @@ feature work stuck on feature branches across multiple workspaces.
 
         Notes live in the vault at ``vault/projects/{project_id}/notes/``.
         """
-        return os.path.join(
-            self.config.data_dir, "vault", "projects", project_id, "notes"
-        )
+        return os.path.join(self.config.data_dir, "vault", "projects", project_id, "notes")
 
     def _resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.
@@ -5615,7 +5612,15 @@ feature work stuck on feature branches across multiple workspaces.
     # -----------------------------------------------------------------------
     # Agent Profile commands -- CRUD for capability bundles that configure
     # agents with specific tools, MCP servers, and system prompt overrides.
+    #
+    # All mutations write to the vault markdown file first; the vault
+    # watcher syncs changes to the database.  For immediate feedback, an
+    # explicit sync_profile_text_to_db call is made after the file write.
     # -----------------------------------------------------------------------
+
+    def _vault_profile_path(self, profile_id: str) -> str:
+        """Return the vault file path for a profile's markdown definition."""
+        return os.path.join(self.config.data_dir, "vault", "agent-types", profile_id, "profile.md")
 
     async def _cmd_list_profiles(self, args: dict) -> dict:
         profiles = await self.db.list_profiles()
@@ -5638,6 +5643,12 @@ feature work stuck on feature branches across multiple workspaces.
         }
 
     async def _cmd_create_profile(self, args: dict) -> dict:
+        from pathlib import Path
+
+        from src.profile_parser import agent_profile_to_markdown
+        from src.profile_sync import sync_profile_text_to_db
+        from src.vault import ensure_vault_profile_dirs
+
         profile_id = args.get("id", "").strip()
         name = args.get("name", "").strip()
         if not profile_id:
@@ -5645,11 +5656,19 @@ feature work stuck on feature branches across multiple workspaces.
         if not name:
             return {"error": "Profile name is required"}
 
+        # Check for duplicates in both vault and DB.
+        vault_path = self._vault_profile_path(profile_id)
+        if os.path.isfile(vault_path):
+            return {"error": f"Profile '{profile_id}' already exists"}
         existing = await self.db.get_profile(profile_id)
         if existing:
             return {"error": f"Profile '{profile_id}' already exists"}
 
-        profile = AgentProfile(
+        # Create vault subdirectories for the new profile (vault spec §2).
+        ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+
+        # Render and write the markdown profile to the vault.
+        markdown = agent_profile_to_markdown(
             id=profile_id,
             name=name,
             description=args.get("description", ""),
@@ -5660,16 +5679,20 @@ feature work stuck on feature branches across multiple workspaces.
             system_prompt_suffix=args.get("system_prompt_suffix", ""),
             install=args.get("install", {}),
         )
-        await self.db.create_profile(profile)
+        Path(vault_path).write_text(markdown, encoding="utf-8")
 
-        # Create vault subdirectories for the new profile (vault spec §2).
-        from src.vault import ensure_vault_profile_dirs
-
-        ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+        # Immediate sync: parse the file and upsert to DB so the caller
+        # gets instant confirmation.  The vault watcher will also pick up
+        # the change (idempotent upsert).
+        sync_result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=vault_path, fallback_id=profile_id
+        )
+        if not sync_result.success:
+            return {
+                "error": (f"Profile file written to vault but DB sync failed: {sync_result.errors}")
+            }
 
         # Ensure the agent-type memory collection exists (memory scoping spec §4).
-        # Non-blocking: if memory is unavailable, the collection will be created
-        # lazily on first access.
         memory_mgr = getattr(self.orchestrator, "memory_manager", None)
         if memory_mgr:
             try:
@@ -5682,12 +5705,8 @@ feature work stuck on feature branches across multiple workspaces.
                 )
 
         result: dict = {"created": profile_id, "name": name}
-        # Soft validation — warn about unrecognized tool names
-        from src.known_tools import validate_tool_names
-
-        unknown = validate_tool_names(profile.allowed_tools)
-        if unknown:
-            result["warnings"] = [f"Unrecognized tools (will still be set): {', '.join(unknown)}"]
+        if sync_result.warnings:
+            result["warnings"] = sync_result.warnings
         return result
 
     async def _cmd_get_profile(self, args: dict) -> dict:
@@ -5710,14 +5729,21 @@ feature work stuck on feature branches across multiple workspaces.
         }
 
     async def _cmd_edit_profile(self, args: dict) -> dict:
+        from pathlib import Path
+
+        from src.profile_parser import (
+            agent_profile_to_markdown,
+            parse_profile,
+            parsed_profile_to_agent_profile,
+        )
+        from src.profile_sync import sync_profile_text_to_db
+        from src.vault import ensure_vault_profile_dirs
+
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
             return {"error": "profile_id is required"}
-        profile = await self.db.get_profile(profile_id)
-        if not profile:
-            return {"error": f"Profile '{profile_id}' not found"}
 
-        updates = {}
+        updates: dict = {}
         for fld in (
             "name",
             "description",
@@ -5738,28 +5764,105 @@ feature work stuck on feature branches across multiple workspaces.
                     "system_prompt_suffix, or install."
                 )
             }
-        await self.db.update_profile(profile_id, **updates)
-        result: dict = {"updated": profile_id, "fields": list(updates.keys())}
-        # Soft validation — warn about unrecognized tool names
-        if "allowed_tools" in updates:
-            from src.known_tools import validate_tool_names
 
-            unknown = validate_tool_names(updates["allowed_tools"])
-            if unknown:
-                result["warnings"] = [
-                    f"Unrecognized tools (will still be set): {', '.join(unknown)}"
-                ]
+        # Load current state: prefer vault file, fall back to DB.
+        vault_path = self._vault_profile_path(profile_id)
+        current: dict = {}
+        role = ""
+        rules = ""
+        reflection = ""
+
+        if os.path.isfile(vault_path):
+            text = Path(vault_path).read_text(encoding="utf-8")
+            parsed = parse_profile(text)
+            current = parsed_profile_to_agent_profile(parsed)
+            role = parsed.role
+            rules = parsed.rules
+            reflection = parsed.reflection
+        else:
+            # No vault file yet — reconstruct from DB.
+            profile = await self.db.get_profile(profile_id)
+            if not profile:
+                return {"error": f"Profile '{profile_id}' not found"}
+            current = {
+                "id": profile.id,
+                "name": profile.name,
+                "description": profile.description,
+                "model": profile.model,
+                "permission_mode": profile.permission_mode,
+                "allowed_tools": profile.allowed_tools,
+                "mcp_servers": profile.mcp_servers,
+                "system_prompt_suffix": profile.system_prompt_suffix,
+                "install": profile.install,
+            }
+
+        # Apply updates on top of the current state.
+        merged = {**current, **updates}
+
+        # If the user is updating system_prompt_suffix, clear the
+        # individual prompt section overrides so the new suffix is used.
+        if "system_prompt_suffix" in updates:
+            role = ""
+            rules = ""
+            reflection = ""
+
+        # Ensure vault dirs exist (handles DB-only → vault migration).
+        ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+
+        # Re-render and write the updated markdown.
+        markdown = agent_profile_to_markdown(
+            id=merged.get("id", profile_id),
+            name=merged.get("name", profile_id),
+            description=merged.get("description", ""),
+            model=merged.get("model", ""),
+            permission_mode=merged.get("permission_mode", ""),
+            allowed_tools=merged.get("allowed_tools", []),
+            mcp_servers=merged.get("mcp_servers", {}),
+            system_prompt_suffix=merged.get("system_prompt_suffix", ""),
+            install=merged.get("install", {}),
+            role=role,
+            rules=rules,
+            reflection=reflection,
+        )
+        Path(vault_path).write_text(markdown, encoding="utf-8")
+
+        # Immediate sync to DB.
+        sync_result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=vault_path, fallback_id=profile_id
+        )
+
+        result: dict = {"updated": profile_id, "fields": list(updates.keys())}
+        if sync_result.warnings:
+            result["warnings"] = sync_result.warnings
+        if not sync_result.success:
+            result["sync_errors"] = sync_result.errors
         return result
 
     async def _cmd_delete_profile(self, args: dict) -> dict:
         profile_id = args.get("profile_id", "").strip()
         if not profile_id:
             return {"error": "profile_id is required"}
+
+        # Check both vault file and DB for the profile.
+        vault_path = self._vault_profile_path(profile_id)
+        vault_exists = os.path.isfile(vault_path)
         profile = await self.db.get_profile(profile_id)
-        if not profile:
+
+        if not profile and not vault_exists:
             return {"error": f"Profile '{profile_id}' not found"}
-        await self.db.delete_profile(profile_id)
-        return {"deleted": profile_id, "name": profile.name}
+
+        name = profile.name if profile else profile_id
+
+        # Remove the vault markdown file (the watcher retains DB rows on
+        # file deletion, so we explicitly delete from DB as well).
+        if vault_exists:
+            os.remove(vault_path)
+
+        # Delete from DB (cascade-clears task/project FK references).
+        if profile:
+            await self.db.delete_profile(profile_id)
+
+        return {"deleted": profile_id, "name": name}
 
     # --- Discovery commands ------------------------------------------------
 
@@ -6037,8 +6140,14 @@ feature work stuck on feature branches across multiple workspaces.
         return result
 
     async def _cmd_import_profile(self, args: dict) -> dict:
+        from pathlib import Path
+
         import yaml as _yaml
+
         from src.known_tools import InstallManifest
+        from src.profile_parser import agent_profile_to_markdown
+        from src.profile_sync import sync_profile_text_to_db
+        from src.vault import ensure_vault_profile_dirs
 
         source = args.get("source", "").strip()
         if not source:
@@ -6084,15 +6193,23 @@ feature work stuck on feature branches across multiple workspaces.
             return {"error": "Profile must have an 'id' field"}
 
         overwrite = args.get("overwrite", False)
+        vault_path = self._vault_profile_path(profile_id)
+        vault_exists = os.path.isfile(vault_path)
         existing = await self.db.get_profile(profile_id)
-        if existing and not overwrite:
+        if (existing or vault_exists) and not overwrite:
             return {
                 "error": f"Profile '{profile_id}' already exists (use overwrite=true to replace)"
             }
 
-        profile = AgentProfile(
+        profile_name = args.get("name") or pdata.get("name", profile_id)
+
+        # Ensure vault directories.
+        ensure_vault_profile_dirs(self.config.data_dir, profile_id)
+
+        # Render imported data as vault markdown.
+        markdown = agent_profile_to_markdown(
             id=profile_id,
-            name=args.get("name") or pdata.get("name", profile_id),
+            name=profile_name,
             description=pdata.get("description", ""),
             model=pdata.get("model", ""),
             permission_mode=pdata.get("permission_mode", ""),
@@ -6101,26 +6218,20 @@ feature work stuck on feature branches across multiple workspaces.
             system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
             install=pdata.get("install", {}),
         )
+        Path(vault_path).write_text(markdown, encoding="utf-8")
 
-        if existing and overwrite:
-            await self.db.update_profile(
-                profile_id,
-                name=profile.name,
-                description=profile.description,
-                model=profile.model,
-                permission_mode=profile.permission_mode,
-                allowed_tools=profile.allowed_tools,
-                mcp_servers=profile.mcp_servers,
-                system_prompt_suffix=profile.system_prompt_suffix,
-                install=profile.install,
-            )
-        else:
-            await self.db.create_profile(profile)
+        # Immediate sync to DB.
+        sync_result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=vault_path, fallback_id=profile_id
+        )
 
-        result: dict = {"imported": True, "name": profile.name, "id": profile_id}
+        result: dict = {"imported": True, "name": profile_name, "id": profile_id}
+        if sync_result.warnings:
+            result["warnings"] = sync_result.warnings
 
         # Auto-install dependencies if manifest is non-empty
-        manifest = InstallManifest.from_dict(profile.install)
+        install_data = pdata.get("install", {})
+        manifest = InstallManifest.from_dict(install_data)
         if not manifest.is_empty:
             install_result = await self._install_manifest(profile_id, manifest)
             result["installed"] = install_result["installed"]

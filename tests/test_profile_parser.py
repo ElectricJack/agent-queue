@@ -108,7 +108,8 @@ class TestConstants:
         assert "config" in STRUCTURED_SECTIONS
         assert "tools" in STRUCTURED_SECTIONS
         assert "mcp servers" in STRUCTURED_SECTIONS
-        assert len(STRUCTURED_SECTIONS) == 3
+        assert "install" in STRUCTURED_SECTIONS
+        assert len(STRUCTURED_SECTIONS) == 4
 
     def test_prompt_sections(self):
         assert "role" in PROMPT_SECTIONS

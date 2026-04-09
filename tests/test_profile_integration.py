@@ -137,6 +137,7 @@ class TestToolEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -229,6 +230,7 @@ class TestMCPEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -335,6 +337,7 @@ class TestProfileIsolation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -410,6 +413,7 @@ class TestMultiProfileIsolation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -496,6 +500,7 @@ class TestInstallCheckIntegration:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -571,6 +576,7 @@ class TestProjectDefaultProfileEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -875,6 +881,7 @@ class TestModelOverrideEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()

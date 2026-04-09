@@ -35,7 +35,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # Sections whose JSON code blocks are parsed deterministically.
-STRUCTURED_SECTIONS = frozenset({"config", "tools", "mcp servers"})
+STRUCTURED_SECTIONS = frozenset({"config", "tools", "mcp servers", "install"})
 
 # Sections whose text is captured as prompt content.
 PROMPT_SECTIONS = frozenset({"role", "rules", "reflection"})
@@ -127,6 +127,7 @@ class ParsedProfile:
     config: dict = field(default_factory=dict)
     tools: dict = field(default_factory=dict)
     mcp_servers: dict = field(default_factory=dict)
+    install: dict = field(default_factory=dict)
 
     # Prompt (English) sections
     role: str = ""
@@ -686,6 +687,13 @@ def parse_profile(
                 result.errors.append(
                     f"## MCP Servers JSON must be an object, got {type(section.json_data).__name__}"
                 )
+        elif heading_lower == "install" and section.json_data is not None:
+            if isinstance(section.json_data, dict):
+                result.install = section.json_data
+            else:
+                result.errors.append(
+                    f"## Install JSON must be an object, got {type(section.json_data).__name__}"
+                )
         elif heading_lower == "role":
             result.role = section.text
         elif heading_lower == "rules":
@@ -721,6 +729,9 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["id"] = parsed.frontmatter.id
     if parsed.frontmatter.name:
         result["name"] = parsed.frontmatter.name
+    # Description lives in frontmatter.extra (not a dedicated field)
+    if parsed.frontmatter.extra.get("description"):
+        result["description"] = str(parsed.frontmatter.extra["description"])
 
     # Config → model, permission_mode
     if parsed.config.get("model"):
@@ -735,6 +746,10 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     # MCP Servers → mcp_servers
     if parsed.mcp_servers:
         result["mcp_servers"] = parsed.mcp_servers
+
+    # Install → install manifest
+    if parsed.install:
+        result["install"] = parsed.install
 
     # Prompt sections → individual fields + combined system_prompt_suffix
     # Expose each section as a separate field for downstream consumers that
@@ -761,3 +776,194 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["system_prompt_suffix"] = "\n\n".join(prompt_parts)
 
     return result
+
+
+def _split_system_prompt_suffix(suffix: str) -> tuple[str, str, str]:
+    """Split a combined ``system_prompt_suffix`` back into (role, rules, reflection).
+
+    The :func:`parsed_profile_to_agent_profile` function builds
+    ``system_prompt_suffix`` by joining sections with ``## Role``,
+    ``## Rules``, ``## Reflection`` headings.  This function reverses
+    that operation for round-tripping back to markdown.
+
+    Parameters
+    ----------
+    suffix:
+        The combined system_prompt_suffix string.
+
+    Returns
+    -------
+    tuple[str, str, str]
+        ``(role, rules, reflection)`` text.  If no section markers are
+        found, the entire suffix is returned as the role.
+    """
+    if not suffix:
+        return "", "", ""
+
+    # Split on ## heading markers that were injected by parsed_profile_to_agent_profile
+    parts = re.split(r"(?:^|\n\n)## (Role|Rules|Reflection)\n", suffix)
+
+    if len(parts) <= 1:
+        # No markers found — treat entire text as role content
+        return suffix.strip(), "", ""
+
+    role = ""
+    rules = ""
+    reflection = ""
+
+    # parts[0] is text before the first ## heading (usually empty).
+    # Then alternating: heading_name, content, heading_name, content, ...
+    i = 1
+    while i < len(parts) - 1:
+        heading = parts[i].lower()
+        content = parts[i + 1].strip()
+        if heading == "role":
+            role = content
+        elif heading == "rules":
+            rules = content
+        elif heading == "reflection":
+            reflection = content
+        i += 2
+
+    return role, rules, reflection
+
+
+def agent_profile_to_markdown(
+    *,
+    id: str,
+    name: str,
+    description: str = "",
+    model: str = "",
+    permission_mode: str = "",
+    allowed_tools: list[str] | None = None,
+    mcp_servers: dict[str, dict] | None = None,
+    system_prompt_suffix: str = "",
+    install: dict | None = None,
+    role: str = "",
+    rules: str = "",
+    reflection: str = "",
+    tags: list[str] | None = None,
+) -> str:
+    """Render profile fields into the hybrid markdown format.
+
+    This is the inverse of :func:`parse_profile` — given the structured fields
+    of an agent profile, it produces a markdown string suitable for writing to
+    ``vault/agent-types/{id}/profile.md``.
+
+    When *role*, *rules*, or *reflection* are not provided individually but
+    *system_prompt_suffix* is, the function attempts to split the suffix back
+    into its component sections (assuming it was produced by
+    :func:`parsed_profile_to_agent_profile`).
+
+    Parameters
+    ----------
+    id:
+        Profile identifier (slug).
+    name:
+        Display name.
+    description:
+        Optional description (stored in frontmatter).
+    model:
+        Model override (empty = use default).
+    permission_mode:
+        Permission mode override (empty = use default).
+    allowed_tools:
+        Tool whitelist.
+    mcp_servers:
+        MCP server configurations.
+    system_prompt_suffix:
+        Combined prompt text (used as fallback when individual sections
+        are not provided).
+    install:
+        Install manifest dict (npm, pip, commands).
+    role:
+        Role section text.
+    rules:
+        Rules section text.
+    reflection:
+        Reflection section text.
+    tags:
+        Optional frontmatter tags.
+
+    Returns
+    -------
+    str
+        The rendered markdown profile.
+    """
+    lines: list[str] = []
+
+    # --- Frontmatter ---
+    fm_data: dict = {"id": id, "name": name}
+    if description:
+        fm_data["description"] = description
+    if tags:
+        fm_data["tags"] = tags
+
+    lines.append("---")
+    lines.append(yaml.dump(fm_data, default_flow_style=False, sort_keys=False).rstrip())
+    lines.append("---")
+    lines.append("")
+    lines.append(f"# {name}")
+    lines.append("")
+
+    # Resolve role/rules/reflection from system_prompt_suffix if not provided
+    if not role and not rules and not reflection and system_prompt_suffix:
+        role, rules, reflection = _split_system_prompt_suffix(system_prompt_suffix)
+
+    # --- Role section ---
+    if role:
+        lines.append("## Role")
+        lines.append(role)
+        lines.append("")
+
+    # --- Config section ---
+    config: dict = {}
+    if model:
+        config["model"] = model
+    if permission_mode:
+        config["permission_mode"] = permission_mode
+    if config:
+        lines.append("## Config")
+        lines.append("```json")
+        lines.append(json.dumps(config, indent=2))
+        lines.append("```")
+        lines.append("")
+
+    # --- Tools section ---
+    if allowed_tools:
+        tools_data = {"allowed": allowed_tools}
+        lines.append("## Tools")
+        lines.append("```json")
+        lines.append(json.dumps(tools_data, indent=2))
+        lines.append("```")
+        lines.append("")
+
+    # --- MCP Servers section ---
+    if mcp_servers:
+        lines.append("## MCP Servers")
+        lines.append("```json")
+        lines.append(json.dumps(mcp_servers, indent=2))
+        lines.append("```")
+        lines.append("")
+
+    # --- Rules section ---
+    if rules:
+        lines.append("## Rules")
+        lines.append(rules)
+        lines.append("")
+
+    # --- Reflection section ---
+    if reflection:
+        lines.append("## Reflection")
+        lines.append(reflection)
+        lines.append("")
+
+    # --- Install section ---
+    if install:
+        lines.append("## Install")
+        lines.append("```json")
+        lines.append(json.dumps(install, indent=2))
+        lines.append("```")
+        lines.append("")
+
+    return "\n".join(lines)

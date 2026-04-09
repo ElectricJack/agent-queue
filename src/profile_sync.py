@@ -189,6 +189,7 @@ async def sync_profile_to_db(
         allowed_tools=profile_dict.get("allowed_tools", []),
         mcp_servers=profile_dict.get("mcp_servers", {}),
         system_prompt_suffix=profile_dict.get("system_prompt_suffix", ""),
+        install=profile_dict.get("install", {}),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).
