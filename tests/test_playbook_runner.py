@@ -5193,11 +5193,11 @@ class TestRoadmap5217:
         visited_ids = [t["node_id"] for t in trace]
         assert "report" not in visited_ids
 
-    # (e) timed-out run → status "timed_out" with the node where timeout occurred
+    # (e) budget-exceeded run → status "failed" with the node where budget was exhausted
 
-    async def test_e_timed_out_run_identifies_node(self, mock_supervisor, event_data, mock_db):
-        """(e) Timed-out run has status 'timed_out' with the node where
-        timeout occurred."""
+    async def test_e_budget_exceeded_run_identifies_node(self, mock_supervisor, event_data, mock_db):
+        """(e) Budget-exceeded run has status 'failed' with the node where
+        budget was exhausted (spec §6 Token Budget)."""
         # Use a very small token budget so it exhausts after the first node
         graph = self._three_node_graph(max_tokens=10)
 
@@ -5207,23 +5207,25 @@ class TestRoadmap5217:
         runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
         result = await runner.run()
 
-        assert result.status == "timed_out"
+        assert result.status == "failed"
 
-        # Find the timed_out DB update
-        timeout_call = None
+        # Find the failed DB update for budget exceeded
+        budget_call = None
         for call in mock_db.update_playbook_run.call_args_list:
-            if call.kwargs.get("status") == "timed_out":
-                timeout_call = call
+            if call.kwargs.get("status") == "failed" and "token_budget_exceeded" in (
+                call.kwargs.get("error") or ""
+            ):
+                budget_call = call
                 break
 
-        assert timeout_call is not None
-        assert "Token budget exceeded" in timeout_call.kwargs["error"]
+        assert budget_call is not None
+        assert "token_budget_exceeded" in budget_call.kwargs["error"]
 
         # The current_node identifies where the budget check fired.
-        # Budget is checked BEFORE executing the next node, so after "start"
-        # completes and tokens exceed the limit, the runner fails before
-        # "analyze" can execute. The trace shows which nodes actually ran.
-        trace = json.loads(timeout_call.kwargs["node_trace"])
+        # Budget is checked AFTER the node completes (spec §6 step 6d),
+        # so after "start" completes and tokens exceed the limit, the
+        # runner fails before "analyze" can execute.
+        trace = json.loads(budget_call.kwargs["node_trace"])
         assert len(trace) >= 1
         # First node completed (tokens accumulated there)
         assert trace[0]["node_id"] == "start"
