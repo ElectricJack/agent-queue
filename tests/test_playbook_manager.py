@@ -1,12 +1,12 @@
 """Tests for PlaybookManager — compilation error handling and version management.
 
-Tests cover roadmap 5.1.7 requirements:
+Tests cover roadmap 5.1.9 requirements (error handling):
   (a) Markdown with no recognizable node structure produces compilation error notification
   (b) Previous valid compiled JSON is retained on disk after failed recompilation
   (c) PlaybookManager continues to use the previous version for event matching
   (d) Error notification includes file path and LLM/validation error details
   (e) Markdown with valid structure but LLM provider failure retains previous version
-  (f) Partially valid markdown fails entire compilation (atomic)
+  (f) Partially valid markdown fails entire compilation (atomic — no partial updates)
   (g) Fixing markdown and saving again triggers successful recompilation
 
 Also tests:
@@ -14,7 +14,11 @@ Also tests:
   - Playbook deletion from active registry
   - Compilation success notification events
   - No-provider fallback (log-only mode)
+  - Source-hash change detection (roadmap 5.1.5)
   - Lookup by trigger
+  - PlaybookHandler integration (vault change handler)
+  - Frontmatter validation errors (pre-LLM)
+  - Notification event models
 """
 
 from __future__ import annotations
@@ -274,6 +278,51 @@ class TestCompilationFailureRetainsPrevious:
         assert active.version == 1  # Still v1!
 
     @pytest.mark.asyncio
+    async def test_previous_version_used_for_event_matching(self, tmp_path: Path) -> None:
+        """(c) PlaybookManager continues to use previous version for event matching.
+
+        After a failed recompilation, get_playbooks_by_trigger() must still
+        return the previous version so that incoming events are correctly routed.
+        """
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
+        provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile successfully — playbook triggers on "git.commit"
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+
+        # Verify event matching works
+        matches = manager.get_playbooks_by_trigger("git.commit")
+        assert len(matches) == 1
+        assert matches[0].id == "test-playbook"
+        assert matches[0].version == 1
+
+        # Fail a recompilation (different content so hash changes)
+        modified_md = _make_playbook_md(body="# Updated\n\nChanged content to trigger recompile.")
+        result2 = await manager.compile_playbook(modified_md)
+        assert not result2.success
+
+        # Event matching still returns the v1 playbook — previous version is
+        # used for event matching despite the failed recompilation
+        matches_after = manager.get_playbooks_by_trigger("git.commit")
+        assert len(matches_after) == 1
+        assert matches_after[0].id == "test-playbook"
+        assert matches_after[0].version == 1
+
+        # Unrelated trigger still returns empty
+        assert manager.get_playbooks_by_trigger("task.completed") == []
+
+    @pytest.mark.asyncio
     async def test_previous_json_retained_on_disk(self, tmp_path: Path) -> None:
         """(b) Previous valid compiled JSON is retained on disk after failed recompilation."""
         provider = _make_mock_provider()
@@ -303,8 +352,13 @@ class TestCompilationFailureRetainsPrevious:
         assert after_data["version"] == 1  # Not overwritten
 
     @pytest.mark.asyncio
-    async def test_error_notification_includes_details(self, tmp_path: Path) -> None:
-        """(d) Error notification includes file path and LLM/validation error details."""
+    async def test_error_notification_includes_details_json_extraction(self, tmp_path: Path) -> None:
+        """(d) Error notification includes file path and LLM error details.
+
+        When the LLM returns unparseable output (not valid JSON), the error
+        notification must include the source_path and mention the JSON
+        extraction failure.
+        """
         provider = _make_mock_provider()
         from src.chat_providers.types import ChatResponse, TextBlock
 
@@ -333,10 +387,60 @@ class TestCompilationFailureRetainsPrevious:
         assert len(payload["errors"]) > 0
         # Should mention JSON extraction failure
         assert any("JSON" in e for e in payload["errors"])
+        # Retries count should be recorded
+        assert "retries_used" in payload
+
+    @pytest.mark.asyncio
+    async def test_error_notification_includes_validation_details(self, tmp_path: Path) -> None:
+        """(d) Error notification includes validation error details.
+
+        When the LLM returns structurally valid JSON but the playbook fails
+        validation (e.g. missing entry node), the error notification must
+        include the specific validation errors.
+        """
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        # Return JSON that parses but fails validation — no entry node
+        invalid_nodes = {
+            "nodes": {
+                "step": {"prompt": "Do something.", "goto": "done"},
+                "done": {"terminal": True},
+            }
+        }
+        bad_json = json.dumps(invalid_nodes)
+        bad_resp = ChatResponse(content=[TextBlock(text=f"```json\n{bad_json}\n```")])
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
+
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        await manager.compile_playbook(
+            SIMPLE_PLAYBOOK_MD,
+            source_path="/vault/system/playbooks/test.md",
+        )
+
+        bus.emit.assert_called_once()
+        event_type, payload = bus.emit.call_args[0]
+        assert event_type == "notify.playbook_compilation_failed"
+        assert payload["source_path"] == "/vault/system/playbooks/test.md"
+        assert len(payload["errors"]) > 0
+        # Validation errors should reference the structural issue
+        error_text = " ".join(payload["errors"]).lower()
+        assert "entry" in error_text  # Missing entry node
 
     @pytest.mark.asyncio
     async def test_llm_provider_failure_retains_previous(self, tmp_path: Path) -> None:
-        """(e) LLM provider failure retains previous version."""
+        """(e) LLM provider failure retains previous version and notifies.
+
+        When the LLM provider raises an exception (e.g. API unavailable),
+        the previous compiled version must remain active in memory AND on disk,
+        and the error notification must include the LLM error details.
+        """
         # First compile successfully
         good_provider = _make_mock_provider()
         bus = _make_event_bus()
@@ -352,26 +456,41 @@ class TestCompilationFailureRetainsPrevious:
 
         bus.emit.reset_mock()
 
-        # Now switch to a failing provider and use changed markdown (so hash differs)
-        manager._compiler._provider = _make_failing_provider()
+        # Now switch to a failing provider and use different content
+        manager._compiler._provider = _make_failing_provider("API rate limited")
 
         modified_md = _make_playbook_md(body="# Modified\n\nDo something totally new.")
         result2 = await manager.compile_playbook(modified_md)
         assert not result2.success
         assert any("LLM call failed" in e for e in result2.errors)
 
-        # Previous version still active
+        # Previous version still active in memory
         assert manager.get_playbook("test-playbook").version == 1
 
-        # Error notification emitted
+        # Previous version still on disk
+        json_path = tmp_path / "playbooks" / "compiled" / "test-playbook.json"
+        assert json_path.exists()
+        disk_data = json.loads(json_path.read_text())
+        assert disk_data["version"] == 1
+
+        # Error notification emitted with full details
         bus.emit.assert_called_once()
         event_type, payload = bus.emit.call_args[0]
         assert event_type == "notify.playbook_compilation_failed"
         assert payload["previous_version"] == 1
+        assert payload["playbook_id"] == "test-playbook"
+        assert len(payload["errors"]) > 0
+        # The LLM error message should appear in the errors
+        assert any("LLM call failed" in e for e in payload["errors"])
 
     @pytest.mark.asyncio
     async def test_no_node_structure_produces_error(self, tmp_path: Path) -> None:
-        """(a) Markdown with no recognizable node structure produces error notification."""
+        """(a) Markdown with no recognizable node structure produces error notification.
+
+        When the LLM returns JSON with an empty nodes dict (no recognizable
+        node structure), validation must fail and an error notification is emitted
+        with details about the structural problem.
+        """
         provider = _make_mock_provider()
         from src.chat_providers.types import ChatResponse, TextBlock
 
@@ -393,13 +512,56 @@ class TestCompilationFailureRetainsPrevious:
         )
 
         assert not result.success
+        # Errors should mention structural issues (no entry node, no terminal, etc.)
+        assert len(result.errors) > 0
+        error_text = " ".join(result.errors).lower()
+        assert "entry" in error_text or "node" in error_text or "terminal" in error_text
+
+        # Error notification emitted
         bus.emit.assert_called_once()
-        event_type, _ = bus.emit.call_args[0]
+        event_type, payload = bus.emit.call_args[0]
         assert event_type == "notify.playbook_compilation_failed"
+        assert payload["playbook_id"] == "test-playbook"
+        assert len(payload["errors"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_no_node_structure_no_prior_version(self, tmp_path: Path) -> None:
+        """(a) Error notification for first compilation failure has previous_version=None.
+
+        When there is no prior compiled version, the error notification should
+        indicate previous_version=None to distinguish from a recompilation failure.
+        """
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        bad_json = json.dumps({"nodes": {}})
+        bad_resp = ChatResponse(content=[TextBlock(text=f"```json\n{bad_json}\n```")])
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
+
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        await manager.compile_playbook(
+            SIMPLE_PLAYBOOK_MD,
+            source_path="/vault/system/playbooks/test.md",
+        )
+
+        bus.emit.assert_called_once()
+        _, payload = bus.emit.call_args[0]
+        assert payload["previous_version"] is None
+        assert payload["source_path"] == "/vault/system/playbooks/test.md"
 
     @pytest.mark.asyncio
     async def test_partial_compilation_fails_atomically(self, tmp_path: Path) -> None:
-        """(f) Partially valid markdown fails entire compilation (atomic)."""
+        """(f) Partially valid markdown fails entire compilation (atomic).
+
+        When the LLM returns nodes where some are valid but the overall graph
+        fails validation, NO partial update should occur.
+        """
         provider = _make_mock_provider()
         from src.chat_providers.types import ChatResponse, TextBlock
 
@@ -425,6 +587,72 @@ class TestCompilationFailureRetainsPrevious:
         result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
         assert not result.success
         assert manager.get_playbook("test-playbook") is None  # Nothing activated
+        # No compiled JSON written to disk
+        json_path = tmp_path / "playbooks" / "compiled" / "test-playbook.json"
+        assert not json_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_partial_compilation_retains_previous_version(self, tmp_path: Path) -> None:
+        """(f) Partially valid recompilation retains previous version atomically.
+
+        When a valid v1 exists and recompilation produces partially valid output
+        (some nodes OK, some broken), the entire update must be rejected and
+        v1 must remain active — no partial update occurs.
+        """
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+
+        # Partial: some nodes valid (done is terminal) but no entry node
+        partial_nodes = {
+            "nodes": {
+                "analyze": {"prompt": "Analyze the code.", "goto": "done"},
+                "done": {"terminal": True},
+                # Missing entry: True — invalid graph
+            }
+        }
+        partial_json = json.dumps(partial_nodes)
+        partial_resp = ChatResponse(content=[TextBlock(text=f"```json\n{partial_json}\n```")])
+        provider.create_message = AsyncMock(
+            side_effect=[good_resp, partial_resp, partial_resp, partial_resp]
+        )
+
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile v1 successfully
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert manager.get_playbook("test-playbook").version == 1
+
+        bus.emit.reset_mock()
+
+        # Attempt recompilation with different content producing partial output
+        modified_md = _make_playbook_md(body="# Updated\n\nTrigger recompile with bad graph.")
+        result2 = await manager.compile_playbook(modified_md)
+        assert not result2.success
+
+        # v1 still active — atomic, no partial update
+        active = manager.get_playbook("test-playbook")
+        assert active is not None
+        assert active.version == 1
+
+        # v1 still on disk
+        json_path = tmp_path / "playbooks" / "compiled" / "test-playbook.json"
+        assert json_path.exists()
+        disk_data = json.loads(json_path.read_text())
+        assert disk_data["version"] == 1
+
+        # Error notification emitted with previous_version reference
+        bus.emit.assert_called_once()
+        _, payload = bus.emit.call_args[0]
+        assert payload["previous_version"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +661,7 @@ class TestCompilationFailureRetainsPrevious:
 
 
 class TestFixAndRecompile:
-    """Test that fixing markdown and recompiling succeeds."""
+    """Test that fixing markdown and recompiling succeeds (roadmap 5.1.9 case g)."""
 
     @pytest.mark.asyncio
     async def test_recompile_succeeds_after_fix(self, tmp_path: Path) -> None:
@@ -471,6 +699,132 @@ class TestFixAndRecompile:
         bus.emit.assert_called_once()
         event_type, _ = bus.emit.call_args[0]
         assert event_type == "notify.playbook_compilation_succeeded"
+
+    @pytest.mark.asyncio
+    async def test_recompile_after_fix_with_existing_version(self, tmp_path: Path) -> None:
+        """(g) Fix after failed recompilation replaces the retained v1 with v2.
+
+        Sequence: compile v1 → fail recompilation → v1 retained → fix → v2 active.
+        """
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
+        # v1 succeeds, recompile fails (3 attempts), fix succeeds
+        provider.create_message = AsyncMock(
+            side_effect=[good_resp, bad_resp, bad_resp, bad_resp, good_resp]
+        )
+
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile v1 successfully
+        result1 = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert result1.success
+        assert manager.get_playbook("test-playbook").version == 1
+
+        # Failed recompilation (different content so hash changes)
+        bad_md = _make_playbook_md(body="# Broken\n\nThis triggers recompile but fails.")
+        result2 = await manager.compile_playbook(bad_md)
+        assert not result2.success
+        assert manager.get_playbook("test-playbook").version == 1  # v1 retained
+
+        bus.emit.reset_mock()
+
+        # Fix and recompile successfully (different content again)
+        fixed_md = _make_playbook_md(body="# Fixed\n\nThis version compiles cleanly.")
+        result3 = await manager.compile_playbook(fixed_md)
+        assert result3.success
+        assert manager.get_playbook("test-playbook").version == 2  # v2 now active
+
+        # Disk updated to v2
+        json_path = tmp_path / "playbooks" / "compiled" / "test-playbook.json"
+        disk_data = json.loads(json_path.read_text())
+        assert disk_data["version"] == 2
+
+        # Success event emitted for v2
+        bus.emit.assert_called_once()
+        event_type, payload = bus.emit.call_args[0]
+        assert event_type == "notify.playbook_compilation_succeeded"
+        assert payload["version"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: Failure isolation (multiple playbooks)
+# ---------------------------------------------------------------------------
+
+
+class TestFailureIsolation:
+    """Test that a compilation failure for one playbook does not affect others."""
+
+    @pytest.mark.asyncio
+    async def test_failure_does_not_affect_other_playbooks(self, tmp_path: Path) -> None:
+        """Failing compilation of playbook B leaves playbook A untouched."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
+        good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
+        bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
+        # First call for playbook A succeeds; next 3 calls for playbook B fail
+        provider.create_message = AsyncMock(
+            side_effect=[good_resp, bad_resp, bad_resp, bad_resp]
+        )
+
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path),
+        )
+
+        # Compile playbook A successfully
+        md_a = _make_playbook_md(playbook_id="playbook-a", triggers="- git.push")
+        result_a = await manager.compile_playbook(md_a)
+        assert result_a.success
+        assert manager.get_playbook("playbook-a") is not None
+
+        # Compile playbook B — fails
+        md_b = _make_playbook_md(playbook_id="playbook-b", triggers="- task.completed")
+        result_b = await manager.compile_playbook(md_b)
+        assert not result_b.success
+
+        # Playbook A is unaffected
+        assert manager.get_playbook("playbook-a") is not None
+        assert manager.get_playbook("playbook-a").version == 1
+        assert manager.get_playbooks_by_trigger("git.push") != []
+
+        # Playbook B was never activated
+        assert manager.get_playbook("playbook-b") is None
+
+    @pytest.mark.asyncio
+    async def test_retries_count_in_error_notification(self, tmp_path: Path) -> None:
+        """Error notification records how many retries were attempted."""
+        provider = _make_mock_provider()
+        from src.chat_providers.types import ChatResponse, TextBlock
+
+        bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
+        # 3 attempts: initial + 2 retries
+        provider.create_message = AsyncMock(side_effect=[bad_resp, bad_resp, bad_resp])
+
+        bus = _make_event_bus()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            event_bus=bus,
+            data_dir=str(tmp_path),
+        )
+
+        result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
+        assert not result.success
+        assert result.retries_used == 2  # max_retries default is 2
+
+        bus.emit.assert_called_once()
+        _, payload = bus.emit.call_args[0]
+        assert payload["retries_used"] == 2
 
 
 # ---------------------------------------------------------------------------
