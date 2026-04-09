@@ -196,6 +196,38 @@ class MemoryV2ServiceProtocol(Protocol):
     async def fact_set(self, project_id: str, key: str, value: str) -> dict: ...
     async def fact_history(self, project_id: str, key: str) -> list[dict]: ...
 
+    # Document save (spec §8)
+    async def save_document(
+        self,
+        project_id: str,
+        content: str,
+        *,
+        summary: str | None = None,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+    async def update_document_timestamp(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        *,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+    async def update_document_content(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        content: str,
+        *,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+
     # Stats
     async def stats(self, project_id: str, *, scope: str | None = None) -> dict: ...
 

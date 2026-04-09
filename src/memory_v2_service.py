@@ -31,13 +31,18 @@ See ``docs/specs/design/memory-plugin.md`` §3 for the full architecture.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 try:
-    from memsearch import CollectionRouter, MemoryScope, collection_name
+    from memsearch import CollectionRouter, MemoryScope, collection_name, vault_paths
     from memsearch.embeddings import EmbeddingProvider, get_provider
     from memsearch.store import MilvusStore
 
@@ -47,6 +52,7 @@ except ImportError:
     CollectionRouter = None  # type: ignore[assignment,misc]
     MemoryScope = None  # type: ignore[assignment,misc]
     collection_name = None  # type: ignore[assignment]
+    vault_paths = None  # type: ignore[assignment]
     EmbeddingProvider = None  # type: ignore[assignment,misc]
     get_provider = None  # type: ignore[assignment]
     MilvusStore = None  # type: ignore[assignment,misc]
@@ -495,6 +501,441 @@ class MemoryV2Service:
 
         store = self._get_store(project_id)
         return await asyncio.to_thread(store.get_temporal_history, key)
+
+    # ------------------------------------------------------------------
+    # Document Save (memory_save — spec §8)
+    # ------------------------------------------------------------------
+
+    def _vault_base_dir(
+        self,
+        project_id: str,
+        scope: str | None = None,
+    ) -> Path:
+        """Return the vault memory directory for the given scope.
+
+        Uses the first entry from :func:`vault_paths` (the ``memory/``
+        directory) under the configured data dir.
+        """
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        paths = vault_paths(mem_scope, scope_id)
+        # First path is the memory/ directory for each scope
+        rel = paths[0] if paths else f"vault/projects/{project_id}/memory/"
+        base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+        return base / rel
+
+    @staticmethod
+    def _slugify(text: str, max_len: int = 60) -> str:
+        """Generate a filesystem-safe slug from text.
+
+        Lowercases, replaces non-alphanum with hyphens, collapses runs,
+        and truncates at word boundaries.
+        """
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
+        slug = re.sub(r"-+", "-", slug)
+        if len(slug) > max_len:
+            slug = slug[:max_len].rsplit("-", 1)[0]
+        return slug or "insight"
+
+    @staticmethod
+    def _generate_chunk_hash(
+        scope: str,
+        content: str,
+        topic: str | None = None,
+    ) -> str:
+        """Deterministic chunk hash for a document entry."""
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        parts = f"doc:{scope}:{topic or ''}:{content_hash}"
+        return hashlib.sha256(parts.encode()).hexdigest()[:32]
+
+    def _write_vault_file(
+        self,
+        vault_dir: Path,
+        *,
+        content: str,
+        original: str | None = None,
+        tags: list[str],
+        topic: str | None = None,
+        source_task: str | None = None,
+        filename: str | None = None,
+        created: str | None = None,
+    ) -> Path:
+        """Write a markdown file with frontmatter to the vault.
+
+        Parameters
+        ----------
+        vault_dir:
+            Target directory (e.g. ``vault/projects/{id}/memory/insights/``).
+        content:
+            Summary / main content.
+        original:
+            Full original content (included below summary if different).
+        tags:
+            Frontmatter tags.
+        topic:
+            Optional topic field.
+        source_task:
+            Optional task ID reference.
+        filename:
+            Override filename (without extension).  Auto-generated from
+            content if not provided.
+        created:
+            ISO date string for ``created`` field.  Uses today if not set.
+
+        Returns
+        -------
+        Path
+            The path to the written file.
+        """
+        insights_dir = vault_dir / "insights"
+        insights_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not filename:
+            # Derive filename from first line or first ~60 chars
+            first_line = content.split("\n", 1)[0].lstrip("# ").strip()
+            slug = self._slugify(first_line or content[:60])
+            # Add short hash to avoid collisions
+            short_hash = hashlib.sha256(content.encode()).hexdigest()[:6]
+            filename = f"{slug}-{short_hash}"
+
+        filepath = insights_dir / f"{filename}.md"
+
+        # Build frontmatter
+        fm_lines = ["---"]
+        import json as _json
+
+        fm_lines.append(f"tags: {_json.dumps(tags)}")
+        if topic:
+            fm_lines.append(f"topic: {topic}")
+        if source_task:
+            fm_lines.append(f"source_task: {source_task}")
+        fm_lines.append(f"created: {created or now}")
+        fm_lines.append(f"updated: {now}")
+        fm_lines.append("---")
+        fm_lines.append("")
+
+        # Build body
+        body_parts = [content]
+        if original and original != content:
+            body_parts.append("\n\n## Original\n")
+            body_parts.append(original)
+
+        full = "\n".join(fm_lines) + "\n".join(body_parts) + "\n"
+        filepath.write_text(full, encoding="utf-8")
+        return filepath
+
+    def _update_vault_file(
+        self,
+        filepath: Path,
+        *,
+        content: str | None = None,
+        tags: list[str] | None = None,
+        source_task: str | None = None,
+    ) -> None:
+        """Update an existing vault markdown file.
+
+        Only modifies the ``updated`` timestamp and optionally appends a
+        ``source_task`` to the frontmatter.  If *content* is provided the
+        file body is replaced.
+        """
+        import json as _json
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        if not filepath.exists():
+            return
+
+        text = filepath.read_text(encoding="utf-8")
+
+        # Update 'updated' timestamp in frontmatter
+        text = re.sub(r"^updated:.*$", f"updated: {now}", text, count=1, flags=re.MULTILINE)
+
+        # Add source_task if not already present
+        if source_task and f"source_task: {source_task}" not in text:
+            # Append source task as additional reference
+            text = re.sub(
+                r"^(updated:.*)$",
+                rf"\1\nsource_tasks_additional: {source_task}",
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+
+        # Merge tags if provided
+        if tags:
+            existing_tags_match = re.search(r"^tags:\s*(\[.*?\])$", text, flags=re.MULTILINE)
+            if existing_tags_match:
+                try:
+                    existing = _json.loads(existing_tags_match.group(1))
+                    merged = list(dict.fromkeys(existing + tags))
+                    text = text.replace(
+                        existing_tags_match.group(0),
+                        f"tags: {_json.dumps(merged)}",
+                    )
+                except _json.JSONDecodeError:
+                    pass
+
+        # Replace body if new content provided
+        if content:
+            parts = text.split("---", 2)
+            if len(parts) >= 3:
+                text = f"---{parts[1]}---\n\n{content}\n"
+
+        filepath.write_text(text, encoding="utf-8")
+
+    async def save_document(
+        self,
+        project_id: str,
+        content: str,
+        *,
+        summary: str | None = None,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Save a new document entry to vault + Milvus.
+
+        Writes a markdown file to the vault and upserts the entry into
+        the scoped Milvus collection.  Does NOT perform dedup checking
+        — the caller (plugin layer) is responsible for checking
+        similarity and deciding whether to create, merge, or deduplicate.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        content:
+            The content to save.  If *summary* is provided, this is
+            used as ``original`` and *summary* as the indexed ``content``.
+        summary:
+            Optional summary (indexed for search).  If not provided,
+            *content* is used as both summary and original.
+        original:
+            Explicit original text.  Overrides using *content* as original.
+        tags:
+            Tags for the entry.
+        topic:
+            Optional topic tag.
+        source_task:
+            Source task ID reference.
+        scope:
+            Memory scope (defaults to project scope).
+
+        Returns
+        -------
+        dict
+            Result with ``chunk_hash``, ``vault_path``, ``collection``, etc.
+        """
+        if not self.available:
+            raise RuntimeError("MemoryV2Service not available")
+
+        tags = tags or ["insight", "auto-generated"]
+        indexed_content = summary or content
+        stored_original = original or (content if summary else content)
+
+        # Resolve scope and generate chunk hash
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        scope_str = f"{mem_scope.value}:{scope_id}" if scope_id else mem_scope.value
+        chunk_hash = self._generate_chunk_hash(scope_str, stored_original, topic)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        # Write vault file
+        vault_dir = self._vault_base_dir(project_id, scope)
+        vault_path = self._write_vault_file(
+            vault_dir,
+            content=indexed_content,
+            original=stored_original if stored_original != indexed_content else None,
+            tags=tags,
+            topic=topic,
+            source_task=source_task,
+        )
+
+        # Compute embedding for the summary/content
+        embeddings = await self._embedder.embed([indexed_content])
+        embedding = embeddings[0]
+
+        # Build Milvus document entry
+        import json as _json
+
+        now_ts = int(time.time())
+        chunk = {
+            "chunk_hash": chunk_hash,
+            "entry_type": "document",
+            "embedding": embedding,
+            "content": indexed_content,
+            "original": stored_original,
+            "source": str(vault_path),
+            "heading": indexed_content.split("\n", 1)[0].lstrip("# ").strip()[:200],
+            "heading_level": 1,
+            "start_line": 0,
+            "end_line": 0,
+            "topic": topic or "",
+            "tags": _json.dumps(tags),
+            "updated_at": now_ts,
+        }
+
+        # Upsert into Milvus
+        store = self._get_store(project_id, scope)
+        await asyncio.to_thread(store.upsert, [chunk])
+
+        return {
+            "chunk_hash": chunk_hash,
+            "vault_path": str(vault_path),
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "topic": topic or "",
+            "tags": tags,
+            "source_task": source_task or "",
+            "updated_at": now_ts,
+        }
+
+    async def update_document_timestamp(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        *,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the timestamp on an existing document (dedup case).
+
+        Per spec §8: when similarity > 0.95, update the timestamp on the
+        existing memory and append the source task reference.  No content
+        change.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        chunk_hash:
+            The chunk_hash of the existing entry.
+        source_task:
+            Task ID to append as a reference.
+        scope:
+            Memory scope.
+
+        Returns
+        -------
+        dict
+            Updated entry info.
+        """
+        if not self.available:
+            raise RuntimeError("MemoryV2Service not available")
+
+        store = self._get_store(project_id, scope)
+        entry = await asyncio.to_thread(store.get, chunk_hash)
+        if not entry:
+            raise ValueError(f"Entry not found: {chunk_hash}")
+
+        now_ts = int(time.time())
+
+        # Update the Milvus entry timestamp
+        entry["updated_at"] = now_ts
+        await asyncio.to_thread(store.upsert, [entry])
+
+        # Update vault file if it exists
+        source = entry.get("source", "")
+        if source:
+            vault_file = Path(source)
+            if vault_file.exists():
+                self._update_vault_file(vault_file, source_task=source_task)
+
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        return {
+            "chunk_hash": chunk_hash,
+            "vault_path": source,
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "updated_at": now_ts,
+        }
+
+    async def update_document_content(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        content: str,
+        *,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace the content of an existing document entry (merge case).
+
+        Per spec §8: when similarity 0.8–0.95, the plugin merges old +
+        new content via LLM and calls this method with the merged result.
+        The embedding is recomputed for the new content.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        chunk_hash:
+            The chunk_hash of the existing entry.
+        content:
+            New (merged) content to store as the indexed summary.
+        original:
+            Optional new original text.
+        tags:
+            Optional merged tag list.
+        scope:
+            Memory scope.
+
+        Returns
+        -------
+        dict
+            Updated entry info.
+        """
+        if not self.available:
+            raise RuntimeError("MemoryV2Service not available")
+
+        store = self._get_store(project_id, scope)
+        entry = await asyncio.to_thread(store.get, chunk_hash)
+        if not entry:
+            raise ValueError(f"Entry not found: {chunk_hash}")
+
+        import json as _json
+
+        now_ts = int(time.time())
+
+        # Recompute embedding for new content
+        embeddings = await self._embedder.embed([content])
+        embedding = embeddings[0]
+
+        # Update the entry
+        entry["content"] = content
+        entry["embedding"] = embedding
+        entry["updated_at"] = now_ts
+        if original:
+            entry["original"] = original
+        if tags:
+            entry["tags"] = _json.dumps(tags)
+
+        await asyncio.to_thread(store.upsert, [entry])
+
+        # Update vault file if it exists
+        source = entry.get("source", "")
+        if source:
+            vault_file = Path(source)
+            if vault_file.exists():
+                self._update_vault_file(vault_file, content=content, tags=tags)
+
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        return {
+            "chunk_hash": chunk_hash,
+            "vault_path": source,
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "updated_at": now_ts,
+        }
 
     # ------------------------------------------------------------------
     # Stats

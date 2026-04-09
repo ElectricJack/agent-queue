@@ -59,6 +59,7 @@ TOOL_CATEGORY = "memory"
 # owned by v1's MemoryPlugin until v1 is fully deprecated.
 V2_ONLY_TOOLS: frozenset[str] = frozenset(
     {
+        "memory_save",
         "memory_search_by_tag",
         "memory_kv_get",
         "memory_kv_set",
@@ -70,6 +71,65 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
 )
 
 TOOL_DEFINITIONS: list[dict] = [
+    # ---- Save (spec §8) ----
+    {
+        "name": "memory_save",
+        "description": (
+            "Save an insight or learning as a memory file with automatic "
+            "deduplication.  Checks for semantically similar existing memories "
+            "and either creates a new file (distinct), merges with an existing "
+            "one (related, similarity 0.8–0.95), or updates the timestamp on a "
+            "near-duplicate (similarity > 0.95).  Writes to the vault as a "
+            "markdown file with frontmatter and indexes into the scoped Milvus "
+            "collection for vector search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (determines scope collection).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The insight or learning to save.  For short insights "
+                        "(< 200 tokens) this is stored as-is.  For longer content "
+                        "a summary is generated and the original is preserved."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Tags for the memory (e.g. ['insight', 'authentication', "
+                        "'bug-fix']).  Defaults to ['insight', 'auto-generated']."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Optional topic for intra-scope filtering (e.g. "
+                        "'authentication', 'testing', 'deployment').  Improves "
+                        "retrieval precision by 30%+."
+                    ),
+                },
+                "source_task": {
+                    "type": "string",
+                    "description": "Task ID that produced this insight (for provenance).",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "'agenttype_{type}', or 'project_{id}'.  Defaults to "
+                        "the project scope derived from project_id."
+                    ),
+                },
+            },
+            "required": ["project_id", "content"],
+        },
+    },
     # ---- Semantic Search ----
     {
         "name": "memory_search",
@@ -563,6 +623,8 @@ class MemoryV2Plugin(InternalPlugin):
         # During transition only V2_ONLY_TOOLS are registered; overlapping
         # names stay with v1 MemoryPlugin.
         all_commands: dict[str, object] = {
+            # Save (spec §8)
+            "memory_save": self.cmd_memory_save,
             # Semantic search
             "memory_search": self.cmd_memory_search,
             "memory_search_by_tag": self.cmd_memory_search_by_tag,
@@ -743,6 +805,321 @@ class MemoryV2Plugin(InternalPlugin):
             return tags if isinstance(tags, list) else []
         except (json.JSONDecodeError, TypeError):
             return []
+
+    # -----------------------------------------------------------------
+    # Command handlers — Save (spec §8)
+    # -----------------------------------------------------------------
+
+    # Similarity thresholds for dedup (per spec §8)
+    _DEDUP_NEAR_IDENTICAL: float = 0.95
+    _DEDUP_RELATED: float = 0.80
+    # Approximate token threshold for summary generation (§9)
+    _SUMMARY_CHAR_THRESHOLD: int = 800  # ~200 tokens ≈ 800 chars
+
+    async def cmd_memory_save(self, args: dict) -> dict:
+        """Save an insight with dedup check, summary/original, topic assignment.
+
+        Implements the full ``memory_save`` flow from spec §8:
+
+        1. Search for semantic duplicates in the target scope.
+        2. Based on top similarity score:
+           - **> 0.95** — near-identical → update timestamp, append source task.
+           - **0.8–0.95** — related → merge via LLM, update content + embedding.
+           - **< 0.8** — distinct → create new vault file + Milvus entry.
+        3. If content is long (> ~200 tokens), generate a summary via LLM (§9).
+        4. Write/update vault markdown file with frontmatter.
+        5. Index into the scoped Milvus collection.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        content = args.get("content")
+        if not content:
+            return {"error": "content is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_save")
+
+        tags = args.get("tags") or ["insight", "auto-generated"]
+        topic = args.get("topic")
+        source_task = args.get("source_task")
+        scope = args.get("scope")
+
+        try:
+            return await self._do_memory_save(
+                project_id=project_id,
+                content=content,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                scope=scope,
+            )
+        except Exception as e:
+            self._log.error("memory_save failed: %s", e, exc_info=True)
+            return {"error": f"Save failed: {e}"}
+
+    async def _do_memory_save(
+        self,
+        *,
+        project_id: str,
+        content: str,
+        tags: list[str],
+        topic: str | None,
+        source_task: str | None,
+        scope: str | None,
+    ) -> dict:
+        """Core orchestration for memory_save.
+
+        Separated from ``cmd_memory_save`` for testability and clarity.
+        """
+        assert self._service is not None  # guarded by caller
+
+        # ----- Step 1: Dedup check via semantic search -----
+        dedup_results = await self._service.search(
+            project_id,
+            content[:500],  # search using first ~500 chars for efficiency
+            scope=scope,
+            topic=topic,
+            top_k=5,
+        )
+
+        # Find the best match
+        best_match: dict | None = None
+        best_score: float = 0.0
+        for result in dedup_results:
+            score = result.get("score", 0.0)
+            # Only consider document entries (not KV/temporal)
+            if result.get("entry_type", "document") == "document" and score > best_score:
+                best_score = score
+                best_match = result
+
+        # ----- Step 2: Apply dedup logic -----
+
+        if best_match and best_score > self._DEDUP_NEAR_IDENTICAL:
+            # Near-identical: just update timestamp
+            return await self._handle_dedup_identical(
+                project_id=project_id,
+                existing=best_match,
+                similarity=best_score,
+                source_task=source_task,
+                scope=scope,
+            )
+
+        if best_match and best_score > self._DEDUP_RELATED:
+            # Related: merge via LLM
+            return await self._handle_dedup_merge(
+                project_id=project_id,
+                content=content,
+                existing=best_match,
+                similarity=best_score,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                scope=scope,
+            )
+
+        # ----- Step 3: Distinct — create new entry -----
+        return await self._handle_create_new(
+            project_id=project_id,
+            content=content,
+            tags=tags,
+            topic=topic,
+            source_task=source_task,
+            scope=scope,
+        )
+
+    async def _handle_dedup_identical(
+        self,
+        *,
+        project_id: str,
+        existing: dict,
+        similarity: float,
+        source_task: str | None,
+        scope: str | None,
+    ) -> dict:
+        """Handle near-identical dedup (similarity > 0.95).
+
+        Updates timestamp on existing memory and appends source task.
+        """
+        chunk_hash = existing.get("chunk_hash", "")
+        if not chunk_hash:
+            self._log.warning("Dedup match has no chunk_hash, falling back to create")
+            return {"error": "Dedup match missing chunk_hash"}
+
+        result = await self._service.update_document_timestamp(
+            project_id,
+            chunk_hash,
+            source_task=source_task,
+            scope=scope,
+        )
+        return {
+            "success": True,
+            "action": "deduplicated",
+            "project_id": project_id,
+            "similarity_score": round(similarity, 4),
+            "existing_chunk_hash": chunk_hash,
+            **result,
+        }
+
+    async def _handle_dedup_merge(
+        self,
+        *,
+        project_id: str,
+        content: str,
+        existing: dict,
+        similarity: float,
+        tags: list[str],
+        topic: str | None,
+        source_task: str | None,
+        scope: str | None,
+    ) -> dict:
+        """Handle related dedup (similarity 0.8–0.95) — merge via LLM.
+
+        Invokes the LLM to combine old + new content, then updates the
+        existing entry with the merged result.
+        """
+        chunk_hash = existing.get("chunk_hash", "")
+        old_content = existing.get("content", "")
+        old_tags = self._decode_tags(existing.get("tags", "[]"))
+
+        # Merge tags (preserve both, deduplicate)
+        merged_tags = list(dict.fromkeys(old_tags + tags))
+
+        # Attempt LLM merge
+        merged_content = await self._merge_via_llm(old_content, content)
+
+        if not chunk_hash:
+            self._log.warning("Merge match has no chunk_hash, creating new entry instead")
+            # Fall through to creating new with merged content
+            return await self._handle_create_new(
+                project_id=project_id,
+                content=merged_content,
+                tags=merged_tags,
+                topic=topic,
+                source_task=source_task,
+                scope=scope,
+            )
+
+        result = await self._service.update_document_content(
+            project_id,
+            chunk_hash,
+            merged_content,
+            tags=merged_tags,
+            scope=scope,
+        )
+        return {
+            "success": True,
+            "action": "merged",
+            "project_id": project_id,
+            "similarity_score": round(similarity, 4),
+            "merged_with": chunk_hash,
+            **result,
+        }
+
+    async def _handle_create_new(
+        self,
+        *,
+        project_id: str,
+        content: str,
+        tags: list[str],
+        topic: str | None,
+        source_task: str | None,
+        scope: str | None,
+    ) -> dict:
+        """Create a new memory entry (distinct content).
+
+        If content is long, generates a summary via LLM (spec §9).
+        """
+        summary: str | None = None
+        original: str | None = None
+
+        # Generate summary for long content (§9)
+        if len(content) > self._SUMMARY_CHAR_THRESHOLD:
+            summary = await self._generate_summary(content)
+            original = content
+        # else: content is already summary-length, used as-is
+
+        result = await self._service.save_document(
+            project_id,
+            content,
+            summary=summary,
+            original=original,
+            tags=tags,
+            topic=topic,
+            source_task=source_task,
+            scope=scope,
+        )
+        return {
+            "success": True,
+            "action": "created",
+            "project_id": project_id,
+            "has_summary": summary is not None,
+            **result,
+        }
+
+    async def _merge_via_llm(self, old_content: str, new_content: str) -> str:
+        """Merge two related memories via a lightweight LLM call.
+
+        Per spec §8: "Combine these into a single memory.  If they
+        contradict, prefer the newer information but note the change.
+        Preserve tags from both."
+
+        Falls back to simple concatenation if LLM is unavailable.
+        """
+        prompt = (
+            "You are merging two related memory entries into one concise, unified memory.\n\n"
+            "EXISTING MEMORY:\n"
+            f"{old_content}\n\n"
+            "NEW MEMORY:\n"
+            f"{new_content}\n\n"
+            "INSTRUCTIONS:\n"
+            "- Combine both into a single, cohesive memory entry.\n"
+            "- If they contradict, prefer the newer information but briefly note what changed.\n"
+            "- Keep the result concise — no longer than the longer of the two inputs.\n"
+            "- Output ONLY the merged memory content, no preamble or explanation.\n"
+        )
+        try:
+            return await self._ctx.invoke_llm(
+                prompt,
+                model="claude-haiku-4-20250514",
+            )
+        except Exception:
+            self._log.warning("LLM merge unavailable, using concatenation fallback")
+            return f"{old_content}\n\n---\n\n**Updated:** {new_content}"
+
+    async def _generate_summary(self, content: str) -> str:
+        """Generate a concise summary of long content via LLM.
+
+        Per spec §9: summary is embedded/indexed for search; original
+        is preserved for full context retrieval.
+
+        Falls back to truncation if LLM is unavailable.
+        """
+        prompt = (
+            "Summarize the following insight or learning into a concise memory entry "
+            "optimized for semantic search retrieval. Keep the key facts, decisions, "
+            "and actionable knowledge. Aim for 2-4 sentences.\n\n"
+            "CONTENT:\n"
+            f"{content}\n\n"
+            "OUTPUT ONLY the summary, no preamble.\n"
+        )
+        try:
+            return await self._ctx.invoke_llm(
+                prompt,
+                model="claude-haiku-4-20250514",
+            )
+        except Exception:
+            self._log.warning("LLM summary unavailable, using truncation fallback")
+            # Truncate to ~200 tokens worth
+            lines = content.split("\n")
+            truncated = []
+            char_count = 0
+            for line in lines:
+                if char_count + len(line) > self._SUMMARY_CHAR_THRESHOLD:
+                    break
+                truncated.append(line)
+                char_count += len(line)
+            return "\n".join(truncated)
 
     # -----------------------------------------------------------------
     # Command handlers — Semantic Search
