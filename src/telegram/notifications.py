@@ -197,3 +197,69 @@ def make_inline_keyboard(
         Each button is on its own row for readability.
     """
     return [[{"text": label, "callback_data": data}] for label, data in buttons]
+
+
+# ---------------------------------------------------------------------------
+# Playbook human-in-the-loop notifications (roadmap 5.4.2)
+# ---------------------------------------------------------------------------
+
+
+def format_playbook_paused(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    last_response: str = "",
+    running_seconds: float = 0.0,
+    tokens_used: int = 0,
+) -> str:
+    """Format a playbook-paused notification for Telegram MarkdownV2.
+
+    Includes the accumulated context summary so the human reviewer
+    can make an informed decision from their phone.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.2.
+    """
+    lines: list[str] = [
+        bold("Playbook Awaiting Human Review"),
+        "",
+        f"{bold('Playbook:')} {code(playbook_id)}",
+        f"{bold('Run ID:')} {code(run_id)}",
+        f"{bold('Paused at:')} {code(node_id)}",
+    ]
+
+    if running_seconds > 0:
+        if running_seconds >= 60:
+            mins = int(running_seconds // 60)
+            secs = int(running_seconds % 60)
+            duration_str = f"{mins}m {secs}s"
+        else:
+            duration_str = f"{running_seconds:.1f}s"
+        lines.append(f"{bold('Running time:')} {escape_markdown(duration_str)}")
+
+    if tokens_used > 0:
+        lines.append(f"{bold('Tokens used:')} {escape_markdown(f'{tokens_used:,}')}")
+
+    if last_response:
+        lines.append("")
+        lines.append(bold("Context Summary:"))
+        # Cap the context for Telegram's 4096 char limit, leaving room for
+        # the rest of the message (~500 chars overhead)
+        context_preview = last_response
+        max_context = 3000
+        if len(context_preview) > max_context:
+            cut = context_preview[:max_context].rfind("\n")
+            if cut > 1000:
+                context_preview = context_preview[:cut] + "\n…"
+            else:
+                context_preview = context_preview[:max_context] + "…"
+        lines.append(code_block(context_preview))
+    else:
+        lines.append("")
+        lines.append(italic("No context summary available."))
+
+    lines.append("")
+    lines.append(escape_markdown(f"Use /resume-playbook {run_id} to provide your input."))
+
+    return "\n".join(lines)

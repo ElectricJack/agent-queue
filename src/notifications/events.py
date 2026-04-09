@@ -313,6 +313,30 @@ class PlaybookRunFailedEvent(NotifyEvent):
     duration_seconds: float = 0.0
 
 
+class PlaybookRunPausedEvent(NotifyEvent):
+    """Emitted when a playbook run pauses at a ``wait_for_human`` node.
+
+    Surfaces the review request to human operators via Discord, Telegram, or
+    other notification transports.  The ``last_response`` field contains the
+    last assistant message (capped at 2000 chars) so the reviewer has
+    immediate context about what the playbook has done and why human input
+    is needed.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.2.
+    """
+
+    event_type: str = "notify.playbook_run_paused"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    last_response: str = ""
+    running_seconds: float = 0.0
+    tokens_used: int = 0
+    paused_at: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Generic text notification (catch-all for simple messages)
 # ---------------------------------------------------------------------------

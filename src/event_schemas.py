@@ -351,6 +351,16 @@ _PLAYBOOK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["playbook_id", "run_id", "failed_at_node"],
         "optional": ["error", "project_id", "tokens_used", "duration_seconds"],
     },
+    "playbook.run.paused": {
+        "required": ["playbook_id", "run_id", "node_id"],
+        "optional": [
+            "last_response",
+            "running_seconds",
+            "paused_at",
+            "tokens_used",
+            "project_id",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------

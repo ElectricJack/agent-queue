@@ -21,6 +21,7 @@ from src.notifications.events import (
     ChainStuckEvent,
     MergeConflictEvent,
     PlanAwaitingApprovalEvent,
+    PlaybookRunPausedEvent,
     PRCreatedEvent,
     PushFailedEvent,
     StuckDefinedTaskEvent,
@@ -132,6 +133,7 @@ class DiscordNotificationHandler:
             ("notify.chain_stuck", self._on_chain_stuck),
             ("notify.stuck_defined_task", self._on_stuck_defined_task),
             ("notify.system_online", self._on_system_online),
+            ("notify.playbook_run_paused", self._on_playbook_run_paused),
             ("notify.task_thread_open", self._on_task_thread_open),
             ("notify.task_message", self._on_task_message),
             ("notify.task_thread_close", self._on_task_thread_close),
@@ -518,8 +520,7 @@ class DiscordNotificationHandler:
         task_p = _task_proxy(event.task)
         # Convert blocking_deps from list[dict] to list[tuple] for formatter
         blocking_tuples = [
-            (d.get("id", ""), d.get("title", ""), d.get("status", ""))
-            for d in event.blocking_deps
+            (d.get("id", ""), d.get("title", ""), d.get("status", "")) for d in event.blocking_deps
         ]
 
         embed = format_stuck_defined_task_embed(task_p, blocking_tuples, event.stuck_hours)
@@ -535,6 +536,41 @@ class DiscordNotificationHandler:
         await self.bot._send_message(
             format_server_started(),
             embed=format_server_started_embed(),
+        )
+
+    # ------------------------------------------------------------------
+    # Playbook human-in-the-loop notifications (roadmap 5.4.2)
+    # ------------------------------------------------------------------
+
+    async def _on_playbook_run_paused(self, data: dict) -> None:
+        event = PlaybookRunPausedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            PlaybookResumeView,
+            format_playbook_paused,
+            format_playbook_paused_embed,
+        )
+
+        handler_ref = self._get_handler()
+        embed = format_playbook_paused_embed(
+            playbook_id=event.playbook_id,
+            run_id=event.run_id,
+            node_id=event.node_id,
+            last_response=event.last_response,
+            running_seconds=event.running_seconds,
+            tokens_used=event.tokens_used,
+        )
+        view = PlaybookResumeView(event.run_id, handler=handler_ref)
+
+        await self.bot._send_message(
+            format_playbook_paused(
+                playbook_id=event.playbook_id,
+                run_id=event.run_id,
+                node_id=event.node_id,
+            ),
+            project_id=event.project_id,
+            embed=embed,
+            view=view,
         )
 
     # ------------------------------------------------------------------

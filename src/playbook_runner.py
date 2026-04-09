@@ -523,6 +523,10 @@ class PlaybookRunner:
         the review request.  The payload includes the node ID, conversation
         context summary, and timing information so the notification can be
         informative without requiring a DB lookup.
+
+        Also emits a ``notify.playbook_run_paused`` event (roadmap 5.4.2)
+        so that notification transports (Discord, Telegram) can deliver a
+        human-readable context summary to the reviewer.
         """
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
@@ -535,13 +539,45 @@ class PlaybookRunner:
             payload["paused_at"] = paused_at
         payload["tokens_used"] = self.tokens_used
         # Include the last assistant response as context for the reviewer
+        last_response = ""
         for msg in reversed(self.messages):
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content:
-                    payload["last_response"] = content[:2000]  # cap for event payload
+                    last_response = content[:2000]  # cap for event payload
                     break
+        if last_response:
+            payload["last_response"] = last_response
         await self._emit_bus_event("playbook.run.paused", payload)
+
+        # Emit typed notification event for Discord/Telegram (roadmap 5.4.2)
+        await self._emit_paused_notification(payload, last_response)
+
+    async def _emit_paused_notification(
+        self,
+        raw_payload: dict[str, Any],
+        last_response: str,
+    ) -> None:
+        """Emit ``notify.playbook_run_paused`` for notification transports.
+
+        Converts the raw ``playbook.run.paused`` payload into a typed
+        ``PlaybookRunPausedEvent`` and emits it on the EventBus so that
+        Discord, Telegram, and other transports can render a rich
+        human-review notification with context summary (roadmap 5.4.2).
+        """
+        from src.notifications.events import PlaybookRunPausedEvent
+
+        event = PlaybookRunPausedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            node_id=raw_payload.get("node_id", ""),
+            last_response=last_response,
+            running_seconds=raw_payload.get("running_seconds", 0.0),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            paused_at=raw_payload.get("paused_at", 0.0),
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_paused", event.model_dump(mode="json"))
 
     async def _emit_resumed_event(
         self,
