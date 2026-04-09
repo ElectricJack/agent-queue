@@ -1424,6 +1424,9 @@ class MemoryV2Plugin(InternalPlugin):
     _DEDUP_RELATED: float = 0.80
     # Approximate token threshold for summary generation (§9)
     _SUMMARY_CHAR_THRESHOLD: int = 800  # ~200 tokens ≈ 800 chars
+    # Minimum word count for dedup check — similarity is unreliable on
+    # very short content so we skip the dedup search entirely.
+    _DEDUP_MIN_WORDS: int = 5
 
     async def cmd_memory_save(self, args: dict) -> dict:
         """Save an insight with dedup check, summary/original, topic assignment.
@@ -1497,29 +1500,37 @@ class MemoryV2Plugin(InternalPlugin):
                 self._log.info("Auto-detected topic %r for memory_save", topic)
 
         # ----- Step 1: Dedup check via semantic search -----
-        # Resolve target scope so the dedup search is scoped to the same
-        # collection we'll save into.  When *scope* is None the target is
-        # the project scope — we must NOT use multi-scope search (which
-        # would also query the system collection) for dedup.
-        dedup_scope = scope if scope is not None else f"project_{project_id}"
 
-        dedup_results = await self._service.search(
-            project_id,
-            content[:500],  # search using first ~500 chars for efficiency
-            scope=dedup_scope,
-            topic=topic,
-            top_k=5,
-        )
+        # Skip dedup for very short content — similarity scores are
+        # unreliable for content shorter than _DEDUP_MIN_WORDS words.
+        word_count = len(content.split())
+        skip_dedup = word_count < self._DEDUP_MIN_WORDS
 
-        # Find the best match
         best_match: dict | None = None
         best_score: float = 0.0
-        for result in dedup_results:
-            score = result.get("score", 0.0)
-            # Only consider document entries (not KV/temporal)
-            if result.get("entry_type", "document") == "document" and score > best_score:
-                best_score = score
-                best_match = result
+
+        if not skip_dedup:
+            # Resolve target scope so the dedup search is scoped to the same
+            # collection we'll save into.  When *scope* is None the target is
+            # the project scope — we must NOT use multi-scope search (which
+            # would also query the system collection) for dedup.
+            dedup_scope = scope if scope is not None else f"project_{project_id}"
+
+            dedup_results = await self._service.search(
+                project_id,
+                content[:500],  # search using first ~500 chars for efficiency
+                scope=dedup_scope,
+                topic=topic,
+                top_k=5,
+            )
+
+            # Find the best match
+            for result in dedup_results:
+                score = result.get("score", 0.0)
+                # Only consider document entries (not KV/temporal)
+                if result.get("entry_type", "document") == "document" and score > best_score:
+                    best_score = score
+                    best_match = result
 
         # ----- Step 2: Apply dedup logic -----
 

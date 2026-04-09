@@ -592,7 +592,7 @@ class TestPluginMemorySave:
         """When LLM merge fails, fall back to concatenation."""
         mock_store.search.return_value = [
             {
-                "content": "Old content",
+                "content": "Old content about error handling and retries",
                 "score": 0.88,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -605,7 +605,7 @@ class TestPluginMemorySave:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "New content to merge",
+                "content": "New content about merging strategies and fallbacks",
             }
         )
         assert result["success"] is True
@@ -649,7 +649,7 @@ class TestPluginMemorySave:
         """Only document entries should be considered for dedup, not KV/temporal."""
         mock_store.search.return_value = [
             {
-                "content": "some kv entry",
+                "content": "some key-value entry about configuration settings",
                 "score": 0.99,
                 "chunk_hash": "kv_hash",
                 "entry_type": "kv",  # Not a document!
@@ -660,7 +660,7 @@ class TestPluginMemorySave:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "New insight",
+                "content": "New insight about API authentication token handling",
             }
         )
         assert result["success"] is True
@@ -677,7 +677,7 @@ class TestPluginMemorySave:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Test",
+                "content": "Test insight that triggers a service error during search",
             }
         )
         assert "error" in result
@@ -741,7 +741,7 @@ class TestPluginMemorySave:
         """When merged content is short (< ~200 tokens), no summary is generated."""
         mock_store.search.return_value = [
             {
-                "content": "Short insight",
+                "content": "Short insight about database connection pooling strategies",
                 "score": 0.88,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -751,7 +751,7 @@ class TestPluginMemorySave:
 
         async def mock_llm(prompt, **kwargs):
             if "merging two related" in prompt.lower():
-                return "Short merged result"  # Under threshold
+                return "Short merged result about connection pooling"  # Under threshold
             return "topic-result"
 
         wired_plugin._ctx.invoke_llm = AsyncMock(side_effect=mock_llm)
@@ -759,7 +759,7 @@ class TestPluginMemorySave:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Short new insight",
+                "content": "New short insight about database pool sizing",
             }
         )
         assert result["success"] is True
@@ -914,7 +914,7 @@ class TestDedupScopedSearch:
         await wired_plugin.cmd_memory_save(
             {
                 "project_id": "my-project",
-                "content": "Test insight",
+                "content": "Test insight about API rate limiting and retries",
                 "topic": "testing",
             }
         )
@@ -934,7 +934,7 @@ class TestDedupScopedSearch:
         await wired_plugin.cmd_memory_save(
             {
                 "project_id": "my-project",
-                "content": "System-level insight",
+                "content": "System-level insight about global configuration and defaults",
                 "scope": "system",
             }
         )
@@ -972,7 +972,7 @@ class TestDedupBoundaryConditions:
         """Similarity == 0.80 should trigger merge (spec says 0.8-0.95 is related)."""
         mock_store.search.return_value = [
             {
-                "content": "Existing insight",
+                "content": "Existing insight about caching patterns and strategies",
                 "score": 0.80,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -983,7 +983,7 @@ class TestDedupBoundaryConditions:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Related insight at boundary",
+                "content": "Related insight about caching at the boundary threshold",
             }
         )
         assert result["success"] is True
@@ -996,7 +996,7 @@ class TestDedupBoundaryConditions:
         """Similarity < 0.80 (e.g. 0.79) should create a new entry."""
         mock_store.search.return_value = [
             {
-                "content": "Somewhat related insight",
+                "content": "Somewhat related insight about error handling approaches",
                 "score": 0.79,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -1007,7 +1007,7 @@ class TestDedupBoundaryConditions:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Distinct enough insight",
+                "content": "Distinct enough insight about database migration strategies",
             }
         )
         assert result["success"] is True
@@ -1019,7 +1019,7 @@ class TestDedupBoundaryConditions:
         """Similarity == 0.95 should trigger merge (spec says >0.95 for near-identical)."""
         mock_store.search.return_value = [
             {
-                "content": "Very similar insight",
+                "content": "Very similar insight about deployment pipeline configuration",
                 "score": 0.95,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -1030,7 +1030,7 @@ class TestDedupBoundaryConditions:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Almost identical insight",
+                "content": "Almost identical insight about deployment pipeline setup steps",
             }
         )
         assert result["success"] is True
@@ -1043,7 +1043,7 @@ class TestDedupBoundaryConditions:
         """Similarity > 0.95 (e.g. 0.96) should trigger dedup (timestamp only)."""
         mock_store.search.return_value = [
             {
-                "content": "Near-identical insight",
+                "content": "Near-identical insight about authentication token refresh flow",
                 "score": 0.96,
                 "chunk_hash": "existing_hash",
                 "entry_type": "document",
@@ -1054,7 +1054,7 @@ class TestDedupBoundaryConditions:
         result = await wired_plugin.cmd_memory_save(
             {
                 "project_id": "test-project",
-                "content": "Nearly the same insight",
+                "content": "Nearly the same insight about authentication token refresh",
             }
         )
         assert result["success"] is True
@@ -1407,6 +1407,399 @@ class TestDistinctContentSave:
         # Return result should also reflect the new entry's own metadata
         assert result["topic"] == "infrastructure"
         assert result["tags"] == ["devops", "kubernetes"]
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection (>0.95 similarity) — Roadmap 3.4.4
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateDetection:
+    """Test duplicate detection when similarity > 0.95.
+
+    Roadmap 3.4.4 cases:
+    (a) Saving identical content twice results in only one entry (second save
+        updates timestamp only).
+    (b) Saving near-identical content (e.g., minor typo fix) with >0.95
+        similarity also deduplicates.
+    (c) Collection entry count does not increase on duplicate save.
+    (d) The updated timestamp reflects the second save time.
+    (e) Duplicate detection works across the same scope only (same content
+        in different scopes creates separate entries).
+    (f) Dedup check does not trigger on very short content where similarity
+        is unreliable (< 5 tokens).
+    """
+
+    @pytest.fixture
+    def plugin(self):
+        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+
+        return MemoryV2Plugin()
+
+    @pytest.fixture
+    def wired_plugin(self, plugin, service):
+        plugin._service = service
+        plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.invoke_llm = AsyncMock(return_value="LLM result")
+        return plugin
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_identical_content_deduplicates(self, wired_plugin, mock_store):
+        """(a) Saving identical content twice — second save updates timestamp only.
+
+        When content is saved and a near-identical entry (score > 0.95) already
+        exists, the action should be 'deduplicated' and no new entry is created.
+        """
+        # First save — no existing entries, creates new
+        mock_store.search.return_value = []
+        first_result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Authentication tokens must be refreshed before expiry.",
+                "tags": ["insight", "auth"],
+                "topic": "authentication",
+                "source_task": "task-001",
+            }
+        )
+        assert first_result["success"] is True
+        assert first_result["action"] == "created"
+
+        # Second save of identical content — search returns the first entry
+        mock_store.search.return_value = [
+            {
+                "content": "Authentication tokens must be refreshed before expiry.",
+                "score": 0.99,
+                "chunk_hash": first_result["chunk_hash"],
+                "entry_type": "document",
+                "topic": "authentication",
+                "tags": '["insight", "auth"]',
+            }
+        ]
+
+        second_result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Authentication tokens must be refreshed before expiry.",
+                "tags": ["insight", "auth"],
+                "topic": "authentication",
+                "source_task": "task-002",
+            }
+        )
+        assert second_result["success"] is True
+        assert second_result["action"] == "deduplicated"
+        assert second_result["existing_chunk_hash"] == first_result["chunk_hash"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_near_identical_with_typo_fix_deduplicates(self, wired_plugin, mock_store):
+        """(b) Near-identical content (typo fix) with >0.95 similarity deduplicates.
+
+        Even when the text isn't byte-for-byte identical, similarity >0.95
+        should still trigger dedup (timestamp update), not a merge or new entry.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "OAuth tokens require explicit scpoe re-request on refresh.",
+                "score": 0.97,
+                "chunk_hash": "existing_typo_hash",
+                "entry_type": "document",
+                "topic": "auth",
+                "tags": '["insight", "oauth"]',
+            }
+        ]
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                # Typo fixed: "scpoe" → "scope"
+                "content": "OAuth tokens require explicit scope re-request on refresh.",
+                "tags": ["insight", "oauth"],
+                "topic": "auth",
+            }
+        )
+        assert result["success"] is True
+        assert result["action"] == "deduplicated"
+        assert result["similarity_score"] == 0.97
+        assert result["existing_chunk_hash"] == "existing_typo_hash"
+        # LLM merge should NOT be invoked for near-identical
+        merge_calls = [
+            c
+            for c in wired_plugin._ctx.invoke_llm.call_args_list
+            if "merging two related" in c[0][0].lower()
+        ]
+        assert len(merge_calls) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_collection_count_unchanged_on_dedup(self, wired_plugin, mock_store):
+        """(c) Collection entry count does not increase on duplicate save.
+
+        When a duplicate is detected (>0.95), the service calls
+        update_document_timestamp (upsert of existing entry), NOT
+        save_document (upsert of a new entry). The upsert call should
+        reuse the existing chunk_hash rather than creating a new one.
+        """
+        mock_store.search.return_value = [
+            {
+                "content": "Rate limiting should use token bucket algorithm.",
+                "score": 0.98,
+                "chunk_hash": "rate_limit_hash",
+                "entry_type": "document",
+                "topic": "api",
+                "tags": '["insight", "api"]',
+            }
+        ]
+
+        mock_store.upsert.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Rate limiting should use token bucket algorithm.",
+                "tags": ["insight", "api"],
+                "topic": "api",
+            }
+        )
+        assert result["action"] == "deduplicated"
+
+        # The upsert call should update the existing entry, not create a new one.
+        # update_document_timestamp calls store.get() then store.upsert() with
+        # the same chunk_hash.
+        assert mock_store.upsert.call_count == 1
+        upserted = mock_store.upsert.call_args[0][0]
+        assert len(upserted) == 1
+        assert upserted[0]["chunk_hash"] == "existing_hash"  # from mock_store fixture
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_updated_timestamp_reflects_second_save(self, wired_plugin, mock_store):
+        """(d) The updated timestamp reflects the second save time.
+
+        After dedup, the returned updated_at should be a recent timestamp,
+        not the original creation time.
+        """
+        import time
+
+        before_save = int(time.time())
+
+        mock_store.search.return_value = [
+            {
+                "content": "Connection pooling improves database performance.",
+                "score": 0.96,
+                "chunk_hash": "pool_hash",
+                "entry_type": "document",
+                "topic": "database",
+                "tags": '["insight", "performance"]',
+            }
+        ]
+
+        # The mock store.get returns an entry with old timestamp
+        mock_store.get.return_value = {
+            "chunk_hash": "pool_hash",
+            "entry_type": "document",
+            "content": "Connection pooling improves database performance.",
+            "original": "",
+            "source": "",
+            "heading": "Connection pooling",
+            "topic": "database",
+            "tags": '["insight", "performance"]',
+            "updated_at": 1000,  # Old timestamp
+            "embedding": [0.1] * 384,
+        }
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Connection pooling improves database performance.",
+                "tags": ["insight", "performance"],
+                "topic": "database",
+            }
+        )
+
+        after_save = int(time.time())
+
+        assert result["action"] == "deduplicated"
+        assert result["updated_at"] >= before_save
+        assert result["updated_at"] <= after_save
+
+        # Verify the store.upsert was called with the updated timestamp
+        upserted = mock_store.upsert.call_args[0][0][0]
+        assert upserted["updated_at"] >= before_save
+        assert upserted["updated_at"] <= after_save
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_dedup_same_scope_only(self, wired_plugin, mock_store, mock_router):
+        """(e) Duplicate detection works across the same scope only.
+
+        The same content saved to different scopes should create separate
+        entries. The dedup search must not cross scope boundaries.
+        """
+        # Save to project scope first — no existing entries
+        mock_store.search.return_value = []
+        mock_store.upsert.reset_mock()
+
+        project_result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Caching strategy should use write-through pattern.",
+                "tags": ["insight", "caching"],
+                "topic": "caching",
+                "scope": "project_test-project",
+            }
+        )
+        assert project_result["action"] == "created"
+
+        # Now save identical content to system scope.
+        # Even though the content is the same, the system scope search
+        # should return empty (different scope), so a new entry is created.
+        mock_store.search.return_value = []
+        mock_store.upsert.reset_mock()
+
+        system_result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Caching strategy should use write-through pattern.",
+                "tags": ["insight", "caching"],
+                "topic": "caching",
+                "scope": "system",
+            }
+        )
+        assert system_result["action"] == "created"
+
+        # The multi-scope router should NOT have been called for dedup
+        assert mock_router.search.call_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_dedup_same_scope_only_does_not_cross_scopes(
+        self, wired_plugin, mock_store, mock_router
+    ):
+        """(e) Extended: if dedup did cross scopes, the second save would wrongly
+        dedup. Instead, both saves should produce 'created' action."""
+        # First save to scope A — creates entry
+        mock_store.search.return_value = []
+        result_a = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "project-a",
+                "content": "Logging should include correlation IDs for traceability.",
+                "tags": ["insight", "observability"],
+                "topic": "logging",
+            }
+        )
+        assert result_a["action"] == "created"
+
+        # Second save of the same content to scope B (different project).
+        # The dedup search resolves scope to project_project-b, which is
+        # different from project_project-a, so no match → created.
+        mock_store.search.return_value = []
+        result_b = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "project-b",
+                "content": "Logging should include correlation IDs for traceability.",
+                "tags": ["insight", "observability"],
+                "topic": "logging",
+            }
+        )
+        assert result_b["action"] == "created"
+
+        # Multi-scope router should never be used for dedup
+        assert mock_router.search.call_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_short_content_skips_dedup(self, wired_plugin, mock_store):
+        """(f) Dedup check does not trigger on very short content (< 5 words).
+
+        Similarity scores are unreliable for very short texts, so the dedup
+        search should be skipped entirely and a new entry should always be
+        created — even if hypothetically similar content exists.
+        """
+        # Set up a high-similarity search result that *would* trigger dedup
+        # if the search were not skipped.
+        mock_store.search.return_value = [
+            {
+                "content": "Fix bug",
+                "score": 0.99,
+                "chunk_hash": "short_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+        mock_store.upsert.reset_mock()
+        mock_store.search.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Fix bug now",  # Only 3 words — below 5-word threshold
+                "tags": ["note"],
+                "topic": "bugs",
+            }
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "created"
+        # The dedup search should NOT have been called at all
+        assert mock_store.search.call_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_content_at_word_threshold_does_dedup(self, wired_plugin, mock_store):
+        """(f) Extended: content at exactly _DEDUP_MIN_WORDS (5 words) should
+        trigger normal dedup."""
+        mock_store.search.return_value = [
+            {
+                "content": "Five word content triggers dedup",
+                "score": 0.98,
+                "chunk_hash": "five_words_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+        mock_store.search.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Five word content triggers dedup",  # Exactly 5 words
+                "tags": ["insight"],
+                "topic": "testing",
+            }
+        )
+
+        # Search SHOULD be called for 5-word content
+        assert mock_store.search.call_count >= 1
+        # And the high similarity should trigger dedup
+        assert result["action"] == "deduplicated"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_four_word_content_skips_dedup(self, wired_plugin, mock_store):
+        """(f) Extended: 4-word content is below the threshold and skips dedup."""
+        mock_store.search.return_value = [
+            {
+                "content": "Should not match",
+                "score": 0.99,
+                "chunk_hash": "four_hash",
+                "entry_type": "document",
+                "tags": '["insight"]',
+            }
+        ]
+        mock_store.search.reset_mock()
+
+        result = await wired_plugin.cmd_memory_save(
+            {
+                "project_id": "test-project",
+                "content": "Only four words here",  # 4 words — below threshold
+                "tags": ["note"],
+            }
+        )
+
+        assert result["action"] == "created"
+        assert mock_store.search.call_count == 0
 
 
 # ---------------------------------------------------------------------------
