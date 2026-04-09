@@ -57,6 +57,8 @@ class NodeTraceEntry:
     started_at: float
     completed_at: float | None = None
     status: str = "running"  # running | completed | failed | skipped
+    transition_to: str | None = None  # next node ID after evaluation
+    transition_method: str | None = None  # "goto" | "llm" | "structured" | "otherwise"
 
 
 @dataclass
@@ -138,6 +140,7 @@ class PlaybookRunner:
         self._playbook_version: int = graph.get("version", 0)
         self._max_tokens: int | None = graph.get("max_tokens")
         self._llm_config: dict | None = graph.get("llm_config")
+        self._transition_llm_config: dict | None = graph.get("transition_llm_config")
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,7 +230,9 @@ class PlaybookRunner:
 
             # Determine next node via transition evaluation
             try:
-                next_node_id = await self._evaluate_transition(current_node_id, node, response)
+                next_node_id, t_method = await self._evaluate_transition(
+                    current_node_id, node, response
+                )
             except Exception as exc:
                 logger.exception("Transition evaluation failed at node '%s'", current_node_id)
                 return await self._fail(
@@ -236,6 +241,11 @@ class PlaybookRunner:
                     started_at,
                     current_node=current_node_id,
                 )
+
+            # Record transition info on the trace entry for this node
+            if self.node_trace:
+                self.node_trace[-1].transition_to = next_node_id
+                self.node_trace[-1].transition_method = t_method
 
             if next_node_id is None:
                 # No transition matched and no terminal — implicit completion
@@ -357,7 +367,7 @@ class PlaybookRunner:
 
         # Evaluate transition from paused node (human input is now in context)
         try:
-            next_node_id = await runner._evaluate_transition(
+            next_node_id, _t_method = await runner._evaluate_transition(
                 paused_node_id, paused_node, last_response
             )
         except Exception as exc:
@@ -429,7 +439,9 @@ class PlaybookRunner:
                 return await runner._pause(db_run, current_node_id, started_at)
 
             try:
-                next_node_id = await runner._evaluate_transition(current_node_id, node, response)
+                next_node_id, t_method = await runner._evaluate_transition(
+                    current_node_id, node, response
+                )
             except Exception as exc:
                 return await runner._fail(
                     db_run,
@@ -437,6 +449,11 @@ class PlaybookRunner:
                     started_at,
                     current_node=current_node_id,
                 )
+
+            # Record transition info on the trace entry for this node
+            if runner.node_trace:
+                runner.node_trace[-1].transition_to = next_node_id
+                runner.node_trace[-1].transition_method = t_method
 
             if next_node_id is None:
                 break
@@ -645,56 +662,221 @@ class PlaybookRunner:
         node_id: str,
         node: dict,
         response: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str]:
         """Determine the next node ID based on the node's transition config.
 
-        Returns the next node ID, or *None* if no transition applies
-        (implicit terminal).
+        Returns a tuple of ``(next_node_id, method)`` where *method* is one of
+        ``"goto"``, ``"llm"``, ``"structured"``, ``"otherwise"``, or ``"none"``.
 
-        Handles three cases per the spec:
-        1. Unconditional ``goto`` — return target directly.
-        2. Conditional ``transitions`` list with natural-language ``when``
-           clauses — use a separate LLM call to classify which condition
+        Handles four cases per the spec §6:
+
+        1. **Unconditional ``goto``** — return target directly (no LLM call).
+        2. **Structured transitions** — when ``when`` is a dict, evaluate
+           locally against the node response without an LLM call.
+        3. **Natural-language transitions** — when ``when`` is a string,
+           use a separate, cheap LLM call to classify which condition
            matches.
-        3. No transitions and no goto — return *None* (implicit end).
+        4. **No transitions and no goto** — return *None* (implicit end).
+
+        Mixed lists (some structured, some natural-language) are supported:
+        structured conditions are checked first; if none match, remaining
+        natural-language conditions are classified via LLM.
         """
         # Case 1: unconditional goto
         if "goto" in node:
             target = node["goto"]
             logger.debug("Node '%s' → unconditional goto '%s'", node_id, target)
-            return target
+            return target, "goto"
 
-        # Case 3: no transitions defined
+        # Case 4: no transitions defined
         transitions = node.get("transitions")
         if not transitions:
-            return None
+            return None, "none"
 
-        # Case 2: conditional transitions via LLM classification
-        return await self._classify_transition(node_id, transitions, response)
+        # Separate transitions into structured vs. natural-language
+        structured: list[tuple[int, dict]] = []
+        natural_lang: list[tuple[int, dict]] = []
+        otherwise_target: str | None = None
+
+        for i, t in enumerate(transitions):
+            if t.get("otherwise"):
+                otherwise_target = t["goto"]
+            elif isinstance(t.get("when"), dict):
+                structured.append((i, t))
+            else:
+                natural_lang.append((i, t))
+
+        # Case 2: try structured transitions first (no LLM call)
+        for _idx, t in structured:
+            if self._evaluate_structured_condition(t["when"], response):
+                target = t["goto"]
+                logger.debug(
+                    "Node '%s' → structured transition to '%s' (condition: %s)",
+                    node_id,
+                    target,
+                    t["when"],
+                )
+                return target, "structured"
+
+        # Case 3: natural-language transitions via LLM classification
+        if natural_lang:
+            target = await self._classify_transition(node_id, node, transitions, response)
+            if target is not None:
+                return target, "llm"
+
+        # Fallback to otherwise
+        if otherwise_target:
+            logger.debug(
+                "Node '%s' → otherwise fallback to '%s'",
+                node_id,
+                otherwise_target,
+            )
+            return otherwise_target, "otherwise"
+
+        logger.warning("Node '%s': no transition matched and no otherwise defined", node_id)
+        return None, "none"
+
+    # ------------------------------------------------------------------
+    # Internal: structured transition evaluation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _evaluate_structured_condition(condition: dict, response: str) -> bool:
+        """Evaluate a structured (dict-based) transition condition locally.
+
+        Structured conditions allow deterministic evaluation without an
+        LLM call, per spec §6.  The compiler emits these for simple,
+        unambiguous conditionals.
+
+        Supported condition functions:
+
+        - ``{"function": "response_contains", "value": "text"}``
+          → ``True`` if *value* appears in *response* (case-insensitive).
+
+        - ``{"function": "response_not_contains", "value": "text"}``
+          → ``True`` if *value* does NOT appear in *response* (case-insensitive).
+
+        - ``{"function": "has_tool_output", "contains": "text"}``
+          → Alias for ``response_contains`` — the node's final response
+          summarises tool output, so checking the response suffices.
+
+        Unrecognised function names log a warning and return ``False``
+        (falling through to LLM evaluation or the ``otherwise`` branch).
+
+        Parameters
+        ----------
+        condition:
+            The structured condition dict from the compiled transition.
+        response:
+            The LLM's response text from the current node.
+
+        Returns
+        -------
+        bool
+            Whether the condition is satisfied.
+        """
+        func = condition.get("function", "")
+        response_lower = response.lower()
+
+        if func in ("response_contains", "has_tool_output"):
+            value = condition.get("value") or condition.get("contains") or ""
+            return value.lower() in response_lower
+
+        if func == "response_not_contains":
+            value = condition.get("value") or condition.get("contains") or ""
+            return value.lower() not in response_lower
+
+        logger.warning("Unknown structured condition function: '%s'", func)
+        return False
+
+    # ------------------------------------------------------------------
+    # Internal: LLM-based transition classification
+    # ------------------------------------------------------------------
+
+    def _resolve_transition_llm_config(self, node: dict) -> dict | None:
+        """Resolve the LLM config for a transition evaluation call.
+
+        Priority order (first non-None wins):
+
+        1. ``node["transition_llm_config"]`` — per-node override for transitions
+        2. ``self._transition_llm_config`` — playbook-level transition config
+        3. ``node["llm_config"]`` — per-node general config
+        4. ``self._llm_config`` — playbook-level general config
+        5. ``None`` — use Supervisor default
+
+        This allows playbooks to route transition classification calls to
+        a cheaper/faster model (e.g., Haiku) while keeping node execution
+        on a capable model (e.g., Sonnet).
+
+        Parameters
+        ----------
+        node:
+            The node definition dict.
+
+        Returns
+        -------
+        dict or None
+            LLM config for the transition call, or *None* for defaults.
+        """
+        return (
+            node.get("transition_llm_config")
+            or self._transition_llm_config
+            or node.get("llm_config")
+            or self._llm_config
+        )
 
     async def _classify_transition(
         self,
         node_id: str,
+        node: dict,
         transitions: list[dict],
         response: str,
     ) -> str | None:
         """Use a lightweight LLM call to determine which transition condition matches.
 
-        The prompt presents the node response and lists all candidate
-        conditions.  The LLM responds with just the matching condition
-        text, which is then fuzzy-matched to find the target node.
+        Builds a numbered list of candidate conditions from the
+        *natural-language* transitions (structured conditions and
+        ``otherwise`` are excluded — they are handled by the caller).
+        The LLM responds with the number of the matching condition.
 
         Falls back to ``otherwise`` transitions if no match is found.
+
+        Parameters
+        ----------
+        node_id:
+            Current node ID (for logging).
+        node:
+            The full node dict (used for resolving transition LLM config).
+        transitions:
+            The complete transitions list (including otherwise entries).
+        response:
+            The LLM's response text from the current node.
+
+        Returns
+        -------
+        str or None
+            The target node ID, or *None* if no condition matched
+            (caller should fall back to ``otherwise``).
         """
-        # Build the classification prompt
+        # Build the classification prompt — only natural-language conditions
         condition_lines = []
+        nl_transitions: list[dict] = []  # ordered subset for index mapping
         otherwise_target: str | None = None
-        for i, t in enumerate(transitions, 1):
+
+        for t in transitions:
             if t.get("otherwise"):
                 otherwise_target = t["goto"]
-                condition_lines.append(f"{i}. [DEFAULT/OTHERWISE]")
-            else:
-                condition_lines.append(f"{i}. {t['when']}")
+            elif isinstance(t.get("when"), str):
+                nl_transitions.append(t)
+                condition_lines.append(f"{len(nl_transitions)}. {t['when']}")
+
+        if not condition_lines:
+            # No natural-language conditions to evaluate
+            return otherwise_target
+
+        # Add the otherwise option for the LLM to pick if nothing matches
+        if otherwise_target:
+            condition_lines.append(f"{len(nl_transitions) + 1}. [DEFAULT/OTHERWISE]")
 
         transition_prompt = (
             "Based on the result above, which condition best matches?\n\n"
@@ -703,13 +885,13 @@ class PlaybookRunner:
             "(e.g., '1' or '2'). If none clearly match, respond with '0'."
         )
 
-        # Use a cheap config if the playbook/node specifies one for transitions
-        transition_llm_config = self._llm_config
+        # Resolve LLM config: prefer transition-specific, then general
+        transition_llm_config = self._resolve_transition_llm_config(node)
 
         # Make the classification call with full conversation context
         decision = await self.supervisor.chat(
             text=transition_prompt,
-            user_name="playbook-runner:transition",
+            user_name=f"playbook-runner:transition:{node_id}",
             history=list(self.messages),
             llm_config=transition_llm_config,
             tool_overrides=[],  # No tools needed for classification
@@ -717,23 +899,30 @@ class PlaybookRunner:
 
         # Parse the LLM's choice
         decision = decision.strip()
-        matched_target = self._match_transition_by_number(decision, transitions, otherwise_target)
+
+        # Build a virtual transitions list for _match_transition_by_number
+        # so indices align with the numbered prompt
+        virtual_transitions = list(nl_transitions)
+        if otherwise_target:
+            virtual_transitions.append({"otherwise": True, "goto": otherwise_target})
+
+        matched_target = self._match_transition_by_number(
+            decision, virtual_transitions, otherwise_target
+        )
 
         if matched_target:
             logger.debug(
-                "Node '%s' → transition to '%s' (decision: %s)",
+                "Node '%s' → LLM transition to '%s' (decision: %s)",
                 node_id,
                 matched_target,
                 decision,
             )
         else:
             logger.warning(
-                "Node '%s': no transition matched (decision: '%s'), falling back to otherwise=%s",
+                "Node '%s': LLM transition — no match (decision: '%s')",
                 node_id,
                 decision,
-                otherwise_target,
             )
-            matched_target = otherwise_target
 
         # Track tokens for the transition call
         self.tokens_used += _estimate_tokens(transition_prompt, decision)
@@ -929,9 +1118,14 @@ class PlaybookRunner:
     @staticmethod
     def _trace_to_dict(entry: NodeTraceEntry) -> dict:
         """Convert a NodeTraceEntry to a JSON-serialisable dict."""
-        return {
+        d: dict = {
             "node_id": entry.node_id,
             "started_at": entry.started_at,
             "completed_at": entry.completed_at,
             "status": entry.status,
         }
+        if entry.transition_to is not None:
+            d["transition_to"] = entry.transition_to
+        if entry.transition_method is not None:
+            d["transition_method"] = entry.transition_method
+        return d

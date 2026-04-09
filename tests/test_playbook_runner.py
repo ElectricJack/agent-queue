@@ -1341,3 +1341,822 @@ class TestSupervisorProgressForwarding:
 
         call_kwargs = mock_supervisor.chat.call_args.kwargs
         assert call_kwargs["user_name"] == "playbook-runner:analyse"
+
+
+# ---------------------------------------------------------------------------
+# 5.2.4: Transition evaluation — separate LLM call with condition list
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionEvaluationLLMCall:
+    """Test the LLM-based transition classification (separate call with condition list)."""
+
+    async def test_transition_call_is_separate_from_node_call(
+        self, mock_supervisor, branching_graph, event_data
+    ):
+        """Transition evaluation should be a distinct supervisor.chat() call."""
+        # scan node response, then transition classification, then triage node
+        responses = iter(["Found issues", "2", "Grouped findings"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # 3 calls: scan node, transition classification, triage node
+        assert mock_supervisor.chat.call_count == 3
+
+    async def test_transition_prompt_contains_numbered_conditions(
+        self, mock_supervisor, branching_graph, event_data
+    ):
+        """The transition prompt should list conditions as numbered options."""
+        responses = iter(["Found issues", "2", "Grouped"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Second call is the transition classification
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        prompt = transition_call.kwargs["text"]
+        assert "1." in prompt
+        assert "2." in prompt
+        assert "no findings" in prompt
+        assert "findings exist" in prompt
+        assert "ONLY the number" in prompt
+
+    async def test_transition_call_receives_full_history(
+        self, mock_supervisor, branching_graph, event_data
+    ):
+        """Transition classification call should receive full conversation history."""
+        responses = iter(["I found 3 issues", "2", "Grouped"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        history = transition_call.kwargs["history"]
+        # Should have: seed + scan prompt + scan response = 3 messages
+        assert len(history) == 3
+        assert "I found 3 issues" in history[2]["content"]
+
+    async def test_transition_call_uses_no_tools(
+        self, mock_supervisor, branching_graph, event_data
+    ):
+        """Transition evaluation should pass tool_overrides=[] (no tools)."""
+        responses = iter(["findings", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["tool_overrides"] == []
+
+    async def test_transition_user_name_includes_node_id(
+        self, mock_supervisor, branching_graph, event_data
+    ):
+        """Transition call user_name should include the source node ID."""
+        responses = iter(["findings", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        await runner.run()
+
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["user_name"] == "playbook-runner:transition:scan"
+
+    async def test_transition_tokens_tracked(self, mock_supervisor, branching_graph, event_data):
+        """Token usage from transition LLM calls should be tracked."""
+        responses = iter(["findings", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # tokens_used should include both node execution and transition evaluation
+        assert result.tokens_used > 0
+        # The transition prompt + decision text add tokens beyond just the node call
+        node_only_tokens = _estimate_tokens("Run scan on files and report findings.", "findings")
+        assert result.tokens_used > node_only_tokens
+
+    async def test_multiple_transitions_evaluated_sequentially(self, mock_supervisor, event_data):
+        """A graph with multiple branching nodes should evaluate transitions for each."""
+        graph = {
+            "id": "multi-branch",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check status.",
+                    "transitions": [
+                        {"when": "needs action", "goto": "act"},
+                        {"when": "all good", "goto": "done"},
+                    ],
+                },
+                "act": {
+                    "prompt": "Take action.",
+                    "transitions": [
+                        {"when": "success", "goto": "done"},
+                        {"when": "needs retry", "goto": "act"},
+                    ],
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        # check → "needs action" → act → "success" → done
+        responses = iter(["Status bad", "1", "Fixed it", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # 4 calls: check node, check transition, act node, act transition
+        assert mock_supervisor.chat.call_count == 4
+
+    async def test_transition_llm_error_propagates(self, mock_supervisor, event_data):
+        """If the transition LLM call fails, the run should fail gracefully."""
+        graph = {
+            "id": "transition-error",
+            "version": 1,
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Step A",
+                    "transitions": [
+                        {"when": "cond1", "goto": "done"},
+                    ],
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        call_count = 0
+
+        async def chat_side_effect(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "Node result"
+            # Second call (transition) fails
+            raise RuntimeError("LLM provider timeout during transition")
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert "Transition from 'a' failed" in result.error
+
+
+class TestTransitionTraceInfo:
+    """Test that trace entries record transition metadata."""
+
+    async def test_goto_transition_recorded(self, mock_supervisor, simple_graph, event_data):
+        """Unconditional goto should be recorded in trace as method='goto'."""
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        trace = result.node_trace[0]
+        assert trace["transition_to"] == "done"
+        assert trace["transition_method"] == "goto"
+
+    async def test_llm_transition_recorded(self, mock_supervisor, branching_graph, event_data):
+        """LLM-classified transition should be recorded with method='llm'."""
+        responses = iter(["Found issues", "2", "Grouped"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(branching_graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # scan node should show llm transition to triage
+        scan_trace = result.node_trace[0]
+        assert scan_trace["transition_to"] == "triage"
+        assert scan_trace["transition_method"] == "llm"
+
+        # triage node should show goto transition to done
+        triage_trace = result.node_trace[1]
+        assert triage_trace["transition_to"] == "done"
+        assert triage_trace["transition_method"] == "goto"
+
+    async def test_implicit_terminal_no_transition(self, mock_supervisor, event_data):
+        """A node with no transitions should have method='none'."""
+        graph = {
+            "id": "implicit-end",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Do something."},
+            },
+        }
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        trace = result.node_trace[0]
+        assert trace.get("transition_to") is None
+        assert trace["transition_method"] == "none"
+
+    async def test_trace_dict_omits_none_transition(self, mock_supervisor, event_data):
+        """When transition_to is None, it should not appear in trace dict."""
+        entry = NodeTraceEntry(node_id="test", started_at=1.0)
+        entry.status = "completed"
+        entry.completed_at = 2.0
+        d = PlaybookRunner._trace_to_dict(entry)
+        assert "transition_to" not in d
+        assert "transition_method" not in d
+
+    async def test_trace_dict_includes_transition_when_set(self, mock_supervisor, event_data):
+        """When transition info is set, it should appear in trace dict."""
+        entry = NodeTraceEntry(node_id="test", started_at=1.0)
+        entry.transition_to = "next_node"
+        entry.transition_method = "goto"
+        d = PlaybookRunner._trace_to_dict(entry)
+        assert d["transition_to"] == "next_node"
+        assert d["transition_method"] == "goto"
+
+
+# ---------------------------------------------------------------------------
+# 5.2.4: Structured transition evaluation (no LLM call)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredTransitions:
+    """Test dict-based structured conditions evaluated without LLM calls."""
+
+    async def test_response_contains_match(self, mock_supervisor, event_data):
+        """Structured condition with response_contains should match."""
+        graph = {
+            "id": "structured-contains",
+            "version": 1,
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Scan files.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "no findings"},
+                            "goto": "done",
+                        },
+                        {
+                            "when": {"function": "response_contains", "value": "found issues"},
+                            "goto": "triage",
+                        },
+                    ],
+                },
+                "triage": {"prompt": "Triage.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Response contains "found issues" → should go to triage
+        responses = iter(["I found issues in 3 files", "Triaged."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["node_id"] == "scan"
+        assert result.node_trace[0]["transition_to"] == "triage"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        assert result.node_trace[1]["node_id"] == "triage"
+        # Only 2 supervisor calls (scan + triage) — no LLM transition call!
+        assert mock_supervisor.chat.call_count == 2
+
+    async def test_response_contains_case_insensitive(self, mock_supervisor, event_data):
+        """Structured contains check should be case-insensitive."""
+        graph = {
+            "id": "case-test",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "ALL CLEAR"},
+                            "goto": "done",
+                        },
+                        {"otherwise": True, "goto": "alert"},
+                    ],
+                },
+                "alert": {"prompt": "Alert!", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Status is all clear."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert len(result.node_trace) == 1  # Only check node (→ done terminal)
+        assert result.node_trace[0]["transition_method"] == "structured"
+
+    async def test_response_not_contains(self, mock_supervisor, event_data):
+        """Structured response_not_contains should match when value is absent."""
+        graph = {
+            "id": "not-contains",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_not_contains", "value": "error"},
+                            "goto": "done",
+                        },
+                        {"otherwise": True, "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix!", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Everything looks fine."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        assert result.node_trace[0]["transition_to"] == "done"
+
+    async def test_has_tool_output_alias(self, mock_supervisor, event_data):
+        """has_tool_output with 'contains' key should work as response_contains alias."""
+        graph = {
+            "id": "tool-output-alias",
+            "version": 1,
+            "nodes": {
+                "scan": {
+                    "entry": True,
+                    "prompt": "Run vibecop.",
+                    "transitions": [
+                        {
+                            "when": {
+                                "function": "has_tool_output",
+                                "contains": "no findings",
+                            },
+                            "goto": "done",
+                        },
+                        {"otherwise": True, "goto": "triage"},
+                    ],
+                },
+                "triage": {"prompt": "Triage.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Vibecop returned no findings."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_method"] == "structured"
+        assert result.node_trace[0]["transition_to"] == "done"
+
+    async def test_structured_no_match_falls_to_otherwise(self, mock_supervisor, event_data):
+        """When structured conditions don't match, fall through to otherwise."""
+        graph = {
+            "id": "structured-fallback",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "perfect"},
+                            "goto": "celebrate",
+                        },
+                        {"otherwise": True, "goto": "investigate"},
+                    ],
+                },
+                "celebrate": {"prompt": "Celebrate!", "goto": "done"},
+                "investigate": {"prompt": "Investigate.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Some issues found."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+        assert result.node_trace[0]["transition_to"] == "investigate"
+        # No LLM transition call — only 2 node calls (check + investigate)
+        assert mock_supervisor.chat.call_count == 2
+
+    async def test_mixed_structured_and_natural_language(self, mock_supervisor, event_data):
+        """Mixed transitions: structured checked first, then NL via LLM if needed."""
+        graph = {
+            "id": "mixed-transitions",
+            "version": 1,
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the code.",
+                    "transitions": [
+                        # Structured: check for "no issues"
+                        {
+                            "when": {"function": "response_contains", "value": "no issues"},
+                            "goto": "done",
+                        },
+                        # Natural language: LLM decides
+                        {"when": "critical issues requiring immediate action", "goto": "hotfix"},
+                        {"when": "minor issues that can wait", "goto": "backlog"},
+                    ],
+                },
+                "hotfix": {"prompt": "Create hotfix.", "goto": "done"},
+                "backlog": {"prompt": "Add to backlog.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        # Response doesn't match structured condition → falls to NL LLM call
+        # LLM picks "1" (first NL condition = "critical issues...")
+        responses = iter(["Found a critical security vulnerability", "1", "Hotfix created."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "hotfix"
+        assert result.node_trace[0]["transition_method"] == "llm"
+        # 3 calls: analyse node, transition classification, hotfix node
+        assert mock_supervisor.chat.call_count == 3
+
+    async def test_structured_match_skips_llm_call(self, mock_supervisor, event_data):
+        """When a structured condition matches, NL conditions should not be evaluated."""
+        graph = {
+            "id": "structured-skip-llm",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "clean"},
+                            "goto": "done",
+                        },
+                        {"when": "has issues", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Everything is clean."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Only 1 call (check node) — no LLM transition, no fix node
+        assert mock_supervisor.chat.call_count == 1
+        assert result.node_trace[0]["transition_method"] == "structured"
+
+    async def test_unknown_function_falls_through(self, mock_supervisor, event_data):
+        """Unknown structured function names should fall through gracefully."""
+        graph = {
+            "id": "unknown-func",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "unknown_check", "value": "x"},
+                            "goto": "a",
+                        },
+                        {"otherwise": True, "goto": "b"},
+                    ],
+                },
+                "a": {"prompt": "A.", "goto": "done"},
+                "b": {"prompt": "B.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Result."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        # Unknown function → False → falls to otherwise → b
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "b"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+
+
+class TestStructuredConditionEvaluation:
+    """Unit tests for _evaluate_structured_condition static method."""
+
+    def test_response_contains_true(self):
+        cond = {"function": "response_contains", "value": "error found"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "An error found in line 5")
+
+    def test_response_contains_false(self):
+        cond = {"function": "response_contains", "value": "error found"}
+        assert not PlaybookRunner._evaluate_structured_condition(cond, "Everything is fine")
+
+    def test_response_contains_case_insensitive(self):
+        cond = {"function": "response_contains", "value": "ERROR"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "Found an error in the code")
+
+    def test_response_not_contains_true(self):
+        cond = {"function": "response_not_contains", "value": "error"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "All tests passed.")
+
+    def test_response_not_contains_false(self):
+        cond = {"function": "response_not_contains", "value": "error"}
+        assert not PlaybookRunner._evaluate_structured_condition(cond, "Got an error!")
+
+    def test_has_tool_output_contains(self):
+        cond = {"function": "has_tool_output", "contains": "no findings"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "Scan: no findings detected.")
+
+    def test_has_tool_output_value_key(self):
+        """has_tool_output should also accept 'value' key."""
+        cond = {"function": "has_tool_output", "value": "clean"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "Code is clean.")
+
+    def test_unknown_function_returns_false(self):
+        cond = {"function": "never_heard_of_this", "value": "x"}
+        assert not PlaybookRunner._evaluate_structured_condition(cond, "anything")
+
+    def test_empty_value_always_contains(self):
+        cond = {"function": "response_contains", "value": ""}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "anything at all")
+
+    def test_missing_value_key(self):
+        cond = {"function": "response_contains"}
+        assert PlaybookRunner._evaluate_structured_condition(cond, "anything")
+
+    def test_missing_function_key(self):
+        cond = {"value": "test"}
+        assert not PlaybookRunner._evaluate_structured_condition(cond, "test something")
+
+
+# ---------------------------------------------------------------------------
+# 5.2.4: Transition LLM config resolution
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionLLMConfig:
+    """Test the transition-specific LLM config resolution chain."""
+
+    def test_node_transition_config_wins(self, mock_supervisor, event_data):
+        """Node-level transition_llm_config takes highest priority."""
+        graph = {
+            "id": "config-test",
+            "version": 1,
+            "llm_config": {"model": "expensive"},
+            "transition_llm_config": {"model": "medium"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"transition_llm_config": {"model": "cheap"}, "llm_config": {"model": "standard"}}
+        result = runner._resolve_transition_llm_config(node)
+        assert result == {"model": "cheap"}
+
+    def test_playbook_transition_config_second(self, mock_supervisor, event_data):
+        """Playbook-level transition_llm_config is second priority."""
+        graph = {
+            "id": "config-test",
+            "version": 1,
+            "llm_config": {"model": "expensive"},
+            "transition_llm_config": {"model": "medium"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"llm_config": {"model": "standard"}}
+        result = runner._resolve_transition_llm_config(node)
+        assert result == {"model": "medium"}
+
+    def test_node_general_config_third(self, mock_supervisor, event_data):
+        """Node-level general llm_config is third priority."""
+        graph = {
+            "id": "config-test",
+            "version": 1,
+            "llm_config": {"model": "expensive"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"llm_config": {"model": "standard"}}
+        result = runner._resolve_transition_llm_config(node)
+        assert result == {"model": "standard"}
+
+    def test_playbook_general_config_fourth(self, mock_supervisor, event_data):
+        """Playbook-level general llm_config is fourth priority."""
+        graph = {
+            "id": "config-test",
+            "version": 1,
+            "llm_config": {"model": "expensive"},
+            "nodes": {},
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        node = {"prompt": "Do something"}
+        result = runner._resolve_transition_llm_config(node)
+        assert result == {"model": "expensive"}
+
+    def test_no_config_returns_none(self, mock_supervisor, event_data):
+        """No config anywhere → None (Supervisor default)."""
+        graph = {"id": "no-config", "version": 1, "nodes": {}}
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = runner._resolve_transition_llm_config({"prompt": "Do something"})
+        assert result is None
+
+    async def test_transition_call_uses_resolved_config(self, mock_supervisor, event_data):
+        """End-to-end: transition LLM call should use the resolved config."""
+        graph = {
+            "id": "e2e-config",
+            "version": 1,
+            "transition_llm_config": {"model": "haiku", "provider": "anthropic"},
+            "llm_config": {"model": "sonnet"},
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check status.",
+                    "transitions": [
+                        {"when": "ok", "goto": "done"},
+                        {"when": "bad", "goto": "fix"},
+                    ],
+                },
+                "fix": {"prompt": "Fix.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Status ok", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        # Node call should use playbook-level llm_config (sonnet)
+        node_call = mock_supervisor.chat.call_args_list[0]
+        assert node_call.kwargs["llm_config"] == {"model": "sonnet"}
+
+        # Transition call should use transition_llm_config (haiku)
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["llm_config"] == {
+            "model": "haiku",
+            "provider": "anthropic",
+        }
+
+    async def test_node_transition_config_overrides_playbook_in_e2e(
+        self, mock_supervisor, event_data
+    ):
+        """Node-level transition_llm_config should override playbook-level."""
+        graph = {
+            "id": "node-override",
+            "version": 1,
+            "transition_llm_config": {"model": "haiku"},
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transition_llm_config": {"model": "gemini-flash"},
+                    "transitions": [
+                        {"when": "ok", "goto": "done"},
+                    ],
+                },
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Result", "1"])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        transition_call = mock_supervisor.chat.call_args_list[1]
+        assert transition_call.kwargs["llm_config"] == {"model": "gemini-flash"}
+
+
+# ---------------------------------------------------------------------------
+# 5.2.4: Edge cases in transition evaluation
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionEdgeCases:
+    """Test edge cases and error scenarios in transition evaluation."""
+
+    async def test_all_otherwise_no_conditions(self, mock_supervisor, event_data):
+        """A transitions list with only an otherwise entry should work."""
+        graph = {
+            "id": "only-otherwise",
+            "version": 1,
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Do something.",
+                    "transitions": [
+                        {"otherwise": True, "goto": "b"},
+                    ],
+                },
+                "b": {"prompt": "B.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_to"] == "b"
+        assert result.node_trace[0]["transition_method"] == "otherwise"
+        # No LLM transition call needed
+        assert mock_supervisor.chat.call_count == 2  # a node + b node
+
+    async def test_empty_transitions_list(self, mock_supervisor, event_data):
+        """An empty transitions list should behave like no transitions."""
+        graph = {
+            "id": "empty-transitions",
+            "version": 1,
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Do something.",
+                    "transitions": [],
+                },
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert result.node_trace[0]["transition_method"] == "none"
+
+    async def test_llm_returns_empty_string(self, mock_supervisor, event_data):
+        """If LLM returns empty string for transition, fall back to otherwise."""
+        graph = {
+            "id": "empty-decision",
+            "version": 1,
+            "nodes": {
+                "check": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {"when": "good", "goto": "celebrate"},
+                        {"otherwise": True, "goto": "default"},
+                    ],
+                },
+                "celebrate": {"prompt": "Celebrate!", "goto": "done"},
+                "default": {"prompt": "Default path.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        responses = iter(["Status unclear", "", "Default done."])
+        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # Empty string → no match → otherwise → default
+        assert result.node_trace[1]["node_id"] == "default"
+
+    async def test_structured_only_no_otherwise_no_match(self, mock_supervisor, event_data):
+        """All structured conditions + no otherwise + no match → None (implicit end)."""
+        graph = {
+            "id": "structured-no-match",
+            "version": 1,
+            "nodes": {
+                "a": {
+                    "entry": True,
+                    "prompt": "Check.",
+                    "transitions": [
+                        {
+                            "when": {"function": "response_contains", "value": "magic word"},
+                            "goto": "b",
+                        },
+                    ],
+                },
+                "b": {"prompt": "B.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+
+        mock_supervisor.chat.return_value = "Nothing special here."
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        # transition_to is None → omitted from dict; transition_method is "none"
+        assert "transition_to" not in result.node_trace[0]
+        assert result.node_trace[0]["transition_method"] == "none"
