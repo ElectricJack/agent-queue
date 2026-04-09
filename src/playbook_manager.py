@@ -27,6 +27,16 @@ The manager is the integration layer between:
     loops).  Events arriving during cooldown are silently dropped, not
     queued.  Cooldown of 0 or ``None`` means no restriction.
 
+**Concurrency limits** (roadmap 5.3.5):
+
+    A global concurrency cap (``max_concurrent_playbook_runs``) limits
+    how many playbook runs execute simultaneously.  Multiple instances of
+    the same playbook can run concurrently (e.g. two ``git.commit``
+    events → two ``code-quality-gate`` runs), but the total across all
+    playbooks is capped.  This mirrors the hook engine's
+    ``max_concurrent_hooks`` gate.  When at capacity, new runs are
+    rejected (not queued).  A value of 0 means unlimited.
+
 **Error handling policy** (spec §4, roadmap 5.1.7):
 
     If compilation fails (invalid output, LLM error, validation failure),
@@ -39,6 +49,7 @@ See ``docs/specs/design/playbooks.md`` Section 4 for the specification.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -86,6 +97,15 @@ class PlaybookManager:
         playbook.  Failed runs also apply cooldown to prevent error
         loops.  Events arriving during cooldown are dropped, not queued.
 
+    **Concurrency tracking** (roadmap 5.3.5):
+
+        The manager tracks in-flight playbook runs as asyncio Tasks and
+        enforces a global concurrency cap.  Multiple instances of the
+        same playbook are allowed (keyed by run_id, not playbook_id),
+        but the total number of concurrent runs is limited.  When at
+        capacity, :meth:`can_start_run` returns ``False`` and callers
+        should skip launching.
+
     Parameters
     ----------
     chat_provider:
@@ -103,6 +123,10 @@ class PlaybookManager:
         uses it to load all compiled playbooks across all scopes on
         startup.  The legacy ``data_dir`` flat-directory persistence is
         used as a fallback when no store is provided.
+    max_concurrent_runs:
+        Maximum number of playbook runs that can execute simultaneously.
+        Defaults to ``2``.  Set to ``0`` for unlimited.  Mirrors the
+        hook engine's ``max_concurrent_hooks`` setting.
     """
 
     def __init__(
@@ -112,6 +136,7 @@ class PlaybookManager:
         event_bus: EventBus | None = None,
         data_dir: str | None = None,
         store: CompiledPlaybookStore | None = None,
+        max_concurrent_runs: int = 2,
     ) -> None:
         self._chat_provider = chat_provider
         self._event_bus = event_bus
@@ -133,6 +158,19 @@ class PlaybookManager:
         # block system-level instances of the same playbook.  Both successful
         # and failed runs record a completion time to prevent error loops.
         self._last_execution: dict[tuple[str, str], float] = {}
+
+        # -- Concurrency tracking (roadmap 5.3.5) --
+        # In-flight playbook runs keyed by run_id.  Each value is the asyncio
+        # Task executing that run.  Keyed by run_id (not playbook_id) because
+        # the spec allows multiple instances of the same playbook concurrently.
+        self._running: dict[str, asyncio.Task] = {}
+
+        # Reverse lookup: run_id → playbook_id, for per-playbook introspection
+        # (e.g. "how many instances of playbook X are running?").
+        self._running_playbook_ids: dict[str, str] = {}
+
+        # Global concurrency cap.  0 = unlimited.
+        self._max_concurrent_runs: int = max_concurrent_runs
 
         # Compiler instance (created lazily when provider is available)
         self._compiler: PlaybookCompiler | None = None
@@ -317,6 +355,14 @@ class PlaybookManager:
         are silently skipped (events during cooldown are dropped, not
         queued).
 
+        .. note::
+
+            This method does **not** check the global concurrency cap
+            (see :meth:`can_start_run`).  Concurrency is a global gate
+            ("is there room for any new run?"), whereas this method
+            answers per-playbook questions ("does this playbook want to
+            run?").  Callers should check both.
+
         Parameters
         ----------
         trigger:
@@ -344,6 +390,177 @@ class PlaybookManager:
             else:
                 result.append(playbook)
         return result
+
+    # -- concurrency tracking (roadmap 5.3.5) --------------------------------
+
+    @property
+    def max_concurrent_runs(self) -> int:
+        """The configured maximum number of concurrent playbook runs.
+
+        A value of ``0`` means unlimited (no cap enforced).
+        """
+        return self._max_concurrent_runs
+
+    @max_concurrent_runs.setter
+    def max_concurrent_runs(self, value: int) -> None:
+        """Update the concurrency cap at runtime (e.g. after config hot-reload)."""
+        self._max_concurrent_runs = value
+
+    @property
+    def running_count(self) -> int:
+        """Number of currently in-flight playbook runs."""
+        return len(self._running)
+
+    @property
+    def running_runs(self) -> dict[str, str]:
+        """Return a read-only mapping of ``run_id → playbook_id`` for in-flight runs."""
+        return dict(self._running_playbook_ids)
+
+    def can_start_run(self) -> bool:
+        """Check whether a new playbook run can start under the concurrency limit.
+
+        Returns ``True`` when the global cap has room (or is set to ``0``
+        for unlimited).  Callers should check this before calling
+        :meth:`register_run`.
+
+        Returns
+        -------
+        bool
+            ``True`` if a new run can be launched, ``False`` if at capacity.
+        """
+        if self._max_concurrent_runs <= 0:
+            return True  # 0 = unlimited
+        return len(self._running) < self._max_concurrent_runs
+
+    def register_run(
+        self,
+        run_id: str,
+        playbook_id: str,
+        task: asyncio.Task,
+    ) -> bool:
+        """Register a newly launched playbook run for concurrency tracking.
+
+        Callers should check :meth:`can_start_run` first, but this method
+        performs a final check and returns ``False`` if the cap has been
+        reached (e.g. due to a race between two event handlers).
+
+        Parameters
+        ----------
+        run_id:
+            Unique identifier for this run (e.g. UUID).
+        playbook_id:
+            The playbook being executed.
+        task:
+            The ``asyncio.Task`` executing the run.
+
+        Returns
+        -------
+        bool
+            ``True`` if the run was registered, ``False`` if the
+            concurrency cap would be exceeded.
+        """
+        if not self.can_start_run():
+            logger.warning(
+                "Playbook run '%s' (playbook=%s) rejected — concurrency cap reached "
+                "(%d/%d running)",
+                run_id,
+                playbook_id,
+                len(self._running),
+                self._max_concurrent_runs,
+            )
+            return False
+
+        self._running[run_id] = task
+        self._running_playbook_ids[run_id] = playbook_id
+        logger.debug(
+            "Registered playbook run '%s' (playbook=%s) — %d/%s running",
+            run_id,
+            playbook_id,
+            len(self._running),
+            self._max_concurrent_runs if self._max_concurrent_runs > 0 else "∞",
+        )
+        return True
+
+    def unregister_run(self, run_id: str) -> None:
+        """Remove a completed run from tracking.
+
+        Called explicitly when the caller manages task lifecycle outside
+        of :meth:`reap_completed_runs` (e.g. in a callback).
+
+        Parameters
+        ----------
+        run_id:
+            The run to unregister.
+        """
+        self._running.pop(run_id, None)
+        self._running_playbook_ids.pop(run_id, None)
+
+    def reap_completed_runs(self) -> list[str]:
+        """Scan for completed asyncio Tasks and remove them from tracking.
+
+        Surfaces any unhandled exceptions as log errors (they are
+        otherwise silently swallowed by asyncio).
+
+        This should be called periodically (e.g. each orchestrator tick)
+        to free concurrency slots.
+
+        Returns
+        -------
+        list[str]
+            The run_ids that were reaped.
+        """
+        done = [rid for rid, t in self._running.items() if t.done()]
+        reaped: list[str] = []
+        for rid in done:
+            task = self._running.pop(rid)
+            playbook_id = self._running_playbook_ids.pop(rid, "<unknown>")
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc:
+                    logger.error(
+                        "Playbook run '%s' (playbook=%s) failed with unhandled exception: %s",
+                        rid,
+                        playbook_id,
+                        exc,
+                    )
+            logger.debug(
+                "Reaped playbook run '%s' (playbook=%s) — %d still running",
+                rid,
+                playbook_id,
+                len(self._running),
+            )
+            reaped.append(rid)
+        return reaped
+
+    def get_runs_for_playbook(self, playbook_id: str) -> list[str]:
+        """Return run_ids of in-flight runs for a specific playbook.
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook to query.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of run_ids.
+        """
+        return sorted(rid for rid, pid in self._running_playbook_ids.items() if pid == playbook_id)
+
+    async def shutdown_runs(self) -> None:
+        """Cancel all running playbook tasks and wait for them to finish.
+
+        Uses ``asyncio.gather(..., return_exceptions=True)`` to ensure
+        CancelledError does not propagate.  Clears all tracking state.
+        """
+        for rid, task in self._running.items():
+            if not task.done():
+                logger.info("Cancelling playbook run '%s'", rid)
+                task.cancel()
+        if self._running:
+            await asyncio.gather(*self._running.values(), return_exceptions=True)
+        self._running.clear()
+        self._running_playbook_ids.clear()
 
     async def load_from_disk(self) -> int:
         """Load previously compiled playbooks from the data directory.
