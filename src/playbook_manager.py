@@ -8,8 +8,16 @@ compiled version remains active when compilation fails.
 The manager is the integration layer between:
 
 - :class:`~src.playbook_compiler.PlaybookCompiler` — LLM compilation
+- :class:`~src.playbook_store.CompiledPlaybookStore` — scope-mirrored storage
 - :class:`~src.event_bus.EventBus` — error/success notifications
 - Filesystem — persistence of compiled JSON artifacts
+
+**Trigger mapping** (roadmap 5.3.1):
+
+    The manager maintains an explicit ``trigger → playbook IDs`` mapping
+    that is updated on every add/remove/compile operation.  This enables
+    O(1) lookup when an event arrives, instead of scanning all active
+    playbooks.
 
 **Error handling policy** (spec §4, roadmap 5.1.7):
 
@@ -34,6 +42,7 @@ from src.playbook_models import CompiledPlaybook
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
     from src.event_bus import EventBus
+    from src.playbook_store import CompiledPlaybookStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,12 @@ class PlaybookManager:
        and on disk), emits a ``notify.playbook_compilation_failed`` event
        with file path and all error details.
 
+    Additionally, the manager maintains an explicit trigger → playbook
+    mapping (roadmap 5.3.1) that is updated on every add/remove/compile
+    operation.  This enables efficient O(1) lookup via
+    :meth:`get_playbooks_by_trigger` when events arrive, instead of
+    scanning all active playbooks.
+
     Parameters
     ----------
     chat_provider:
@@ -63,6 +78,12 @@ class PlaybookManager:
         Root data directory (e.g. ``~/.agent-queue``).  Compiled playbook
         JSON files are stored under ``{data_dir}/playbooks/compiled/``.
         When ``None``, persistence is disabled (in-memory only).
+    store:
+        Optional :class:`~src.playbook_store.CompiledPlaybookStore` for
+        scope-mirrored storage.  When provided, :meth:`load_from_store`
+        uses it to load all compiled playbooks across all scopes on
+        startup.  The legacy ``data_dir`` flat-directory persistence is
+        used as a fallback when no store is provided.
     """
 
     def __init__(
@@ -71,13 +92,19 @@ class PlaybookManager:
         chat_provider: ChatProvider | None = None,
         event_bus: EventBus | None = None,
         data_dir: str | None = None,
+        store: CompiledPlaybookStore | None = None,
     ) -> None:
         self._chat_provider = chat_provider
         self._event_bus = event_bus
         self._data_dir = data_dir
+        self._store = store
 
         # In-memory registry: playbook_id → active CompiledPlaybook
         self._active: dict[str, CompiledPlaybook] = {}
+
+        # Trigger mapping: trigger event type → set of playbook IDs
+        # Updated on every add/remove/compile to enable O(1) lookups.
+        self._trigger_map: dict[str, set[str]] = {}
 
         # Track source paths for each playbook ID (for notifications)
         self._source_paths: dict[str, str] = {}
@@ -94,20 +121,56 @@ class PlaybookManager:
         """Return a read-only view of all active compiled playbooks."""
         return dict(self._active)
 
+    @property
+    def trigger_map(self) -> dict[str, list[str]]:
+        """Return a read-only view of the trigger → playbook ID mapping.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Mapping from trigger event type to sorted list of playbook IDs
+            that respond to that trigger.
+        """
+        return {trigger: sorted(ids) for trigger, ids in self._trigger_map.items()}
+
+    @property
+    def playbook_count(self) -> int:
+        """Return the number of active playbooks."""
+        return len(self._active)
+
+    def get_all_triggers(self) -> list[str]:
+        """Return all registered trigger event types across all active playbooks.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of unique trigger event types.
+        """
+        return sorted(self._trigger_map.keys())
+
     def get_playbook(self, playbook_id: str) -> CompiledPlaybook | None:
         """Return the active compiled playbook for *playbook_id*, or ``None``."""
         return self._active.get(playbook_id)
 
     def get_playbooks_by_trigger(self, trigger: str) -> list[CompiledPlaybook]:
-        """Return all active playbooks that match the given *trigger* event type."""
-        return [pb for pb in self._active.values() if trigger in pb.triggers]
+        """Return all active playbooks that match the given *trigger* event type.
+
+        Uses the pre-built trigger mapping for O(1) lookup instead of
+        scanning all active playbooks.
+        """
+        playbook_ids = self._trigger_map.get(trigger)
+        if not playbook_ids:
+            return []
+        return [self._active[pid] for pid in sorted(playbook_ids) if pid in self._active]
 
     async def load_from_disk(self) -> int:
         """Load previously compiled playbooks from the data directory.
 
         Reads all ``.json`` files from the compiled playbooks directory and
-        populates the in-memory registry.  Called at startup to restore
-        state from a previous run.
+        populates the in-memory registry and trigger mapping.  Called at
+        startup to restore state from a previous run.
+
+        When no ``data_dir`` is configured, returns 0.
 
         Returns
         -------
@@ -132,6 +195,7 @@ class PlaybookManager:
                     )
                     continue
                 self._active[playbook.id] = playbook
+                self._index_triggers(playbook)
                 loaded += 1
                 logger.debug(
                     "Loaded compiled playbook '%s' v%d from disk",
@@ -147,6 +211,54 @@ class PlaybookManager:
 
         if loaded:
             logger.info("Loaded %d compiled playbook(s) from disk", loaded)
+        return loaded
+
+    async def load_from_store(self) -> int:
+        """Load all compiled playbooks from the :class:`CompiledPlaybookStore`.
+
+        Walks every scope (system, orchestrator, agent-types, projects) in
+        the store and populates the in-memory registry and trigger mapping.
+        Playbooks that fail validation are skipped with a warning.
+
+        This is the preferred startup loading method when a store is
+        configured.  Falls back to :meth:`load_from_disk` when no store
+        is available.
+
+        Returns
+        -------
+        int
+            Number of playbooks successfully loaded.
+        """
+        if self._store is None:
+            logger.debug("No CompiledPlaybookStore configured, falling back to load_from_disk")
+            return await self.load_from_disk()
+
+        all_playbooks = self._store.list_all()
+        loaded = 0
+        for scope, identifier, playbook in all_playbooks:
+            errors = playbook.validate()
+            if errors:
+                logger.warning(
+                    "Skipping invalid compiled playbook '%s' (scope=%s, id=%s): %s",
+                    playbook.id,
+                    scope,
+                    identifier,
+                    "; ".join(errors),
+                )
+                continue
+            self._active[playbook.id] = playbook
+            self._index_triggers(playbook)
+            loaded += 1
+            logger.debug(
+                "Loaded compiled playbook '%s' v%d from store (scope=%s, identifier=%s)",
+                playbook.id,
+                playbook.version,
+                scope,
+                identifier,
+            )
+
+        if loaded:
+            logger.info("Loaded %d compiled playbook(s) from store across all scopes", loaded)
         return loaded
 
     async def compile_playbook(
@@ -236,8 +348,12 @@ class PlaybookManager:
         )
 
         if result.success and result.playbook is not None:
-            # Success — update active version and persist
+            # Success — update active version, trigger map, and persist
+            old_playbook = self._active.get(result.playbook.id)
+            if old_playbook is not None:
+                self._unindex_triggers(old_playbook)
             self._active[result.playbook.id] = result.playbook
+            self._index_triggers(result.playbook)
             self._source_paths[result.playbook.id] = source_path
             self._persist_compiled(result.playbook)
 
@@ -297,6 +413,7 @@ class PlaybookManager:
         self._source_paths.pop(playbook_id, None)
 
         if removed is not None:
+            self._unindex_triggers(removed)
             self._remove_compiled(playbook_id)
             logger.info(
                 "Playbook '%s' removed from active registry (was v%d)",
@@ -306,6 +423,43 @@ class PlaybookManager:
             return True
 
         return False
+
+    # -- trigger mapping -----------------------------------------------------
+
+    def _index_triggers(self, playbook: CompiledPlaybook) -> None:
+        """Add a playbook's triggers to the trigger mapping.
+
+        For each trigger event type in the playbook, adds the playbook's
+        ID to the corresponding set in ``_trigger_map``.
+        """
+        for trigger in playbook.triggers:
+            if trigger not in self._trigger_map:
+                self._trigger_map[trigger] = set()
+            self._trigger_map[trigger].add(playbook.id)
+
+    def _unindex_triggers(self, playbook: CompiledPlaybook) -> None:
+        """Remove a playbook's triggers from the trigger mapping.
+
+        For each trigger event type in the playbook, removes the playbook's
+        ID from the corresponding set in ``_trigger_map``.  Cleans up empty
+        sets to keep the mapping tidy.
+        """
+        for trigger in playbook.triggers:
+            ids = self._trigger_map.get(trigger)
+            if ids is not None:
+                ids.discard(playbook.id)
+                if not ids:
+                    del self._trigger_map[trigger]
+
+    def _rebuild_trigger_map(self) -> None:
+        """Rebuild the trigger mapping from scratch.
+
+        Clears the existing mapping and re-indexes all active playbooks.
+        Useful after bulk operations (e.g. loading from disk).
+        """
+        self._trigger_map.clear()
+        for playbook in self._active.values():
+            self._index_triggers(playbook)
 
     # -- persistence ---------------------------------------------------------
 
