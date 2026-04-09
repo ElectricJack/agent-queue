@@ -611,6 +611,235 @@ class TestFactsFileSync:
         assert "key: value" in content
 
 
+class TestFactsWriterPreamble:
+    """Test facts.md writer — preamble preservation on KV write.
+
+    Verifies that _sync_facts_file preserves frontmatter, titles, and other
+    content that appears before the first ``## heading`` in the facts file.
+    """
+
+    def test_preserves_frontmatter_on_write(self, tmp_path):
+        """Frontmatter should be preserved when updating KV entries."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        facts_path.write_text(
+            "---\ntags: [facts, auto-updated]\n---\n\n## project\ntech_stack: Python\n",
+            encoding="utf-8",
+        )
+
+        svc._sync_facts_file(facts_path, "project", "db", "SQLite")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert content.startswith("---\ntags: [facts, auto-updated]\n---\n")
+        assert "tech_stack: Python" in content
+        assert "db: SQLite" in content
+
+    def test_preserves_title_on_write(self, tmp_path):
+        """A ``# Title`` line before headings should be preserved."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        facts_path.write_text(
+            "# Project Facts -- Mech Fighters\n\n## project\ntech_stack: Python\n",
+            encoding="utf-8",
+        )
+
+        svc._sync_facts_file(facts_path, "project", "db", "SQLite")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "# Project Facts -- Mech Fighters" in content
+        assert "tech_stack: Python" in content
+        assert "db: SQLite" in content
+
+    def test_preserves_full_preamble_with_frontmatter_and_title(self, tmp_path):
+        """Full preamble (frontmatter + title) should be preserved."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        original = (
+            "---\n"
+            "tags: [facts, auto-updated]\n"
+            "---\n"
+            "\n"
+            "# Project Facts -- Mech Fighters\n"
+            "\n"
+            "## Project\n"
+            "- tech_stack: [Python 3.12, SQLAlchemy, Pygame]\n"
+            "- deploy_branch: main\n"
+        )
+        facts_path.write_text(original, encoding="utf-8")
+
+        svc._sync_facts_file(facts_path, "Project", "db", "SQLite")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "---\ntags: [facts, auto-updated]\n---" in content
+        assert "# Project Facts -- Mech Fighters" in content
+        assert "db: SQLite" in content
+        assert "deploy_branch: main" in content
+
+    def test_no_preamble_new_file(self, tmp_path):
+        """A new file (no existing content) should have no preamble."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+
+        svc._sync_facts_file(facts_path, "project", "key", "value")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert content.startswith("## project")
+        assert "key: value" in content
+
+    def test_no_preamble_existing_file_without_preamble(self, tmp_path):
+        """Existing file without preamble should produce no preamble on write."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        facts_path.write_text("## project\nold_key: old_val\n", encoding="utf-8")
+
+        svc._sync_facts_file(facts_path, "project", "new_key", "new_val")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert content.startswith("## project")
+        assert "old_key: old_val" in content
+        assert "new_key: new_val" in content
+
+    def test_preamble_separator_normalised(self, tmp_path):
+        """Preamble ending without a blank line should get a separator."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        # No blank line between title and ## heading
+        facts_path.write_text(
+            "# Title\n## project\nkey: val\n",
+            encoding="utf-8",
+        )
+
+        svc._sync_facts_file(facts_path, "project", "new_key", "new_val")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "# Title" in content
+        # There should be separation between preamble and body
+        assert "# Title\n\n## project" in content
+
+    def test_repeated_writes_preserve_preamble(self, tmp_path):
+        """Multiple writes should preserve the preamble each time."""
+        svc = MemoryV2Service()
+        facts_path = tmp_path / "facts.md"
+        facts_path.write_text(
+            "---\ntags: [facts]\n---\n\n## project\ntech_stack: Python\n",
+            encoding="utf-8",
+        )
+
+        # Write 1
+        svc._sync_facts_file(facts_path, "project", "db", "SQLite")
+        # Write 2
+        svc._sync_facts_file(facts_path, "conventions", "naming", "snake_case")
+        # Write 3
+        svc._sync_facts_file(facts_path, "project", "db", "PostgreSQL")
+
+        content = facts_path.read_text(encoding="utf-8")
+        assert "---\ntags: [facts]\n---" in content
+        assert "tech_stack: Python" in content
+        assert "db: PostgreSQL" in content
+        assert "naming: snake_case" in content
+        # Old value should NOT be present
+        assert "db: SQLite" not in content
+
+
+class TestFromVaultBypass:
+    """Test that _from_vault=True skips vault file writes.
+
+    Critical for circular sync prevention: when the facts handler parses a
+    file and calls kv_set(_from_vault=True), the vault file must NOT be
+    rewritten to avoid an infinite file→kv→file→kv loop.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_from_vault_skips_file_write(self, service, mock_store, tmp_path):
+        """kv_set with _from_vault=True should NOT write the vault file."""
+        service._data_dir = str(tmp_path)
+
+        # Pre-create the facts file with known content
+        from memsearch import MemoryScope, vault_paths as vp
+
+        paths = vp(MemoryScope.PROJECT, "test_project")
+        facts_rel = [p for p in paths if p.endswith("facts.md")][0]
+        facts_path = tmp_path / facts_rel
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        original_content = "## project\noriginal_key: original_val\n"
+        facts_path.write_text(original_content, encoding="utf-8")
+
+        # Call kv_set with _from_vault=True
+        await service.kv_set(
+            "test-project",
+            "project",
+            "new_key",
+            "new_value",
+            _from_vault=True,
+        )
+
+        # File should NOT have been modified
+        content = facts_path.read_text(encoding="utf-8")
+        assert content == original_content
+        assert "new_key" not in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_from_vault_false_does_write_file(self, service, mock_store, tmp_path):
+        """kv_set without _from_vault (default False) SHOULD write the vault file."""
+        service._data_dir = str(tmp_path)
+
+        result = await service.kv_set(
+            "test-project",
+            "project",
+            "new_key",
+            "new_value",
+        )
+
+        vault_path = result["_vault_path"]
+        facts = Path(vault_path)
+        assert facts.exists()
+        content = facts.read_text(encoding="utf-8")
+        assert "new_key: new_value" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_from_vault_still_returns_vault_metadata(self, service, mock_store, tmp_path):
+        """Even with _from_vault=True, the result should include vault metadata."""
+        service._data_dir = str(tmp_path)
+
+        result = await service.kv_set(
+            "test-project",
+            "project",
+            "key",
+            "value",
+            _from_vault=True,
+        )
+
+        # Should still have vault path and scope metadata
+        assert "_vault_path" in result
+        assert "_scope" in result
+        assert "_scope_id" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_from_vault_still_writes_to_milvus(self, service, mock_store, tmp_path):
+        """_from_vault only skips the file; Milvus should still be updated."""
+        service._data_dir = str(tmp_path)
+
+        await service.kv_set(
+            "test-project",
+            "project",
+            "key",
+            "value",
+            _from_vault=True,
+        )
+
+        # The Milvus store should have been called
+        mock_store.set_kv.assert_called_once_with(
+            "key",
+            "value",
+            namespace="project",
+            content="project/key: value",
+        )
+
+
 class TestKVRecall:
     """Test kv_recall — scoped KV lookup with first-match-wins (spec §6)."""
 

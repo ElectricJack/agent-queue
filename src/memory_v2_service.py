@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.facts_parser import parse_facts_file, render_facts_file
+from src.facts_parser import extract_preamble, parse_facts_file, render_facts_file
 
 logger = logging.getLogger(__name__)
 
@@ -543,6 +543,10 @@ class MemoryV2Service:
         pair under the specified namespace heading, and writes the result
         back.  Creates parent directories as needed.
 
+        Any **preamble** in the existing file (YAML frontmatter, ``# title``,
+        introductory text before the first ``## heading``) is preserved.
+        Only the structured KV sections are updated.
+
         Parameters
         ----------
         facts_path:
@@ -562,6 +566,11 @@ class MemoryV2Service:
             except OSError:
                 logger.warning("Could not read facts file %s", facts_path)
 
+        # Preserve any preamble (frontmatter, title, etc.) from the
+        # existing file.  The preamble is everything before the first
+        # ``## heading`` line and is not part of the KV data.
+        preamble, _ = extract_preamble(existing)
+
         # Parse, merge, render
         data = self._parse_facts_file(existing)
         if namespace not in data:
@@ -570,10 +579,20 @@ class MemoryV2Service:
 
         rendered = self._render_facts_file(data)
 
+        # Combine preamble with rendered structured sections
+        if preamble:
+            # Ensure preamble ends with a blank line separator before
+            # the first ``## heading``.
+            if not preamble.endswith("\n\n"):
+                preamble = preamble.rstrip("\n") + "\n\n"
+            output = preamble + rendered
+        else:
+            output = rendered
+
         # Write back
         facts_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            facts_path.write_text(rendered, encoding="utf-8")
+            facts_path.write_text(output, encoding="utf-8")
             logger.debug(
                 "Synced KV %s/%s to vault facts: %s",
                 namespace,

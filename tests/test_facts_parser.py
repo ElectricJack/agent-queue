@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.facts_parser import diff_facts, parse_facts_file, render_facts_file
+from src.facts_parser import diff_facts, extract_preamble, parse_facts_file, render_facts_file
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +95,7 @@ class TestParseFacts:
 
     def test_mixed_bullets_and_plain(self):
         """Bullet-prefixed and plain lines can coexist under a namespace."""
-        text = (
-            "## project\n"
-            "- tech_stack: Python\n"
-            "db: SQLite\n"
-            "* framework: FastAPI\n"
-        )
+        text = "## project\n- tech_stack: Python\ndb: SQLite\n* framework: FastAPI\n"
         result = parse_facts_file(text)
         assert result == {
             "project": {
@@ -125,14 +120,7 @@ class TestParseFacts:
     # --- YAML frontmatter ---
 
     def test_yaml_frontmatter_skipped(self):
-        text = (
-            "---\n"
-            "tags: [facts, auto-updated]\n"
-            "---\n"
-            "\n"
-            "## project\n"
-            "tech_stack: Python\n"
-        )
+        text = "---\ntags: [facts, auto-updated]\n---\n\n## project\ntech_stack: Python\n"
         result = parse_facts_file(text)
         assert result == {"project": {"tech_stack": "Python"}}
 
@@ -167,14 +155,7 @@ class TestParseFacts:
 
     def test_horizontal_rule_after_frontmatter_ignored(self):
         """A ``---`` line after frontmatter closes is just a horizontal rule."""
-        text = (
-            "---\ntags: [facts]\n---\n"
-            "\n"
-            "---\n"
-            "\n"
-            "## project\n"
-            "key: val\n"
-        )
+        text = "---\ntags: [facts]\n---\n\n---\n\n## project\nkey: val\n"
         result = parse_facts_file(text)
         assert result == {"project": {"key": "val"}}
 
@@ -234,13 +215,7 @@ class TestParseFacts:
 
     def test_duplicate_namespace_headings_merge(self):
         """If the same heading appears twice, entries should merge."""
-        text = (
-            "## project\n"
-            "tech_stack: Python\n"
-            "\n"
-            "## project\n"
-            "db: SQLite\n"
-        )
+        text = "## project\ntech_stack: Python\n\n## project\ndb: SQLite\n"
         result = parse_facts_file(text)
         assert result == {
             "project": {"tech_stack": "Python", "db": "SQLite"},
@@ -390,16 +365,100 @@ class TestRoundtrip:
 
     def test_roundtrip_with_frontmatter(self):
         """Frontmatter is ignored on parse; rendered form omits it."""
-        original = (
-            "---\ntags: [facts]\n---\n"
-            "\n"
-            "## project\n"
-            "key: val\n"
-        )
+        original = "---\ntags: [facts]\n---\n\n## project\nkey: val\n"
         data = parse_facts_file(original)
         rendered = render_facts_file(data)
         data2 = parse_facts_file(rendered)
         assert data == data2
+
+
+# ---------------------------------------------------------------------------
+# extract_preamble
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPreamble:
+    """Tests for extract_preamble — splitting preamble from structured body."""
+
+    def test_empty_string(self):
+        preamble, body = extract_preamble("")
+        assert preamble == ""
+        assert body == ""
+
+    def test_no_heading_all_preamble(self):
+        text = "Just some text\nwithout any headings\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == text
+        assert body == ""
+
+    def test_heading_only_no_preamble(self):
+        text = "## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == ""
+        assert body == "## project\nkey: val\n"
+
+    def test_title_before_heading(self):
+        text = "# Project Facts\n\n## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == "# Project Facts\n\n"
+        assert body == "## project\nkey: val\n"
+
+    def test_frontmatter_and_title(self):
+        text = (
+            "---\n"
+            "tags: [facts, auto-updated]\n"
+            "---\n"
+            "\n"
+            "# Project Facts -- Mech Fighters\n"
+            "\n"
+            "## Project\n"
+            "tech_stack: Python\n"
+        )
+        preamble, body = extract_preamble(text)
+        assert preamble == (
+            "---\ntags: [facts, auto-updated]\n---\n\n# Project Facts -- Mech Fighters\n\n"
+        )
+        assert body == "## Project\ntech_stack: Python\n"
+
+    def test_frontmatter_only(self):
+        text = "---\ntags: [facts]\n---\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == text
+        assert body == ""
+
+    def test_frontmatter_with_hash_content(self):
+        """A ``##`` inside frontmatter should not be treated as a heading."""
+        text = "---\ncomment: ## not a heading\n---\n\n## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        assert "## project" in body
+        assert "## not a heading" not in body
+
+    def test_multiple_headings_returns_first_split(self):
+        text = "# Title\n\n## alpha\na: 1\n\n## beta\nb: 2\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == "# Title\n\n"
+        assert body.startswith("## alpha")
+        assert "## beta" in body
+
+    def test_blank_heading_ignored(self):
+        """A ``## `` line with no name should not count as a heading."""
+        text = "## \norphan: val\n## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        # ## (empty) is not a valid heading; ## project is the first real one
+        assert body.startswith("## project")
+
+    def test_frontmatter_then_immediate_heading(self):
+        text = "---\ntags: [facts]\n---\n## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        assert preamble == "---\ntags: [facts]\n---\n"
+        assert body == "## project\nkey: val\n"
+
+    def test_horizontal_rule_after_frontmatter(self):
+        """A ``---`` after frontmatter is a horizontal rule, not frontmatter."""
+        text = "---\ntags: [facts]\n---\n\n---\n\n## project\nkey: val\n"
+        preamble, body = extract_preamble(text)
+        assert "---\n\n---\n\n" in preamble or preamble.endswith("---\n\n")
+        assert body.startswith("## project")
 
 
 # ---------------------------------------------------------------------------

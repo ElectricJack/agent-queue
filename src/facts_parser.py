@@ -163,6 +163,67 @@ def render_facts_file(data: dict[str, dict[str, str]]) -> str:
     return "\n\n".join(sections) + "\n"
 
 
+def extract_preamble(text: str) -> tuple[str, str]:
+    """Split a facts.md file into preamble and structured body.
+
+    The **preamble** is everything before the first ``## heading`` line
+    (YAML frontmatter, ``# title``, blank lines, etc.).  The **body** is
+    everything from the first ``## heading`` onward.
+
+    YAML frontmatter blocks (``---`` delimiters) are handled correctly —
+    a ``## `` sequence inside frontmatter is not treated as a heading.
+
+    Parameters
+    ----------
+    text:
+        Raw content of the facts.md file (UTF-8 string).
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(preamble, body)`` where either may be empty.
+
+    Examples
+    --------
+    >>> extract_preamble("---\\ntags: [facts]\\n---\\n\\n## project\\nkey: val\\n")
+    ('---\\ntags: [facts]\\n---\\n\\n', '## project\\nkey: val\\n')
+
+    >>> extract_preamble("## project\\nkey: val\\n")
+    ('', '## project\\nkey: val\\n')
+    """
+    lines = text.splitlines(keepends=True)
+    in_frontmatter = False
+    frontmatter_seen = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # --- YAML frontmatter tracking (mirrors parse_facts_file logic) ---
+        if stripped == "---":
+            if not frontmatter_seen:
+                if not in_frontmatter:
+                    in_frontmatter = True
+                    continue
+                else:
+                    in_frontmatter = False
+                    frontmatter_seen = True
+                    continue
+            # Post-frontmatter ``---`` is a horizontal rule; skip
+            continue
+
+        if in_frontmatter:
+            continue
+
+        # First ``## heading`` outside frontmatter marks the body start
+        if stripped.startswith("## ") and stripped[3:].strip():
+            preamble = "".join(lines[:i])
+            body = "".join(lines[i:])
+            return preamble, body
+
+    # No ``## heading`` found — everything is preamble
+    return text, ""
+
+
 def diff_facts(
     old: dict[str, dict[str, str]],
     new: dict[str, dict[str, str]],
