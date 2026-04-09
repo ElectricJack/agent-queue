@@ -464,6 +464,84 @@ a starter template — update it as you discover project-specific patterns.
     },
 }
 
+# Orchestrator profile (roadmap §4.2.3, self-improvement spec §5)
+# The orchestrator is its own agent type — it coordinates agents, manages
+# tasks, and maintains high-level project understanding.  This profile is
+# written to vault/orchestrator/profile.md at startup if it doesn't exist.
+ORCHESTRATOR_PROFILE = """\
+---
+id: orchestrator
+name: Orchestrator
+tags: [profile, orchestrator]
+---
+
+# Orchestrator
+
+## Role
+You are the orchestrator — the central coordinator of the agent-queue system.
+You manage projects, tasks, and agent workflows. You delegate all code work
+to specialized agents and never edit code directly.
+
+Your responsibilities:
+- Assign tasks to agents based on project needs and agent-type expertise
+- Maintain high-level understanding of each project's state and goals
+- Coordinate multi-agent workflows (feature pipelines, review sequences)
+- Learn from task outcomes to improve scheduling and assignment decisions
+- Detect bottlenecks, stuck agents, and systemic issues
+- Synthesize project knowledge from READMEs and task completions
+
+You work from distilled project summaries, not raw codebases. When you need
+project details, read the project README or delegate to a project-aware agent.
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": ["file_write", "file_edit", "shell"]
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Never edit code directly — always delegate to an agent via task creation
+- Prefer creating focused, parallel tasks over large monolithic ones
+- Include all relevant context in task descriptions (file paths, requirements,
+  error messages, design decisions) so agents can work independently
+- When a task fails, analyze the failure before blindly retrying
+- Update project memory when significant state changes occur
+- Verify actions after taking them (list tasks after creating, read rules
+  after saving)
+
+## Reflection
+After coordinating work, consider:
+- Did task assignments match agent-type strengths?
+- Were task descriptions self-contained enough for agents to succeed?
+- Did any tasks fail due to missing context I could have provided?
+- Are there recurring patterns in task outcomes worth remembering?
+- Should project summaries be updated based on completed work?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
 
 # ---------------------------------------------------------------------------
 # Static vault subdirectories (always created at startup)
@@ -497,6 +575,7 @@ def ensure_vault_layout(data_dir: str) -> None:
     - ``vault/system/memory/``
     - ``vault/orchestrator/playbooks/``
     - ``vault/orchestrator/memory/``
+    - ``vault/orchestrator/profile.md``
     - ``vault/agent-types/``
     - ``vault/projects/``
     - ``vault/templates/``
@@ -506,6 +585,10 @@ def ensure_vault_layout(data_dir: str) -> None:
     packs) into ``vault/templates/`` if they don't already exist.  See
     :func:`ensure_default_templates` for details.
 
+    The orchestrator's own ``profile.md`` (roadmap §4.2.3) is written to
+    ``vault/orchestrator/profile.md`` if it doesn't already exist.  See
+    :func:`ensure_orchestrator_profile` for details.
+
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
     """
@@ -514,6 +597,7 @@ def ensure_vault_layout(data_dir: str) -> None:
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
+    ensure_orchestrator_profile(data_dir)
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
 
 
@@ -577,6 +661,37 @@ def ensure_default_templates(data_dir: str) -> dict:
         )
 
     return result
+
+
+def ensure_orchestrator_profile(data_dir: str) -> bool:
+    """Write the orchestrator profile to ``vault/orchestrator/profile.md`` if absent.
+
+    The orchestrator is its own agent type (roadmap §4.2.3, self-improvement
+    spec §5).  This function writes the default :data:`ORCHESTRATOR_PROFILE`
+    to the vault so that the profile sync system can pick it up and upsert
+    it into the ``agent_profiles`` database table at startup.
+
+    The operation is **idempotent**: if the file already exists it is not
+    overwritten, preserving any user customisations.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        ``True`` if the file was created, ``False`` if it already existed.
+    """
+    profile_path = os.path.join(data_dir, "vault", "orchestrator", "profile.md")
+
+    if os.path.exists(profile_path):
+        logger.debug("Orchestrator profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(ORCHESTRATOR_PROFILE)
+
+    logger.info("Created orchestrator profile: %s", profile_path)
+    return True
 
 
 def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
