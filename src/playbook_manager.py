@@ -19,6 +19,14 @@ The manager is the integration layer between:
     O(1) lookup when an event arrives, instead of scanning all active
     playbooks.
 
+**Cooldown tracking** (roadmap 5.3.4):
+
+    Per-playbook, per-scope cooldown prevents rapid re-triggering.  Each
+    ``(playbook_id, scope)`` pair tracks the last execution completion
+    time.  Both success and failure apply cooldown (to prevent error
+    loops).  Events arriving during cooldown are silently dropped, not
+    queued.  Cooldown of 0 or ``None`` means no restriction.
+
 **Error handling policy** (spec §4, roadmap 5.1.7):
 
     If compilation fails (invalid output, LLM error, validation failure),
@@ -33,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,6 +75,16 @@ class PlaybookManager:
     operation.  This enables efficient O(1) lookup via
     :meth:`get_playbooks_by_trigger` when events arrive, instead of
     scanning all active playbooks.
+
+    **Cooldown tracking** (roadmap 5.3.4):
+
+        The manager tracks the last execution completion time for each
+        ``(playbook_id, scope)`` pair.  Before an event triggers a
+        playbook, callers should check :meth:`is_on_cooldown`.  The
+        cooldown is per-playbook *and* per-scope — a project-level
+        cooldown does not block a system-level instance of the same
+        playbook.  Failed runs also apply cooldown to prevent error
+        loops.  Events arriving during cooldown are dropped, not queued.
 
     Parameters
     ----------
@@ -108,6 +127,12 @@ class PlaybookManager:
 
         # Track source paths for each playbook ID (for notifications)
         self._source_paths: dict[str, str] = {}
+
+        # Cooldown tracking: (playbook_id, scope) → last completion timestamp.
+        # Tracked per (playbook_id, scope) so project-level cooldowns don't
+        # block system-level instances of the same playbook.  Both successful
+        # and failed runs record a completion time to prevent error loops.
+        self._last_execution: dict[tuple[str, str], float] = {}
 
         # Compiler instance (created lazily when provider is available)
         self._compiler: PlaybookCompiler | None = None
@@ -162,6 +187,163 @@ class PlaybookManager:
         if not playbook_ids:
             return []
         return [self._active[pid] for pid in sorted(playbook_ids) if pid in self._active]
+
+    # -- cooldown tracking (roadmap 5.3.4) ------------------------------------
+
+    def is_on_cooldown(self, playbook_id: str, scope: str = "system") -> bool:
+        """Check whether a playbook is currently on cooldown.
+
+        A playbook is on cooldown when:
+
+        1. It has a ``cooldown_seconds`` value > 0.
+        2. A previous execution completed within that window.
+
+        The check is scoped: a project-level cooldown does not block a
+        system-level instance of the same playbook (different scope keys).
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook to check.
+        scope:
+            The scope string (e.g. ``"system"``, ``"project"``,
+            ``"agent-type:coding"``).  Cooldown state is tracked
+            independently per scope.
+
+        Returns
+        -------
+        bool
+            ``True`` if the playbook is on cooldown and should not be
+            triggered, ``False`` if it can run.
+        """
+        return self.get_cooldown_remaining(playbook_id, scope) > 0.0
+
+    def get_cooldown_remaining(self, playbook_id: str, scope: str = "system") -> float:
+        """Return the number of seconds remaining in a playbook's cooldown.
+
+        Returns ``0.0`` when the playbook is not on cooldown (either
+        because it has no ``cooldown_seconds``, the cooldown has expired,
+        the cooldown is explicitly set to 0, or no execution has been
+        recorded).
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook to check.
+        scope:
+            The scope string.
+
+        Returns
+        -------
+        float
+            Seconds remaining (≥ 0.0).
+        """
+        playbook = self._active.get(playbook_id)
+        if playbook is None:
+            return 0.0
+
+        cooldown = playbook.cooldown_seconds
+        if cooldown is None or cooldown <= 0:
+            return 0.0
+
+        key = (playbook_id, scope)
+        last = self._last_execution.get(key)
+        if last is None:
+            return 0.0
+
+        elapsed = time.monotonic() - last
+        remaining = cooldown - elapsed
+        return max(0.0, remaining)
+
+    def record_execution(
+        self,
+        playbook_id: str,
+        scope: str = "system",
+        *,
+        _clock: float | None = None,
+    ) -> None:
+        """Record that a playbook completed execution (success or failure).
+
+        Both successful and failed runs record a completion time.  This
+        prevents rapid re-triggering of playbooks that consistently fail
+        (error loops).
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook that completed.
+        scope:
+            The scope string for per-scope cooldown tracking.
+        _clock:
+            Internal parameter for testing — override the monotonic clock
+            value.  Production callers should never pass this.
+        """
+        key = (playbook_id, scope)
+        self._last_execution[key] = _clock if _clock is not None else time.monotonic()
+        logger.debug(
+            "Recorded execution for playbook '%s' (scope=%s) — cooldown started",
+            playbook_id,
+            scope,
+        )
+
+    def clear_cooldown(self, playbook_id: str, scope: str | None = None) -> None:
+        """Clear cooldown state for a playbook.
+
+        When *scope* is ``None``, clears cooldown across all scopes for
+        the given playbook.  When *scope* is provided, only clears that
+        specific ``(playbook_id, scope)`` entry.
+
+        Parameters
+        ----------
+        playbook_id:
+            The playbook whose cooldown to clear.
+        scope:
+            Optional scope to clear.  ``None`` clears all scopes.
+        """
+        if scope is not None:
+            self._last_execution.pop((playbook_id, scope), None)
+        else:
+            keys_to_remove = [k for k in self._last_execution if k[0] == playbook_id]
+            for k in keys_to_remove:
+                del self._last_execution[k]
+
+    def get_triggerable_playbooks(
+        self, trigger: str, scope: str = "system"
+    ) -> list[CompiledPlaybook]:
+        """Return playbooks matching *trigger* that are not on cooldown.
+
+        Combines :meth:`get_playbooks_by_trigger` with cooldown checking
+        to give the caller a ready-to-execute list.  Playbooks on cooldown
+        are silently skipped (events during cooldown are dropped, not
+        queued).
+
+        Parameters
+        ----------
+        trigger:
+            The event type to match (e.g. ``"git.commit"``).
+        scope:
+            The scope to check cooldowns against.
+
+        Returns
+        -------
+        list[CompiledPlaybook]
+            Playbooks that match the trigger and are not on cooldown.
+        """
+        candidates = self.get_playbooks_by_trigger(trigger)
+        result = []
+        for playbook in candidates:
+            if self.is_on_cooldown(playbook.id, scope):
+                logger.debug(
+                    "Playbook '%s' skipped for trigger '%s' — on cooldown "
+                    "(%.1fs remaining, scope=%s)",
+                    playbook.id,
+                    trigger,
+                    self.get_cooldown_remaining(playbook.id, scope),
+                    scope,
+                )
+            else:
+                result.append(playbook)
+        return result
 
     async def load_from_disk(self) -> int:
         """Load previously compiled playbooks from the data directory.
@@ -415,6 +597,7 @@ class PlaybookManager:
         if removed is not None:
             self._unindex_triggers(removed)
             self._remove_compiled(playbook_id)
+            self.clear_cooldown(playbook_id)  # Clean up cooldown state
             logger.info(
                 "Playbook '%s' removed from active registry (was v%d)",
                 playbook_id,
