@@ -879,11 +879,21 @@ class Orchestrator:
 
         # Register playbook .md watcher handlers (playbooks spec §17).
         # Detects changes to playbook files across all vault scopes so they
-        # can be recompiled into executable graphs.  Phase 4 is a logging
-        # stub; actual compilation is wired in Phase 5.
+        # can be recompiled into executable graphs.  The PlaybookManager
+        # handles compilation, versioning, and error recovery (keeping the
+        # previous compiled version active on failure — roadmap 5.1.7).
         from src.playbook_handler import register_playbook_handlers
+        from src.playbook_manager import PlaybookManager
 
-        register_playbook_handlers(self.vault_watcher)
+        self.playbook_manager = PlaybookManager(
+            chat_provider=self._chat_provider,
+            event_bus=self.bus,
+            data_dir=self.config.data_dir,
+        )
+        register_playbook_handlers(
+            self.vault_watcher,
+            playbook_manager=self.playbook_manager,
+        )
 
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they

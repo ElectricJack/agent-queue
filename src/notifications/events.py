@@ -225,6 +225,51 @@ class ProfileSyncFailedEvent(NotifyEvent):
     warnings: list[str] = []
 
 
+# ---------------------------------------------------------------------------
+# Playbook compilation events
+# ---------------------------------------------------------------------------
+
+
+class PlaybookCompilationFailedEvent(NotifyEvent):
+    """Emitted when playbook markdown compilation fails.
+
+    The previous compiled version (if any) remains active for event
+    matching and execution.  The error notification includes the file
+    path and all LLM/validation error details so operators can diagnose
+    and fix the markdown.
+
+    See ``docs/specs/design/playbooks.md`` Section 4 — Authoring Model.
+    """
+
+    event_type: str = "notify.playbook_compilation_failed"
+    severity: str = "error"
+    category: str = "system"
+    playbook_id: str = ""
+    source_path: str = ""
+    errors: list[str] = []
+    previous_version: int | None = None
+    source_hash: str = ""
+    retries_used: int = 0
+
+
+class PlaybookCompilationSucceededEvent(NotifyEvent):
+    """Emitted when playbook markdown is successfully compiled.
+
+    Provides observability into playbook compilation — useful for
+    dashboards and audit logs.
+    """
+
+    event_type: str = "notify.playbook_compilation_succeeded"
+    severity: str = "info"
+    category: str = "system"
+    playbook_id: str = ""
+    source_path: str = ""
+    version: int = 0
+    source_hash: str = ""
+    node_count: int = 0
+    retries_used: int = 0
+
+
 class TextNotifyEvent(NotifyEvent):
     """Plain-text notification for messages that don't warrant a typed event."""
 
