@@ -273,6 +273,11 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "task_id", "final_status", "final_message"],
     },
+    # -- Profile sync notifications --
+    "notify.profile_sync_failed": {
+        "required": [*_NOTIFY_BASE_FIELDS],
+        "optional": [*_NOTIFY_BASE_OPTIONAL, "profile_id", "source_path", "errors", "warnings"],
+    },
     # -- Generic text notification --
     "notify.text": {
         "required": [*_NOTIFY_BASE_FIELDS],

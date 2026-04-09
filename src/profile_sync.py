@@ -35,6 +35,7 @@ from src.models import AgentProfile
 from src.profile_parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 
 if TYPE_CHECKING:
+    from src.event_bus import EventBus
     from src.vault_watcher import VaultChange, VaultWatcher
 
 logger = logging.getLogger(__name__)
@@ -272,10 +273,33 @@ async def sync_profile_text_to_db(
     )
 
 
+async def _emit_sync_failed(
+    event_bus: EventBus | None,
+    result: ProfileSyncResult,
+    source_path: str,
+) -> None:
+    """Emit a ``notify.profile_sync_failed`` event if an event bus is available."""
+    if event_bus is None:
+        return
+    try:
+        from src.notifications.events import ProfileSyncFailedEvent
+
+        event = ProfileSyncFailedEvent(
+            profile_id=result.profile_id,
+            source_path=source_path,
+            errors=result.errors or [],
+            warnings=result.warnings or [],
+        )
+        await event_bus.emit(event.event_type, event.model_dump(mode="json"))
+    except Exception:
+        logger.debug("Failed to emit profile sync notification", exc_info=True)
+
+
 async def on_profile_changed(
     changes: list[VaultChange],
     *,
     db: Any | None = None,
+    event_bus: EventBus | None = None,
 ) -> None:
     """Handle profile.md file changes detected by the VaultWatcher.
 
@@ -296,6 +320,11 @@ async def on_profile_changed(
     db:
         Optional database instance.  When ``None``, handler falls back
         to log-only mode.
+    event_bus:
+        Optional :class:`~src.event_bus.EventBus` instance.  When
+        provided, a ``notify.profile_sync_failed`` event is emitted
+        on sync failure so that transport handlers (Discord, etc.)
+        can alert the user.
     """
     for change in changes:
         path_id = derive_profile_id(change.rel_path)
@@ -346,17 +375,20 @@ async def on_profile_changed(
             )
         else:
             # Sync failed — previous DB config remains active (per spec).
+            # Emit a notification so transport handlers can alert the user.
             logger.error(
                 "Profile sync failed for %s: %s",
                 change.rel_path,
                 result.errors,
             )
+            await _emit_sync_failed(event_bus, result, change.rel_path)
 
 
 def register_profile_handlers(
     watcher: VaultWatcher,
     *,
     db: Any | None = None,
+    event_bus: EventBus | None = None,
 ) -> list[str]:
     """Register profile.md path handlers with the VaultWatcher.
 
@@ -374,6 +406,10 @@ def register_profile_handlers(
         Optional database instance.  When provided, detected profile
         changes are synced to the ``agent_profiles`` table.  When
         ``None``, the handler falls back to logging only.
+    event_bus:
+        Optional :class:`~src.event_bus.EventBus` instance.  When
+        provided, a ``notify.profile_sync_failed`` event is emitted
+        on sync failure.
 
     Returns
     -------
@@ -382,7 +418,7 @@ def register_profile_handlers(
     """
 
     async def _handler(changes: list[VaultChange]) -> None:
-        await on_profile_changed(changes, db=db)
+        await on_profile_changed(changes, db=db, event_bus=event_bus)
 
     handler_ids: list[str] = []
     for pattern in PROFILE_PATTERNS:

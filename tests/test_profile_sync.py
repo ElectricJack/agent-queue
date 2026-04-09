@@ -12,6 +12,7 @@ Covers:
 - File deletion handling (DB row retained)
 - Pattern matching for agent-types/*/profile.md and orchestrator/profile.md
 - End-to-end dispatch through VaultWatcher with DB sync
+- Notification events: sync failures emit notify.profile_sync_failed
 """
 
 from __future__ import annotations
@@ -1081,3 +1082,197 @@ class TestUpsertProfile:
         assert fetched.allowed_tools == ["Read", "Write", "Edit"]
         assert fetched.mcp_servers == {"new": {"command": "new"}}
         assert fetched.system_prompt_suffix == "new prompt"
+
+
+# ---------------------------------------------------------------------------
+# Notification on sync failure (Roadmap 4.1.8)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileSyncNotifications:
+    """Test that sync failures emit notify.profile_sync_failed events."""
+
+    @pytest.fixture
+    def event_bus(self):
+        from src.event_bus import EventBus
+
+        return EventBus(env="dev", validate_events=True)
+
+    @pytest.fixture
+    def event_collector(self, event_bus):
+        """Subscribe to all events and collect them."""
+        events: list[dict] = []
+
+        def _handler(data: dict) -> None:
+            events.append(data)
+
+        event_bus.subscribe("notify.profile_sync_failed", _handler)
+        return events
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_emits_notification(self, db, tmp_path, event_bus, event_collector):
+        """Bad JSON in profile.md emits notify.profile_sync_failed."""
+        profile_path = tmp_path / "agent-types" / "broken" / "profile.md"
+        _create_file(str(profile_path), INVALID_JSON_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/broken/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        # DB should not have the profile
+        assert await db.get_profile("broken") is None
+
+        # Notification should have been emitted
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        assert event["event_type"] == "notify.profile_sync_failed"
+        assert event["severity"] == "error"
+        assert event["category"] == "system"
+        assert any("Invalid JSON" in e for e in event["errors"])
+        assert event["source_path"] == "agent-types/broken/profile.md"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_preserves_existing_and_notifies(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """Bad JSON preserves existing DB row AND sends notification."""
+        # Seed good profile
+        await db.create_profile(AgentProfile(id="broken", name="Original", model="original-model"))
+
+        profile_path = tmp_path / "agent-types" / "broken" / "profile.md"
+        _create_file(str(profile_path), INVALID_JSON_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/broken/profile.md",
+            operation="modified",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        # Previous config retained
+        profile = await db.get_profile("broken")
+        assert profile.name == "Original"
+        assert profile.model == "original-model"
+
+        # Notification sent
+        assert len(event_collector) == 1
+        assert event_collector[0]["event_type"] == "notify.profile_sync_failed"
+
+    @pytest.mark.asyncio
+    async def test_successful_sync_no_notification(self, db, tmp_path, event_bus, event_collector):
+        """Successful sync does NOT emit a failure notification."""
+        profile_path = tmp_path / "agent-types" / "coding" / "profile.md"
+        _create_file(str(profile_path), FULL_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/coding/profile.md",
+            operation="created",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert await db.get_profile("coding") is not None
+        assert len(event_collector) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_event_bus_no_crash(self, db, tmp_path):
+        """Sync failure without event bus doesn't crash (backward compat)."""
+        profile_path = tmp_path / "agent-types" / "broken" / "profile.md"
+        _create_file(str(profile_path), INVALID_JSON_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/broken/profile.md",
+            operation="created",
+        )
+        # No event_bus passed — should not crash
+        await on_profile_changed([change], db=db)
+        assert await db.get_profile("broken") is None
+
+    @pytest.mark.asyncio
+    async def test_notification_includes_source_path(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """Notification event includes the source file path."""
+        profile_path = tmp_path / "agent-types" / "bad" / "profile.md"
+        _create_file(str(profile_path), INVALID_JSON_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/bad/profile.md",
+            operation="modified",
+        )
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        assert event_collector[0]["source_path"] == "agent-types/bad/profile.md"
+
+    @pytest.mark.asyncio
+    async def test_multiple_failures_emit_multiple_notifications(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """Each failed sync in a batch emits its own notification."""
+        p1 = tmp_path / "agent-types" / "bad1" / "profile.md"
+        p2 = tmp_path / "agent-types" / "bad2" / "profile.md"
+        _create_file(str(p1), INVALID_JSON_PROFILE)
+        _create_file(str(p2), INVALID_JSON_PROFILE)
+
+        changes = [
+            VaultChange(path=str(p1), rel_path="agent-types/bad1/profile.md", operation="created"),
+            VaultChange(path=str(p2), rel_path="agent-types/bad2/profile.md", operation="created"),
+        ]
+        await on_profile_changed(changes, db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 2
+        paths = {e["source_path"] for e in event_collector}
+        assert "agent-types/bad1/profile.md" in paths
+        assert "agent-types/bad2/profile.md" in paths
+
+    @pytest.mark.asyncio
+    async def test_register_handlers_passes_event_bus(
+        self, db, tmp_path, event_bus, event_collector
+    ):
+        """register_profile_handlers wires event_bus through to handler."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(str(vault), poll_interval=0, debounce_seconds=0)
+        register_profile_handlers(watcher, db=db, event_bus=event_bus)
+
+        await watcher.check()
+
+        _create_file(
+            str(vault / "agent-types" / "broken" / "profile.md"),
+            INVALID_JSON_PROFILE,
+        )
+
+        await watcher.check()
+
+        # Notification should have been emitted through the watcher pipeline
+        assert len(event_collector) == 1
+        assert event_collector[0]["event_type"] == "notify.profile_sync_failed"
+
+    @pytest.mark.asyncio
+    async def test_notification_event_schema_valid(self, db, tmp_path, event_bus, event_collector):
+        """Emitted event passes schema validation."""
+        profile_path = tmp_path / "agent-types" / "broken" / "profile.md"
+        _create_file(str(profile_path), INVALID_JSON_PROFILE)
+
+        change = VaultChange(
+            path=str(profile_path),
+            rel_path="agent-types/broken/profile.md",
+            operation="created",
+        )
+        # EventBus in dev mode raises on validation errors — this would fail
+        # if the event payload doesn't match the schema
+        await on_profile_changed([change], db=db, event_bus=event_bus)
+
+        assert len(event_collector) == 1
+        event = event_collector[0]
+        # Verify required fields are present
+        assert "event_type" in event
+        assert "severity" in event
+        assert "category" in event

@@ -209,6 +209,22 @@ class TaskThreadCloseEvent(NotifyEvent):
 # ---------------------------------------------------------------------------
 
 
+class ProfileSyncFailedEvent(NotifyEvent):
+    """Emitted when a profile.md sync to the database fails.
+
+    Common causes include invalid JSON in structured sections, missing
+    profile ID, or database errors.  The previous DB config remains active.
+    """
+
+    event_type: str = "notify.profile_sync_failed"
+    severity: str = "error"
+    category: str = "system"
+    profile_id: str = ""
+    source_path: str = ""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+
 class TextNotifyEvent(NotifyEvent):
     """Plain-text notification for messages that don't warrant a typed event."""
 
