@@ -36,6 +36,7 @@ from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
+from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
 from src.database.tables import agents as agents_t, events as events_t, tasks as tasks_t
@@ -60,6 +61,7 @@ class SQLiteDatabaseAdapter(
     ArchiveQueryMixin,
     ChatQueryMixin,
     PluginQueryMixin,
+    PlaybookQueryMixin,
 ):
     """Async SQLite persistence layer using SQLAlchemy Core.
 

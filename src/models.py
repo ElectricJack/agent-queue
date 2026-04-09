@@ -610,6 +610,45 @@ class HookRun:
     completed_at: float | None = None
 
 
+class PlaybookRunStatus(Enum):
+    """Valid statuses for a playbook execution run."""
+
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+@dataclass
+class PlaybookRun:
+    """A single execution record of a playbook graph.
+
+    Tracks the full lifecycle of one playbook invocation: which playbook
+    was executed, the trigger event, accumulated conversation history,
+    the path taken through the graph (node trace), and token usage.
+
+    For paused runs (human-in-the-loop), the conversation history is
+    serialised so the run can resume exactly where it left off, even
+    across process restarts.
+
+    See docs/specs/design/playbooks.md §6 (Run Persistence).
+    """
+
+    run_id: str
+    playbook_id: str
+    playbook_version: int
+    trigger_event: str = "{}"  # JSON-serialised event dict
+    status: str = "running"
+    current_node: str | None = None
+    conversation_history: str = "[]"  # JSON-serialised message list
+    node_trace: str = "[]"  # JSON list of {node_id, started_at, completed_at, status}
+    tokens_used: int = 0
+    started_at: float = 0.0
+    completed_at: float | None = None
+    error: str | None = None
+
+
 class PhaseResult(Enum):
     """Outcome of a single completion pipeline phase."""
 

@@ -24,6 +24,7 @@ from src.models import (
     AgentState,
     Hook,
     HookRun,
+    PlaybookRun,
     Project,
     ProjectStatus,
     RepoConfig,
@@ -252,6 +253,19 @@ class DatabaseBackend(Protocol):
         hook_id_prefix: str,
         limit: int = 20,
     ) -> list[HookRun]: ...
+
+    # --- Playbook Runs ---
+
+    async def create_playbook_run(self, run: PlaybookRun) -> None: ...
+    async def get_playbook_run(self, run_id: str) -> PlaybookRun | None: ...
+    async def list_playbook_runs(
+        self,
+        playbook_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[PlaybookRun]: ...
+    async def update_playbook_run(self, run_id: str, **kwargs) -> None: ...
+    async def delete_playbook_run(self, run_id: str) -> None: ...
 
     # --- Atomic Operations ---
 
