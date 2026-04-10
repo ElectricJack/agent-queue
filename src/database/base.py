@@ -32,6 +32,7 @@ from src.models import (
     TaskStatus,
     Workflow,
     Workspace,
+    WorkspaceMode,
 )
 
 
@@ -174,6 +175,7 @@ class DatabaseBackend(Protocol):
         agent_id: str,
         task_id: str,
         preferred_workspace_id: str | None = None,
+        lock_mode: WorkspaceMode = WorkspaceMode.EXCLUSIVE,
     ) -> Workspace | None: ...
     async def release_workspace(self, workspace_id: str) -> None: ...
     async def release_workspaces_for_agent(self, agent_id: str) -> int: ...

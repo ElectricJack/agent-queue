@@ -8,7 +8,7 @@ import time
 from sqlalchemy import case, delete, func, insert, select, update
 
 from src.database.tables import workspaces
-from src.models import RepoSourceType, Workspace
+from src.models import RepoSourceType, Workspace, WorkspaceMode
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +89,18 @@ class WorkspaceQueryMixin:
         agent_id: str,
         task_id: str,
         preferred_workspace_id: str | None = None,
+        lock_mode: WorkspaceMode = WorkspaceMode.EXCLUSIVE,
     ) -> Workspace | None:
         """Atomically find an unlocked workspace for a project and lock it.
 
         If *preferred_workspace_id* is given, attempt to lock that specific
         workspace first.  Falls back to any unlocked workspace if the
         preferred one is unavailable.
+
+        *lock_mode* records the locking strategy used for this acquisition.
+        Default is ``WorkspaceMode.EXCLUSIVE`` — one agent, one workspace.
+        See ``docs/specs/design/agent-coordination.md §7`` for lock mode
+        semantics.
 
         Returns the locked workspace, or None if all are locked.
         """
@@ -167,6 +173,7 @@ class WorkspaceQueryMixin:
                         locked_by_agent_id=agent_id,
                         locked_by_task_id=task_id,
                         locked_at=now,
+                        lock_mode=lock_mode.value,
                     )
                 )
 
@@ -177,6 +184,7 @@ class WorkspaceQueryMixin:
                 ws.locked_by_agent_id = agent_id
                 ws.locked_by_task_id = task_id
                 ws.locked_at = now
+                ws.lock_mode = lock_mode
                 return ws
 
             return None
@@ -187,7 +195,12 @@ class WorkspaceQueryMixin:
             await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.id == workspace_id)
-                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+                .values(
+                    locked_by_agent_id=None,
+                    locked_by_task_id=None,
+                    locked_at=None,
+                    lock_mode=None,
+                )
             )
 
     async def release_workspaces_for_agent(self, agent_id: str) -> int:
@@ -196,7 +209,12 @@ class WorkspaceQueryMixin:
             result = await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+                .values(
+                    locked_by_agent_id=None,
+                    locked_by_task_id=None,
+                    locked_at=None,
+                    lock_mode=None,
+                )
             )
             return result.rowcount
 
@@ -206,7 +224,12 @@ class WorkspaceQueryMixin:
             result = await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.locked_by_task_id == task_id)
-                .values(locked_by_agent_id=None, locked_by_task_id=None, locked_at=None)
+                .values(
+                    locked_by_agent_id=None,
+                    locked_by_task_id=None,
+                    locked_at=None,
+                    lock_mode=None,
+                )
             )
             return result.rowcount
 
@@ -253,6 +276,7 @@ class WorkspaceQueryMixin:
     @staticmethod
     def _row_to_workspace(row) -> Workspace:
         """Convert a database row to a Workspace model."""
+        raw_mode = row["lock_mode"]
         return Workspace(
             id=row["id"],
             project_id=row["project_id"],
@@ -262,4 +286,5 @@ class WorkspaceQueryMixin:
             locked_by_agent_id=row["locked_by_agent_id"],
             locked_by_task_id=row["locked_by_task_id"],
             locked_at=row["locked_at"],
+            lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
         )

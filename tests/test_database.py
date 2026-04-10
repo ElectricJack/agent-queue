@@ -8,6 +8,7 @@ from src.models import (
     AgentState,
     RepoSourceType,
     Workspace,
+    WorkspaceMode,
 )
 
 
@@ -314,6 +315,51 @@ class TestWorkspaces:
         assert ws is not None
         assert ws.locked_by_agent_id == "a-1"
         assert ws.locked_by_task_id == "t-1"
+        assert ws.lock_mode == WorkspaceMode.EXCLUSIVE  # default
+
+    async def test_acquire_workspace_lock_mode(self, db):
+        """acquire_workspace stores the requested lock_mode on the workspace."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws is not None
+        assert ws.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+        # Verify persisted via get_workspace
+        ws2 = await db.get_workspace("ws-1")
+        assert ws2.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+    async def test_release_workspace_clears_lock_mode(self, db):
+        """release_workspace clears lock_mode along with other lock columns."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        await db.release_workspace("ws-1")
+        ws = await db.get_workspace("ws-1")
+        assert ws.locked_by_agent_id is None
+        assert ws.lock_mode is None
 
     async def test_acquire_workspace_none_available(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))

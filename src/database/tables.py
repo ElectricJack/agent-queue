@@ -225,6 +225,7 @@ workspaces = Table(
     Column("locked_by_agent_id", Text, ForeignKey("agents.id"), nullable=True),
     Column("locked_by_task_id", Text, ForeignKey("tasks.id"), nullable=True),
     Column("locked_at", Float, nullable=True),
+    Column("lock_mode", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("project_id", "workspace_path"),
 )

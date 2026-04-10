@@ -4681,6 +4681,7 @@ class CommandHandler:
                     "name": ws.name,
                     "locked_by_agent_id": ws.locked_by_agent_id,
                     "locked_by_task_id": ws.locked_by_task_id,
+                    "lock_mode": ws.lock_mode.value if ws.lock_mode else None,
                 }
                 for ws in workspaces
             ]

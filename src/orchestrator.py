@@ -129,6 +129,7 @@ from src.models import (
     TaskStatus,
     TaskContext,
     TaskType,
+    WorkspaceMode,
 )
 from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
@@ -2527,11 +2528,13 @@ class Orchestrator:
         it just won't have proper branch management.
         """
         project = await self.db.get_project(task.project_id)
+        lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
         ws = await self.db.acquire_workspace(
             task.project_id,
             agent.id,
             task.id,
             preferred_workspace_id=task.preferred_workspace_id,
+            lock_mode=lock_mode,
         )
 
         if not ws:
