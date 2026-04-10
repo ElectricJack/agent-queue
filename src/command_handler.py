@@ -5476,6 +5476,111 @@ feature work stuck on feature branches across multiple workspaces.
         return result
 
     # -----------------------------------------------------------------------
+    # Reference stub staleness scanning (Roadmap 6.3.4)
+    # -----------------------------------------------------------------------
+
+    async def _cmd_scan_stub_staleness(self, args: dict) -> dict:
+        """Scan vault reference stubs for staleness by comparing source_hash.
+
+        Walks the ``references/`` directory for one or all projects and checks
+        each stub's ``source_hash`` frontmatter against the current content of
+        the source file on disk.
+
+        Returns a structured report with per-stub status and summary counts.
+        """
+        from src.reference_stub_enricher import scan_stale_stubs
+
+        project_id = args.get("project_id") or self._active_project_id
+        vault_projects_dir = os.path.join(self.config.data_dir, "vault", "projects")
+
+        if not os.path.isdir(vault_projects_dir):
+            return {"error": "Vault projects directory not found."}
+
+        # Determine which projects to scan
+        if project_id:
+            project_ids = [project_id]
+        else:
+            # Scan all projects that have a references/ directory
+            try:
+                project_ids = sorted(
+                    d
+                    for d in os.listdir(vault_projects_dir)
+                    if os.path.isdir(os.path.join(vault_projects_dir, d, "references"))
+                )
+            except OSError:
+                return {"error": "Failed to list vault project directories."}
+
+        if not project_ids:
+            return {
+                "projects": [],
+                "summary": "No projects with reference stubs found.",
+            }
+
+        all_results = []
+        totals = {
+            "total": 0,
+            "stale": 0,
+            "missing_source": 0,
+            "unenriched": 0,
+            "orphaned": 0,
+            "current": 0,
+        }
+
+        for pid in project_ids:
+            scan = scan_stale_stubs(vault_projects_dir, pid)
+            project_entry = {
+                "project_id": pid,
+                "total": scan.total,
+                "stale": scan.stale,
+                "missing_source": scan.missing_source,
+                "unenriched": scan.unenriched,
+                "orphaned": scan.orphaned,
+                "current": scan.current,
+                "stubs": [
+                    {
+                        "stub_name": s.stub_name,
+                        "status": s.status,
+                        "source_path": s.source_path,
+                        "recorded_hash": s.recorded_hash,
+                        "current_hash": s.current_hash,
+                        "last_synced": s.last_synced,
+                        "is_enriched": s.is_enriched,
+                    }
+                    for s in scan.stubs
+                ],
+            }
+            all_results.append(project_entry)
+
+            for key in totals:
+                totals[key] += getattr(scan, key)
+
+        # Build human-readable summary
+        parts = []
+        if totals["stale"]:
+            parts.append(f"{totals['stale']} stale")
+        if totals["missing_source"]:
+            parts.append(f"{totals['missing_source']} missing source")
+        if totals["unenriched"]:
+            parts.append(f"{totals['unenriched']} unenriched")
+        if totals["orphaned"]:
+            parts.append(f"{totals['orphaned']} orphaned")
+        if totals["current"]:
+            parts.append(f"{totals['current']} current")
+
+        summary = (
+            f"Scanned {totals['total']} stub(s) across {len(project_ids)} project(s): "
+            + ", ".join(parts)
+            if parts
+            else f"Scanned 0 stubs across {len(project_ids)} project(s)."
+        )
+
+        return {
+            "projects": all_results,
+            "totals": totals,
+            "summary": summary,
+        }
+
+    # -----------------------------------------------------------------------
     # Prompt template commands -- read-only browsing of prompt templates
     # stored in <workspace>/prompts/.  Templates use YAML frontmatter for
     # metadata and Mustache-style {{variable}} placeholders for context

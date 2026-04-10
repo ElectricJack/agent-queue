@@ -155,6 +155,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "refresh_rules": "rules",
     # memory
     "recall_topic_context": "memory",
+    # vault — reference stub management
+    "scan_stub_staleness": "system",
     # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory.py)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
@@ -1748,6 +1750,32 @@ _ALL_TOOL_DEFINITIONS = [
                         "Topics already loaded in your context (e.g. from "
                         "task start).  These will be excluded to avoid "
                         "duplicate content."
+                    ),
+                },
+            },
+        },
+    },
+    # ------------------------------------------------------------------
+    # Vault / reference stub management (Roadmap 6.3.4)
+    # ------------------------------------------------------------------
+    {
+        "name": "scan_stub_staleness",
+        "description": (
+            "Scan vault reference stubs to detect staleness.  Compares each "
+            "stub's recorded source_hash against the current source file on "
+            "disk.  Reports stubs that are stale (source changed), missing "
+            "(source deleted), unenriched (placeholder content), or orphaned "
+            "(no source metadata).  Use to audit reference stub health before "
+            "triggering re-enrichment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID to scan.  If omitted, scans all projects "
+                        "that have reference stubs in the vault."
                     ),
                 },
             },

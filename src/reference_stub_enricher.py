@@ -27,6 +27,16 @@ already been enriched (i.e. placeholder sections have been replaced), the
 enrichment is skipped to avoid redundant LLM calls.  A ``force`` parameter
 allows bypassing this check when re-enrichment is explicitly desired.
 
+**Stale stub detection (Roadmap 6.3.4):** The :func:`scan_stale_stubs` function
+scans all reference stubs under a project's ``references/`` directory and
+compares each stub's recorded ``source_hash`` against the current content of the
+source file.  Stubs whose source has changed, whose source is missing, or that
+remain unenriched are flagged with a status (``stale``, ``missing_source``,
+``unenriched``, ``orphaned``, or ``current``).  The companion
+:func:`extract_source_path_from_frontmatter` and
+:func:`extract_last_synced_from_frontmatter` helpers parse additional frontmatter
+fields needed for the scan.
+
 Configuration is via ``MemoryConfig`` fields prefixed with ``stub_enrichment_``.
 The LLM provider falls back through:
 ``stub_enrichment_provider`` -> ``revision_provider`` -> ``"anthropic"``
@@ -39,7 +49,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -303,6 +313,242 @@ def stub_is_enriched(content: str) -> bool:
             return True
 
     return False
+
+
+def extract_source_path_from_frontmatter(content: str) -> str:
+    """Extract the ``source`` path from a stub file's YAML frontmatter.
+
+    Parses the YAML frontmatter delimited by ``---`` lines and returns the
+    value of the ``source`` field.  Returns an empty string if the field is
+    not found or the content has no valid frontmatter.
+
+    Parameters
+    ----------
+    content:
+        The full text of a stub file.
+
+    Returns
+    -------
+    str
+        The source path, or ``""`` if not found.
+    """
+    if not content or not content.startswith("---"):
+        return ""
+
+    end_idx = content.find("\n---", 3)
+    if end_idx == -1:
+        return ""
+
+    frontmatter = content[3:end_idx]
+
+    for line in frontmatter.splitlines():
+        line = line.strip()
+        if line.startswith("source:"):
+            value = line[len("source:") :].strip()
+            # Remove optional quotes
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value
+
+    return ""
+
+
+def extract_last_synced_from_frontmatter(content: str) -> str:
+    """Extract the ``last_synced`` date from a stub file's YAML frontmatter.
+
+    Parses the YAML frontmatter delimited by ``---`` lines and returns the
+    value of the ``last_synced`` field (typically an ISO date string like
+    ``2026-04-07``).  Returns an empty string if the field is not found.
+
+    Parameters
+    ----------
+    content:
+        The full text of a stub file.
+
+    Returns
+    -------
+    str
+        The last_synced value, or ``""`` if not found.
+    """
+    if not content or not content.startswith("---"):
+        return ""
+
+    end_idx = content.find("\n---", 3)
+    if end_idx == -1:
+        return ""
+
+    frontmatter = content[3:end_idx]
+
+    for line in frontmatter.splitlines():
+        line = line.strip()
+        if line.startswith("last_synced:"):
+            value = line[len("last_synced:") :].strip()
+            # Remove optional quotes
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value
+
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Stale stub detection (Roadmap 6.3.4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StaleStubInfo:
+    """Information about a single reference stub's freshness status.
+
+    Attributes:
+        stub_name: Filename of the stub (e.g. ``spec-orchestrator.md``).
+        stub_path: Absolute path to the stub file in the vault.
+        source_path: Absolute path to the source document (from frontmatter).
+        recorded_hash: The ``source_hash`` stored in the stub's frontmatter.
+        current_hash: The current SHA-256 prefix of the source file
+            (empty if the source file is missing or unreadable).
+        last_synced: The ``last_synced`` date from the stub's frontmatter.
+        is_enriched: Whether the stub has been enriched with LLM content.
+        status: One of ``"current"``, ``"stale"``, ``"missing_source"``,
+            ``"unenriched"``, or ``"orphaned"``.
+
+            - ``current``: source_hash matches and stub is enriched.
+            - ``stale``: source_hash differs from the live source file.
+            - ``missing_source``: the source file no longer exists on disk.
+            - ``unenriched``: hashes match but stub still has placeholders.
+            - ``orphaned``: no ``source`` or ``source_hash`` in frontmatter.
+    """
+
+    stub_name: str
+    stub_path: str
+    source_path: str = ""
+    recorded_hash: str = ""
+    current_hash: str = ""
+    last_synced: str = ""
+    is_enriched: bool = False
+    status: str = "current"
+
+
+@dataclass
+class StaleScanResult:
+    """Aggregated result from scanning a project's reference stubs.
+
+    Attributes:
+        project_id: The project that was scanned.
+        stubs: List of :class:`StaleStubInfo` for every stub found.
+        total: Total number of stubs scanned.
+        stale: Count of stubs with status ``"stale"``.
+        missing_source: Count of stubs with status ``"missing_source"``.
+        unenriched: Count of stubs with status ``"unenriched"``.
+        orphaned: Count of stubs with status ``"orphaned"``.
+        current: Count of stubs with status ``"current"``.
+    """
+
+    project_id: str
+    stubs: list[StaleStubInfo] = field(default_factory=list)
+    total: int = 0
+    stale: int = 0
+    missing_source: int = 0
+    unenriched: int = 0
+    orphaned: int = 0
+    current: int = 0
+
+
+def scan_stale_stubs(
+    vault_projects_dir: str,
+    project_id: str,
+) -> StaleScanResult:
+    """Scan a project's reference stubs and flag those with stale source_hash.
+
+    Walks the ``vault/projects/{project_id}/references/`` directory,
+    reads each stub's YAML frontmatter, and compares the recorded
+    ``source_hash`` against the current content of the source file.
+
+    Parameters
+    ----------
+    vault_projects_dir:
+        Path to ``vault/projects/`` where project directories live.
+    project_id:
+        The project to scan.
+
+    Returns
+    -------
+    StaleScanResult
+        Aggregated scan results with per-stub details and summary counts.
+    """
+    from src.workspace_spec_watcher import compute_content_hash
+
+    refs_dir = os.path.join(vault_projects_dir, project_id, "references")
+    result = StaleScanResult(project_id=project_id)
+
+    if not os.path.isdir(refs_dir):
+        return result
+
+    for filename in sorted(os.listdir(refs_dir)):
+        if not filename.endswith(".md"):
+            continue
+
+        stub_path = os.path.join(refs_dir, filename)
+        if not os.path.isfile(stub_path):
+            continue
+
+        try:
+            with open(stub_path, encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        source_path = extract_source_path_from_frontmatter(content)
+        recorded_hash = extract_source_hash_from_frontmatter(content)
+        last_synced = extract_last_synced_from_frontmatter(content)
+        enriched = stub_is_enriched(content)
+
+        # Determine status
+        if not source_path or not recorded_hash:
+            status = "orphaned"
+        elif not os.path.isfile(source_path):
+            status = "missing_source"
+        else:
+            current_hash = compute_content_hash(source_path)
+            if current_hash and current_hash != recorded_hash:
+                status = "stale"
+            elif not enriched:
+                status = "unenriched"
+            else:
+                status = "current"
+
+        # Compute current hash only when source exists (avoid recomputation)
+        current_hash_val = ""
+        if source_path and os.path.isfile(source_path):
+            current_hash_val = compute_content_hash(source_path)
+
+        info = StaleStubInfo(
+            stub_name=filename,
+            stub_path=stub_path,
+            source_path=source_path,
+            recorded_hash=recorded_hash,
+            current_hash=current_hash_val,
+            last_synced=last_synced,
+            is_enriched=enriched,
+            status=status,
+        )
+        result.stubs.append(info)
+
+    # Compute summary counts
+    result.total = len(result.stubs)
+    for info in result.stubs:
+        if info.status == "stale":
+            result.stale += 1
+        elif info.status == "missing_source":
+            result.missing_source += 1
+        elif info.status == "unenriched":
+            result.unenriched += 1
+        elif info.status == "orphaned":
+            result.orphaned += 1
+        elif info.status == "current":
+            result.current += 1
+
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,13 @@ import pytest
 from src.reference_stub_enricher import (
     SUMMARIZE_SYSTEM_PROMPT,
     ReferenceStubEnricher,
+    StaleScanResult,
+    StaleStubInfo,
+    extract_last_synced_from_frontmatter,
     extract_source_hash_from_frontmatter,
+    extract_source_path_from_frontmatter,
     parse_enrichment_response,
+    scan_stale_stubs,
     stub_is_enriched,
     update_stub_content,
 )
@@ -1737,7 +1742,11 @@ class TestDeletedSourceOrphanedStub:
     @pytest.mark.asyncio
     async def test_watcher_removes_stub_on_source_deletion(self, tmp_path):
         """WorkspaceSpecWatcher removes the stub file when source is deleted."""
-        from src.workspace_spec_watcher import SpecChange, WorkspaceSpecWatcher, compute_content_hash
+        from src.workspace_spec_watcher import (
+            SpecChange,
+            WorkspaceSpecWatcher,
+            compute_content_hash,
+        )
 
         # Setup vault and watcher
         vault_dir = str(tmp_path / "vault" / "projects")
@@ -1791,3 +1800,479 @@ class TestDeletedSourceOrphanedStub:
         assert deleted is True
         assert not os.path.isfile(stub_path)
         assert watcher.total_stubs_deleted == 1
+
+
+# ---------------------------------------------------------------------------
+# extract_source_path_from_frontmatter tests (6.3.4)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSourcePathFromFrontmatter:
+    """Tests for the extract_source_path_from_frontmatter() function."""
+
+    def test_extracts_path_from_valid_frontmatter(self):
+        content = (
+            "---\n"
+            "tags: [spec, reference, auto-generated]\n"
+            "source: /workspace/specs/orchestrator.md\n"
+            "source_hash: abc123def456\n"
+            "last_synced: 2026-04-07\n"
+            "---\n\n"
+            "# Spec: Orchestrator\n"
+        )
+        assert extract_source_path_from_frontmatter(content) == "/workspace/specs/orchestrator.md"
+
+    def test_returns_empty_for_no_frontmatter(self):
+        content = "# Just a heading\n\nSome content."
+        assert extract_source_path_from_frontmatter(content) == ""
+
+    def test_returns_empty_for_empty_content(self):
+        assert extract_source_path_from_frontmatter("") == ""
+
+    def test_returns_empty_for_missing_source(self):
+        content = "---\ntags: [spec]\nsource_hash: abc123\nlast_synced: 2026-04-07\n---\n\n"
+        assert extract_source_path_from_frontmatter(content) == ""
+
+    def test_handles_quoted_path(self):
+        content = '---\nsource: "/path/with spaces/file.md"\n---\n\nContent\n'
+        assert extract_source_path_from_frontmatter(content) == "/path/with spaces/file.md"
+
+    def test_handles_single_quoted_path(self):
+        content = "---\nsource: '/path/to/file.md'\n---\n\nContent\n"
+        assert extract_source_path_from_frontmatter(content) == "/path/to/file.md"
+
+    def test_returns_empty_for_unclosed_frontmatter(self):
+        content = "---\nsource: /path/to/file.md\n# No closing ---"
+        assert extract_source_path_from_frontmatter(content) == ""
+
+    def test_handles_extra_whitespace(self):
+        content = "---\n  source:   /path/to/file.md  \n---\n\n"
+        assert extract_source_path_from_frontmatter(content) == "/path/to/file.md"
+
+    def test_does_not_match_source_hash(self):
+        """Ensure 'source:' does not accidentally match 'source_hash:'."""
+        content = "---\nsource_hash: abc123\n---\n\n"
+        assert extract_source_path_from_frontmatter(content) == ""
+
+
+# ---------------------------------------------------------------------------
+# extract_last_synced_from_frontmatter tests (6.3.4)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractLastSyncedFromFrontmatter:
+    """Tests for the extract_last_synced_from_frontmatter() function."""
+
+    def test_extracts_date_from_valid_frontmatter(self):
+        content = (
+            "---\n"
+            "source: /workspace/specs/orchestrator.md\n"
+            "source_hash: abc123def456\n"
+            "last_synced: 2026-04-07\n"
+            "---\n\n"
+        )
+        assert extract_last_synced_from_frontmatter(content) == "2026-04-07"
+
+    def test_returns_empty_for_no_frontmatter(self):
+        content = "# Just a heading\n"
+        assert extract_last_synced_from_frontmatter(content) == ""
+
+    def test_returns_empty_for_empty_content(self):
+        assert extract_last_synced_from_frontmatter("") == ""
+
+    def test_returns_empty_for_missing_field(self):
+        content = "---\nsource: /foo\nsource_hash: abc123\n---\n\n"
+        assert extract_last_synced_from_frontmatter(content) == ""
+
+    def test_handles_quoted_date(self):
+        content = '---\nlast_synced: "2026-04-07"\n---\n\n'
+        assert extract_last_synced_from_frontmatter(content) == "2026-04-07"
+
+    def test_handles_extra_whitespace(self):
+        content = "---\n  last_synced:   2026-04-07  \n---\n\n"
+        assert extract_last_synced_from_frontmatter(content) == "2026-04-07"
+
+
+# ---------------------------------------------------------------------------
+# scan_stale_stubs tests (Roadmap 6.3.4)
+# ---------------------------------------------------------------------------
+
+
+class TestScanStaleStubs:
+    """Tests for scan_stale_stubs() — the main stale stub detection scanner."""
+
+    def test_empty_project_returns_empty_result(self, tmp_path):
+        """Project with no references/ directory returns empty scan."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        os.makedirs(vault_dir, exist_ok=True)
+
+        result = scan_stale_stubs(vault_dir, "nonexistent-project")
+
+        assert result.project_id == "nonexistent-project"
+        assert result.total == 0
+        assert result.stubs == []
+
+    def test_empty_references_dir(self, tmp_path):
+        """Project with empty references/ directory returns empty scan."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 0
+        assert result.stubs == []
+
+    def test_current_stub_detected(self, tmp_path):
+        """Stub with matching source_hash and enriched content → current."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        source_path = str(tmp_path / "workspace" / "specs" / "orchestrator.md")
+        os.makedirs(os.path.dirname(source_path), exist_ok=True)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec\n\nContent here.\n")
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        real_hash = compute_content_hash(source_path)
+
+        # Create enriched stub pointing to the real source with matching hash
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-orchestrator.md")
+        content = (
+            f"---\n"
+            f"tags: [spec, reference, auto-generated]\n"
+            f"source: {source_path}\n"
+            f"source_hash: {real_hash}\n"
+            f"last_synced: 2026-04-07\n"
+            f"---\n\n"
+            f"# Spec: Orchestrator\n\n"
+            f"## Summary\n\n"
+            f"A real summary of the document.\n\n"
+            f"## Key Decisions\n\n"
+            f"- Decision one\n\n"
+            f"## Key Interfaces\n\n"
+            f"- Interface one\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.current == 1
+        assert result.stale == 0
+        assert result.stubs[0].status == "current"
+        assert result.stubs[0].stub_name == "spec-orchestrator.md"
+        assert result.stubs[0].recorded_hash == real_hash
+        assert result.stubs[0].current_hash == real_hash
+        assert result.stubs[0].is_enriched is True
+
+    def test_stale_stub_detected(self, tmp_path):
+        """Stub whose source_hash no longer matches → stale."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        source_path = str(tmp_path / "workspace" / "specs" / "orchestrator.md")
+        os.makedirs(os.path.dirname(source_path), exist_ok=True)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec v2\n\nUpdated content.\n")
+
+        # Create enriched stub with an OLD hash
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-orchestrator.md")
+        content = (
+            f"---\n"
+            f"tags: [spec, reference, auto-generated]\n"
+            f"source: {source_path}\n"
+            f"source_hash: oldhash12345\n"
+            f"last_synced: 2026-04-01\n"
+            f"---\n\n"
+            f"# Spec: Orchestrator\n\n"
+            f"## Summary\n\n"
+            f"An outdated summary.\n\n"
+            f"## Key Decisions\n\n"
+            f"- Old decision\n\n"
+            f"## Key Interfaces\n\n"
+            f"- Old interface\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.stale == 1
+        assert result.current == 0
+        assert result.stubs[0].status == "stale"
+        assert result.stubs[0].recorded_hash == "oldhash12345"
+        assert result.stubs[0].current_hash != "oldhash12345"
+
+    def test_missing_source_detected(self, tmp_path):
+        """Stub pointing to a deleted source file → missing_source."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        missing_path = str(tmp_path / "workspace" / "specs" / "deleted.md")
+
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-deleted.md")
+        content = (
+            f"---\n"
+            f"source: {missing_path}\n"
+            f"source_hash: abc123def456\n"
+            f"last_synced: 2026-04-07\n"
+            f"---\n\n"
+            f"## Summary\n\n"
+            f"A real summary.\n\n"
+            f"## Key Decisions\n\n"
+            f"- Decision\n\n"
+            f"## Key Interfaces\n\n"
+            f"- Interface\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.missing_source == 1
+        assert result.stubs[0].status == "missing_source"
+        assert result.stubs[0].current_hash == ""
+
+    def test_unenriched_stub_detected(self, tmp_path):
+        """Stub with matching hash but placeholder content → unenriched."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        source_path = str(tmp_path / "workspace" / "specs" / "orchestrator.md")
+        os.makedirs(os.path.dirname(source_path), exist_ok=True)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec\n\nContent.\n")
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        real_hash = compute_content_hash(source_path)
+
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-orchestrator.md")
+        content = (
+            f"---\n"
+            f"source: {source_path}\n"
+            f"source_hash: {real_hash}\n"
+            f"last_synced: 2026-04-07\n"
+            f"---\n\n"
+            f"## Summary\n\n"
+            f"*Summary pending -- will be generated by LLM enrichment.*\n\n"
+            f"## Key Decisions\n\n"
+            f"*Pending LLM extraction.*\n\n"
+            f"## Key Interfaces\n\n"
+            f"*Pending LLM extraction.*\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.unenriched == 1
+        assert result.stubs[0].status == "unenriched"
+        assert result.stubs[0].is_enriched is False
+
+    def test_orphaned_stub_no_source_path(self, tmp_path):
+        """Stub with no source field in frontmatter → orphaned."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-mystery.md")
+        content = (
+            "---\n"
+            "tags: [spec]\n"
+            "last_synced: 2026-04-07\n"
+            "---\n\n"
+            "## Summary\n\n"
+            "A summary.\n\n"
+            "## Key Decisions\n\n"
+            "- Decision\n\n"
+            "## Key Interfaces\n\n"
+            "- Interface\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.orphaned == 1
+        assert result.stubs[0].status == "orphaned"
+
+    def test_orphaned_stub_no_source_hash(self, tmp_path):
+        """Stub with source path but no source_hash → orphaned."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+        stub_path = os.path.join(refs_dir, "spec-nohash.md")
+        content = (
+            "---\nsource: /some/path.md\nlast_synced: 2026-04-07\n---\n\n## Summary\n\nContent.\n"
+        )
+        with open(stub_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        assert result.total == 1
+        assert result.orphaned == 1
+        assert result.stubs[0].status == "orphaned"
+
+    def test_mixed_statuses_across_stubs(self, tmp_path):
+        """Multiple stubs with different statuses are all reported correctly."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        project_id = "test-project"
+
+        # Source file 1 — current (hash matches, enriched)
+        source1 = str(tmp_path / "ws" / "specs" / "current.md")
+        os.makedirs(os.path.dirname(source1), exist_ok=True)
+        with open(source1, "w", encoding="utf-8") as f:
+            f.write("# Current spec\n")
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        hash1 = compute_content_hash(source1)
+
+        # Source file 2 — stale (hash mismatch)
+        source2 = str(tmp_path / "ws" / "specs" / "stale.md")
+        with open(source2, "w", encoding="utf-8") as f:
+            f.write("# Stale spec — updated content\n")
+
+        refs_dir = os.path.join(vault_dir, project_id, "references")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        # Current stub
+        with open(os.path.join(refs_dir, "spec-current.md"), "w", encoding="utf-8") as f:
+            f.write(
+                f"---\nsource: {source1}\nsource_hash: {hash1}\n"
+                f"last_synced: 2026-04-07\n---\n\n"
+                f"## Summary\n\nReal summary.\n\n"
+                f"## Key Decisions\n\n- Decision\n\n"
+                f"## Key Interfaces\n\n- Interface\n"
+            )
+
+        # Stale stub (old hash)
+        with open(os.path.join(refs_dir, "spec-stale.md"), "w", encoding="utf-8") as f:
+            f.write(
+                f"---\nsource: {source2}\nsource_hash: oldhash00000\n"
+                f"last_synced: 2026-03-01\n---\n\n"
+                f"## Summary\n\nOld summary.\n\n"
+                f"## Key Decisions\n\n- Old decision\n\n"
+                f"## Key Interfaces\n\n- Old interface\n"
+            )
+
+        # Missing source stub
+        missing_path = str(tmp_path / "ws" / "specs" / "gone.md")
+        with open(os.path.join(refs_dir, "spec-gone.md"), "w", encoding="utf-8") as f:
+            f.write(
+                f"---\nsource: {missing_path}\nsource_hash: abc123\n"
+                f"last_synced: 2026-04-07\n---\n\n"
+                f"## Summary\n\nSummary.\n\n"
+                f"## Key Decisions\n\n- D\n\n"
+                f"## Key Interfaces\n\n- I\n"
+            )
+
+        # Orphaned stub (no source_hash)
+        with open(os.path.join(refs_dir, "spec-orphan.md"), "w", encoding="utf-8") as f:
+            f.write(
+                "---\ntags: [spec]\n---\n\n"
+                "## Summary\n\nContent.\n\n"
+                "## Key Decisions\n\n- D\n\n"
+                "## Key Interfaces\n\n- I\n"
+            )
+
+        result = scan_stale_stubs(vault_dir, project_id)
+
+        assert result.total == 4
+        assert result.current == 1
+        assert result.stale == 1
+        assert result.missing_source == 1
+        assert result.orphaned == 1
+        assert result.unenriched == 0
+
+        statuses = {s.stub_name: s.status for s in result.stubs}
+        assert statuses["spec-current.md"] == "current"
+        assert statuses["spec-stale.md"] == "stale"
+        assert statuses["spec-gone.md"] == "missing_source"
+        assert statuses["spec-orphan.md"] == "orphaned"
+
+    def test_stubs_sorted_by_name(self, tmp_path):
+        """Stubs are returned sorted alphabetically by stub_name."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        for name in ["spec-zebra.md", "spec-alpha.md", "spec-middle.md"]:
+            with open(os.path.join(refs_dir, name), "w", encoding="utf-8") as f:
+                f.write("---\ntags: [spec]\n---\n\n## Summary\n\nContent.\n")
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        names = [s.stub_name for s in result.stubs]
+        assert names == ["spec-alpha.md", "spec-middle.md", "spec-zebra.md"]
+
+    def test_ignores_non_md_files(self, tmp_path):
+        """Non-.md files in the references/ directory are ignored."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        # Create a .md file and a .txt file
+        with open(os.path.join(refs_dir, "spec-valid.md"), "w", encoding="utf-8") as f:
+            f.write("---\ntags: [spec]\n---\n\n## Summary\n\nContent.\n")
+        with open(os.path.join(refs_dir, "notes.txt"), "w", encoding="utf-8") as f:
+            f.write("some notes")
+        with open(os.path.join(refs_dir, ".hidden.md"), "w", encoding="utf-8") as f:
+            f.write("hidden file")
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+
+        # Only .md files that pass os.listdir are scanned; .hidden.md starts with
+        # a dot but still ends with .md, so it would be included. Let's just check
+        # that the .txt file was excluded.
+        names = {s.stub_name for s in result.stubs}
+        assert "notes.txt" not in names
+        assert "spec-valid.md" in names
+
+    def test_last_synced_included_in_results(self, tmp_path):
+        """The last_synced field is correctly extracted into StaleStubInfo."""
+        vault_dir = str(tmp_path / "vault" / "projects")
+        refs_dir = os.path.join(vault_dir, "test-project", "references")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        with open(os.path.join(refs_dir, "spec-dated.md"), "w", encoding="utf-8") as f:
+            f.write(
+                "---\nsource: /path\nsource_hash: hash123\n"
+                "last_synced: 2026-04-09\n---\n\n"
+                "## Summary\n\nContent.\n"
+            )
+
+        result = scan_stale_stubs(vault_dir, "test-project")
+        assert result.stubs[0].last_synced == "2026-04-09"
+
+    def test_scan_result_dataclass_defaults(self):
+        """StaleScanResult initializes with sensible defaults."""
+        result = StaleScanResult(project_id="p")
+        assert result.project_id == "p"
+        assert result.stubs == []
+        assert result.total == 0
+        assert result.stale == 0
+        assert result.missing_source == 0
+        assert result.unenriched == 0
+        assert result.orphaned == 0
+        assert result.current == 0
+
+    def test_stale_stub_info_defaults(self):
+        """StaleStubInfo frozen dataclass has sensible defaults."""
+        info = StaleStubInfo(stub_name="test.md", stub_path="/path/test.md")
+        assert info.status == "current"
+        assert info.source_path == ""
+        assert info.recorded_hash == ""
+        assert info.current_hash == ""
+        assert info.last_synced == ""
+        assert info.is_enriched is False
