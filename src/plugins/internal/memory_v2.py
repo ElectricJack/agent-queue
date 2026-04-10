@@ -128,6 +128,13 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": "Task ID that produced this insight (for provenance).",
                 },
+                "source_playbook": {
+                    "type": "string",
+                    "description": (
+                        "Playbook name that generated this memory (e.g. "
+                        "'task-outcome', 'reflection').  For provenance tracking."
+                    ),
+                },
                 "scope": {
                     "type": "string",
                     "description": (
@@ -1606,6 +1613,7 @@ class MemoryV2Plugin(InternalPlugin):
         tags = args.get("tags") or ["insight", "auto-generated"]
         topic = args.get("topic")
         source_task = args.get("source_task")
+        source_playbook = args.get("source_playbook")
         scope = args.get("scope")
 
         try:
@@ -1615,6 +1623,7 @@ class MemoryV2Plugin(InternalPlugin):
                 tags=tags,
                 topic=topic,
                 source_task=source_task,
+                source_playbook=source_playbook,
                 scope=scope,
             )
         except Exception as e:
@@ -1629,6 +1638,7 @@ class MemoryV2Plugin(InternalPlugin):
         tags: list[str],
         topic: str | None,
         source_task: str | None,
+        source_playbook: str | None = None,
         scope: str | None,
     ) -> dict:
         """Core orchestration for memory_save.
@@ -1673,6 +1683,7 @@ class MemoryV2Plugin(InternalPlugin):
                 scope=dedup_scope,
                 topic=topic,
                 top_k=5,
+                track_retrieval=False,  # dedup check is internal, not a user retrieval
             )
 
             # Find the best match
@@ -1704,6 +1715,7 @@ class MemoryV2Plugin(InternalPlugin):
                 tags=tags,
                 topic=topic,
                 source_task=source_task,
+                source_playbook=source_playbook,
                 scope=scope,
             )
         else:
@@ -1714,6 +1726,7 @@ class MemoryV2Plugin(InternalPlugin):
                 tags=tags,
                 topic=topic,
                 source_task=source_task,
+                source_playbook=source_playbook,
                 scope=scope,
             )
 
@@ -1765,6 +1778,7 @@ class MemoryV2Plugin(InternalPlugin):
         tags: list[str],
         topic: str | None,
         source_task: str | None,
+        source_playbook: str | None = None,
         scope: str | None,
     ) -> dict:
         """Handle related dedup (similarity 0.8–0.95) — merge via LLM.
@@ -1799,6 +1813,7 @@ class MemoryV2Plugin(InternalPlugin):
                 tags=merged_tags,
                 topic=topic,
                 source_task=source_task,
+                source_playbook=source_playbook,
                 scope=scope,
             )
 
@@ -1837,6 +1852,7 @@ class MemoryV2Plugin(InternalPlugin):
         tags: list[str],
         topic: str | None,
         source_task: str | None,
+        source_playbook: str | None = None,
         scope: str | None,
     ) -> dict:
         """Create a new memory entry (distinct content).
@@ -1860,6 +1876,7 @@ class MemoryV2Plugin(InternalPlugin):
             tags=tags,
             topic=topic,
             source_task=source_task,
+            source_playbook=source_playbook,
             scope=scope,
         )
         return {
@@ -2030,6 +2047,8 @@ class MemoryV2Plugin(InternalPlugin):
             "topic": result.get("topic", ""),
             "tags": self._decode_tags(result.get("tags", "[]")),
             "chunk_hash": result.get("chunk_hash", ""),
+            "retrieval_count": result.get("retrieval_count", 0),
+            "last_retrieved": result.get("last_retrieved", 0),
             "scope": result.get("_scope", ""),
             "scope_id": result.get("_scope_id"),
             "collection": result.get("_collection", ""),
@@ -2147,6 +2166,7 @@ class MemoryV2Plugin(InternalPlugin):
             "source": entry.get("source", ""),
             "entry_type": entry.get("entry_type", "document"),
             "retrieval_count": entry.get("retrieval_count", 0),
+            "last_retrieved": entry.get("last_retrieved", 0),
             "updated_at": entry.get("updated_at", 0),
             "content_preview": preview,
         }
@@ -2496,6 +2516,8 @@ class MemoryV2Plugin(InternalPlugin):
                 "score": r.get("score", 0.0),
                 "topic": r.get("topic", ""),
                 "tags": self._decode_tags(r.get("tags", "[]")),
+                "retrieval_count": r.get("retrieval_count", 0),
+                "last_retrieved": r.get("last_retrieved", 0),
             }
             if full and original:
                 entry["full"] = True

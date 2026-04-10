@@ -255,6 +255,7 @@ class MemoryV2Service:
         topic: str | None = None,
         top_k: int = 10,
         full: bool = False,
+        track_retrieval: bool = True,
     ) -> list[dict[str, Any]]:
         """Semantic search across scoped collection(s).
 
@@ -281,6 +282,12 @@ class MemoryV2Service:
             When ``True``, include the ``original`` field in results.
             When ``False`` (default), only the summary ``content``
             is returned.  Per spec §9.
+        track_retrieval:
+            When ``True`` (default), update ``last_retrieved`` and
+            ``retrieval_count`` in vault files for returned results.
+            Set to ``False`` for internal dedup searches where results
+            are not surfaced to agents.  Per spec §6 (Memory Audit
+            Trail).
         """
         if not self.available:
             return []
@@ -314,10 +321,9 @@ class MemoryV2Service:
                 r["_collection"] = coll_name
                 r["_scope"] = mem_scope.value
                 r["_scope_id"] = scope_id
-            return results
         else:
             # Multi-scope search via router (project + system)
-            return await self._router.search(
+            results = await self._router.search(
                 query_embedding,
                 query_text=query,
                 project_id=project_id,
@@ -325,6 +331,14 @@ class MemoryV2Service:
                 top_k=top_k,
                 full=full,
             )
+
+        # Update vault file retrieval stats (spec §6: Memory Audit Trail)
+        if track_retrieval and results:
+            vault_paths = [r.get("source", "") for r in results if r.get("source")]
+            if vault_paths:
+                await asyncio.to_thread(self._update_vault_retrieval_stats, vault_paths)
+
+        return results
 
     async def batch_search(
         self,
@@ -998,6 +1012,7 @@ class MemoryV2Service:
         tags: list[str],
         topic: str | None = None,
         source_task: str | None = None,
+        source_playbook: str | None = None,
         filename: str | None = None,
         created: str | None = None,
     ) -> Path:
@@ -1017,6 +1032,9 @@ class MemoryV2Service:
             Optional topic field.
         source_task:
             Optional task ID reference.
+        source_playbook:
+            Optional playbook name that generated this memory (e.g.
+            ``"task-outcome"``).  Per spec §6 (Memory Audit Trail).
         filename:
             Override filename (without extension).  Auto-generated from
             content if not provided.
@@ -1051,8 +1069,12 @@ class MemoryV2Service:
             fm_lines.append(f"topic: {topic}")
         if source_task:
             fm_lines.append(f"source_task: {source_task}")
+        if source_playbook:
+            fm_lines.append(f"source_playbook: {source_playbook}")
         fm_lines.append(f"created: {created or now}")
         fm_lines.append(f"updated: {now}")
+        fm_lines.append("last_retrieved: null")
+        fm_lines.append("retrieval_count: 0")
         fm_lines.append("---")
         fm_lines.append("")
 
@@ -1074,14 +1096,15 @@ class MemoryV2Service:
         original: str | None = None,
         tags: list[str] | None = None,
         source_task: str | None = None,
+        source_playbook: str | None = None,
     ) -> None:
         """Update an existing vault markdown file.
 
         Only modifies the ``updated`` timestamp and optionally appends a
-        ``source_task`` to the frontmatter.  If *content* is provided the
-        file body is replaced.  If *original* is also provided, the body
-        includes both the summary content and the original text under an
-        ``## Original`` heading (per spec §9).
+        ``source_task`` or ``source_playbook`` to the frontmatter.  If
+        *content* is provided the file body is replaced.  If *original*
+        is also provided, the body includes both the summary content and
+        the original text under an ``## Original`` heading (per spec §9).
         """
         import json as _json
 
@@ -1122,6 +1145,20 @@ class MemoryV2Service:
                     flags=re.MULTILINE,
                 )
 
+        # Add source_playbook if provided and not already present
+        if source_playbook:
+            existing_playbook = re.search(r"^source_playbook:.*$", text, flags=re.MULTILINE)
+            if not existing_playbook:
+                # Insert after source_task if it exists, otherwise after tags
+                anchor = re.search(r"^(source_task:.*)$", text, flags=re.MULTILINE)
+                if not anchor:
+                    anchor = re.search(r"^(tags:.*)$", text, flags=re.MULTILINE)
+                if anchor:
+                    text = text.replace(
+                        anchor.group(0),
+                        f"{anchor.group(0)}\nsource_playbook: {source_playbook}",
+                    )
+
         # Merge tags if provided
         if tags:
             existing_tags_match = re.search(r"^tags:\s*(\[.*?\])$", text, flags=re.MULTILINE)
@@ -1148,6 +1185,79 @@ class MemoryV2Service:
 
         filepath.write_text(text, encoding="utf-8")
 
+    def _update_vault_retrieval_stats(self, vault_paths: list[str]) -> None:
+        """Update ``last_retrieved`` and ``retrieval_count`` in vault files.
+
+        Called after search/recall returns results.  For each vault file
+        that exists, increments ``retrieval_count`` by 1 and sets
+        ``last_retrieved`` to today's date.
+
+        Per spec §6 (Memory Audit Trail): these fields power staleness
+        and hit-rate metrics in the Memory Health view.
+
+        Parameters
+        ----------
+        vault_paths:
+            Paths to vault markdown files whose retrieval stats should
+            be updated.  Non-existent paths are silently skipped.
+        """
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        for path_str in vault_paths:
+            if not path_str:
+                continue
+            filepath = Path(path_str)
+            if not filepath.exists():
+                continue
+
+            try:
+                text = filepath.read_text(encoding="utf-8")
+
+                # Update last_retrieved
+                if re.search(r"^last_retrieved:.*$", text, flags=re.MULTILINE):
+                    text = re.sub(
+                        r"^last_retrieved:.*$",
+                        f"last_retrieved: {now}",
+                        text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+                else:
+                    # Insert before closing --- if not present
+                    text = re.sub(
+                        r"^(---)(\n\n)",
+                        rf"last_retrieved: {now}\n\1\2",
+                        text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+
+                # Update retrieval_count (increment by 1)
+                count_match = re.search(
+                    r"^retrieval_count:\s*(\d+)$", text, flags=re.MULTILINE
+                )
+                if count_match:
+                    old_count = int(count_match.group(1))
+                    text = text.replace(
+                        count_match.group(0),
+                        f"retrieval_count: {old_count + 1}",
+                    )
+                else:
+                    # Insert before closing --- if not present
+                    text = re.sub(
+                        r"^(---)(\n\n)",
+                        r"retrieval_count: 1\n\1\2",
+                        text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+
+                filepath.write_text(text, encoding="utf-8")
+            except Exception:
+                logger.debug(
+                    "Failed to update retrieval stats for %s", path_str, exc_info=True
+                )
+
     async def save_document(
         self,
         project_id: str,
@@ -1158,6 +1268,7 @@ class MemoryV2Service:
         tags: list[str] | None = None,
         topic: str | None = None,
         source_task: str | None = None,
+        source_playbook: str | None = None,
         scope: str | None = None,
     ) -> dict[str, Any]:
         """Save a new document entry to vault + Milvus.
@@ -1185,6 +1296,9 @@ class MemoryV2Service:
             Optional topic tag.
         source_task:
             Source task ID reference.
+        source_playbook:
+            Playbook name that generated this memory (e.g.
+            ``"task-outcome"``).  Per spec §6 (Memory Audit Trail).
         scope:
             Memory scope (defaults to project scope).
 
@@ -1215,6 +1329,7 @@ class MemoryV2Service:
             tags=tags,
             topic=topic,
             source_task=source_task,
+            source_playbook=source_playbook,
         )
 
         # Compute embedding for the summary/content
@@ -1254,6 +1369,7 @@ class MemoryV2Service:
             "topic": topic or "",
             "tags": tags,
             "source_task": source_task or "",
+            "source_playbook": source_playbook or "",
             "updated_at": now_ts,
         }
 
