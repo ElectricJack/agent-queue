@@ -1,4 +1,5 @@
-import pytest
+import logging
+
 from src.models import (
     Project,
     Task,
@@ -611,3 +612,178 @@ class TestAgentTypeMatching:
         assert len(actions) == 1
         assert actions[0].task_id == "t-p2"
         assert actions[0].agent_id == "a-1"
+
+    # ── (e) Multiple type capabilities ──────────────────────────────────
+
+    def test_multi_type_agent_matches_first_type(self):
+        """(e) Agent with comma-separated types matches a task requiring any of its types."""
+        task = make_task(id="t-1", agent_type="coding")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding,code-review")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-1"
+        assert actions[0].agent_id == "a-1"
+
+    def test_multi_type_agent_matches_second_type(self):
+        """(e) Agent with comma-separated types matches a task requiring the second type."""
+        task = make_task(id="t-1", agent_type="code-review")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding,code-review")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-1"
+        assert actions[0].agent_id == "a-1"
+
+    def test_multi_type_agent_no_match(self):
+        """(e) Agent with multiple types still rejects tasks requiring an unlisted type."""
+        task = make_task(id="t-1", agent_type="qa")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding,code-review")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+
+    def test_multi_type_agent_routes_different_tasks(self):
+        """(e) Multi-type agent picks up tasks of any of its types across rounds."""
+        coding_task = make_task(id="t-coding", agent_type="coding", priority=100)
+        review_task = make_task(id="t-review", agent_type="code-review", priority=100)
+        state = SchedulerState(
+            projects=[make_project(max_agents=2)],
+            tasks=[coding_task, review_task],
+            agents=[
+                self._agent("a-multi", "coding,code-review"),
+                self._agent("a-multi2", "coding,code-review"),
+            ],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 2
+        assigned_tasks = {a.task_id for a in actions}
+        assert assigned_tasks == {"t-coding", "t-review"}
+
+    def test_multi_type_with_spaces_in_list(self):
+        """(e) Whitespace around commas in agent_type is trimmed."""
+        task = make_task(id="t-1", agent_type="code-review")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding , code-review , qa")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-1"
+
+    def test_multi_type_agent_vs_single_type_routing(self):
+        """(e) Multi-type and single-type agents coexist; tasks route correctly."""
+        review_task = make_task(id="t-review", agent_type="code-review", priority=100)
+        qa_task = make_task(id="t-qa", agent_type="qa", priority=100)
+        state = SchedulerState(
+            projects=[make_project(max_agents=2)],
+            tasks=[review_task, qa_task],
+            agents=[
+                self._agent("a-multi", "coding,code-review"),
+                self._agent("a-qa", "qa"),
+            ],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 2
+        by_agent = {a.agent_id: a for a in actions}
+        assert by_agent["a-multi"].task_id == "t-review"
+        assert by_agent["a-qa"].task_id == "t-qa"
+
+    # ── (f) Type mismatch logging ───────────────────────────────────────
+
+    def test_type_mismatch_logged(self, caplog):
+        """(f) Type mismatch rejection is logged with task_id, required_type, and agent_type."""
+        task = make_task(id="t-review-42", agent_type="code-review")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-coder-7", "coding")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        with caplog.at_level(logging.DEBUG, logger="src.scheduler"):
+            actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+        # Verify the log contains the required debugging fields
+        assert "t-review-42" in caplog.text  # task_id
+        assert "code-review" in caplog.text  # required_type
+        assert "coding" in caplog.text  # agent_type
+
+    def test_type_match_not_logged(self, caplog):
+        """(f) Successful type matches do not produce mismatch log entries."""
+        task = make_task(id="t-1", agent_type="coding")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        with caplog.at_level(logging.DEBUG, logger="src.scheduler"):
+            actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert "mismatch" not in caplog.text.lower()
+
+    def test_no_agent_type_not_logged(self, caplog):
+        """(f) Tasks without agent_type do not produce mismatch log entries."""
+        task = make_task(id="t-1")  # agent_type=None
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-1", "coding")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        with caplog.at_level(logging.DEBUG, logger="src.scheduler"):
+            actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert "mismatch" not in caplog.text.lower()
+
+    def test_multi_type_mismatch_logged_with_full_type_string(self, caplog):
+        """(f) When a multi-type agent mismatches, the full agent_type string is logged."""
+        task = make_task(id="t-qa-99", agent_type="qa")
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[task],
+            agents=[self._agent("a-dev-5", "coding,code-review")],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        with caplog.at_level(logging.DEBUG, logger="src.scheduler"):
+            actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+        assert "t-qa-99" in caplog.text
+        assert "qa" in caplog.text
+        assert "coding,code-review" in caplog.text

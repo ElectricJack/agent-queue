@@ -64,6 +64,7 @@ Integration with the orchestrator:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from src.models import (
@@ -76,6 +77,8 @@ from src.models import (
     TaskStatus,
     TaskType,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -168,6 +171,10 @@ def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
     matches exactly.  Tasks without an ``agent_type`` requirement match
     any agent regardless of the agent's type.
 
+    Agents may advertise multiple type capabilities via a comma-separated
+    ``agent_type`` string (e.g. ``"coding,code-review"``).  A task matches
+    if its required type appears anywhere in the agent's type list.
+
     This enforces the type-matching dimension of agent affinity described
     in the agent-coordination spec §3 (Core Concepts): "a review task
     should go to a review agent, not a coding agent."
@@ -179,7 +186,18 @@ def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
     """
     if not task.agent_type:
         return True  # no type requirement → any agent is fine
-    return task.agent_type == agent.agent_type
+    # Support comma-separated multiple type capabilities on agents
+    agent_types = {t.strip() for t in agent.agent_type.split(",")} if agent.agent_type else set()
+    if task.agent_type in agent_types:
+        return True
+    logger.debug(
+        "Agent type mismatch: task %s requires type '%s' but agent %s has type '%s'",
+        task.id,
+        task.agent_type,
+        agent.id,
+        agent.agent_type,
+    )
+    return False
 
 
 def _is_scheduling_paused(project_id: str, constraints: dict[str, ProjectConstraint]) -> bool:
