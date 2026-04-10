@@ -55,11 +55,6 @@ Related modules:
   ``AssignAction`` objects with zero side effects.  See that module's
   docstring for the deficit-based algorithm and min-task guarantee.
 
-- ``src/hooks.py`` — Event-driven and periodic hook engine.  Ticked each
-  cycle by ``run_one_cycle`` step 7; event hooks fire asynchronously via
-  ``EventBus``.  See that module's docstring for the context pipeline,
-  short-circuit checks, and LLM invocation with tool access.
-
 - ``src/state_machine.py`` — ``VALID_TASK_TRANSITIONS`` dict defining the
   legal (status, event) → status transitions.  The orchestrator calls
   ``db.transition_task()`` which enforces these transitions.
@@ -132,7 +127,6 @@ from src.models import (
     Workspace,
     WorkspaceMode,
 )
-from src.hooks import HookEngine
 from src.plan_parser import find_plan_file, read_plan_file
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.tokens.budget import BudgetManager
@@ -219,7 +213,7 @@ class Orchestrator:
 
         The constructor wires up all subsystems but does NOT perform any
         async initialization (DB schema creation, stale-state recovery,
-        hook subscriptions).  Call ``await initialize()`` before running
+        event subscriptions).  Call ``await initialize()`` before running
         cycles.
         """
         self.config = config
@@ -279,7 +273,6 @@ class Orchestrator:
         self._last_failed_blocked_report: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
         self._supervisor = None  # Set via set_supervisor() in Discord bot
-        self.rule_manager = None
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
         # with an LLM instead of the regex parser, producing higher-quality
@@ -302,7 +295,6 @@ class Orchestrator:
         # Tracks the last time a "stuck DEFINED" notification was sent for
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
-        self.hooks: HookEngine | None = None
         self.vault_watcher = None
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
@@ -492,7 +484,7 @@ class Orchestrator:
         """Pause scheduling — no new tasks are assigned, but monitoring continues.
 
         When paused, ``run_one_cycle`` still runs approvals, dependency
-        promotion, stuck-task detection, hooks, and archival — only the
+        promotion, stuck-task detection, playbooks, and archival — only the
         scheduler step (``_schedule``) is skipped.  In-flight agent work
         continues unaffected; this only prevents *new* assignments.
         """
@@ -680,7 +672,7 @@ class Orchestrator:
         return None
 
     async def _emit_task_event(self, event_type: str, task, **extra) -> None:
-        """Emit a task lifecycle event for hooks."""
+        """Emit a task lifecycle event for playbooks and subscribers."""
         payload = {
             "task_id": task.id,
             "project_id": task.project_id,
@@ -698,7 +690,7 @@ class Orchestrator:
         agent_id: str | None = None,
         agent_type: str | None = None,
     ) -> None:
-        """Emit ``task.failed`` event so hooks and playbooks can react.
+        """Emit ``task.failed`` event so playbooks and subscribers can react.
 
         Parameters
         ----------
@@ -883,8 +875,8 @@ class Orchestrator:
            state.  Must run before the first scheduling cycle to avoid
            ghost assignments.  See ``_recover_stale_state``.
         4. **Vault manager** — create ``VaultManager`` and ensure the vault
-           directory structure exists.  Must run before plugins, hooks,
-           rules, memory, or any file watchers that depend on vault paths.
+           directory structure exists.  Must run before plugins, memory,
+           or any file watchers that depend on vault paths.
         4b. **Vault watcher** — create the ``VaultWatcher`` (playbooks spec
            §17) after the vault structure exists but before subsystems that
            register handlers.  The watcher is NOT started here — it uses
@@ -892,12 +884,8 @@ class Orchestrator:
            An initial snapshot is taken at the end of ``initialize()``
            after all handlers have been registered.
         5. **Plugins** — discover and load plugin modules.
-        6. **Hook engine** — subscribe to EventBus events and pre-populate
-           last-run timestamps so periodic hooks don't all fire simultaneously
-           on startup.  Depends on DB for reading last-run times.
-        7. **Rule manager** — install default rules and start file watcher.
-        8. **Config watcher** — hot-reload support for config.yaml.
-        9. **Vault watcher snapshot** — take the initial filesystem snapshot
+        6. **Config watcher** — hot-reload support for config.yaml.
+        7. **Vault watcher snapshot** — take the initial filesystem snapshot
            so ``check()`` in the tick loop only detects changes after init.
 
         This method must be called (and awaited) before ``run_one_cycle``.
@@ -910,7 +898,7 @@ class Orchestrator:
 
         # Initialize VaultManager — central path resolution and directory
         # management for the vault.  Must be available before any subsystem
-        # that reads vault paths (hooks, rules, memory, plugins).
+        # that reads vault paths (memory, plugins, playbooks).
         self.vault_manager = VaultManager(self.config)
 
         # Ensure per-project task directories exist under {data_dir}/tasks/.
@@ -926,8 +914,8 @@ class Orchestrator:
         # One watcher for the entire vault tree — specific path handlers
         # are registered by subsystems in subsequent initialization steps.
         # The watcher is NOT started here — it uses tick-driven polling
-        # (like HookEngine's FileWatcher) via check() in run_one_cycle().
-        # This ensures all handlers are registered before detection begins.
+        # via check() in run_one_cycle().  This ensures all handlers are
+        # registered before detection begins.
         from src.vault_watcher import VaultWatcher
 
         self.vault_watcher = VaultWatcher(
@@ -1061,7 +1049,7 @@ class Orchestrator:
         # Passing vault_root lets the handler resolve summary output paths
         # without guessing from change events.  The event_bus enables
         # notify.readme_summary_updated / notify.readme_summary_failed
-        # events for observability and downstream hook triggers.
+        # events for observability and downstream subscribers.
         from src.readme_handler import register_readme_handlers
 
         register_readme_handlers(
@@ -1114,7 +1102,7 @@ class Orchestrator:
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
 
-        # Initialize plugin registry (after DB, before hooks)
+        # Initialize plugin registry (after DB)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
 
@@ -1164,67 +1152,9 @@ class Orchestrator:
         # V1 MemoryManager collection initialization removed (roadmap 8.6).
         # Collection management is now handled by MemoryV2Plugin.
 
-        if self.config.hook_engine.enabled:
-            self.hooks = HookEngine(self.db, self.bus, self.config)
-            self.hooks.set_orchestrator(self)
-            await self.hooks.initialize()
-
-        # Initialize rule manager
-        from src.rule_manager import RuleManager
-
-        self.rule_manager = RuleManager(
-            storage_root=self.config.data_dir,
-            db=self.db,
-            hook_engine=self.hooks if hasattr(self, "hooks") else None,
-            orchestrator=self,
-        )
-
-        # Phase 2 (playbooks spec §13): retire default rules that have been
-        # superseded by default playbooks.  The playbooks were installed
-        # earlier by ensure_vault_layout() → ensure_default_playbooks().
-        # Any default rule whose playbook equivalent exists in the vault is
-        # now redundant and is removed here.
-        try:
-            retirement = self.rule_manager.retire_superseded_defaults()
-            if retirement["retired"]:
-                logger.info(
-                    "Retired %d default rules superseded by playbooks: %s",
-                    len(retirement["retired"]),
-                    retirement["retired"],
-                )
-                # Clean up hooks from retired rules
-                if self.hooks and retirement["hook_ids"]:
-                    for hid in retirement["hook_ids"]:
-                        try:
-                            await self.db.delete_hook(hid)
-                        except Exception as e:
-                            logger.warning("Failed to clean up hook %s: %s", hid, e)
-        except Exception as e:
-            logger.warning("Default rule retirement failed: %s", e)
-
-        # Install any remaining default rules that don't have playbook
-        # equivalents.  As of Phase 2, all 6 original default rules have
-        # playbook replacements, so this is effectively a no-op — but it
-        # preserves backward compatibility if playbooks are missing.
-        # (Rule reconciliation happens later in on_ready, after the
-        # supervisor is available for LLM prompt expansion.)
-        try:
-            installed = self.rule_manager.install_defaults()
-            if installed:
-                logger.info(
-                    "Installed %d default global rules: %s",
-                    len(installed),
-                    installed,
-                )
-        except Exception as e:
-            logger.warning("Default rule installation failed: %s", e)
-
-        # Start rule file watcher — monitors rule directories for changes
-        # and triggers per-rule reconciliation automatically.
-        try:
-            await self.rule_manager.start_file_watcher(self.bus)
-        except Exception as e:
-            logger.warning("Rule file watcher startup failed: %s", e)
+        # HookEngine + RuleManager removed (playbooks spec §13 Phase 3).
+        # All automation is now handled by playbooks — see PlaybookExecutor
+        # and TimerService.
 
         # Start config file watcher for hot-reloading
         if self.config._config_path:
@@ -1519,12 +1449,11 @@ class Orchestrator:
         Shutdown order:
         1. Wait for running agent tasks (with a 10s timeout so we don't
            hang indefinitely if an adapter is stuck).
-        2. Shut down the hook engine (cancels any in-flight hook tasks).
-        3. Close the memory manager (flushes pending index writes).
-        4. Close the database connection.
+        2. Stop watchers, timers, and resume handlers.
+        3. Close the database connection.
 
-        The order matters: tasks and hooks use the DB, so we must wait
-        for them to finish before closing it.
+        The order matters: tasks use the DB, so we must wait for them
+        to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
         if self.vault_watcher:
@@ -1534,19 +1463,12 @@ class Orchestrator:
                 logger.warning("Vault watcher shutdown error: %s", e)
         if self._config_watcher:
             await self._config_watcher.stop()
-        if self.rule_manager:
-            try:
-                await self.rule_manager.stop_file_watcher()
-            except Exception as e:
-                logger.warning("Rule file watcher shutdown error: %s", e)
         if self.timer_service:
             self.timer_service.stop()
         if hasattr(self, "playbook_resume_handler") and self.playbook_resume_handler:
             self.playbook_resume_handler.shutdown()
         if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:
             self.workflow_stage_resume_handler.shutdown()
-        if self.hooks:
-            await self.hooks.shutdown()
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -1583,11 +1505,11 @@ class Orchestrator:
 
         **Phase 3 — Housekeeping** (steps 7-11):
 
-        7. **Hook engine tick** — process periodic hooks; event-driven hooks
-           fire asynchronously via the EventBus.
+        7a. **Timer service tick** — emit synthetic timer.* events for
+            playbooks with periodic triggers (playbooks spec §7).
+        7b. **Plugin cron tick** — run plugin cron jobs.
         7c. **Vault watcher tick** — poll the vault directory tree for file
             changes and dispatch to registered handlers (playbooks spec §17).
-            Uses the same tick-driven pattern as HookEngine's FileWatcher.
         8. **Config hot-reload** — periodically re-read non-critical settings
            from disk (scheduling, archive, monitoring, etc.) without restart.
         9. **Log cleanup** — prune old LLM interaction logs and flush
@@ -1663,10 +1585,6 @@ class Orchestrator:
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
 
-            # 7. Run hook engine tick (periodic hooks; event hooks fire async).
-            if self.hooks:
-                await self.hooks.tick()
-
             # 7a. Run timer service tick — emit synthetic timer.* events for
             # playbooks with periodic triggers (playbooks spec §7).
             if self.timer_service:
@@ -1680,9 +1598,9 @@ class Orchestrator:
                 await self.plugin_registry.tick_cron()
 
             # 7c. Poll vault watcher for filesystem changes (playbooks spec §17).
-            # Uses tick-driven polling (like HookEngine's FileWatcher) rather
-            # than a background loop — check() has built-in rate limiting via
-            # poll_interval and debounce, so calling it each cycle is cheap.
+            # Uses tick-driven polling rather than a background loop — check()
+            # has built-in rate limiting via poll_interval and debounce, so
+            # calling it each cycle is cheap.
             if self.vault_watcher:
                 try:
                     await self.vault_watcher.check()
@@ -1858,15 +1776,12 @@ class Orchestrator:
         """Handle config.reloaded events from the ConfigWatcher.
 
         Updates the orchestrator's config reference and propagates changes
-        to subsystems that cache config values (hook engine, budget manager).
+        to subsystems that cache config values (budget manager, etc.).
         """
         config = data.get("config")
         if config is None:
             return
         self.config = config
-        # Update hook engine config reference
-        if self.hooks:
-            self.hooks.config = config
         # Update budget manager if global budget changed
         if self.budget and config.global_token_budget_daily is not None:
             self.budget._global_budget = config.global_token_budget_daily

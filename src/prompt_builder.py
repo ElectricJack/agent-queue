@@ -1,19 +1,18 @@
 """Unified prompt assembly pipeline.
 
-Assembles system prompts from composable sections for the Supervisor and hook
-LLM calls.  Replaces ``prompt_registry.py`` and scattered string concatenation
-across orchestrator, adapters, supervisor, and hooks.  Each prompt is built by
-stacking named sections (identity, rules, memory context, tool instructions)
-with YAML-driven templates that can be overridden per-project.
+Assembles system prompts from composable sections for the Supervisor and
+playbook LLM calls.  Replaces ``prompt_registry.py`` and scattered string
+concatenation across orchestrator, adapters, and supervisor.  Each prompt
+is built by stacking named sections (identity, memory context, tool
+instructions) with YAML-driven templates that can be overridden per-project.
 
-The pipeline has five layers, assembled in order:
+The pipeline has four layers, assembled in order:
 
 1. **Identity** — who the LLM is (loaded from a Markdown template).
 2. **Project context** — project profile from the memory system.
-3. **Rules** — applicable active/passive rules from the RuleManager.
-4. **Context blocks** — arbitrary named sections (task depth, active
+3. **Context blocks** — arbitrary named sections (task depth, active
    project, dependency results, etc.).
-5. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
+4. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
 
 Templates live in ``src/prompts/*.md`` as Markdown files with YAML
 frontmatter.  The ``{{variable}}`` placeholders use Mustache-style
@@ -95,9 +94,8 @@ class PromptBuilder:
     Layers:
         1. Identity — who is the LLM? (loaded from template)
         2. Project context — what project? (from memory)
-        3. Relevant rules — what rules apply? (Phase 2)
-        4. Specific context — named context blocks
-        5. Tools — JSON Schema tool definitions
+        3. Specific context — named context blocks
+        4. Tools — JSON Schema tool definitions
     """
 
     def __init__(
@@ -110,15 +108,13 @@ class PromptBuilder:
 
         Args:
             project_id: Active project for context loading.  When set,
-                layers 2 (project context) and 3 (rules) can auto-load
-                relevant data.
-            rule_manager: A ``RuleManager`` instance for loading applicable
-                rules (layer 3).  May be ``None`` — layer 3 is skipped.
+                layer 2 (project context) can auto-load relevant data.
+            rule_manager: Deprecated, ignored.  Retained for API
+                compatibility.
             prompts_dir: Override for the template directory.  Defaults to
                 ``src/prompts/``.
         """
         self._project_id = project_id
-        self._rule_manager = rule_manager
         self._prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
 
         # Layer state
@@ -127,7 +123,6 @@ class PromptBuilder:
         self._l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always at task start)
         self._identity: str = ""
         self._project_context: str = ""
-        self._rules: str = ""
         self._context_blocks: list[tuple[str, str]] = []
         self._tools: list[dict] = []
 
@@ -343,21 +338,15 @@ class PromptBuilder:
         pass
 
     async def load_relevant_rules(self, query: str) -> None:
-        """Layer 3: Load active rules from the rule system.
+        """Deprecated no-op — rules have been replaced by playbooks.
 
-        Uses RuleManager to load applicable **active** rules for the current
-        project (plus globals).  Passive rules (contextual guidance) are now
-        stored as vault memory files (playbooks spec §13) and are surfaced
-        through memory search in Layer 2 rather than static rule injection.
+        Previously loaded active rules via RuleManager. The rule manager
+        has been removed (playbooks spec §13 Phase 3). Contextual guidance
+        is now surfaced through vault memory search.
+
+        Retained as a no-op for API compatibility.
         """
-        if not self._rule_manager or not self._project_id:
-            self._rules = ""
-            return
-        try:
-            rules_text = self._rule_manager.get_rules_for_prompt(self._project_id, query)
-            self._rules = rules_text
-        except Exception:
-            self._rules = ""  # graceful degradation
+        pass
 
     def add_context(self, name: str, content: str) -> None:
         """Layer 4: Add a named context block."""
@@ -425,7 +414,7 @@ class PromptBuilder:
 
         Layer order:
             L0 role → Override → L1 facts → Identity template
-            → Project context → Rules → Context blocks
+            → Project context → Context blocks
 
         Returns:
             Tuple of ``(system_prompt, tools)`` where *system_prompt*
@@ -444,8 +433,6 @@ class PromptBuilder:
             sections.append(self._identity)
         if self._project_context:
             sections.append(self._project_context)
-        if self._rules:
-            sections.append(self._rules)
         for _name, content in self._context_blocks:
             sections.append(content)
 

@@ -616,57 +616,8 @@ class MemoryContext:
         )
 
 
-@dataclass
-class Hook:
-    """Definition of an automated hook that runs in response to events or on a schedule.
-
-    Hooks allow project-level automation without manual intervention: they can
-    be triggered periodically, by cron, or by task lifecycle events (via the
-    EventBus). Each hook defines context-gathering steps, an LLM prompt
-    template, and cooldown/budget limits to prevent runaway costs.
-    See specs/hooks.md.
-    """
-
-    id: str
-    project_id: str
-    name: str
-    enabled: bool = True
-    trigger: str = "{}"  # JSON: {"type": "periodic", "interval_seconds": 7200}
-    context_steps: str = "[]"  # JSON array of step configs
-    prompt_template: str = ""  # Template with {{step_0}}, {{event}} placeholders
-    llm_config: str | None = None  # JSON: {"provider": "anthropic", "model": "..."}
-    cooldown_seconds: int = 3600
-    max_tokens_per_run: int | None = None
-    last_triggered_at: float | None = None  # epoch seconds; persisted across restarts
-    source_hash: str | None = None  # content hash of source rule for idempotent reconciliation
-    created_at: float = 0.0
-    updated_at: float = 0.0
-
-
-@dataclass
-class HookRun:
-    """A single execution record of a Hook.
-
-    Captures the full lifecycle of one hook invocation: why it fired
-    (trigger_reason), what context was gathered, what prompt was sent to the
-    LLM, and what actions resulted. Used for auditing and debugging hook
-    behavior.
-    """
-
-    id: str
-    hook_id: str
-    project_id: str
-    trigger_reason: str  # "periodic", "cron", "event:task_completed", "manual"
-    status: str = "running"  # running, completed, failed, skipped
-    event_data: str | None = None
-    context_results: str | None = None
-    prompt_sent: str | None = None
-    llm_response: str | None = None
-    actions_taken: str | None = None
-    skipped_reason: str | None = None
-    tokens_used: int = 0
-    started_at: float = 0.0
-    completed_at: float | None = None
+# Hook and HookRun dataclasses removed (playbooks spec §13 Phase 3).
+# All automation is now managed through playbooks.
 
 
 class PlaybookRunStatus(Enum):

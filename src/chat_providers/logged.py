@@ -4,7 +4,7 @@
 every ``create_message()`` call — including timing, inputs, outputs, and
 errors — via an ``LLMLogger`` instance.  The caller can set the ``caller``
 attribute to tag log entries with the call site (e.g. "supervisor.chat",
-"hook_engine", "plan_parser").
+"playbook_executor", "plan_parser").
 
 Usage::
 

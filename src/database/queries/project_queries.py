@@ -10,8 +10,6 @@ from sqlalchemy import delete, insert, select, update
 from src.database.tables import (
     chat_analyzer_suggestions,
     events,
-    hooks,
-    hook_runs,
     project_constraints,
     projects,
     repos,
@@ -107,8 +105,7 @@ class ProjectQueryMixin:
                     chat_analyzer_suggestions.c.project_id == project_id
                 )
             )
-            await conn.execute(delete(hook_runs).where(hook_runs.c.project_id == project_id))
-            await conn.execute(delete(hooks).where(hooks.c.project_id == project_id))
+            # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
             await conn.execute(delete(token_ledger).where(token_ledger.c.project_id == project_id))
             await conn.execute(delete(tasks).where(tasks.c.project_id == project_id))
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))

@@ -88,9 +88,7 @@ class AgentQueueBot(commands.Bot):
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
-        # Wire Supervisor into HookEngine for LLM invocations
-        if hasattr(self.orchestrator, "hooks") and self.orchestrator.hooks:
-            self.orchestrator.hooks.set_supervisor(self.agent)
+        # HookEngine removed (playbooks spec §13 Phase 3).
         # Discord invalid-request rate guard — tracks 401/403/429 responses
         # in a 10-minute sliding window to prevent Cloudflare IP bans.
         from src.discord.rate_guard import configure_tracker
@@ -135,8 +133,7 @@ class AgentQueueBot(commands.Bot):
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
-        # Reconciliation is now lock-protected in RuleManager — no need
-        # for a task guard here.
+        # RuleManager removed (playbooks spec §13 Phase 3).
         # Chat observer for passive channel observation (Phase 5)
         self._chat_observer: ChatObserver | None = None
         if config.supervisor.observation.enabled:
@@ -513,10 +510,8 @@ class AgentQueueBot(commands.Bot):
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
 
-        # Reconcile rules → hooks in the background now that supervisor is available.
-        # RuleManager._reconcile_lock prevents concurrent runs, so we can
-        # safely fire-and-forget on every reconnect without a task guard.
-        asyncio.create_task(self._reconcile_rules())
+        # RuleManager removed (playbooks spec §13 Phase 3).
+        # Playbook compilation is handled by the VaultWatcher.
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
@@ -1943,26 +1938,6 @@ class AgentQueueBot(commands.Bot):
     # ------------------------------------------------------------------
     # Periodic buffer cleanup
     # ------------------------------------------------------------------
-
-    async def _reconcile_rules(self) -> None:
-        """Reconcile rules → hooks now that the supervisor is available.
-
-        Runs once at startup as a background task.  Each active rule gets
-        its hooks regenerated (with LLM prompt expansion if possible).
-        """
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return
-        try:
-            stats = await rm.reconcile()
-            scanned = stats.get("rules_scanned", 0)
-            regen = stats.get("hooks_regenerated", 0)
-            if scanned > 0:
-                logger.info(
-                    "Rule reconciliation: %d rules scanned, %d hooks regenerated", scanned, regen
-                )
-        except Exception as e:
-            logger.error("Rule reconciliation failed: %s", e)
 
     async def _periodic_buffer_cleanup(self) -> None:
         """Background loop that evicts idle channel buffers every 10 minutes."""

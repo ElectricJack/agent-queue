@@ -19,7 +19,6 @@ from src.config import (
     PauseRetryConfig,
     ArchiveConfig,
     MonitoringConfig,
-    HookEngineConfig,
     LLMLoggingConfig,
     DiscordConfig,
     ChatProviderConfig,
@@ -108,8 +107,9 @@ class TestClassificationConstants:
     def test_discord_requires_restart(self):
         assert "discord" in RESTART_REQUIRED_SECTIONS
 
-    def test_hook_engine_is_hot_reloadable(self):
-        assert "hook_engine" in HOT_RELOADABLE_SECTIONS
+    def test_hook_engine_removed_from_hot_reloadable(self):
+        """hook_engine was removed (playbooks spec §13 Phase 3)."""
+        assert "hook_engine" not in HOT_RELOADABLE_SECTIONS
 
 
 # ---------------------------------------------------------------------------

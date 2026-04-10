@@ -2,7 +2,7 @@
 
 Any database adapter must implement this protocol. The protocol is
 organized by domain: projects, profiles, repos, tasks, dependencies,
-agents, workspaces, tokens, results, events, hooks, hook runs, archives,
+agents, workspaces, tokens, results, events, playbook runs, archives,
 and chat analyzer suggestions.
 
 Usage::
@@ -22,8 +22,6 @@ from src.models import (
     Agent,
     AgentProfile,
     AgentState,
-    Hook,
-    HookRun,
     PlaybookRun,
     Project,
     ProjectStatus,
@@ -231,35 +229,7 @@ class DatabaseBackend(Protocol):
     ) -> None: ...
     async def get_recent_events(self, limit: int = 50) -> list[dict]: ...
 
-    # --- Hooks ---
-
-    async def create_hook(self, hook: Hook) -> None: ...
-    async def get_hook(self, hook_id: str) -> Hook | None: ...
-    async def list_hooks(
-        self,
-        project_id: str | None = None,
-        enabled: bool | None = None,
-    ) -> list[Hook]: ...
-    async def update_hook(self, hook_id: str, **kwargs) -> None: ...
-    async def delete_hook(self, hook_id: str) -> None: ...
-    async def list_hooks_by_id_prefix(self, prefix: str) -> list[Hook]: ...
-    async def delete_hooks_by_id_prefix(self, prefix: str) -> int: ...
-
-    # --- Hook Runs ---
-
-    async def create_hook_run(self, run: HookRun) -> None: ...
-    async def update_hook_run(self, run_id: str, **kwargs) -> None: ...
-    async def get_last_hook_run(self, hook_id: str) -> HookRun | None: ...
-    async def list_hook_runs(
-        self,
-        hook_id: str,
-        limit: int = 20,
-    ) -> list[HookRun]: ...
-    async def list_hook_runs_by_prefix(
-        self,
-        hook_id_prefix: str,
-        limit: int = 20,
-    ) -> list[HookRun]: ...
+    # --- Hooks / Hook Runs removed (playbooks spec §13 Phase 3) ---
 
     # --- Playbook Runs ---
 

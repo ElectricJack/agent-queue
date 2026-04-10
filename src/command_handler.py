@@ -5336,23 +5336,22 @@ feature work stuck on feature branches across multiple workspaces.
     #   → moved to src/plugins/internal/git.py (aq-git plugin)
 
     # -----------------------------------------------------------------------
-    # Hook commands -- CRUD plus manual firing.
-    # Hooks are automated routines that fire on events (e.g. task completion)
-    # or on a schedule.  They gather context via shell/file/HTTP steps and
-    # optionally invoke an LLM with full tool access to take corrective
-    # actions (like creating fix-up tasks when tests fail).
+    # Hook and Rule commands — DEPRECATED (playbooks spec §13 Phase 3)
+    #
+    # The hook engine and rule manager have been removed. All automation is
+    # now managed through playbooks. These commands return deprecation
+    # notices pointing callers to the playbook equivalents.
     # -----------------------------------------------------------------------
 
     async def _cmd_fire_hook(self, args: dict) -> dict:
-        """Deprecated: use fire_rule or compile_playbook instead."""
+        """Deprecated: hooks have been removed. Use compile_playbook instead."""
         return {
-            "error": "fire_hook is deprecated.",
+            "error": "fire_hook is deprecated — hooks have been removed.",
             "_deprecated": (
-                "fire_hook is deprecated. "
-                "Use fire_rule for rule-based automation, "
-                "or compile_playbook for playbook-based automation."
+                "The hook engine has been removed (playbooks spec §13 Phase 3). "
+                "Use compile_playbook for playbook-based automation."
             ),
-            "replacements": ["fire_rule", "compile_playbook"],
+            "replacements": ["compile_playbook", "dry_run_playbook"],
         }
 
     async def _cmd_list_hooks(self, args: dict) -> dict:
@@ -5360,43 +5359,41 @@ feature work stuck on feature branches across multiple workspaces.
         result = await self._cmd_list_playbooks(args)
         result["_deprecated"] = (
             "list_hooks is deprecated — use list_playbooks instead. "
-            "Hooks are now an internal detail; playbooks are the replacement."
+            "Hooks have been removed; playbooks are the replacement."
         )
         return result
 
     async def _cmd_create_hook(self, args: dict) -> dict:
-        """Deprecated: use compile_playbook or save_rule instead."""
+        """Deprecated: hooks have been removed. Use compile_playbook instead."""
         return {
-            "error": "create_hook is deprecated.",
+            "error": "create_hook is deprecated — hooks have been removed.",
             "_deprecated": (
-                "Hooks can no longer be created directly. "
-                "Use compile_playbook for playbook-based automation, "
-                "or save_rule for rule-based automation."
+                "The hook engine has been removed (playbooks spec §13 Phase 3). "
+                "Use compile_playbook for playbook-based automation."
             ),
-            "replacements": ["compile_playbook", "save_rule"],
+            "replacements": ["compile_playbook"],
         }
 
     async def _cmd_edit_hook(self, args: dict) -> dict:
-        """Deprecated: use compile_playbook or save_rule instead."""
+        """Deprecated: hooks have been removed. Use compile_playbook instead."""
         return {
-            "error": "edit_hook is deprecated.",
+            "error": "edit_hook is deprecated — hooks have been removed.",
             "_deprecated": (
-                "Hooks can no longer be edited directly. "
-                "Use compile_playbook for playbook-based automation, "
-                "or save_rule for rule-based automation."
+                "The hook engine has been removed (playbooks spec §13 Phase 3). "
+                "Use compile_playbook for playbook-based automation."
             ),
-            "replacements": ["compile_playbook", "save_rule"],
+            "replacements": ["compile_playbook"],
         }
 
     async def _cmd_delete_hook(self, args: dict) -> dict:
-        """Deprecated: use delete_rule instead."""
+        """Deprecated: hooks have been removed."""
         return {
-            "error": "delete_hook is deprecated.",
+            "error": "delete_hook is deprecated — hooks have been removed.",
             "_deprecated": (
-                "Hooks can no longer be deleted directly. "
-                "Use delete_rule to remove rule-based automation."
+                "The hook engine has been removed (playbooks spec §13 Phase 3). "
+                "Automation is now managed through playbooks."
             ),
-            "replacements": ["delete_rule"],
+            "replacements": ["list_playbooks"],
         }
 
     async def _cmd_list_hook_runs(self, args: dict) -> dict:
@@ -5407,324 +5404,125 @@ feature work stuck on feature branches across multiple workspaces.
         )
         return result
 
-    # Hook CRUD commands have been replaced by playbook and rule equivalents.
-    # The redirects above ensure backward compatibility with deprecation notices.
-    # See _cmd_fire_rule, _cmd_rule_runs, _cmd_toggle_rule, _cmd_refresh_rules
-    # for rule-based automation. See _cmd_compile_playbook, _cmd_list_playbooks,
-    # _cmd_list_playbook_runs for playbook-based automation.
+    async def _cmd_refresh_hooks(self, args: dict) -> dict:
+        """Deprecated: hooks have been removed."""
+        return {
+            "error": "refresh_hooks is deprecated — hooks have been removed.",
+            "_deprecated": (
+                "The hook engine and rule manager have been removed "
+                "(playbooks spec §13 Phase 3). Playbooks are compiled "
+                "automatically when their markdown files change."
+            ),
+            "replacements": ["compile_playbook", "list_playbooks"],
+        }
 
-    # -----------------------------------------------------------------------
-    # Rule commands -- persistent autonomous behaviors stored as markdown.
-    # Rules are the source of truth; active rules generate hooks.
-    # -----------------------------------------------------------------------
+    # Rule commands — all deprecated, redirecting to playbook equivalents.
 
     async def _cmd_save_rule(self, args: dict) -> dict:
-        """Create or update a rule."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
+        """Deprecated: rules have been replaced by playbooks."""
+        return {
+            "error": "save_rule is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager has been removed (playbooks spec §13 Phase 3). "
+                "Write a playbook markdown file in the vault and use "
+                "compile_playbook to compile it."
+            ),
+            "replacements": ["compile_playbook"],
+        }
 
-        rule_id = args.get("id")
-        project_id = args.get("project_id")
-        rule_type = args.get("type", "passive")
-        content = args.get("content", "")
+    async def _cmd_delete_rule(self, args: dict) -> dict:
+        """Deprecated: rules have been replaced by playbooks."""
+        return {
+            "error": "delete_rule is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager has been removed (playbooks spec §13 Phase 3). "
+                "Delete the playbook markdown file from the vault instead."
+            ),
+            "replacements": ["list_playbooks"],
+        }
 
-        if not content:
-            return {"error": "content is required"}
-        if rule_type not in ("active", "passive"):
-            return {"error": f"type must be 'active' or 'passive', got '{rule_type}'"}
-
-        result = await rm.async_save_rule(
-            id=rule_id,
-            project_id=project_id,
-            rule_type=rule_type,
-            content=content,
+    async def _cmd_browse_rules(self, args: dict) -> dict:
+        """Deprecated: redirects to list_playbooks."""
+        result = await self._cmd_list_playbooks(args)
+        result["_deprecated"] = (
+            "browse_rules is deprecated — use list_playbooks instead. "
+            "Rules have been replaced by playbooks (playbooks spec §13 Phase 3)."
         )
         return result
 
-    async def _cmd_delete_rule(self, args: dict) -> dict:
-        """Delete a rule and its associated hooks."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        rule_id = args.get("id")
-        if not rule_id:
-            return {"error": "id is required"}
-
-        return await rm.async_delete_rule(rule_id)
-
-    async def _cmd_browse_rules(self, args: dict) -> dict:
-        """List rules for a project (plus globals). Alias: list_rules."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        project_id = args.get("project_id")
-        rules = rm.browse_rules(project_id)
-
-        # Enrich each rule with execution info
-        all_hooks = await self.db.list_hooks()
-        hooks_by_rule: dict[str, list] = {}
-        for h in all_hooks:
-            for rule in rules:
-                prefix = f"rule-{rule['id']}-"
-                if h.id.startswith(prefix):
-                    hooks_by_rule.setdefault(rule["id"], []).append(h)
-                    break
-
-        for rule in rules:
-            rule_hooks = hooks_by_rule.get(rule["id"], [])
-            if rule_hooks:
-                all_enabled = all(h.enabled for h in rule_hooks)
-                all_disabled = all(not h.enabled for h in rule_hooks)
-                last_runs = [h.last_triggered_at for h in rule_hooks if h.last_triggered_at]
-                rule["enabled"] = (
-                    all_enabled if all_enabled else (False if all_disabled else "mixed")
-                )
-                rule["last_run"] = max(last_runs) if last_runs else None
-            else:
-                rule["enabled"] = None
-                rule["last_run"] = None
-
-        return {"rules": rules}
-
     async def _cmd_list_rules(self, args: dict) -> dict:
-        """Alias for browse_rules — primary interface name."""
+        """Deprecated: redirects to list_playbooks."""
         return await self._cmd_browse_rules(args)
 
     async def _cmd_load_rule(self, args: dict) -> dict:
-        """Load full details of a specific rule, including execution info."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        rule_id = args.get("id")
-        if not rule_id:
-            return {"error": "id is required"}
-
-        loaded = rm.load_rule(rule_id)
-        if not loaded:
-            return {"error": f"Rule '{rule_id}' not found"}
-
-        # Enrich with execution info from hooks
-        prefix = f"rule-{rule_id}-"
-        hooks = await self.db.list_hooks_by_id_prefix(prefix)
-        if hooks:
-            all_enabled = all(h.enabled for h in hooks)
-            all_disabled = all(not h.enabled for h in hooks)
-            last_runs = [h.last_triggered_at for h in hooks if h.last_triggered_at]
-            loaded["execution_info"] = {
-                "enabled": all_enabled if all_enabled else (False if all_disabled else "mixed"),
-                "hook_count": len(hooks),
-                "last_run": max(last_runs) if last_runs else None,
-            }
-
-        return loaded
-
-    async def _cmd_refresh_hooks(self, args: dict) -> dict:
-        """Deprecated: redirects to refresh_rules."""
-        result = await self._cmd_refresh_rules(args)
-        result["_deprecated"] = (
-            "refresh_hooks is deprecated — use refresh_rules instead."
-        )
-        return result
+        """Deprecated: rules have been replaced by playbooks."""
+        return {
+            "error": "load_rule is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager has been removed (playbooks spec §13 Phase 3). "
+                "Use list_playbooks to discover playbooks."
+            ),
+            "replacements": ["list_playbooks"],
+        }
 
     async def _cmd_refresh_rules(self, args: dict) -> dict:
-        """Reconcile hooks from current rule files.
-
-        Re-reads all rule files and regenerates hooks for active rules,
-        ensuring the hook engine matches the rules on disk.
-        """
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        stats = await rm.reconcile()
+        """Deprecated: rules have been replaced by playbooks."""
         return {
-            "success": True,
-            "rules_scanned": stats.get("rules_scanned", 0),
-            "active_rules": stats.get("active_rules", 0),
-            "hooks_regenerated": stats.get("hooks_regenerated", 0),
-            "hooks_unchanged": stats.get("hooks_unchanged", 0),
-            "errors": stats.get("errors", 0),
+            "error": "refresh_rules is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager has been removed (playbooks spec §13 Phase 3). "
+                "Playbooks are compiled automatically when their markdown "
+                "files change."
+            ),
+            "replacements": ["compile_playbook", "list_playbooks"],
         }
 
     async def _cmd_fire_rule(self, args: dict) -> dict:
-        """Manually trigger all hooks for a rule."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        rule_id = args.get("id")
-        if not rule_id:
-            return {"error": "id is required"}
-
-        loaded = rm.load_rule(rule_id)
-        if not loaded:
-            return {"error": f"Rule '{rule_id}' not found"}
-
-        hook_ids = loaded.get("hooks", [])
-        if not hook_ids:
-            return {"error": f"Rule '{rule_id}' has no generated hooks"}
-
-        hooks_engine = self.orchestrator.hooks
-        if not hooks_engine:
-            return {"error": "Hook engine is not enabled"}
-
-        fired = []
-        skipped = []
-        for hid in hook_ids:
-            try:
-                await hooks_engine.fire_hook(hid)
-                fired.append(hid)
-            except ValueError:
-                skipped.append(hid)
-
+        """Deprecated: rules have been replaced by playbooks."""
         return {
-            "rule_id": rule_id,
-            "fired": len(fired),
-            "skipped": len(skipped),
-            "total": len(hook_ids),
+            "error": "fire_rule is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager and hook engine have been removed "
+                "(playbooks spec §13 Phase 3). Use dry_run_playbook to "
+                "test playbook execution."
+            ),
+            "replacements": ["dry_run_playbook"],
         }
 
     async def _cmd_rule_runs(self, args: dict) -> dict:
-        """Show recent execution history for a rule's hooks."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        rule_id = args.get("id")
-        if not rule_id:
-            return {"error": "id is required"}
-
-        loaded = rm.load_rule(rule_id)
-        if not loaded:
-            return {"error": f"Rule '{rule_id}' not found"}
-
-        limit = args.get("limit", 10)
-        prefix = f"rule-{rule_id}-"
-        runs = await self.db.list_hook_runs_by_prefix(prefix, limit=limit)
-
-        run_list = []
-        for r in runs:
-            run_list.append(
-                {
-                    "id": r.id,
-                    "hook_id": r.hook_id,
-                    "project_id": r.project_id,
-                    "status": r.status,
-                    "trigger_reason": r.trigger_reason,
-                    "tokens_used": r.tokens_used,
-                    "skipped_reason": r.skipped_reason,
-                    "started_at": r.started_at,
-                    "completed_at": r.completed_at,
-                }
-            )
-
-        return {
-            "rule_id": rule_id,
-            "rule_name": loaded.get("name", rule_id),
-            "runs": run_list,
-        }
+        """Deprecated: redirects to list_playbook_runs."""
+        result = await self._cmd_list_playbook_runs(args)
+        result["_deprecated"] = (
+            "rule_runs is deprecated — use list_playbook_runs instead. "
+            "Rules have been replaced by playbooks (playbooks spec §13 Phase 3)."
+        )
+        return result
 
     async def _cmd_toggle_rule(self, args: dict) -> dict:
-        """Enable or disable all hooks for a rule."""
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return {"error": "Rule manager not initialized"}
-
-        rule_id = args.get("id")
-        if not rule_id:
-            return {"error": "id is required"}
-
-        enabled = args.get("enabled")
-        if enabled is None:
-            return {"error": "enabled is required (true or false)"}
-
-        loaded = rm.load_rule(rule_id)
-        if not loaded:
-            return {"error": f"Rule '{rule_id}' not found"}
-
-        prefix = f"rule-{rule_id}-"
-        hooks = await self.db.list_hooks_by_id_prefix(prefix)
-        updated = 0
-        for hook in hooks:
-            if hook.enabled != enabled:
-                await self.db.update_hook(hook.id, enabled=enabled)
-                updated += 1
-
+        """Deprecated: rules have been replaced by playbooks."""
         return {
-            "rule_id": rule_id,
-            "action": "enabled" if enabled else "disabled",
-            "hooks_updated": updated,
-            "total_hooks": len(hooks),
+            "error": "toggle_rule is deprecated — rules have been replaced by playbooks.",
+            "_deprecated": (
+                "The rule manager has been removed (playbooks spec §13 Phase 3). "
+                "Edit the playbook's enabled field in its frontmatter instead."
+            ),
+            "replacements": ["compile_playbook", "list_playbooks"],
         }
 
     async def _cmd_migrate_rules_to_playbooks(self, args: dict) -> dict:
-        """Phase 2 migration: convert active rules to playbook markdown.
-
-        Scans all rule directories for user-created active rules and
-        converts each to an equivalent playbook markdown file.  Passive
-        rules are migrated to memory files.
-
-        Default rules (the six bundled rules) are skipped — they have
-        hand-crafted playbook replacements.
-
-        Args:
-            dry_run: Preview without writing files.
-            include_defaults: Also migrate default rules.
-            cleanup_hooks: Remove hooks from migrated rules (default True).
-            archive_rules: Archive original rule files after migration.
-        """
-        from src.rule_migration import (
-            cleanup_migrated_rule_hooks,
-            migrate_rules_to_playbooks,
-            remove_migrated_rule_files,
-        )
-
-        dry_run = args.get("dry_run", False)
-        include_defaults = args.get("include_defaults", False)
-        cleanup_hooks = args.get("cleanup_hooks", True)
-        archive_rules = args.get("archive_rules", False)
-
-        # Run the migration
-        result = migrate_rules_to_playbooks(
-            self.config.data_dir,
-            dry_run=dry_run,
-            include_defaults=include_defaults,
-        )
-
-        if dry_run:
-            return result
-
-        # Post-migration: clean up hooks for migrated rules
-        migrated_ids = []
-        for detail in result.get("details", []):
-            if detail.startswith("MIGRATE "):
-                # Extract rule ID from "MIGRATE rule-id → playbook-id ..."
-                parts = detail.split(" → ")
-                if parts:
-                    rule_id = parts[0].replace("MIGRATE ", "").strip()
-                    migrated_ids.append(rule_id)
-
-        if migrated_ids and cleanup_hooks:
-            hook_result = await cleanup_migrated_rule_hooks(self.db, migrated_ids)
-            result["hooks_cleaned"] = hook_result.get("cleaned", 0)
-            result["hook_cleanup_errors"] = hook_result.get("errors", 0)
-
-        if migrated_ids and archive_rules:
-            archive_result = await remove_migrated_rule_files(
-                self.config.data_dir, migrated_ids
-            )
-            result["rules_archived"] = archive_result.get("archived", 0)
-            result["archive_errors"] = archive_result.get("errors", 0)
-
-        return result
+        """Deprecated: migration is complete."""
+        return {
+            "error": "migrate_rules_to_playbooks is no longer needed.",
+            "_deprecated": (
+                "The rule-to-playbook migration is complete and the rule "
+                "manager has been removed (playbooks spec §13 Phase 3). "
+                "All automation is now managed through playbooks."
+            ),
+        }
 
     # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
-    # Notes are a lightweight knowledge base: users and hooks can write
+    # Notes are a lightweight knowledge base: users and playbooks can write
     # specs, brainstorms, or analysis, and later turn them into tasks.
     # Stored as plain .md files under <data_dir>/vault/projects/<project_id>/notes/.
     # -----------------------------------------------------------------------
