@@ -110,6 +110,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_project": "project",
     "pause_project": "project",
     "resume_project": "project",
+    "set_project_constraint": "project",
+    "release_project_constraint": "project",
     "edit_project": "project",
     "set_default_branch": "project",
     "get_project": "project",
@@ -314,6 +316,75 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID to resume"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "set_project_constraint",
+        "description": (
+            "Set a temporary scheduling constraint on a project. Supports exclusive access "
+            "(only one agent at a time), per-agent-type concurrency limits, and pausing all "
+            "scheduling. Constraints stack: calling this on a project that already has a "
+            "constraint merges the new fields with the existing ones."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "exclusive": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, only one agent may work on the project at a time "
+                        "(overrides max_concurrent_agents to 1)."
+                    ),
+                },
+                "max_agents_by_type": {
+                    "type": "object",
+                    "description": (
+                        "Per-agent-type concurrency limits, e.g. "
+                        '{"claude": 2, "codex": 1}. Agent types not listed are unrestricted.'
+                    ),
+                    "additionalProperties": {"type": "integer"},
+                },
+                "pause_scheduling": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, the scheduler skips this project entirely — "
+                        "no new tasks are assigned until the constraint is released."
+                    ),
+                },
+                "created_by": {
+                    "type": "string",
+                    "description": (
+                        "Identifier of who/what set the constraint "
+                        "(e.g. workflow ID, admin name). Informational only."
+                    ),
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "release_project_constraint",
+        "description": (
+            "Release (remove) a scheduling constraint from a project. "
+            "If specific fields are provided, only those fields are cleared; "
+            "otherwise the entire constraint is removed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Specific constraint fields to release: "
+                        "'exclusive', 'pause_scheduling', 'max_agents_by_type'. "
+                        "If omitted, the entire constraint is removed."
+                    ),
+                },
             },
             "required": ["project_id"],
         },

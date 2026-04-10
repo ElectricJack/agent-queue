@@ -2470,6 +2470,11 @@ class Orchestrator:
         all_workspaces = await self.db.list_workspaces()
         workspace_locks = {ws.id: ws.locked_by_task_id for ws in all_workspaces}
 
+        # Load active project constraints (exclusive, pause_scheduling,
+        # max_agents_by_type) so the scheduler can enforce them.
+        constraint_list = await self.db.list_project_constraints()
+        constraint_map = {c.project_id: c for c in constraint_list}
+
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -2482,6 +2487,7 @@ class Orchestrator:
             global_budget=self.config.global_token_budget_daily,
             global_tokens_used=total_used,
             provider_cooldowns=self._provider_cooldowns,
+            project_constraints=constraint_map,
         )
 
         return Scheduler.schedule(state)
@@ -5108,6 +5114,71 @@ For EACH workspace listed above, perform these steps IN ORDER:
             except Exception as e:
                 logger.error("Sync workflow %s: final status update failed: %s", task.id, e)
 
+    async def _check_constraints_before_assignment(
+        self, action: AssignAction
+    ) -> str | None:
+        """Re-check project constraints right before committing an assignment.
+
+        The scheduler runs as a pure function on a point-in-time snapshot, and
+        the resulting ``AssignAction`` objects are executed asynchronously as
+        background tasks.  Between the scheduler's decision and the actual
+        ``assign_task_to_agent()`` call, constraints may have changed (e.g. a
+        coordination playbook called ``set_project_constraint`` to pause the
+        project or request exclusive access).
+
+        This method queries the *current* constraint state from the database
+        and validates the assignment against it.  Returns ``None`` if the
+        assignment is allowed, or a human-readable reason string if it should
+        be aborted.
+
+        Checked constraints:
+        - ``pause_scheduling`` — project is paused, no new assignments allowed.
+        - ``exclusive`` — only one agent may work on the project at a time;
+          if another agent is already active, this assignment is rejected.
+        - ``max_agents_by_type`` — per-agent-type concurrency limits; if the
+          agent's type has reached its cap, the assignment is rejected.
+        """
+        constraint = await self.db.get_project_constraint(action.project_id)
+        if not constraint:
+            return None  # no constraint → always allowed
+
+        # 1. pause_scheduling — block all new assignments
+        if constraint.pause_scheduling:
+            return "pause_scheduling is active"
+
+        # 2. exclusive — only one agent on the project at a time
+        #    Count agents currently BUSY on tasks belonging to this project.
+        if constraint.exclusive:
+            agents = await self.db.list_agents(state=AgentState.BUSY)
+            active_on_project = 0
+            for a in agents:
+                if a.current_task_id:
+                    t = await self.db.get_task(a.current_task_id)
+                    if t and t.project_id == action.project_id:
+                        active_on_project += 1
+            if active_on_project >= 1:
+                return "exclusive constraint active and project already has an active agent"
+
+        # 3. max_agents_by_type — per-type concurrency limits
+        if constraint.max_agents_by_type:
+            agent = await self.db.get_agent(action.agent_id)
+            if agent and agent.agent_type in constraint.max_agents_by_type:
+                limit = constraint.max_agents_by_type[agent.agent_type]
+                agents = await self.db.list_agents(state=AgentState.BUSY)
+                type_count = 0
+                for a in agents:
+                    if a.agent_type == agent.agent_type and a.current_task_id:
+                        t = await self.db.get_task(a.current_task_id)
+                        if t and t.project_id == action.project_id:
+                            type_count += 1
+                if type_count >= limit:
+                    return (
+                        f"max_agents_by_type limit reached for type "
+                        f"'{agent.agent_type}' (limit={limit}, active={type_count})"
+                    )
+
+        return None
+
     async def _execute_task(self, action: AssignAction) -> None:
         """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
 
@@ -5155,6 +5226,23 @@ For EACH workspace listed above, perform these steps IN ORDER:
             await self._emit_text_notify(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
                 project_id=action.project_id,
+            )
+            return
+
+        # ── Pre-assignment constraint check ─────────────────────────────
+        # The scheduler checked constraints with a point-in-time snapshot,
+        # but this background task may execute seconds later.  Re-check
+        # constraints right before committing the assignment to catch
+        # changes that occurred since the scheduler ran (e.g. a playbook
+        # set pause_scheduling or exclusive after the scheduling tick).
+        violation = await self._check_constraints_before_assignment(action)
+        if violation:
+            logger.info(
+                "Constraint violation for task %s on project %s: %s — "
+                "returning to READY",
+                action.task_id,
+                action.project_id,
+                violation,
             )
             return
 

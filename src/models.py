@@ -240,6 +240,36 @@ class Project:
 
 
 @dataclass
+class ProjectConstraint:
+    """Temporary scheduling constraint on a project.
+
+    Constraints are set by workflows, playbooks, or admins to temporarily
+    restrict how the scheduler assigns work to a project. They persist
+    until explicitly released via ``release_project_constraint``.
+
+    Fields:
+        project_id: The project this constraint applies to.
+        exclusive: If True, only one agent may work on the project at a
+            time (overrides ``max_concurrent_agents`` to 1).
+        max_agents_by_type: Per-agent-type concurrency limits, e.g.
+            ``{"claude": 2, "codex": 1}``. When set, the scheduler checks
+            how many agents of each type are active and enforces the cap.
+        pause_scheduling: If True, the scheduler skips this project
+            entirely — no new tasks are assigned until released.
+        created_by: Identifier of who/what set the constraint (e.g.
+            workflow ID, admin username). Informational only.
+        created_at: Unix timestamp when the constraint was created.
+    """
+
+    project_id: str
+    exclusive: bool = False
+    max_agents_by_type: dict[str, int] = field(default_factory=dict)
+    pause_scheduling: bool = False
+    created_by: str | None = None
+    created_at: float = 0.0
+
+
+@dataclass
 class Task:
     """The fundamental unit of work in the system.
 

@@ -339,6 +339,17 @@ archived_tasks = Table(
     Column("archived_at", Float, nullable=False),
 )
 
+project_constraints = Table(
+    "project_constraints",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), primary_key=True),
+    Column("exclusive", Integer, nullable=False, server_default="0"),
+    Column("max_agents_by_type", Text, nullable=False, server_default="'{}'"),
+    Column("pause_scheduling", Integer, nullable=False, server_default="0"),
+    Column("created_by", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+)
+
 plugins = Table(
     "plugins",
     metadata,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from sqlalchemy import delete, insert, select, update
@@ -11,6 +12,7 @@ from src.database.tables import (
     events,
     hooks,
     hook_runs,
+    project_constraints,
     projects,
     repos,
     task_context,
@@ -23,7 +25,7 @@ from src.database.tables import (
     token_ledger,
     workspaces,
 )
-from src.models import Project, ProjectStatus
+from src.models import Project, ProjectConstraint, ProjectStatus
 
 
 class ProjectQueryMixin:
@@ -112,7 +114,79 @@ class ProjectQueryMixin:
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))
             await conn.execute(delete(events).where(events.c.project_id == project_id))
+            await conn.execute(
+                delete(project_constraints).where(project_constraints.c.project_id == project_id)
+            )
             await conn.execute(delete(projects).where(projects.c.id == project_id))
+
+    # ── Project constraint operations ────────────────────────────────
+
+    async def set_project_constraint(self, constraint: ProjectConstraint) -> None:
+        """Insert or update the constraint record for a project.
+
+        Uses INSERT-or-REPLACE semantics (SQLite: ON CONFLICT REPLACE,
+        PostgreSQL: ON CONFLICT DO UPDATE).  Any fields not provided on
+        the new constraint object overwrite the old record — callers must
+        merge fields before calling this method if they want additive
+        "stacking" behavior.
+        """
+        async with self._engine.begin() as conn:
+            # Delete-then-insert is simpler and works on both SQLite and PG.
+            await conn.execute(
+                delete(project_constraints).where(
+                    project_constraints.c.project_id == constraint.project_id
+                )
+            )
+            await conn.execute(
+                insert(project_constraints).values(
+                    project_id=constraint.project_id,
+                    exclusive=int(constraint.exclusive),
+                    max_agents_by_type=json.dumps(constraint.max_agents_by_type),
+                    pause_scheduling=int(constraint.pause_scheduling),
+                    created_by=constraint.created_by,
+                    created_at=constraint.created_at or time.time(),
+                )
+            )
+
+    async def get_project_constraint(self, project_id: str) -> ProjectConstraint | None:
+        """Fetch the active constraint for a project, or None."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(project_constraints).where(project_constraints.c.project_id == project_id)
+            )
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_project_constraint(row)
+
+    async def list_project_constraints(self) -> list[ProjectConstraint]:
+        """Fetch all active project constraints."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(select(project_constraints))
+            return [self._row_to_project_constraint(r) for r in result.mappings().fetchall()]
+
+    async def delete_project_constraint(self, project_id: str) -> bool:
+        """Remove the constraint for a project.  Returns True if a row was deleted."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                delete(project_constraints).where(project_constraints.c.project_id == project_id)
+            )
+            return result.rowcount > 0
+
+    @staticmethod
+    def _row_to_project_constraint(row) -> ProjectConstraint:
+        """Convert a database row to a ProjectConstraint model."""
+        mat = row.get("max_agents_by_type", "{}")
+        if isinstance(mat, str):
+            mat = json.loads(mat)
+        return ProjectConstraint(
+            project_id=row["project_id"],
+            exclusive=bool(row["exclusive"]),
+            max_agents_by_type=mat,
+            pause_scheduling=bool(row["pause_scheduling"]),
+            created_by=row.get("created_by"),
+            created_at=row.get("created_at", 0.0),
+        )
 
     @staticmethod
     def _row_to_project(row) -> Project:

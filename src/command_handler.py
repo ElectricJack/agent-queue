@@ -1437,6 +1437,140 @@ class CommandHandler:
         await self.db.update_project(pid, status=ProjectStatus.ACTIVE)
         return {"resumed": pid, "name": project.name}
 
+    async def _cmd_set_project_constraint(self, args: dict) -> dict:
+        """Set a scheduling constraint on a project.
+
+        Supports three constraint types that can be combined ("stacked"):
+        - exclusive: only one agent may work on the project at a time
+        - max_agents_by_type: per-agent-type concurrency limits
+        - pause_scheduling: stop all new task assignments
+
+        When called on a project that already has a constraint, the new
+        fields are merged with the existing constraint — unspecified fields
+        retain their previous values.
+        """
+        import time as _time
+
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+
+        # Load existing constraint (if any) for merge/stacking behavior.
+        existing = await self.db.get_project_constraint(pid)
+
+        exclusive = args.get("exclusive", existing.exclusive if existing else False)
+        pause_scheduling = args.get(
+            "pause_scheduling", existing.pause_scheduling if existing else False
+        )
+        max_agents_by_type = args.get(
+            "max_agents_by_type",
+            existing.max_agents_by_type if existing else {},
+        )
+        created_by = args.get("created_by", existing.created_by if existing else None)
+
+        if not exclusive and not pause_scheduling and not max_agents_by_type:
+            return {
+                "error": (
+                    "At least one constraint must be set: "
+                    "exclusive, max_agents_by_type, or pause_scheduling."
+                )
+            }
+
+        from src.models import ProjectConstraint
+
+        constraint = ProjectConstraint(
+            project_id=pid,
+            exclusive=bool(exclusive),
+            max_agents_by_type=max_agents_by_type if isinstance(max_agents_by_type, dict) else {},
+            pause_scheduling=bool(pause_scheduling),
+            created_by=created_by,
+            created_at=_time.time(),
+        )
+        await self.db.set_project_constraint(constraint)
+
+        active_fields = []
+        if constraint.exclusive:
+            active_fields.append("exclusive")
+        if constraint.pause_scheduling:
+            active_fields.append("pause_scheduling")
+        if constraint.max_agents_by_type:
+            active_fields.append(f"max_agents_by_type={constraint.max_agents_by_type}")
+
+        return {
+            "project_id": pid,
+            "constraint_set": True,
+            "active_fields": active_fields,
+        }
+
+    async def _cmd_release_project_constraint(self, args: dict) -> dict:
+        """Release (remove) the scheduling constraint from a project.
+
+        If specific fields are provided (exclusive, pause_scheduling, or
+        max_agents_by_type), only those fields are cleared.  If no fields
+        are specified, the entire constraint is removed.
+        """
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+
+        existing = await self.db.get_project_constraint(pid)
+        if not existing:
+            return {"error": f"No active constraint on project '{pid}'"}
+
+        # Check if caller wants to release specific fields only.
+        fields_to_release = args.get("fields", [])
+        if fields_to_release:
+            import time as _time
+
+            from src.models import ProjectConstraint
+
+            exclusive = existing.exclusive
+            pause_scheduling = existing.pause_scheduling
+            max_agents_by_type = dict(existing.max_agents_by_type)
+
+            for f in fields_to_release:
+                if f == "exclusive":
+                    exclusive = False
+                elif f == "pause_scheduling":
+                    pause_scheduling = False
+                elif f == "max_agents_by_type":
+                    max_agents_by_type = {}
+
+            # If all fields are now empty, remove the constraint entirely.
+            if not exclusive and not pause_scheduling and not max_agents_by_type:
+                await self.db.delete_project_constraint(pid)
+                return {"project_id": pid, "constraint_released": True, "fields": "all"}
+
+            updated = ProjectConstraint(
+                project_id=pid,
+                exclusive=exclusive,
+                max_agents_by_type=max_agents_by_type,
+                pause_scheduling=pause_scheduling,
+                created_by=existing.created_by,
+                created_at=_time.time(),
+            )
+            await self.db.set_project_constraint(updated)
+            return {
+                "project_id": pid,
+                "constraint_released": False,
+                "fields_released": fields_to_release,
+                "remaining_fields": [
+                    k
+                    for k, v in [
+                        ("exclusive", exclusive),
+                        ("pause_scheduling", pause_scheduling),
+                        ("max_agents_by_type", bool(max_agents_by_type)),
+                    ]
+                    if v
+                ],
+            }
+
+        # Release the entire constraint.
+        await self.db.delete_project_constraint(pid)
+        return {"project_id": pid, "constraint_released": True, "fields": "all"}
+
     async def _cmd_edit_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)

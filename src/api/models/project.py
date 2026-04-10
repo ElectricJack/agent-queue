@@ -142,6 +142,20 @@ class QueueSyncWorkspacesResponse(BaseModel):
     message: str = ""
 
 
+class SetProjectConstraintResponse(BaseModel):
+    project_id: str
+    constraint_set: bool = False
+    active_fields: list[str] = []
+
+
+class ReleaseProjectConstraintResponse(BaseModel):
+    project_id: str
+    constraint_released: bool = False
+    fields: str | None = None
+    fields_released: list[str] = []
+    remaining_fields: list[str] = []
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -167,5 +181,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "release_workspace": ReleaseWorkspaceResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
+    "set_project_constraint": SetProjectConstraintResponse,
+    "release_project_constraint": ReleaseProjectConstraintResponse,
     "set_active_project": SetActiveProjectResponse,
 }
