@@ -153,6 +153,13 @@ class WorkspaceQueryMixin:
                 #   exists on the same path.  Two BRANCH_ISOLATED locks on
                 #   the same path are compatible (agents work on separate
                 #   branches via git worktrees).
+                # DIRECTORY_ISOLATED (future): will allow multiple agents on
+                #   the same branch in different directories.  Needs directory-
+                #   scoped locking and careful handling of shared files
+                #   (configs, lock files, root-level changes).  Currently
+                #   falls through to the EXCLUSIVE path below — the
+                #   orchestrator rejects this mode before it reaches here.
+                #   See docs/specs/design/agent-coordination.md §7.
                 if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
                     conflict_result = await conn.execute(
                         select(workspaces.c.id).where(

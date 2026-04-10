@@ -2569,6 +2569,19 @@ class Orchestrator:
         """
         project = await self.db.get_project(task.project_id)
         lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
+
+        # Directory-isolated mode is stubbed but not yet implemented.
+        # Reject early with a clear message rather than silently falling
+        # through to exclusive-like behavior.
+        # See docs/specs/design/agent-coordination.md §7 (Workspace Strategy).
+        if lock_mode == WorkspaceMode.DIRECTORY_ISOLATED:
+            raise RuntimeError(
+                "workspace_mode='directory-isolated' is not yet implemented. "
+                "This mode is reserved for future monorepo support where multiple "
+                "agents work on the same branch in different directories. "
+                "Use 'exclusive' (default) or 'branch-isolated' instead."
+            )
+
         ws = await self.db.acquire_workspace(
             task.project_id,
             agent.id,

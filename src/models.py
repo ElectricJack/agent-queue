@@ -121,7 +121,7 @@ class WorkspaceMode(Enum):
     EXCLUSIVE = "exclusive"  # One agent, one workspace (current default)
     BRANCH_ISOLATED = "branch-isolated"  # Multiple agents, same repo, different branches
     DIRECTORY_ISOLATED = (
-        "directory-isolated"  # Multiple agents, same branch, different dirs (future)
+        "directory-isolated"  # Multiple agents, same branch, different dirs (deferred — stub only)
     )
 
 

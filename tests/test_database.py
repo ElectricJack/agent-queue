@@ -1004,3 +1004,128 @@ class TestBranchIsolatedWorkspaceMode:
         assert results[0].locked_by_agent_id == "a-1"
         assert results[1].locked_by_agent_id == "a-2"
         assert results[2].locked_by_agent_id == "a-3"
+
+
+class TestDirectoryIsolatedWorkspaceModeStub:
+    """Roadmap 7.4.6 — Directory-isolated workspace mode (deferred stub).
+
+    The ``directory-isolated`` mode is designed for monorepo workflows where
+    multiple agents work on the same branch in different directories.  The mode
+    is accepted by the data model and persisted, but **not yet implemented** in
+    the orchestrator.  These tests verify the stub behavior:
+
+    - The enum value is valid and can be stored/retrieved.
+    - At the DB level, directory-isolated currently falls through to exclusive-
+      like locking (no special handling).
+    - The orchestrator rejects directory-isolated at execution time (tested
+      separately in test_orchestrator.py when that mode is implemented).
+
+    See docs/specs/design/agent-coordination.md §7 (Workspace Strategy).
+    """
+
+    async def test_directory_isolated_enum_value_exists(self, db):
+        """The DIRECTORY_ISOLATED enum value is defined and valid."""
+        assert WorkspaceMode.DIRECTORY_ISOLATED.value == "directory-isolated"
+        assert "directory-isolated" in {m.value for m in WorkspaceMode}
+
+    async def test_directory_isolated_stored_on_task(self, db):
+        """workspace_mode='directory-isolated' can be persisted on a task."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        task = Task(
+            id="t-1",
+            project_id="p-1",
+            title="Monorepo task",
+            description="Work in packages/auth/",
+            workspace_mode=WorkspaceMode.DIRECTORY_ISOLATED,
+        )
+        await db.create_task(task)
+        retrieved = await db.get_task("t-1")
+        assert retrieved.workspace_mode == WorkspaceMode.DIRECTORY_ISOLATED
+
+    async def test_directory_isolated_stored_on_workspace_lock(self, db):
+        """acquire_workspace with DIRECTORY_ISOLATED stores the lock mode."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/monorepo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.DIRECTORY_ISOLATED
+        )
+        assert ws is not None
+        assert ws.lock_mode == WorkspaceMode.DIRECTORY_ISOLATED
+
+        # Verify persisted
+        ws2 = await db.get_workspace("ws-1")
+        assert ws2.lock_mode == WorkspaceMode.DIRECTORY_ISOLATED
+
+    async def test_directory_isolated_blocks_like_exclusive_for_now(self, db):
+        """Until fully implemented, DIRECTORY_ISOLATED blocks like EXCLUSIVE.
+
+        The DB-level path conflict check treats DIRECTORY_ISOLATED the same
+        as EXCLUSIVE — no special directory-scoped locking exists yet.  A
+        second agent requesting DIRECTORY_ISOLATED on the same path is
+        blocked (falls through to the catch-all exclusive check).
+        """
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/monorepo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-2",
+                workspace_path="/tmp/monorepo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # First agent acquires with DIRECTORY_ISOLATED
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.DIRECTORY_ISOLATED
+        )
+        assert ws is not None
+
+        # Second agent is blocked — no directory-scoped locking yet
+        ws2 = await db.acquire_workspace(
+            "p-2", "a-2", "t-2", lock_mode=WorkspaceMode.DIRECTORY_ISOLATED
+        )
+        assert ws2 is None
+
+    async def test_directory_isolated_release_clears_lock_mode(self, db):
+        """Releasing a DIRECTORY_ISOLATED lock clears lock_mode to None."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/monorepo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.DIRECTORY_ISOLATED
+        )
+        await db.release_workspace("ws-1")
+        ws = await db.get_workspace("ws-1")
+        assert ws.locked_by_agent_id is None
+        assert ws.lock_mode is None

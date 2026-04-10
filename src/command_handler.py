@@ -2585,6 +2585,13 @@ class CommandHandler:
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
 
+        # Warn if directory-isolated is set — it's accepted for storage but
+        # not yet implemented.  The orchestrator will reject it at execution
+        # time with a clear error.
+        warn_deferred_mode = (
+            workspace_mode == WorkspaceMode.DIRECTORY_ISOLATED
+        )
+
         initial_status = (
             TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
         )
@@ -2653,6 +2660,12 @@ class CommandHandler:
             result["affinity_reason"] = affinity_reason
         if workspace_mode:
             result["workspace_mode"] = workspace_mode.value
+        if warn_deferred_mode:
+            result["warning"] = (
+                "workspace_mode='directory-isolated' is accepted but not yet implemented. "
+                "The task will fail at execution time. This mode is reserved for future "
+                "monorepo support. Use 'exclusive' or 'branch-isolated' instead."
+            )
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),
@@ -3022,6 +3035,13 @@ class CommandHandler:
         if status_changed:
             result["old_status"] = old_status
             result["new_status"] = new_status_raw
+        # Warn if directory-isolated is set — deferred feature
+        if updates.get("workspace_mode") == WorkspaceMode.DIRECTORY_ISOLATED:
+            result["warning"] = (
+                "workspace_mode='directory-isolated' is accepted but not yet implemented. "
+                "The task will fail at execution time. This mode is reserved for future "
+                "monorepo support. Use 'exclusive' or 'branch-isolated' instead."
+            )
         return result
 
     async def _cmd_stop_task(self, args: dict) -> dict:
