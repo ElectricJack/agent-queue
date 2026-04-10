@@ -1303,39 +1303,6 @@ class CommandHandler:
         projects = await self.db.list_projects()
         tasks = await self.db.list_tasks(project_id=filter_project)
 
-        # Build agent view from workspaces (scoped to project when provided)
-        agent_details = []
-        target_projects = projects
-        if filter_project:
-            target_projects = [p for p in projects if p.id == filter_project]
-        for p in target_projects:
-            workspaces = await self.db.list_workspaces(project_id=p.id)
-            for ws in workspaces:
-                if ws.locked_by_task_id:
-                    state = "busy"
-                    task = await self.db.get_task(ws.locked_by_task_id)
-                    info: dict = {
-                        "workspace_id": ws.id,
-                        "name": ws.name or ws.id,
-                        "project_id": p.id,
-                        "state": state,
-                    }
-                    if task:
-                        info["working_on"] = {
-                            "task_id": task.id,
-                            "title": task.title,
-                            "project_id": task.project_id,
-                            "status": task.status.value,
-                        }
-                else:
-                    info = {
-                        "workspace_id": ws.id,
-                        "name": ws.name or ws.id,
-                        "project_id": p.id,
-                        "state": "idle",
-                    }
-                agent_details.append(info)
-
         in_progress = [
             {
                 "id": t.id,
@@ -1354,7 +1321,6 @@ class CommandHandler:
 
         return {
             "projects": 1 if filter_project else len(projects),
-            "agents": agent_details,
             "tasks": {
                 "total": len(tasks),
                 "by_status": _count_by(tasks, lambda t: t.status.value),

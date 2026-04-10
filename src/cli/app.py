@@ -192,8 +192,8 @@ def cli(ctx: click.Context, api_url: str | None, help_all: bool, output_json: bo
 @_handle_errors
 def status(ctx: click.Context) -> None:
     """Show system status overview."""
-    from .adapters import agent_proxy, project_proxy
-    from .formatters import format_agent_table, format_status_overview
+    from .adapters import project_proxy
+    from .formatters import format_status_overview
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -211,8 +211,8 @@ def status(ctx: click.Context) -> None:
         return
 
     # Adapt get_status response for format_status_overview.
-    # The formatter expects (projects: list, agents: list, task_counts: dict).
-    # get_status returns {"agents": [...], "tasks": {"by_status": {...}}, ...}
+    # The formatter expects (projects: list, task_counts: dict).
+    # get_status returns {"tasks": {"by_status": {...}}, "projects": int, ...}
     # get_status may return a typed object or a dict depending on the dispatch path.
     def _get(obj, key, default=None):
         if isinstance(obj, dict):
@@ -222,8 +222,6 @@ def status(ctx: click.Context) -> None:
             return default
         return val
 
-    raw_agents = _get(result, "agents", [])
-    agents = [agent_proxy(a) for a in raw_agents]
     tasks_section = _get(result, "tasks", {})
     if isinstance(tasks_section, dict):
         task_counts = tasks_section.get("by_status", {})
@@ -233,15 +231,15 @@ def status(ctx: click.Context) -> None:
     task_counts = {k.upper(): v for k, v in task_counts.items()}
 
     # format_status_overview needs project list — but get_status only returns
-    # a count.  We'll create minimal proxies from the agent data.
-    project_ids = {_get(a, "project_id") for a in raw_agents if _get(a, "project_id")}
-    proj_list = [project_proxy({"id": pid, "name": pid, "status": "ACTIVE"}) for pid in project_ids]
+    # a count.  Build minimal proxies from the project count.
+    num_projects = _get(result, "projects", 0)
+    proj_list = [
+        project_proxy({"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"})
+        for i in range(num_projects)
+    ]
 
-    panel = format_status_overview(proj_list, agents, task_counts)
+    panel = format_status_overview(proj_list, task_counts)
     console.print(panel)
-
-    if agents:
-        console.print(format_agent_table(agents))
 
 
 # ---------------------------------------------------------------------------

@@ -379,7 +379,6 @@ def format_project_table(projects: list[Any]) -> Table:
 
 def format_status_overview(
     projects: list[Any],
-    agents: list[Any],
     task_counts: dict[str, int],
 ) -> Panel:
     """Format a system status overview panel."""
@@ -410,13 +409,6 @@ def format_status_overview(
             line.append(str(count))
             lines.append(line)
         lines.append("")
-
-    # Agent summary
-    busy_agents = sum(1 for a in agents if (a.state or "").upper() == "BUSY")
-    idle_agents = sum(1 for a in agents if (a.state or "").upper() == "IDLE")
-    lines.append(Text("🤖 Agents", style="bold bright_white"))
-    lines.append(Text(f"  Total: {len(agents)}  Busy: {busy_agents}  Idle: {idle_agents}"))
-    lines.append("")
 
     # Project summary
     active_projects = sum(1 for p in projects if (p.status or "").upper() == "ACTIVE")

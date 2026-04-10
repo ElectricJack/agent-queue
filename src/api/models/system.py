@@ -7,14 +7,6 @@ from typing import Any
 from pydantic import BaseModel
 
 
-class AgentStatusEntry(BaseModel):
-    workspace_id: str
-    name: str = ""
-    project_id: str = ""
-    state: str = ""
-    working_on: dict[str, Any] | None = None
-
-
 class TaskStatusSummary(BaseModel):
     total: int = 0
     by_status: dict[str, int] = {}
@@ -24,7 +16,6 @@ class TaskStatusSummary(BaseModel):
 
 class GetStatusResponse(BaseModel):
     projects: int = 0
-    agents: list[AgentStatusEntry] = []
     tasks: TaskStatusSummary = TaskStatusSummary()
     orchestrator_paused: bool = False
 

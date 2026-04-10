@@ -6314,9 +6314,6 @@ def setup_commands(bot: commands.Bot) -> None:
         blocked = by_status.get("BLOCKED", 0)
         ready = by_status.get("READY", 0)
 
-        agents = result.get("agents", [])
-        busy_count = sum(1 for a in agents if a.get("state") == "BUSY")
-
         lines = ["## 🎛️ Agent Queue — Control Panel"]
         if result.get("orchestrator_paused"):
             lines.append("⏸ **Orchestrator is PAUSED**")
@@ -6329,7 +6326,6 @@ def setup_commands(bot: commands.Bot) -> None:
             f"📊 {total} tasks — {in_progress} active, {ready} ready, "
             f"{failed} failed, {blocked} blocked"
         )
-        lines.append(f"🤖 {len(agents)} agents — {busy_count} busy")
         lines.append("\n_Use the buttons below to view details and take actions._")
 
         view = MenuView(handler=handler, bot=bot)
