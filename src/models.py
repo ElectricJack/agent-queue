@@ -184,11 +184,13 @@ class VerificationType(Enum):
 
 class RepoSourceType(Enum):
     """How a project's repository was set up — cloned from a URL, linked to
-    an existing local path, or initialized as a new git repo."""
+    an existing local path, initialized as a new git repo, or created as a
+    git worktree for branch-isolated workspace sharing."""
 
     CLONE = "clone"
     LINK = "link"
     INIT = "init"
+    WORKTREE = "worktree"  # Git worktree of another workspace (branch-isolated mode)
 
 
 @dataclass

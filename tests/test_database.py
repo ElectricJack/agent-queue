@@ -353,9 +353,7 @@ class TestWorkspaces:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await db.acquire_workspace(
-            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
-        )
+        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED)
         await db.release_workspace("ws-1")
         ws = await db.get_workspace("ws-1")
         assert ws.locked_by_agent_id is None
@@ -488,17 +486,13 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         )
 
         # First agent acquires with explicit exclusive mode
-        ws = await db.acquire_workspace(
-            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws = await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws is not None
         assert ws.locked_by_agent_id == "a-1"
         assert ws.lock_mode == WorkspaceMode.EXCLUSIVE
 
         # Second agent cannot acquire the same workspace
-        ws2 = await db.acquire_workspace(
-            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws2 = await db.acquire_workspace("p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws2 is None
 
     async def test_second_agent_returns_none_not_exception(self, db):
@@ -530,19 +524,13 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         )
 
         # First agent locks ws-1, second agent locks ws-2
-        await db.acquire_workspace(
-            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
-        await db.acquire_workspace(
-            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
+        await db.acquire_workspace("p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
 
         # Third agent — all workspaces are locked, should get None (not raise)
         await db.create_agent(Agent(id="a-3", name="claude-3", agent_type="claude"))
         await db.create_task(Task(id="t-3", project_id="p-1", title="C", description="D"))
-        result = await db.acquire_workspace(
-            "p-1", "a-3", "t-3", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        result = await db.acquire_workspace("p-1", "a-3", "t-3", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert result is None
 
         # Verify existing locks are untouched (no side effects from failed acquire)
@@ -570,15 +558,11 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         )
 
         # First agent acquires exclusively
-        ws = await db.acquire_workspace(
-            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws = await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws is not None
 
         # Second agent blocked
-        ws2 = await db.acquire_workspace(
-            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws2 = await db.acquire_workspace("p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws2 is None
 
         # Release the exclusive lock
@@ -592,9 +576,7 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         assert released.lock_mode is None
 
         # Now second agent can acquire
-        ws3 = await db.acquire_workspace(
-            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws3 = await db.acquire_workspace("p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws3 is not None
         assert ws3.locked_by_agent_id == "a-2"
         assert ws3.locked_by_task_id == "t-2"
@@ -715,9 +697,7 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         )
 
         # First agent locks exclusively via project p-1
-        ws = await db.acquire_workspace(
-            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE
-        )
+        ws = await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws is not None
         assert ws.lock_mode == WorkspaceMode.EXCLUSIVE
 
@@ -728,3 +708,299 @@ class TestExclusiveWorkspaceModeBackwardCompat:
             "p-2", "a-2", "t-2", lock_mode=WorkspaceMode.BRANCH_ISOLATED
         )
         assert ws2 is None
+
+
+class TestBranchIsolatedWorkspaceMode:
+    """Roadmap 7.4.2 — Branch-isolated workspace lock mode.
+
+    Verifies that the lock_mode="branch-isolated" allows multiple agents to
+    share workspace paths when all participants use BRANCH_ISOLATED mode,
+    while properly rejecting mixed-mode conflicts.
+    """
+
+    async def test_branch_isolated_allows_same_path_cross_project(self, db):
+        """(a) Two BRANCH_ISOLATED locks on the same path coexist.
+
+        When two workspace records from different projects point at the same
+        filesystem path and both are acquired with BRANCH_ISOLATED mode,
+        the path-level lock check permits both acquisitions.
+        """
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
+
+        # Two workspace records in different projects, same path
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-2",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # First agent acquires BRANCH_ISOLATED
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws is not None
+        assert ws.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+        # Second agent acquires BRANCH_ISOLATED at same path — allowed
+        ws2 = await db.acquire_workspace(
+            "p-2", "a-2", "t-2", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws2 is not None
+        assert ws2.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+        assert ws2.locked_by_agent_id == "a-2"
+
+    async def test_branch_isolated_blocked_by_exclusive(self, db):
+        """(b) EXCLUSIVE lock on a path blocks BRANCH_ISOLATED acquisition.
+
+        When a workspace path is exclusively locked, no BRANCH_ISOLATED
+        acquisition is allowed on the same path. This is the same as the
+        existing test in TestExclusiveWorkspaceModeBackwardCompat but
+        verifies it from the BI perspective.
+        """
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-2",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # Exclusive lock first
+        ws = await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
+        assert ws is not None
+
+        # BRANCH_ISOLATED blocked by existing EXCLUSIVE
+        ws2 = await db.acquire_workspace(
+            "p-2", "a-2", "t-2", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws2 is None
+
+    async def test_exclusive_blocked_by_branch_isolated(self, db):
+        """(c) BRANCH_ISOLATED lock on a path blocks EXCLUSIVE acquisition.
+
+        When a workspace path is locked with BRANCH_ISOLATED, an EXCLUSIVE
+        request on the same path is rejected — EXCLUSIVE requires sole
+        access.
+        """
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-2",
+                project_id="p-2",
+                workspace_path="/tmp/shared-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # BRANCH_ISOLATED lock first
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws is not None
+
+        # EXCLUSIVE blocked by existing BRANCH_ISOLATED
+        ws2 = await db.acquire_workspace("p-2", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
+        assert ws2 is None
+
+    async def test_find_branch_isolated_base(self, db):
+        """(d) find_branch_isolated_base returns BI-locked workspace for sharing."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+
+        # No BI-locked workspace yet
+        base = await db.find_branch_isolated_base("p-1")
+        assert base is None
+
+        # Lock with BRANCH_ISOLATED
+        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED)
+
+        # Now find_branch_isolated_base should return the workspace
+        base = await db.find_branch_isolated_base("p-1")
+        assert base is not None
+        assert base.id == "ws-1"
+        assert base.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+    async def test_find_branch_isolated_base_ignores_exclusive(self, db):
+        """(e) find_branch_isolated_base ignores exclusively-locked workspaces."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # Lock with EXCLUSIVE
+        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
+
+        # find_branch_isolated_base should not return exclusively-locked workspace
+        base = await db.find_branch_isolated_base("p-1")
+        assert base is None
+
+    async def test_find_branch_isolated_base_no_workspaces(self, db):
+        """(f) find_branch_isolated_base returns None for project without workspaces."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        base = await db.find_branch_isolated_base("p-1")
+        assert base is None
+
+    async def test_branch_isolated_release_allows_reacquisition(self, db):
+        """(g) Releasing a BRANCH_ISOLATED lock allows reacquisition."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+
+        # First agent acquires
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws is not None
+
+        # Second agent can't acquire same workspace (it's locked by a-1)
+        ws2 = await db.acquire_workspace(
+            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws2 is None  # Only 1 workspace, already locked
+
+        # Release first agent's lock
+        await db.release_workspace("ws-1")
+
+        # Now second agent can acquire
+        ws3 = await db.acquire_workspace(
+            "p-1", "a-2", "t-2", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws3 is not None
+        assert ws3.locked_by_agent_id == "a-2"
+        assert ws3.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+    async def test_worktree_workspace_source_type(self, db):
+        """(h) Workspace with source_type=WORKTREE can be created and acquired."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-wt-1",
+                project_id="p-1",
+                workspace_path="/tmp/ws1/.worktrees-repo/my-branch",
+                source_type=RepoSourceType.WORKTREE,
+                name="worktree:ws-1",
+            )
+        )
+
+        # Acquire the worktree workspace
+        ws = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+        )
+        assert ws is not None
+        assert ws.source_type == RepoSourceType.WORKTREE
+        assert ws.lock_mode == WorkspaceMode.BRANCH_ISOLATED
+
+        # Verify persisted
+        ws2 = await db.get_workspace("ws-wt-1")
+        assert ws2.source_type == RepoSourceType.WORKTREE
+        assert ws2.locked_by_agent_id == "a-1"
+
+    async def test_multiple_branch_isolated_cross_project_simultaneous(self, db):
+        """(i) Three agents can hold BRANCH_ISOLATED locks on same path simultaneously.
+
+        Tests the scenario where three different projects share a workspace
+        path and all acquire with BRANCH_ISOLATED mode — all three should
+        succeed.
+        """
+        for i in range(1, 4):
+            await db.create_project(Project(id=f"p-{i}", name=f"project-{i}"))
+            await db.create_agent(Agent(id=f"a-{i}", name=f"claude-{i}", agent_type="claude"))
+            await db.create_task(
+                Task(id=f"t-{i}", project_id=f"p-{i}", title=f"Task {i}", description="D")
+            )
+            await db.create_workspace(
+                Workspace(
+                    id=f"ws-{i}",
+                    project_id=f"p-{i}",
+                    workspace_path="/tmp/shared-mono-repo",
+                    source_type=RepoSourceType.LINK,
+                )
+            )
+
+        # All three acquire BRANCH_ISOLATED — all should succeed
+        results = []
+        for i in range(1, 4):
+            ws = await db.acquire_workspace(
+                f"p-{i}", f"a-{i}", f"t-{i}", lock_mode=WorkspaceMode.BRANCH_ISOLATED
+            )
+            results.append(ws)
+
+        assert all(ws is not None for ws in results)
+        assert all(ws.lock_mode == WorkspaceMode.BRANCH_ISOLATED for ws in results)
+        assert results[0].locked_by_agent_id == "a-1"
+        assert results[1].locked_by_agent_id == "a-2"
+        assert results[2].locked_by_agent_id == "a-3"

@@ -145,14 +145,31 @@ class WorkspaceQueryMixin:
                 if not row:
                     continue
 
-                # Path-level lock check
-                conflict_result = await conn.execute(
-                    select(workspaces.c.id).where(
-                        (workspaces.c.workspace_path == row["workspace_path"])
-                        & (workspaces.c.locked_by_agent_id.isnot(None))
-                        & (workspaces.c.id != row["id"])
+                # Path-level lock check — mode-aware.
+                #
+                # EXCLUSIVE (default): reject if ANY other workspace on the
+                #   same filesystem path is locked, regardless of mode.
+                # BRANCH_ISOLATED: reject only if a non-BRANCH_ISOLATED lock
+                #   exists on the same path.  Two BRANCH_ISOLATED locks on
+                #   the same path are compatible (agents work on separate
+                #   branches via git worktrees).
+                if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
+                    conflict_result = await conn.execute(
+                        select(workspaces.c.id).where(
+                            (workspaces.c.workspace_path == row["workspace_path"])
+                            & (workspaces.c.locked_by_agent_id.isnot(None))
+                            & (workspaces.c.id != row["id"])
+                            & (workspaces.c.lock_mode != WorkspaceMode.BRANCH_ISOLATED.value)
+                        )
                     )
-                )
+                else:
+                    conflict_result = await conn.execute(
+                        select(workspaces.c.id).where(
+                            (workspaces.c.workspace_path == row["workspace_path"])
+                            & (workspaces.c.locked_by_agent_id.isnot(None))
+                            & (workspaces.c.id != row["id"])
+                        )
+                    )
                 conflict = conflict_result.fetchone()
                 if conflict:
                     logger.warning(
@@ -188,6 +205,36 @@ class WorkspaceQueryMixin:
                 return ws
 
             return None
+
+    async def find_branch_isolated_base(
+        self,
+        project_id: str,
+    ) -> Workspace | None:
+        """Find a workspace locked with BRANCH_ISOLATED that can host worktrees.
+
+        Used by the orchestrator when a BRANCH_ISOLATED task has no unlocked
+        workspace available.  Returns the first workspace for the project
+        that is currently locked with ``WorkspaceMode.BRANCH_ISOLATED``.
+        The orchestrator will create a git worktree from this base workspace.
+
+        Prefers clone workspaces over link workspaces (clones are managed by
+        the orchestrator and more likely to have proper remote configuration).
+        """
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces)
+                .where(
+                    (workspaces.c.project_id == project_id)
+                    & (workspaces.c.locked_by_agent_id.isnot(None))
+                    & (workspaces.c.lock_mode == WorkspaceMode.BRANCH_ISOLATED.value)
+                )
+                .order_by(_source_type_order, workspaces.c.id)
+                .limit(1)
+            )
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_workspace(row)
 
     async def release_workspace(self, workspace_id: str) -> None:
         """Clear lock columns on a workspace."""

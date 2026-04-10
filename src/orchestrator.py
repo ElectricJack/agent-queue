@@ -129,6 +129,7 @@ from src.models import (
     TaskStatus,
     TaskContext,
     TaskType,
+    Workspace,
     WorkspaceMode,
 )
 from src.hooks import HookEngine
@@ -324,6 +325,16 @@ class Orchestrator:
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
         self._budget_warned_at: dict[str, int] = {}
+        # Per-workspace-path asyncio.Lock for serializing shared git
+        # operations (fetch, gc) across branch-isolated worktrees.
+        # Keyed by the base workspace path (the parent repo directory).
+        self._git_mutexes: dict[str, asyncio.Lock] = {}
+
+    def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
+        """Get or create an asyncio.Lock for shared git operations on a workspace."""
+        if workspace_path not in self._git_mutexes:
+            self._git_mutexes[workspace_path] = asyncio.Lock()
+        return self._git_mutexes[workspace_path]
 
     def set_command_handler(self, handler: Any) -> None:
         """Store a reference to the command handler for interactive views."""
@@ -610,11 +621,11 @@ class Orchestrator:
             # before we issue our own DB queries.
             await asyncio.wait({bg_task}, timeout=5.0)
 
-        # Clean up sentinel and release workspace lock
+        # Clean up sentinel and release workspace lock (worktree-aware)
         ws = await self.db.get_workspace_for_task(task_id)
         if ws:
             self._remove_sentinel(ws.workspace_path)
-        await self.db.release_workspaces_for_task(task_id)
+        await self._release_workspaces_for_task(task_id)
         await self.db.transition_task(
             task_id, TaskStatus.BLOCKED, context="stop_task", assigned_agent_id=None
         )
@@ -1291,17 +1302,28 @@ class Orchestrator:
         # Also remove sentinel files from ALL workspaces — they may exist
         # even when the DB lock was already released (e.g. _prepare_workspace
         # acquired + detected sentinel + released lock, but never deleted file).
+        #
+        # Worktree workspaces (source_type=WORKTREE) are cleaned up: the git
+        # worktree is removed and the workspace record is deleted.  These are
+        # dynamically created for branch-isolated mode and should not persist
+        # across restarts.
         all_workspaces = await self.db.list_workspaces()
         for ws in all_workspaces:
-            if ws.locked_by_agent_id:
+            self._remove_sentinel(ws.workspace_path)
+            if ws.source_type == RepoSourceType.WORKTREE:
+                logger.info(
+                    "Recovery: cleaning up worktree workspace '%s' at %s",
+                    ws.id,
+                    ws.workspace_path,
+                )
+                await self._cleanup_worktree_workspace(ws)
+            elif ws.locked_by_agent_id:
                 logger.info(
                     "Recovery: releasing workspace lock '%s' (was locked by %s)",
                     ws.id,
                     ws.locked_by_agent_id,
                 )
                 await self.db.release_workspace(ws.id)
-            # Always clean sentinel files on startup — no agents are running
-            self._remove_sentinel(ws.workspace_path)
 
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
@@ -1819,11 +1841,11 @@ class Orchestrator:
                     await self._adapters[action.agent_id].stop()
                 except Exception:
                     pass
-            # Clean up sentinel before releasing workspace lock
+            # Clean up sentinel before releasing workspace lock (worktree-aware)
             ws = await self.db.get_workspace_for_task(action.task_id)
             if ws:
                 self._remove_sentinel(ws.workspace_path)
-            await self.db.release_workspaces_for_task(action.task_id)
+            await self._release_workspaces_for_task(action.task_id)
             await self.db.transition_task(
                 action.task_id, TaskStatus.BLOCKED, context="timeout", assigned_agent_id=None
             )
@@ -1851,11 +1873,11 @@ class Orchestrator:
         except Exception as e:
             logger.error("Error executing task %s", action.task_id, exc_info=True)
             try:
-                # Clean up sentinel before releasing workspace lock
+                # Clean up sentinel before releasing workspace lock (worktree-aware)
                 ws = await self.db.get_workspace_for_task(action.task_id)
                 if ws:
                     self._remove_sentinel(ws.workspace_path)
-                await self.db.release_workspaces_for_task(action.task_id)
+                await self._release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
                     action.task_id,
                     TaskStatus.READY,
@@ -2509,18 +2531,23 @@ class Orchestrator:
         1. Acquire an unlocked workspace for the project via
            ``db.acquire_workspace()``.  This is an atomic DB operation that
            sets ``locked_by_agent_id`` — only one agent can hold a workspace.
-        2. If no workspace is available, return ``None`` (caller returns
-           the task to READY and frees the agent).
-        3. Determine the branch name:
+        2. If no workspace is available and ``lock_mode`` is
+           ``BRANCH_ISOLATED``, try to share a workspace that is already
+           locked with ``BRANCH_ISOLATED`` by creating a git worktree.
+        3. If still no workspace, return ``None`` (caller returns the task
+           to READY and frees the agent).
+        4. Determine the branch name:
            - Root tasks: generate a fresh branch from task ID + title.
            - Plan subtasks: reuse the parent task's branch name so all
              steps accumulate commits on a single shared branch.
-        4. Perform git operations based on ``workspace.source_type``:
+        5. Perform git operations based on ``workspace.source_type``:
            - CLONE: orchestrator manages the full clone lifecycle (clone on
              first use, fetch + branch on subsequent uses).
            - LINK: workspace points to a pre-existing local checkout;
              orchestrator only manages branch operations, never clones.
-        5. Return the workspace path.
+           - WORKTREE: workspace is a git worktree of another workspace;
+             git fetch is serialized via a per-repo mutex.
+        6. Return the workspace path.
 
         Error resilience: git failures (network issues, auth errors) are
         caught and reported via Discord but do NOT prevent the workspace
@@ -2537,15 +2564,24 @@ class Orchestrator:
             lock_mode=lock_mode,
         )
 
+        # Branch-isolated fallback: when no unlocked workspace is available,
+        # share an existing BRANCH_ISOLATED workspace via a git worktree.
+        if not ws and lock_mode == WorkspaceMode.BRANCH_ISOLATED:
+            ws = await self._create_branch_isolated_worktree(task, agent, project)
+
         if not ws:
             return None
 
         workspace = ws.workspace_path
+        is_worktree = ws.source_type == RepoSourceType.WORKTREE
 
         # Layer 2: Filesystem sentinel — detect concurrent access that slipped
         # past the DB-level path lock (e.g. race condition, stale lock).
         # If the sentinel's owner task is no longer IN_PROGRESS, the sentinel
         # is stale (left behind by a crash) and safe to remove.
+        #
+        # For WORKTREE workspaces, each worktree has its own directory and
+        # its own sentinel — no conflict with the base workspace's sentinel.
         sentinel = os.path.join(workspace, ".agent-queue-lock")
         if os.path.exists(sentinel):
             try:
@@ -2570,7 +2606,7 @@ class Orchestrator:
                     workspace,
                     owner_info,
                 )
-                await self.db.release_workspace(ws.id)
+                await self._release_workspace_and_cleanup(ws)
                 return None
             else:
                 # Stale sentinel from a crashed/completed task — clean it up
@@ -2613,65 +2649,82 @@ class Orchestrator:
         # proper branch management.  Errors are reported via Discord
         # notification so operators are aware.
         try:
-            # Workspace source types determine the git setup strategy:
-            #
-            # CLONE: The orchestrator manages the full clone lifecycle.
-            #   - First use: clone from repo_url into the workspace path.
-            #   - Subsequent uses: fetch + ensure clean default branch.
-            #
-            # LINK: The workspace points to a pre-existing local checkout
-            #   (e.g. the developer's own repo).  The orchestrator only
-            #   validates the directory exists.
-            #
-            # In both cases the orchestrator no longer creates task branches.
-            # The agent receives branch-name + default-branch in its prompt
-            # and handles branch creation, merge, and push itself.
-            if ws.source_type == RepoSourceType.CLONE:
-                if not await self.git.avalidate_checkout(workspace):
-                    os.makedirs(os.path.dirname(workspace), exist_ok=True)
-                    if repo_url:
-                        await self.git.acreate_checkout(repo_url, workspace)
-                    # Re-detect default branch now that the repo is cloned.
-                    # The initial detection (above) may have fallen back to
-                    # "main" because the workspace didn't exist yet.
-                    default_branch = await self._get_default_branch(project, workspace)
-
-            elif ws.source_type == RepoSourceType.LINK:
-                if not os.path.isdir(workspace):
-                    await self._emit_text_notify(
-                        f"**Warning:** Linked workspace path `{workspace}` does not exist.",
-                        project_id=task.project_id,
-                    )
-
-            # Ensure workspace is on a clean, up-to-date default branch.
-            # The agent will create/switch to the task branch per its prompt.
-            if await self.git.avalidate_checkout(workspace):
-                # Discard any uncommitted changes left by a previous task
-                # so the checkout to default_branch doesn't fail due to
-                # conflicts.  This is especially important for LINK
-                # workspaces without remotes, where no hard-reset follows.
+            if is_worktree:
+                # WORKTREE: Created by _create_branch_isolated_worktree().
+                # The worktree directory and branch already exist.
+                # Serialize fetch operations via the git mutex to prevent
+                # concurrent git index corruption across worktrees sharing
+                # the same repository objects.
+                base_path = self._get_worktree_base_path(workspace)
+                if base_path and await self.git.ahas_remote(base_path):
+                    async with self._git_mutex(base_path):
+                        await self.git._arun(["fetch", "origin"], cwd=base_path)
+            else:
+                # Workspace source types determine the git setup strategy:
                 #
-                # We first abort any in-progress operations (merge/rebase)
-                # and remove stale lock files, then force-clean the workspace.
-                # The old approach (checkout -- . + clean -fd) failed when
-                # the workspace was in a mid-merge/rebase state or had
-                # staged-but-uncommitted changes.
-                if await self.git.ahas_uncommitted_changes(workspace):
+                # CLONE: The orchestrator manages the full clone lifecycle.
+                #   - First use: clone from repo_url into the workspace path.
+                #   - Subsequent uses: fetch + ensure clean default branch.
+                #
+                # LINK: The workspace points to a pre-existing local checkout
+                #   (e.g. the developer's own repo).  The orchestrator only
+                #   validates the directory exists.
+                #
+                # In both cases the orchestrator no longer creates task branches.
+                # The agent receives branch-name + default-branch in its prompt
+                # and handles branch creation, merge, and push itself.
+                if ws.source_type == RepoSourceType.CLONE:
+                    if not await self.git.avalidate_checkout(workspace):
+                        os.makedirs(os.path.dirname(workspace), exist_ok=True)
+                        if repo_url:
+                            await self.git.acreate_checkout(repo_url, workspace)
+                        # Re-detect default branch now that the repo is cloned.
+                        # The initial detection (above) may have fallen back to
+                        # "main" because the workspace didn't exist yet.
+                        default_branch = await self._get_default_branch(project, workspace)
+
+                elif ws.source_type == RepoSourceType.LINK:
+                    if not os.path.isdir(workspace):
+                        await self._emit_text_notify(
+                            f"**Warning:** Linked workspace path `{workspace}` does not exist.",
+                            project_id=task.project_id,
+                        )
+
+                # Ensure workspace is on a clean, up-to-date default branch.
+                # The agent will create/switch to the task branch per its prompt.
+                if await self.git.avalidate_checkout(workspace):
+                    # Discard any uncommitted changes left by a previous task
+                    # so the checkout to default_branch doesn't fail due to
+                    # conflicts.  This is especially important for LINK
+                    # workspaces without remotes, where no hard-reset follows.
+                    #
+                    # We first abort any in-progress operations (merge/rebase)
+                    # and remove stale lock files, then force-clean the workspace.
+                    # The old approach (checkout -- . + clean -fd) failed when
+                    # the workspace was in a mid-merge/rebase state or had
+                    # staged-but-uncommitted changes.
+                    if await self.git.ahas_uncommitted_changes(workspace):
+                        try:
+                            await self.git.aforce_clean_workspace(workspace)
+                        except GitError:
+                            pass  # Best-effort cleanup
+                    # Use git mutex for fetch when workspace is branch-isolated,
+                    # as other worktrees may share this repo's git objects.
+                    if await self.git.ahas_remote(workspace):
+                        if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
+                            async with self._git_mutex(workspace):
+                                await self.git._arun(["fetch", "origin"], cwd=workspace)
+                        else:
+                            await self.git._arun(["fetch", "origin"], cwd=workspace)
                     try:
-                        await self.git.aforce_clean_workspace(workspace)
+                        await self.git._arun(["checkout", default_branch], cwd=workspace)
                     except GitError:
-                        pass  # Best-effort cleanup
-                if await self.git.ahas_remote(workspace):
-                    await self.git._arun(["fetch", "origin"], cwd=workspace)
-                try:
-                    await self.git._arun(["checkout", default_branch], cwd=workspace)
-                except GitError:
-                    pass  # May already be on default branch
-                if await self.git.ahas_remote(workspace):
-                    await self.git._arun(
-                        ["reset", "--hard", f"origin/{default_branch}"],
-                        cwd=workspace,
-                    )
+                        pass  # May already be on default branch
+                    if await self.git.ahas_remote(workspace):
+                        await self.git._arun(
+                            ["reset", "--hard", f"origin/{default_branch}"],
+                            cwd=workspace,
+                        )
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
@@ -2685,7 +2738,7 @@ class Orchestrator:
                 project_id=task.project_id,
             )
             self._remove_sentinel(workspace)
-            await self.db.release_workspace(ws.id)
+            await self._release_workspace_and_cleanup(ws)
             return None
 
         # Clean up ALL plan files from previous tasks to prevent:
@@ -2698,6 +2751,156 @@ class Orchestrator:
         )
 
         return workspace
+
+    async def _create_branch_isolated_worktree(
+        self,
+        task: Task,
+        agent,
+        project,
+    ) -> Workspace | None:
+        """Create a git worktree for branch-isolated workspace sharing.
+
+        Called when ``lock_mode=BRANCH_ISOLATED`` and no unlocked workspace
+        is available.  Finds an existing workspace locked with
+        ``BRANCH_ISOLATED``, creates a git worktree from it, registers a
+        new workspace record (``source_type=WORKTREE``), and locks it for
+        the requesting agent.
+
+        The worktree path convention is::
+
+            <parent_dir>/.worktrees-<base_name>/<branch-slug>/
+
+        where ``base_name`` is the basename of the base workspace and
+        ``branch-slug`` is derived from the task ID and title.
+
+        Returns the locked worktree workspace, or ``None`` if no shareable
+        base workspace was found.
+        """
+        from src.workspace_names import generate_workspace_id
+
+        base_ws = await self.db.find_branch_isolated_base(task.project_id)
+        if not base_ws:
+            return None
+
+        branch_name = GitManager.make_branch_name(task.id, task.title)
+        # Derive a filesystem-safe slug for the worktree directory
+        slug = GitManager.slugify(f"{task.id}-{task.title}")
+        base_dir = os.path.dirname(base_ws.workspace_path)
+        base_name = os.path.basename(base_ws.workspace_path)
+        worktree_path = os.path.join(base_dir, f".worktrees-{base_name}", slug)
+
+        try:
+            await self.git.acreate_worktree(base_ws.workspace_path, worktree_path, branch_name)
+        except GitError as e:
+            logger.error(
+                "Failed to create worktree for task %s from %s: %s",
+                task.id,
+                base_ws.workspace_path,
+                e,
+            )
+            return None
+
+        # Register a workspace record for the worktree and lock it.
+        ws_id = await generate_workspace_id(self.db)
+        worktree_ws = Workspace(
+            id=ws_id,
+            project_id=task.project_id,
+            workspace_path=worktree_path,
+            source_type=RepoSourceType.WORKTREE,
+            name=f"worktree:{base_ws.id}",
+        )
+        await self.db.create_workspace(worktree_ws)
+        ws = await self.db.acquire_workspace(
+            task.project_id,
+            agent.id,
+            task.id,
+            preferred_workspace_id=ws_id,
+            lock_mode=WorkspaceMode.BRANCH_ISOLATED,
+        )
+
+        if ws:
+            logger.info(
+                "Created branch-isolated worktree %s for task %s (base: %s)",
+                worktree_path,
+                task.id,
+                base_ws.id,
+            )
+        return ws
+
+    @staticmethod
+    def _get_worktree_base_path(worktree_path: str) -> str | None:
+        """Derive the base workspace path from a worktree path.
+
+        Worktree paths follow the convention::
+
+            <parent_dir>/.worktrees-<base_name>/<slug>/
+
+        Returns the base workspace path, or ``None`` if the path doesn't
+        match the convention.
+        """
+        parent = os.path.dirname(worktree_path.rstrip("/"))
+        worktrees_dir = os.path.basename(parent)
+        if worktrees_dir.startswith(".worktrees-"):
+            base_name = worktrees_dir[len(".worktrees-") :]
+            base_dir = os.path.dirname(parent)
+            return os.path.join(base_dir, base_name)
+        return None
+
+    async def _release_workspace_and_cleanup(self, ws: Workspace) -> None:
+        """Release a workspace lock and clean up worktrees if applicable.
+
+        For regular workspaces, this just releases the DB lock.
+        For WORKTREE workspaces, it also:
+        - Removes the git worktree from the base repo
+        - Deletes the dynamically created workspace record
+        """
+        if ws.source_type == RepoSourceType.WORKTREE:
+            await self._cleanup_worktree_workspace(ws)
+        else:
+            await self.db.release_workspace(ws.id)
+
+    async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
+        """Remove a git worktree and delete its workspace record."""
+        base_path = self._get_worktree_base_path(ws.workspace_path)
+        if base_path:
+            try:
+                await self.git.aremove_worktree(base_path, ws.workspace_path)
+            except GitError as e:
+                logger.warning("Failed to remove worktree %s: %s", ws.workspace_path, e)
+                # Best-effort: try to remove the directory directly
+                import shutil
+
+                try:
+                    shutil.rmtree(ws.workspace_path, ignore_errors=True)
+                except Exception:
+                    pass
+        await self.db.release_workspace(ws.id)
+        await self.db.delete_workspace(ws.id)
+        logger.info("Cleaned up worktree workspace %s at %s", ws.id, ws.workspace_path)
+
+    async def _release_workspaces_for_task(self, task_id: str) -> None:
+        """Release all workspace locks for a task, cleaning up worktrees.
+
+        Wraps ``db.release_workspaces_for_task()`` with worktree awareness.
+        For tasks that used branch-isolated worktrees, this removes the
+        git worktree and deletes the dynamically created workspace record
+        before releasing locks.  Regular workspaces are released normally.
+        """
+        # Find all workspaces locked by this task
+        all_ws = await self.db.list_workspaces()
+        worktree_ws = [
+            ws
+            for ws in all_ws
+            if ws.locked_by_task_id == task_id and ws.source_type == RepoSourceType.WORKTREE
+        ]
+
+        # Clean up worktree workspaces first (remove git worktree + delete record)
+        for ws in worktree_ws:
+            self._remove_sentinel(ws.workspace_path)
+            await self._cleanup_worktree_workspace(ws)
+
+        # Release any remaining (non-worktree) workspaces via bulk operation
+        await self.db.release_workspaces_for_task(task_id)
 
     async def _cleanup_plan_files_before_task(
         self,
@@ -5072,8 +5275,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     except Exception:
                         pass
 
-            # Also release via standard task cleanup.
-            await self.db.release_workspaces_for_task(action.task_id)
+            # Also release via standard task cleanup (worktree-aware).
+            await self._release_workspaces_for_task(action.task_id)
 
             # Resume the project.
             await self.db.update_project(action.project_id, status=ProjectStatus.ACTIVE)
@@ -5117,9 +5320,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             except Exception as e:
                 logger.error("Sync workflow %s: final status update failed: %s", task.id, e)
 
-    async def _check_constraints_before_assignment(
-        self, action: AssignAction
-    ) -> str | None:
+    async def _check_constraints_before_assignment(self, action: AssignAction) -> str | None:
         """Re-check project constraints right before committing an assignment.
 
         The scheduler runs as a pure function on a point-in-time snapshot, and
@@ -5241,8 +5442,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
         violation = await self._check_constraints_before_assignment(action)
         if violation:
             logger.info(
-                "Constraint violation for task %s on project %s: %s — "
-                "returning to READY",
+                "Constraint violation for task %s on project %s: %s — returning to READY",
                 action.task_id,
                 action.project_id,
                 violation,
@@ -6409,7 +6609,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
             self._remove_sentinel(workspace)
 
         # Release the workspace lock so other tasks can use this workspace.
-        await self.db.release_workspaces_for_task(action.task_id)
+        # Worktree-aware: cleans up git worktrees for branch-isolated tasks.
+        await self._release_workspaces_for_task(action.task_id)
 
         # Free the agent for new work.  We re-read the agent's current state
         # from the DB because an admin may have paused the agent (via
