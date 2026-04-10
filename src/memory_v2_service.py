@@ -1412,6 +1412,194 @@ class MemoryV2Service:
         }
 
     # ------------------------------------------------------------------
+    # Update (consolidation — spec §10)
+    # ------------------------------------------------------------------
+
+    async def update_document(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        *,
+        content: str | None = None,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing document entry's content, tags, and/or topic.
+
+        Unlike ``update_document_content`` (used by the merge flow), this
+        method supports partial updates — changing tags without touching
+        content, updating the topic, or any combination.  Used by the
+        ``memory_update`` consolidation tool.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        chunk_hash:
+            The chunk_hash of the entry to update.
+        content:
+            New content.  If ``None``, content is unchanged.
+        tags:
+            New tags list.  If ``None``, tags are unchanged.
+        topic:
+            New topic string.  If ``None``, topic is unchanged.
+        scope:
+            Memory scope.
+
+        Returns
+        -------
+        dict
+            Updated entry info.
+        """
+        if not self.available:
+            raise RuntimeError("MemoryV2Service not available")
+
+        store = self._get_store(project_id, scope)
+        entry = await asyncio.to_thread(store.get, chunk_hash)
+        if not entry:
+            raise ValueError(f"Entry not found: {chunk_hash}")
+
+        import json as _json
+
+        now_ts = int(time.time())
+        changed_fields: list[str] = []
+
+        # Update content + recompute embedding
+        if content is not None and content != entry.get("content"):
+            embeddings = await self._embedder.embed([content])
+            entry["content"] = content
+            entry["embedding"] = embeddings[0]
+            entry["heading"] = content.split("\n", 1)[0].lstrip("# ").strip()[:200]
+            changed_fields.append("content")
+
+        # Update tags
+        if tags is not None:
+            entry["tags"] = _json.dumps(tags)
+            changed_fields.append("tags")
+
+        # Update topic
+        if topic is not None:
+            entry["topic"] = topic
+            changed_fields.append("topic")
+
+        entry["updated_at"] = now_ts
+        await asyncio.to_thread(store.upsert, [entry])
+
+        # Update vault file if it exists
+        source = entry.get("source", "")
+        if source:
+            vault_file = Path(source)
+            if vault_file.exists():
+                self._update_vault_file(
+                    vault_file,
+                    content=content,
+                    tags=tags,
+                )
+                # Update topic in vault frontmatter if changed
+                if topic is not None:
+                    self._update_vault_topic(vault_file, topic)
+
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        return {
+            "chunk_hash": chunk_hash,
+            "vault_path": source,
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "updated_at": now_ts,
+            "changed_fields": changed_fields,
+        }
+
+    @staticmethod
+    def _update_vault_topic(filepath: Path, topic: str) -> None:
+        """Update the topic field in a vault markdown file's frontmatter."""
+        if not filepath.exists():
+            return
+        text = filepath.read_text(encoding="utf-8")
+        if re.search(r"^topic:\s*", text, flags=re.MULTILINE):
+            text = re.sub(
+                r"^topic:.*$", f"topic: {topic}", text, count=1, flags=re.MULTILINE
+            )
+        else:
+            # Add topic after tags line
+            text = re.sub(
+                r"^(tags:.*)$",
+                rf"\1\ntopic: {topic}",
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        filepath.write_text(text, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+
+    async def delete_document(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        *,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a document entry from Milvus and optionally its vault file.
+
+        Used by the reflection playbook's consolidation step to remove
+        duplicate or stale memories after merging them into stronger entries.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        chunk_hash:
+            The chunk_hash (primary key) of the entry to delete.
+        scope:
+            Memory scope.  ``None`` for the project scope.
+
+        Returns
+        -------
+        dict
+            Confirmation with deleted entry info.
+        """
+        if not self.available:
+            raise RuntimeError("MemoryV2Service not available")
+
+        store = self._get_store(project_id, scope)
+
+        # Look up the entry first to get vault path
+        entry = await asyncio.to_thread(store.get, chunk_hash)
+        if not entry:
+            raise ValueError(f"Entry not found: {chunk_hash}")
+
+        vault_path = entry.get("source", "")
+
+        # Delete from Milvus
+        await asyncio.to_thread(store.delete_by_hashes, [chunk_hash])
+
+        # Delete vault file if it exists and is a standalone insight file
+        deleted_vault = False
+        if vault_path:
+            vp = Path(vault_path)
+            if vp.exists() and "/insights/" in str(vp):
+                vp.unlink()
+                deleted_vault = True
+
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        return {
+            "chunk_hash": chunk_hash,
+            "vault_path": vault_path,
+            "vault_deleted": deleted_vault,
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+        }
+
+    # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
 

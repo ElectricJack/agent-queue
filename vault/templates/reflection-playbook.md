@@ -151,22 +151,30 @@ this before starting a similar task?"
 ## Consolidate existing memories
 
 After writing new insights, review the agent-type memory for
-consolidation opportunities:
+consolidation opportunities. Use the consolidation tools to act on
+what you find:
 
-  - **Merge duplicates** -- if the new insight overlaps with an existing
-    memory, merge them into a single, stronger entry. Delete the weaker
-    or older version.
-  - **Update outdated insights** -- if recent evidence contradicts an
-    existing memory, update or replace it. Bump the confidence tag
-    from `#provisional` to `#verified` if confirmed, or mark as
-    `#contested` if contradicted.
-  - **Promote cross-project patterns** -- if the same insight has been
-    independently discovered in multiple projects, it belongs in
-    agent-type memory rather than project memory. Re-tag and move it.
+  - **Merge duplicates** -- search agent-type memory for entries related
+    to the insights you just saved. If you find overlapping memories,
+    use `memory_save` (which auto-merges related content) to create a
+    unified version, then `memory_delete` to remove the weaker or
+    redundant entry by its `chunk_hash`.
+  - **Update outdated insights** -- if recent evidence confirms or
+    contradicts an existing memory, use `memory_update` to change its
+    content or tags directly. Bump `#provisional` to `#verified` if
+    confirmed by this task. Mark as `#contested` if contradicted.
+    Change the content to reflect current understanding.
+  - **Promote cross-project patterns** -- use `memory_search_by_tag` to
+    check if a project-specific insight also appears in other projects'
+    memories. If the same pattern has been discovered independently in
+    multiple projects, use `memory_promote` to copy it from project
+    scope to agent-type scope (set `target_scope` to
+    `agenttype_{{AGENT_TYPE}}` and `delete_source` to true).
   - **Archive stale memories** -- if an insight hasn't been retrieved
     recently and the current task provides no supporting evidence,
-    consider whether it's still relevant. Don't delete aggressively,
-    but flag clearly outdated knowledge for removal.
+    use `memory_delete` to remove clearly outdated knowledge. Don't
+    delete aggressively -- only remove entries that are demonstrably
+    wrong or superseded.
 
 Keep consolidation lightweight. Only touch memories that are directly
 related to the current task's domain. Do not attempt a full audit of

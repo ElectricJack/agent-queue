@@ -74,6 +74,9 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_recall",
         "memory_get",
         "memory_list",
+        "memory_delete",
+        "memory_update",
+        "memory_promote",
     }
 )
 
@@ -643,6 +646,154 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    # ---- Consolidation Tools (spec §10) ----
+    {
+        "name": "memory_delete",
+        "description": (
+            "Delete a memory entry by its chunk_hash.  Removes the entry "
+            "from the Milvus index and deletes the corresponding vault "
+            "markdown file.  Use during reflection consolidation to remove "
+            "duplicate or stale memories after merging them into stronger "
+            "entries.  Returns confirmation of what was deleted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (determines default scope).",
+                },
+                "chunk_hash": {
+                    "type": "string",
+                    "description": (
+                        "The chunk_hash (unique identifier) of the memory "
+                        "entry to delete.  Obtain this from memory_search "
+                        "or memory_list results."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Memory scope containing the entry.  One of 'system', "
+                        "'orchestrator', 'agenttype_{type}', or 'project_{id}'.  "
+                        "Defaults to the project scope derived from project_id."
+                    ),
+                },
+            },
+            "required": ["project_id", "chunk_hash"],
+        },
+    },
+    {
+        "name": "memory_update",
+        "description": (
+            "Update an existing memory entry's content, tags, or topic.  "
+            "Use during reflection consolidation to correct outdated "
+            "insights, change confidence tags (e.g. #provisional → "
+            "#verified), add tags, or rewrite content based on new "
+            "evidence.  The entry's embedding is recomputed if content "
+            "changes.  Unlike memory_save, this directly targets a known "
+            "entry by chunk_hash — no dedup search is performed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (determines default scope).",
+                },
+                "chunk_hash": {
+                    "type": "string",
+                    "description": (
+                        "The chunk_hash of the memory entry to update.  "
+                        "Obtain from memory_search or memory_list results."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "New content to replace the existing entry's content.  "
+                        "If omitted, the content is not changed (useful for "
+                        "tag-only updates)."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "New tags to set on the entry.  Replaces the existing "
+                        "tags entirely.  To add tags, include both old and new."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "New topic to set on the entry.  Replaces the existing "
+                        "topic.  Omit to leave unchanged."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "'agenttype_{type}', or 'project_{id}'.  Defaults to "
+                        "the project scope derived from project_id."
+                    ),
+                },
+            },
+            "required": ["project_id", "chunk_hash"],
+        },
+    },
+    {
+        "name": "memory_promote",
+        "description": (
+            "Promote a memory from a narrower scope to a broader scope.  "
+            "Copies the entry to the target scope (e.g. project → "
+            "agent-type, or agent-type → system) and optionally deletes "
+            "the original.  Use during reflection consolidation when an "
+            "insight discovered in one project applies broadly across "
+            "projects — it should live in agent-type memory, not project "
+            "memory.  The entry is re-embedded in the target collection."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (used for scope resolution and context).",
+                },
+                "chunk_hash": {
+                    "type": "string",
+                    "description": (
+                        "The chunk_hash of the source memory entry to promote."
+                    ),
+                },
+                "source_scope": {
+                    "type": "string",
+                    "description": (
+                        "Scope to copy FROM (e.g. 'project_my-app').  Defaults "
+                        "to the project scope derived from project_id."
+                    ),
+                },
+                "target_scope": {
+                    "type": "string",
+                    "description": (
+                        "Scope to copy TO (e.g. 'agenttype_coding', 'system').  "
+                        "Must be broader than source_scope."
+                    ),
+                },
+                "delete_source": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, delete the original entry from the source "
+                        "scope after successful promotion.  Default false "
+                        "(keeps both copies)."
+                    ),
+                    "default": False,
+                },
+            },
+            "required": ["project_id", "chunk_hash", "target_scope"],
         },
     },
     # ---- Index Management ----
@@ -2472,6 +2623,154 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_fact_list failed: %s", e, exc_info=True)
             return {"error": f"Fact list failed: {e}"}
+
+    # -----------------------------------------------------------------
+    # Command handlers — Consolidation Tools (spec §10)
+    # -----------------------------------------------------------------
+
+    async def cmd_memory_delete(self, args: dict) -> dict:
+        """Delete a memory entry by chunk_hash.
+
+        Used during reflection consolidation to remove duplicate or stale
+        memories after they have been merged into stronger entries.
+        Deletes from both the Milvus index and the vault filesystem.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        chunk_hash = args.get("chunk_hash")
+        if not chunk_hash:
+            return {"error": "chunk_hash is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_delete")
+
+        scope = args.get("scope")
+
+        try:
+            result = await self._service.delete_document(
+                project_id, chunk_hash, scope=scope
+            )
+            return {"success": True, "action": "deleted", **result}
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            self._log.error("memory_delete failed: %s", e, exc_info=True)
+            return {"error": f"Delete failed: {e}"}
+
+    async def cmd_memory_update(self, args: dict) -> dict:
+        """Update an existing memory entry's content, tags, or topic.
+
+        Directly targets a known entry by chunk_hash — no dedup search.
+        Useful for reflection consolidation: changing confidence tags,
+        correcting outdated content, or refining topic classification.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        chunk_hash = args.get("chunk_hash")
+        if not chunk_hash:
+            return {"error": "chunk_hash is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_update")
+
+        content = args.get("content")
+        tags = args.get("tags")
+        topic = args.get("topic")
+        scope = args.get("scope")
+
+        if content is None and tags is None and topic is None:
+            return {"error": "At least one of content, tags, or topic must be provided"}
+
+        try:
+            result = await self._service.update_document(
+                project_id,
+                chunk_hash,
+                content=content,
+                tags=tags,
+                topic=topic,
+                scope=scope,
+            )
+            return {"success": True, "action": "updated", **result}
+        except ValueError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            self._log.error("memory_update failed: %s", e, exc_info=True)
+            return {"error": f"Update failed: {e}"}
+
+    async def cmd_memory_promote(self, args: dict) -> dict:
+        """Promote a memory from a narrower scope to a broader scope.
+
+        Copies the entry to the target scope and optionally deletes the
+        source.  Used when reflection discovers an insight applies broadly
+        across projects — e.g. promoting from project memory to agent-type
+        memory.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        chunk_hash = args.get("chunk_hash")
+        if not chunk_hash:
+            return {"error": "chunk_hash is required"}
+        target_scope = args.get("target_scope")
+        if not target_scope:
+            return {"error": "target_scope is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_promote")
+
+        source_scope = args.get("source_scope")
+        delete_source = args.get("delete_source", False)
+
+        try:
+            # Step 1: Read the source entry
+            store = self._service._get_store(project_id, source_scope)
+            import asyncio
+
+            entry = await asyncio.to_thread(store.get, chunk_hash)
+            if not entry:
+                return {"error": f"Entry not found in source scope: {chunk_hash}"}
+
+            source_content = entry.get("original") or entry.get("content", "")
+            source_tags = self._decode_tags(entry.get("tags", "[]"))
+            source_topic = entry.get("topic", "") or None
+
+            # Step 2: Save to the target scope via the normal save flow
+            # (this handles embedding, vault file creation, and dedup in target)
+            result = await self._do_memory_save(
+                project_id=project_id,
+                content=source_content,
+                tags=source_tags,
+                topic=source_topic,
+                source_task=entry.get("source_task"),
+                scope=target_scope,
+            )
+
+            # Step 3: Optionally delete the source entry
+            source_deleted = False
+            if delete_source and result.get("success"):
+                try:
+                    await self._service.delete_document(
+                        project_id, chunk_hash, scope=source_scope
+                    )
+                    source_deleted = True
+                except Exception as e:
+                    self._log.warning(
+                        "Failed to delete source after promote: %s", e
+                    )
+
+            return {
+                "success": True,
+                "action": "promoted",
+                "source_scope": source_scope or f"project_{project_id}",
+                "target_scope": target_scope,
+                "source_deleted": source_deleted,
+                "target_result": result,
+            }
+        except Exception as e:
+            self._log.error("memory_promote failed: %s", e, exc_info=True)
+            return {"error": f"Promote failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command handlers — Index Management
