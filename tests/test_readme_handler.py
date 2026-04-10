@@ -1,8 +1,9 @@
 """Tests for src/readme_handler — project README.md vault watcher handler.
 
 Covers Phase 6 implementation: actual orchestrator summary generation,
-startup scanning, VaultWatcher dispatch integration, and event bus
-integration (Roadmap 6.4.2 — README change triggers summary update).
+startup scanning, VaultWatcher dispatch integration, event bus
+integration (Roadmap 6.4.2), and orchestrator memory integration
+tests (Roadmap 6.4.3).
 """
 
 from __future__ import annotations
@@ -1285,3 +1286,492 @@ class TestEventBusIntegration:
 
         # All events for same project
         assert all(e["project_id"] == "my-app" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator memory from project READMEs (Roadmap 6.4.3)
+# ---------------------------------------------------------------------------
+
+# Realistic README content for integration tests.
+_REALISTIC_README = """\
+# My Web App
+
+A full-stack web application for managing team tasks and collaboration.
+
+## Purpose
+
+MyWebApp helps distributed teams coordinate work by providing real-time
+task boards, threaded discussions, and automated status reporting. It
+replaces our previous spreadsheet-based workflow.
+
+## Tech Stack
+
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy
+- **Frontend:** React 18, TypeScript
+- **Database:** PostgreSQL 16
+- **Infrastructure:** Docker Compose, GitHub Actions CI
+
+## Current Status
+
+Active development. Core API and task-board UI are stable. Currently
+working on the notification subsystem and Slack integration.
+
+## Getting Started
+
+```bash
+docker compose up -d
+pip install -e ".[dev]"
+pytest tests/
+```
+"""
+
+_REALISTIC_README_UPDATED = """\
+# My Web App
+
+A full-stack web application for managing team tasks and collaboration.
+
+## Purpose
+
+MyWebApp helps distributed teams coordinate work by providing real-time
+task boards, threaded discussions, and automated status reporting. It
+replaces our previous spreadsheet-based workflow. **Now with Slack integration!**
+
+## Tech Stack
+
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy
+- **Frontend:** React 18, TypeScript
+- **Database:** PostgreSQL 16
+- **Infrastructure:** Docker Compose, GitHub Actions CI
+- **Integrations:** Slack Bot SDK
+
+## Current Status
+
+Entering beta. Notification subsystem and Slack integration are complete.
+Focus shifting to performance tuning and load testing.
+
+## Getting Started
+
+```bash
+docker compose up -d
+pip install -e ".[dev]"
+pytest tests/
+```
+"""
+
+
+class TestOrchestratorMemoryFromProjectReadmes:
+    """Roadmap 6.4.3 — integration tests for orchestrator memory via project READMEs.
+
+    Each test method maps to a specific acceptance criterion:
+        (a) README creation triggers summary generation
+        (b) Summary captures key project details
+        (c) README modification triggers summary update
+        (d) Startup scan processes all READMEs
+        (e) Project with no README handled gracefully
+        (f) README deletion removes/flags summary
+        (g) Summary conciseness
+    """
+
+    # (a) Creating vault/projects/myapp/README.md triggers generation of
+    #     vault/orchestrator/memory/project-myapp.md
+    @pytest.mark.asyncio
+    async def test_readme_creation_triggers_summary_generation(self, tmp_path):
+        """(a) A new project README creates a summary in orchestrator memory."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot (empty vault)
+        await watcher.check()
+
+        # Create the project README
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "README.md").write_text(_REALISTIC_README)
+
+        # Watcher detects the new file and dispatches the handler
+        await watcher.check()
+
+        # Verify the summary was generated at the expected path
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        assert summary.is_file(), "Summary file should be created in orchestrator memory"
+
+        content = summary.read_text()
+        assert 'project_id: "myapp"' in content
+        assert 'source: "vault/projects/myapp/README.md"' in content
+        assert "type: project-summary" in content
+
+    # (b) Summary captures key project details (tech stack, purpose, status)
+    @pytest.mark.asyncio
+    async def test_summary_captures_key_project_details(self, tmp_path):
+        """(b) The summary preserves tech stack, purpose, and status from the README."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "README.md").write_text(_REALISTIC_README)
+
+        change = VaultChange(
+            path=str(proj_dir / "README.md"),
+            rel_path="projects/myapp/README.md",
+            operation="created",
+        )
+        results = await on_readme_changed([change], vault_root=str(vault))
+
+        assert len(results) == 1
+        assert results[0].success
+
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        content = summary.read_text()
+
+        # Title captured
+        assert "# My Web App" in content
+
+        # Purpose section captured
+        assert "distributed teams coordinate work" in content
+
+        # Tech stack details captured
+        assert "Python 3.12" in content
+        assert "FastAPI" in content
+        assert "React 18" in content
+        assert "PostgreSQL 16" in content
+
+        # Current status captured
+        assert "Active development" in content
+        assert "notification subsystem" in content
+
+    # (c) Editing README triggers summary update — new content reflected
+    @pytest.mark.asyncio
+    async def test_readme_modification_triggers_summary_update(self, tmp_path):
+        """(c) Modifying a README updates the summary with new content."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Phase 1: Create initial README and summary
+        readme.write_text(_REALISTIC_README)
+        await watcher.check()  # initial snapshot
+        # Force a create event (VaultWatcher needs pre-snapshot for modify)
+        time.sleep(0.05)
+        readme.write_text(_REALISTIC_README)  # re-trigger with same content to establish baseline
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        # May or may not exist yet depending on watcher behavior; use direct handler as fallback
+        if not summary.is_file():
+            change = VaultChange(
+                path=str(readme),
+                rel_path="projects/myapp/README.md",
+                operation="created",
+            )
+            await on_readme_changed([change], vault_root=str(vault))
+
+        assert summary.is_file()
+        old_content = summary.read_text()
+        assert "Active development" in old_content
+
+        # Phase 2: Update README with new content
+        time.sleep(0.05)
+        readme.write_text(_REALISTIC_README_UPDATED)
+        await watcher.check()
+
+        new_content = summary.read_text()
+
+        # New content reflected
+        assert "Entering beta" in new_content
+        assert "Slack Bot SDK" in new_content
+        assert "Now with Slack integration" in new_content
+
+        # Old content replaced
+        assert "Active development" not in new_content
+
+    # (d) Startup scan processes all existing READMEs
+    @pytest.mark.asyncio
+    async def test_startup_scan_processes_all_readmes(self, tmp_path):
+        """(d) Startup scan creates summaries for every project with a README."""
+        vault = tmp_path / "vault"
+
+        # Pre-create READMEs for multiple projects
+        project_data = {
+            "frontend": "# Frontend\n\n## Tech Stack\n- React, TypeScript\n",
+            "backend": "# Backend API\n\n## Tech Stack\n- Python, FastAPI\n",
+            "infra": "# Infrastructure\n\n## Purpose\nCI/CD and deployment.\n",
+        }
+        for pid, content in project_data.items():
+            proj_dir = vault / "projects" / pid
+            proj_dir.mkdir(parents=True)
+            (proj_dir / "README.md").write_text(content)
+
+        # Run startup scan
+        results = await scan_and_generate_readme_summaries(str(vault))
+
+        # All three READMEs processed successfully
+        assert len(results) == 3
+        assert all(r.success for r in results)
+        project_ids = {r.project_id for r in results}
+        assert project_ids == {"frontend", "backend", "infra"}
+
+        # Each project has a summary with its specific content
+        for pid, content in project_data.items():
+            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            assert summary.is_file(), f"Summary for {pid} should exist"
+            summary_text = summary.read_text()
+            assert f'project_id: "{pid}"' in summary_text
+            # Spot-check content propagation
+            if pid == "frontend":
+                assert "React" in summary_text
+            elif pid == "backend":
+                assert "FastAPI" in summary_text
+            elif pid == "infra":
+                assert "CI/CD" in summary_text
+
+    # (e) Project with no README does not cause errors (skipped gracefully)
+    @pytest.mark.asyncio
+    async def test_missing_readme_handled_gracefully(self, tmp_path):
+        """(e) Projects without a README are skipped — no errors raised."""
+        vault = tmp_path / "vault"
+
+        # Create some projects — only some have READMEs
+        (vault / "projects" / "has-readme").mkdir(parents=True)
+        (vault / "projects" / "has-readme" / "README.md").write_text(
+            "# Has README\n\nA project with a README.\n"
+        )
+        (vault / "projects" / "no-readme").mkdir(parents=True)
+        # no-readme has a directory but no README.md
+        (vault / "projects" / "empty-dir").mkdir(parents=True)
+        # empty-dir also has no README
+
+        # Startup scan should process gracefully
+        results = await scan_and_generate_readme_summaries(str(vault))
+
+        # Only the project with a README is processed
+        assert len(results) == 1
+        assert results[0].project_id == "has-readme"
+        assert results[0].success
+
+        # No summary for projects without READMEs — and no crashes
+        for pid in ("no-readme", "empty-dir"):
+            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            assert not summary.is_file(), f"No summary should exist for {pid}"
+
+    # (e) additional: watcher does not error on missing-README projects
+    @pytest.mark.asyncio
+    async def test_watcher_ignores_non_readme_project_files(self, tmp_path):
+        """(e) Creating non-README files in project dirs causes no handler errors."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot
+        await watcher.check()
+
+        # Create project with non-README files only
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "config.yaml").write_text("key: value\n")
+        (proj_dir / "notes.md").write_text("# Notes\n")
+
+        # Should not trigger the handler or create a summary
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        assert not summary.is_file()
+
+    # (f) Deleting README removes the orchestrator summary
+    @pytest.mark.asyncio
+    async def test_readme_deletion_removes_summary(self, tmp_path):
+        """(f) Deleting a README removes its orchestrator summary."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text(_REALISTIC_README)
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Create + snapshot
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+
+        # If watcher didn't generate summary on first check (pre-existing file),
+        # force it via the handler
+        if not summary.is_file():
+            change = VaultChange(
+                path=str(readme),
+                rel_path="projects/myapp/README.md",
+                operation="created",
+            )
+            await on_readme_changed([change], vault_root=str(vault))
+
+        assert summary.is_file(), "Summary should exist before deletion"
+
+        # Delete the README
+        readme.unlink()
+        await watcher.check()
+
+        assert not summary.is_file(), "Summary should be removed after README deletion"
+
+    # (f) additional: deletion via direct handler call
+    @pytest.mark.asyncio
+    async def test_readme_deletion_via_handler_removes_summary(self, tmp_path):
+        """(f) Direct handler call for deleted README removes summary file."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        # Pre-create a summary
+        _write_summary(str(vault), "myapp", _REALISTIC_README)
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        assert summary.is_file()
+
+        # Simulate deletion event
+        change = VaultChange(
+            path=str(vault / "projects" / "myapp" / "README.md"),
+            rel_path="projects/myapp/README.md",
+            operation="deleted",
+        )
+        results = await on_readme_changed([change], vault_root=str(vault))
+
+        assert len(results) == 1
+        assert results[0].success
+        assert results[0].action == "removed"
+        assert not summary.is_file()
+
+    # (g) Summary is concise enough for orchestrator's context
+    @pytest.mark.asyncio
+    async def test_summary_is_concise(self, tmp_path):
+        """(g) Summary overhead (frontmatter, structure) is minimal relative to README."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "README.md").write_text(_REALISTIC_README)
+
+        change = VaultChange(
+            path=str(proj_dir / "README.md"),
+            rel_path="projects/myapp/README.md",
+            operation="created",
+        )
+        await on_readme_changed([change], vault_root=str(vault))
+
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        content = summary.read_text()
+
+        # The summary overhead (frontmatter + title line) should be small.
+        # Full README is ~600 chars; total summary should be under 2x that.
+        readme_len = len(_REALISTIC_README)
+        summary_len = len(content)
+        overhead = summary_len - readme_len
+
+        # Frontmatter + title wrapper should add < 300 bytes of overhead
+        assert overhead < 300, (
+            f"Summary overhead is {overhead} bytes — should be under 300. "
+            f"README={readme_len}, summary={summary_len}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_multiple_summaries_fit_in_context(self, tmp_path):
+        """(g) Multiple project summaries are small enough to coexist in context."""
+        vault = tmp_path / "vault"
+
+        # Create 10 projects with realistic READMEs
+        for i in range(10):
+            pid = f"project-{i:02d}"
+            proj_dir = vault / "projects" / pid
+            proj_dir.mkdir(parents=True)
+            (proj_dir / "README.md").write_text(
+                f"# Project {i}\n\n"
+                f"## Purpose\nProject {i} handles module {i} of the system.\n\n"
+                f"## Tech Stack\n- Python, FastAPI\n\n"
+                f"## Status\nActive development.\n"
+            )
+
+        results = await scan_and_generate_readme_summaries(str(vault))
+
+        assert len(results) == 10
+        assert all(r.success for r in results)
+
+        # Measure total size of all summaries
+        total_size = 0
+        for i in range(10):
+            pid = f"project-{i:02d}"
+            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            assert summary.is_file()
+            total_size += len(summary.read_text())
+
+        # 10 project summaries should fit comfortably in an LLM context.
+        # A reasonable budget: < 50KB for 10 projects.
+        assert total_size < 50_000, (
+            f"Total size of 10 project summaries is {total_size} bytes — "
+            f"should be under 50KB to fit in orchestrator context"
+        )
+
+    # Integration: full lifecycle with realistic content
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_with_realistic_content(self, tmp_path):
+        """Full create → modify → delete lifecycle with realistic README content."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+
+        # Phase 1: Create README
+        proj_dir = vault / "projects" / "myapp"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text(_REALISTIC_README)
+        await watcher.check()
+
+        assert summary.is_file()
+        content = summary.read_text()
+        assert "Active development" in content
+        assert "Python 3.12" in content
+
+        # Phase 2: Modify README (project evolves)
+        time.sleep(0.05)
+        readme.write_text(_REALISTIC_README_UPDATED)
+        await watcher.check()
+
+        content = summary.read_text()
+        assert "Entering beta" in content
+        assert "Slack Bot SDK" in content
+        assert "Active development" not in content
+
+        # Phase 3: Delete README (project removed)
+        readme.unlink()
+        await watcher.check()
+
+        assert not summary.is_file()
