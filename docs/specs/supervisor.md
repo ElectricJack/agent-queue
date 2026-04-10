@@ -7,7 +7,7 @@ tags: [spec, supervisor, llm, core]
 The Supervisor is the single intelligent entity in the agent-queue system.
 It replaces the former `ChatAgent` class. All LLM reasoning flows through it.
 
-> **Future evolution:** See [[design/playbooks]] for how playbook execution extends the Supervisor model.
+See [[design/playbooks]] for how playbook execution extends the Supervisor model.
 
 ## Class: Supervisor (src/supervisor.py)
 

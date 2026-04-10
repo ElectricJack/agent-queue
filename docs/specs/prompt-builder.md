@@ -24,7 +24,7 @@ Every prompt is assembled from up to 5 ordered layers:
    - Project documentation (CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
-3. **Relevant Rules** — What rules apply to this action? Loaded from `RuleManager` via `load_relevant_rules(query)`. Without memsearch, loads ALL rules for the current project plus globals. With memsearch (future), uses semantic search against the query for relevance filtering. Rules are formatted as a single markdown block under `## Applicable Rules` with each rule's content included, prefixed with `[Active]` or `[Passive]`.
+3. **Relevant Rules** — Deprecated. Previously loaded from `RuleManager` via `load_relevant_rules(query)`. Rules have been replaced by playbooks and vault memory. `load_relevant_rules()` is now a no-op.
 
 4. **Specific Context** — What is the LLM doing right now? Arbitrary named context blocks:
    - `task` — task description

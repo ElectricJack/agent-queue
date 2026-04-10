@@ -255,4 +255,4 @@ MCP servers are passed through from `TaskContext.mcp_servers` (a `dict` mapping 
 
 If `TaskContext.mcp_servers` is empty (the default), no MCP configuration is applied to the session.
 
-> **Future evolution:** See [[design/agent-coordination]] for how coordination playbooks manage agent assignment and affinity.
+See [[design/agent-coordination]] for how coordination playbooks manage agent assignment and affinity.

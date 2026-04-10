@@ -4,8 +4,8 @@ tags: [design, playbooks, automation, workflows]
 
 # Playbooks — Agent Workflow Graphs
 
-**Status:** Draft
-**Supersedes:** `rule-system.md`, `hooks.md` (planned migration)
+**Status:** Active
+**Supersedes:** `rule-system.md`, `hooks.md` (migration complete)
 **Source files:** TBD
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
 **Related:** [[vault]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
@@ -789,9 +789,9 @@ git.commit
         → Summarizes what happened and posts to Discord
 ```
 
-### Sub-Playbook Invocation (Future)
+### Sub-Playbook Invocation (Deferred)
 
-A future extension could allow a node to explicitly invoke another playbook as a
+A possible extension: a node could explicitly invoke another playbook as a
 sub-routine, passing context in and receiving results back. This would be modeled as:
 
 ```json
@@ -1029,10 +1029,10 @@ surfaced through memory search rather than a separate rule mechanism.
 
 ---
 
-## 14. Dashboard Visualization (Future)
+## 14. Dashboard Visualization
 
 The compiled JSON graph is directly renderable as a visual diagram. The dashboard
-should eventually support:
+supports:
 
 - **Graph view:** Nodes as boxes, transitions as arrows, conditions as edge labels.
   Color-code by node type (action, decision, human checkpoint, terminal).
@@ -1040,7 +1040,7 @@ should eventually support:
   Show accumulated context at each completed node.
 - **Run history:** Timeline of past runs with the path taken through the graph
   highlighted. Click a node to see the LLM prompt and response for that step.
-- **Authoring (future):** Visual graph editor that generates markdown, closing
+- **Authoring:** Visual graph editor that generates markdown, closing
   the loop — author visually, edit as text, compile to JSON, render as graph.
 
 ---

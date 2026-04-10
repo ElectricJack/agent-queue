@@ -11,7 +11,7 @@ tags: [spec, plugins, extensibility]
 
 ## 1. Overview
 
-> **Future evolution:** See [[design/memory-plugin]] for how the memory plugin v2 extends the plugin architecture.
+See [[design/memory-plugin]] for how the memory plugin v2 extends the plugin architecture.
 
 The plugin system enables extending AgentQueue with installable, self-contained Python packages that can register commands, tools, cron-scheduled functions, CLI commands, and Discord slash commands. Plugins are installed from git repositories, managed via Discord slash commands and the `aq` CLI, and can be developed/updated by AgentQueue agents themselves.
 
@@ -518,7 +518,7 @@ Plugins do NOT get:
 
 ---
 
-## 10. Future Work: Extracting Existing Features to Plugins
+## 10. Candidates for Extraction to Plugins
 
 Several existing AgentQueue subsystems are good candidates for extraction into plugins. This would slim down the core and validate the plugin architecture. Listed by extraction difficulty:
 

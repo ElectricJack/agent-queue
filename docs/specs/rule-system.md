@@ -14,7 +14,7 @@ automatically. Users never need to interact with hooks directly.
 **Key principle:** Rules are the source of truth. Hooks are derived, disposable
 artifacts that the hook engine uses internally for execution.
 
-> **Future evolution:** Rules evolve into [[design/playbooks|playbooks]] and [[design/vault|vault memory]]. See [[design/playbooks]] Section 13 for migration path.
+> **Deprecated:** Rules have been replaced by [[design/playbooks|playbooks]] and [[design/vault|vault memory]]. See [[design/playbooks]] Section 13 for the migration path that was followed.
 
 ---
 

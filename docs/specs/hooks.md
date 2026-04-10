@@ -12,7 +12,7 @@ tags: [spec, hooks, automation, deprecated]
 
 ## 1. Overview
 
-> **Future evolution:** The hook engine will be replaced by [[design/playbooks|playbooks]]. See [[design/playbooks]] for the planned migration.
+> **Deprecated:** The hook engine has been replaced by [[design/playbooks|playbooks]]. See [[design/playbooks]] Section 13 for the migration path that was followed.
 
 The `HookEngine` class implements a generic, event-driven automation layer that runs
 alongside the main orchestrator loop. Hooks are **internal execution artifacts** —

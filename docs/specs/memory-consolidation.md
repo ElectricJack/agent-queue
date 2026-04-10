@@ -8,7 +8,7 @@ tags: [spec, memory, consolidation]
 > **Author:** Agent (fleet-beacon)
 > **Date:** 2026-04-05
 
-> **Future evolution:** See [[design/memory-scoping]] for scoped collections and [[design/memory-plugin]] for the plugin v2 architecture.
+See [[design/memory-scoping]] for scoped collections and [[design/memory-plugin]] for the plugin v2 architecture.
 
 ## Problem Statement
 

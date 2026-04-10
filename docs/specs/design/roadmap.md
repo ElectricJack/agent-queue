@@ -555,14 +555,14 @@ The core new automation system replacing rules + hooks.
 | 5.6.7 | Migrate plugin `@cron()` hooks to timer-triggered playbooks per [[playbooks#16. Plugin Integration]] | 5.6.6 |
 | 5.6.8 | Remove default rules when playbook equivalents are validated per [[playbooks#13. Migration Path]] Phase 2 | 5.6.6 |
 
-### 5.7 Observability (Future)
+### 5.7 Observability
 
-**Spec:** [[playbooks#14. Dashboard Visualization (Future)]], [[playbooks#19. Open Questions]] #4
+**Spec:** [[playbooks#14. Dashboard Visualization]], [[playbooks#19. Open Questions]] #4
 
 | # | Task | Depends On |
 |---|---|---|
 | 5.7.1 | Implement playbook health metrics: tokens per node, run duration, transition paths, failure rates per [[playbooks#19. Open Questions]] #4 | 5.2.9 |
-| 5.7.2 | Design dashboard playbook graph view (nodes as boxes, transitions as arrows, live state highlighting) per [[playbooks#14. Dashboard Visualization (Future)]] | 5.7.1 |
+| 5.7.2 | Design dashboard playbook graph view (nodes as boxes, transitions as arrows, live state highlighting) per [[playbooks#14. Dashboard Visualization]] | 5.7.1 |
 
 > **Test checkpoint:** Full system test with playbooks running alongside hooks.
 > Trigger `task.completed` — verify both the old hook AND the new playbook fire.
@@ -746,7 +746,7 @@ Playbook-driven multi-agent workflows.
 | 7.5.9 | Add tests: Exploration coordination playbook per [[agent-coordination#4. Coordination Playbook Examples]] Example 2. Cases: (a) exploration playbook creates N parallel research tasks with no dependencies between them, (b) all parallel tasks are assigned to available agents concurrently (scheduler respects independence), (c) reviewer task is created only after ALL parallel tasks complete (depends on all), (d) reviewer task receives summaries/outputs from all parallel tasks as context, (e) partial failure (2 of 3 parallel tasks complete, 1 fails) — reviewer still triggers with available results plus failure note, (f) exploration with single parallel task degrades gracefully to sequential, (g) workflow status reflects "running" until reviewer completes, then "completed" | 7.5.4 |
 | 7.5.10 | Add tests: Orphan workflow recovery per [[agent-coordination#11. Open Questions]] #2. Cases: (a) kill coordination playbook mid-workflow — in-flight tasks continue executing to completion, (b) tasks created before crash have correct dependencies and are scheduled normally, (c) re-triggering coordination playbook discovers existing workflow and resumes from current state, (d) resumed playbook does not re-create tasks that already exist, (e) workflow status shows "running" during orphan period (not "failed"), (f) orphan detection: system identifies workflows with no active playbook run and alerts operator, (g) manual `resume_playbook` can restart coordination from the last completed stage | 7.5.6 |
 
-### 7.6 Coordination Observability (Future)
+### 7.6 Coordination Observability
 
 **Spec:** [[agent-coordination#11. Open Questions]] #6
 
@@ -795,7 +795,7 @@ Remove the old system once [[playbooks]] are validated.
 | 8.4 | Remove `HookEngine` ([[specs/hooks]]), `RuleManager` ([[specs/rule-system]]), and related code | 8.1, 8.2, 8.3 |
 | 8.5 | Remove hook/rule DB tables (Alembic migration) | 8.4 |
 | 8.6 | Remove `src/memory.py` MemoryManager and v1 memory plugin per [[memory-plugin#2. Current Architecture (Being Replaced)]] | 2.2.16 |
-| 8.7 | Update all specs to remove "future evolution" callouts (they're now current) | 8.4 |
+| 8.7 | ~~Update all specs to remove "future evolution" callouts (they're now current)~~ ✅ | 8.4 |
 | 8.8 | Remove deprecated spec files (`proactive-inspector.md` already removed, verify no others) | 8.7 |
 
 > **Final test checkpoint:** Full regression test. Every feature that worked with

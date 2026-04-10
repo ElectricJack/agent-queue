@@ -7,7 +7,7 @@ tags: [spec, messaging, telegram, bot]
 **Source files:** `src/telegram/bot.py`, `src/telegram/adapter.py`, `src/telegram/commands.py`, `src/telegram/views.py`, `src/telegram/notifications.py`
 **Related:** [[messaging/base]], [[messaging/discord]], [[specs/supervisor]], [[specs/command-handler]]
 
-> **Future evolution:** See [[design/agent-coordination]] for how messaging platforms surface workflow status and human-in-the-loop prompts.
+See [[design/agent-coordination]] for how messaging platforms surface workflow status and human-in-the-loop prompts.
 
 ## 1. Overview
 

@@ -26,7 +26,7 @@ tags: [spec, git, workspace]
 ## Source Files
 - `src/git/manager.py`
 
-> **Future evolution:** GitManager gains event emission (git.commit, git.push, git.pr.created). See [[design/playbooks]] Section 7 and Section 17.
+GitManager emits events (git.commit, git.push, git.pr.created) for playbook triggers. See [[design/playbooks]] Section 7 and Section 17.
 
 ---
 

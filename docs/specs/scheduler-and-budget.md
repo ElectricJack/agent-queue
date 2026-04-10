@@ -8,7 +8,7 @@ tags: [spec, scheduler, budget, tokens]
 
 The scheduler and budget subsystem controls which tasks get assigned to which agents, in what order, and under what resource constraints. It is entirely deterministic and stateless: given the same snapshot of system state, it always produces the same assignment decisions. No LLM calls, no randomness, no side effects. All scheduling logic runs in-process inside the asyncio event loop.
 
-> **Future evolution:** See [[design/agent-coordination]] for how coordination playbooks interact with the scheduler.
+See [[design/agent-coordination]] for how coordination playbooks interact with the scheduler.
 
 The subsystem is split across three files:
 

@@ -104,7 +104,7 @@ The following tools are always available (not assigned to any category):
 - `load_tools` -- load a tool category
 - `memory_search` -- search project memory
 - `send_message` -- post to Discord channel
-- `browse_rules` -- list rules (Phase 2 stub)
-- `load_rule` -- load rule detail (Phase 2 stub)
-- `save_rule` -- create/update rule (Phase 2 stub)
-- `delete_rule` -- remove rule (Phase 2 stub)
+- `browse_rules` -- list rules (deprecated, redirects to playbooks)
+- `load_rule` -- load rule detail (deprecated, redirects to playbooks)
+- `save_rule` -- create/update rule (deprecated, redirects to playbooks)
+- `delete_rule` -- remove rule (deprecated, redirects to playbooks)

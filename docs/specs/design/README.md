@@ -4,22 +4,22 @@ tags: [design, overview, index]
 
 # Next-Generation Design Specs
 
-These specs describe the planned evolution of Agent Queue's automation and knowledge
-systems. They are **design documents under active development** — not yet implemented.
+These specs describe the automation and knowledge systems of Agent Queue.
+They are **design documents** that serve as the architectural reference for the current implementation.
 
 ## Documents
 
 | Spec | Status | Summary |
 |---|---|---|
-| [[guiding-design-principles]] | Draft | The 10 core principles behind all design decisions |
-| [[playbooks]] | Draft | Agent workflow graphs — directed graphs of LLM decision points replacing rules + hooks |
-| [[vault]] | Draft | Vault directory structure, what lives where, reference stubs, Obsidian integration, migration path |
-| [[memory-plugin]] | Draft | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
-| [[memory-scoping]] | Draft | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
-| [[profiles]] | Draft | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
-| [[self-improvement]] | Draft | Self-improvement loop, orchestrator memory, reflection, health & observability |
-| [[agent-coordination]] | Draft | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
-| [[roadmap]] | Draft | 196-task implementation roadmap across 8 phases with dependencies and test checkpoints |
+| [[guiding-design-principles]] | Active | The 10 core principles behind all design decisions |
+| [[playbooks]] | Active | Agent workflow graphs — directed graphs of LLM decision points, replaced rules + hooks |
+| [[vault]] | Active | Vault directory structure, what lives where, reference stubs, Obsidian integration |
+| [[memory-plugin]] | Active | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
+| [[memory-scoping]] | Active | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
+| [[profiles]] | Active | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
+| [[self-improvement]] | Active | Self-improvement loop, orchestrator memory, reflection, health & observability |
+| [[agent-coordination]] | Active | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
+| [[roadmap]] | Active | 196-task implementation roadmap across 8 phases with dependencies and test checkpoints |
 
 ## How They Relate
 
@@ -131,7 +131,7 @@ fix tasks, and the experience is remembered for next time.
 
 ## Supersedes
 
-Once implemented, these specs will replace:
-- `specs/rule-system.md` — rules become [[playbooks]] or [[vault|vault memory]]
+These specs have replaced:
+- `specs/rule-system.md` — rules are now [[playbooks]] or [[vault|vault memory]]
 - `specs/hooks.md` — hook engine replaced by [[playbooks|playbook executor]]
-- Parts of `specs/agent-profiles.md` — profiles move to [[vault|vault markdown]]
+- Parts of `specs/agent-profiles.md` — profiles now stored as [[vault|vault markdown]]

@@ -149,7 +149,7 @@ Generate a daily project status summary:
 }
 ```
 
-> **Future evolution:** Hooks evolve into [[specs/design/playbooks|playbooks]]. See [[specs/design/playbooks]] for the planned replacement.
+> **Deprecated:** Hooks have been replaced by [[specs/design/playbooks|playbooks]]. See [[specs/design/playbooks]] for the playbook system.
 
 ### Test Gate After Completion
 

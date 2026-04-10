@@ -27,7 +27,7 @@ scheduling or coordination.  All promotion, assignment, and retry decisions are 
 and derive purely from database state.  LLM calls occur only inside agent adapters (doing
 real work) and, optionally, inside the plan parser when `use_llm_parser` is enabled.
 
-> **Future evolution:** See [[design/playbooks]] and [[design/agent-coordination]] for planned evolution of the orchestration model.
+See [[design/playbooks]] and [[design/agent-coordination]] for the extended orchestration model.
 
 **Concurrency model.**  Everything runs inside a single asyncio event loop.  Each executing
 task is launched as an `asyncio.Task` background coroutine.  The orchestrator keeps a

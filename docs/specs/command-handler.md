@@ -10,7 +10,7 @@ tags: [spec, command-handler, core]
 
 The handler holds a reference to an [[specs/orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
 
-> **Future evolution:** See [[design/playbooks]] Section 15 for new playbook management commands.
+See [[design/playbooks]] Section 15 for playbook management commands.
 
 The `db` property is a convenience accessor that returns `self.orchestrator.db`.
 
