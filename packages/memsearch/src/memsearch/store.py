@@ -575,7 +575,13 @@ class MilvusStore:
     # directly get summary fields (the non-breaking default).
     _QUERY_FIELDS: ClassVar[list[str]] = _SUMMARY_FIELDS
 
-    def query(self, *, filter_expr: str = "", full: bool = False) -> list[dict[str, Any]]:
+    def query(
+        self,
+        *,
+        filter_expr: str = "",
+        full: bool = False,
+        track: bool = True,
+    ) -> list[dict[str, Any]]:
         """Retrieve chunks by scalar filter (no vector needed).
 
         Parameters
@@ -585,6 +591,10 @@ class MilvusStore:
         full:
             When ``True``, include the ``original`` field in results.
             Defaults to ``False`` (summary-only).
+        track:
+            When ``True`` (default), update retrieval stats for returned
+            results.  Set to ``False`` for internal/diagnostic queries
+            (e.g. health checks, stats) that should not inflate counts.
         """
         output_fields = self._FULL_FIELDS if full else self._SUMMARY_FIELDS
         kwargs: dict[str, Any] = {
@@ -596,8 +606,9 @@ class MilvusStore:
 
         # Update retrieval tracking (spec §6): increment retrieval_count
         # and set last_retrieved for all returned results.
-        hit_hashes = [r["chunk_hash"] for r in results if "chunk_hash" in r]
-        self._update_retrieval_stats(hit_hashes)
+        if track:
+            hit_hashes = [r["chunk_hash"] for r in results if "chunk_hash" in r]
+            self._update_retrieval_stats(hit_hashes)
 
         return results
 

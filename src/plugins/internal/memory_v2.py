@@ -77,6 +77,7 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_delete",
         "memory_update",
         "memory_promote",
+        "memory_health",
     }
 )
 
@@ -860,6 +861,45 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "memory_health",
+        "description": (
+            "Get memory health metrics for a project.  Surfaces collection "
+            "sizes, growth rate (new documents in last 7 days), stale document "
+            "count (not retrieved in N days), most-retrieved documents, "
+            "retrieval hit rate, and contradiction count (entries tagged "
+            "#contested).  Per spec §6 — Memory Health View."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to check health for.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Scope to inspect.  Defaults to project scope.",
+                },
+                "stale_days": {
+                    "type": "integer",
+                    "description": (
+                        "Number of days without retrieval before a document is "
+                        "considered stale.  Default 30."
+                    ),
+                    "default": 30,
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": (
+                        "Number of most-retrieved documents to include.  Default 10."
+                    ),
+                    "default": 10,
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
     # ---- Profile / Factsheet / Knowledge (carried forward from v1) ----
     {
         "name": "view_profile",
@@ -1084,6 +1124,8 @@ class MemoryV2Plugin(InternalPlugin):
             # Index management
             "memory_reindex": self.cmd_memory_reindex,
             "memory_stats": self.cmd_memory_stats,
+            # Health (spec §6)
+            "memory_health": self.cmd_memory_health,
             # Profile / knowledge
             "view_profile": self.cmd_view_profile,
             "edit_project_profile": self.cmd_edit_project_profile,
@@ -2826,6 +2868,33 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_stats failed: %s", e, exc_info=True)
             return {"error": f"Stats failed: {e}"}
+
+    async def cmd_memory_health(self, args: dict) -> dict:
+        """Get memory health metrics (spec §6 — Memory Health View)."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_health")
+
+        scope = args.get("scope")
+        stale_days = args.get("stale_days", 30)
+        top_n = args.get("top_n", 10)
+
+        try:
+            result = await self._service.health(
+                project_id,
+                scope=scope,
+                stale_days=int(stale_days),
+                top_n=int(top_n),
+            )
+            if "error" in result:
+                return result
+            return {"success": True, **result}
+        except Exception as e:
+            self._log.error("memory_health failed: %s", e, exc_info=True)
+            return {"error": f"Health check failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command stubs — Profile / Factsheet / Knowledge

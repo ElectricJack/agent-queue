@@ -1740,10 +1740,17 @@ class MemoryV2Service:
         total = await asyncio.to_thread(store.count)
         model = store.model_info
 
-        # Count by entry type (in parallel)
-        doc_task = asyncio.to_thread(store.query, filter_expr='entry_type == "document"')
-        kv_task = asyncio.to_thread(store.query, filter_expr='entry_type == "kv"')
-        temporal_task = asyncio.to_thread(store.query, filter_expr='entry_type == "temporal"')
+        # Count by entry type (in parallel) — track=False so diagnostic
+        # queries don't inflate retrieval counts.
+        doc_task = asyncio.to_thread(
+            store.query, filter_expr='entry_type == "document"', track=False
+        )
+        kv_task = asyncio.to_thread(
+            store.query, filter_expr='entry_type == "kv"', track=False
+        )
+        temporal_task = asyncio.to_thread(
+            store.query, filter_expr='entry_type == "temporal"', track=False
+        )
         doc_results, kv_results, temporal_results = await asyncio.gather(
             doc_task, kv_task, temporal_task
         )
@@ -1758,6 +1765,152 @@ class MemoryV2Service:
             "temporal_entries": len(temporal_results),
             "embedding_model": model,
             "needs_reindex": store.needs_reindex,
+        }
+
+    # ------------------------------------------------------------------
+    # Health (spec §6 — Memory Health View)
+    # ------------------------------------------------------------------
+
+    async def health(
+        self,
+        project_id: str,
+        *,
+        scope: str | None = None,
+        stale_days: int = 30,
+        top_n: int = 10,
+    ) -> dict[str, Any]:
+        """Compute memory health metrics for a scoped collection.
+
+        Returns six key metrics per spec §6 (Memory Health View):
+
+        1. **Collection sizes** — entry counts by type.
+        2. **Growth rate** — new documents in the last 7 days.
+        3. **Stale count** — documents not retrieved in *stale_days*.
+        4. **Most-retrieved** — top *top_n* documents by retrieval_count.
+        5. **Hit rate** — fraction of documents retrieved at least once.
+        6. **Contradictions** — documents tagged ``#contested``.
+
+        All queries use ``track=False`` to avoid inflating retrieval stats.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier (determines default scope).
+        scope:
+            Explicit scope override.  ``None`` for project scope.
+        stale_days:
+            Number of days without retrieval before a document is
+            considered stale.  Default 30.
+        top_n:
+            Number of most-retrieved documents to return.  Default 10.
+        """
+        if not self.available:
+            return {"error": "MemoryV2Service not available"}
+
+        store = self._get_store(project_id, scope)
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+
+        # Fetch all entries without tracking (health queries are internal)
+        all_entries = await asyncio.to_thread(
+            store.query, filter_expr='chunk_hash != ""', track=False
+        )
+
+        # Split by type
+        documents = [e for e in all_entries if e.get("entry_type") == "document"]
+        kv_entries = [e for e in all_entries if e.get("entry_type") == "kv"]
+        temporal_entries = [e for e in all_entries if e.get("entry_type") == "temporal"]
+
+        now = time.time()
+        stale_threshold = now - (stale_days * 86400)
+        seven_days_ago = now - (7 * 86400)
+
+        # --- 1. Collection sizes ---
+        sizes = {
+            "total": len(all_entries),
+            "documents": len(documents),
+            "kv_entries": len(kv_entries),
+            "temporal_entries": len(temporal_entries),
+        }
+
+        # --- 2. Growth rate (documents created in the last 7 days) ---
+        recent_docs = [
+            d for d in documents if d.get("updated_at", 0) >= seven_days_ago
+        ]
+        growth_rate = {
+            "new_documents_7d": len(recent_docs),
+            "period_days": 7,
+        }
+
+        # --- 3. Stale count (not retrieved in N days) ---
+        stale = [
+            d
+            for d in documents
+            if d.get("last_retrieved", 0) == 0
+            or d.get("last_retrieved", 0) < stale_threshold
+        ]
+        stale_count = len(stale)
+
+        # --- 4. Most-retrieved (top N by retrieval_count) ---
+        docs_with_retrievals = [
+            d for d in documents if d.get("retrieval_count", 0) > 0
+        ]
+        docs_with_retrievals.sort(
+            key=lambda d: d.get("retrieval_count", 0), reverse=True
+        )
+        most_retrieved = [
+            {
+                "chunk_hash": d.get("chunk_hash", ""),
+                "heading": d.get("heading", ""),
+                "topic": d.get("topic", ""),
+                "retrieval_count": d.get("retrieval_count", 0),
+                "last_retrieved": d.get("last_retrieved", 0),
+            }
+            for d in docs_with_retrievals[:top_n]
+        ]
+
+        # --- 5. Hit rate (fraction of documents retrieved at least once) ---
+        total_docs = len(documents)
+        retrieved_docs = len(docs_with_retrievals)
+        hit_rate = (retrieved_docs / total_docs) if total_docs > 0 else 0.0
+
+        # --- 6. Contradictions (documents tagged #contested) ---
+        import json as _json
+
+        contested: list[dict[str, Any]] = []
+        for d in documents:
+            tags_raw = d.get("tags", "[]")
+            try:
+                tags = (
+                    _json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+                )
+            except (_json.JSONDecodeError, TypeError):
+                tags = []
+            if isinstance(tags, list) and "contested" in tags:
+                contested.append(
+                    {
+                        "chunk_hash": d.get("chunk_hash", ""),
+                        "heading": d.get("heading", ""),
+                        "topic": d.get("topic", ""),
+                        "tags": tags,
+                    }
+                )
+
+        return {
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "sizes": sizes,
+            "growth_rate": growth_rate,
+            "stale_count": stale_count,
+            "stale_days_threshold": stale_days,
+            "most_retrieved": most_retrieved,
+            "hit_rate": round(hit_rate, 4),
+            "hit_rate_pct": f"{hit_rate * 100:.1f}%",
+            "documents_retrieved": retrieved_docs,
+            "documents_never_retrieved": total_docs - retrieved_docs,
+            "contradictions": contested,
+            "contradiction_count": len(contested),
         }
 
     # ------------------------------------------------------------------
