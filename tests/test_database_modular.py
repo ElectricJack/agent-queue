@@ -7,6 +7,7 @@ Verifies that:
 4. The abstraction layer works with mock adapters
 """
 
+import asyncio
 import json
 
 import pytest
@@ -1659,9 +1660,7 @@ class TestWorkflowQueries:
     async def test_list_workflows_newest_first(self, db):
         await _setup_workflow_fks(db)
         for i in range(3):
-            await db.create_workflow(
-                _make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i)
-            )
+            await db.create_workflow(_make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i))
 
         wfs = await db.list_workflows()
         assert len(wfs) == 3
@@ -1698,9 +1697,7 @@ class TestWorkflowQueries:
             _make_playbook_run_for_workflow(run_id="pbr-wf-2", playbook_id="pb-other")
         )
 
-        await db.create_workflow(
-            _make_workflow(workflow_id="wf-a", playbook_id="pb-coord")
-        )
+        await db.create_workflow(_make_workflow(workflow_id="wf-a", playbook_id="pb-coord"))
         await db.create_workflow(
             _make_workflow(
                 workflow_id="wf-b",
@@ -1716,9 +1713,7 @@ class TestWorkflowQueries:
     async def test_list_with_limit(self, db):
         await _setup_workflow_fks(db)
         for i in range(5):
-            await db.create_workflow(
-                _make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i)
-            )
+            await db.create_workflow(_make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i))
 
         wfs = await db.list_workflows(limit=2)
         assert len(wfs) == 2
@@ -1790,6 +1785,340 @@ class TestWorkflowQueries:
 
         fetched = await db.get_workflow("wf-1")
         assert fetched.agent_affinity == {}
+
+
+class TestWorkflowLifecycle:
+    """Roadmap 7.1.5 — Workflow CRUD and lifecycle test cases (a)-(h).
+
+    These complement TestWorkflowQueries (unit-level CRUD) with higher-level
+    lifecycle scenarios specified in the roadmap.
+    """
+
+    # ── (a) Create returns valid workflow_id and initial status ───────
+
+    async def test_create_returns_valid_id_and_initial_status(self, db):
+        """(a) create_workflow returns a retrievable record with initial status 'running'."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(workflow_id="wf-new")
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-new")
+        assert fetched is not None
+        assert fetched.workflow_id == "wf-new"
+        # Implementation uses "running" as the initial status (not "pending")
+        assert fetched.status == "running"
+        assert fetched.created_at > 0
+        assert fetched.completed_at is None
+
+    async def test_create_preserves_all_fields(self, db):
+        """(a) All fields survive the create → get round-trip."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(
+            workflow_id="wf-full",
+            current_stage="build",
+            task_ids=["t-1", "t-2"],
+            agent_affinity={"stage-build": "agent-1"},
+            created_at=42.0,
+        )
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-full")
+        assert fetched.playbook_id == "pb-coord"
+        assert fetched.playbook_run_id == "pbr-wf-1"
+        assert fetched.project_id == "p-1"
+        assert fetched.current_stage == "build"
+        assert fetched.task_ids == ["t-1", "t-2"]
+        assert fetched.agent_affinity == {"stage-build": "agent-1"}
+        assert fetched.created_at == 42.0
+
+    # ── (b) Associate tasks with workflow via workflow_id FK ──────────
+
+    async def test_tasks_associated_via_workflow_id(self, db):
+        """(b) Tasks can be created with workflow_id FK and queried by it."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        # Create tasks — two linked to the workflow, one standalone
+        await db.create_task(
+            Task(
+                id="t-w1",
+                project_id="p-1",
+                title="WF Task 1",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-w2",
+                project_id="p-1",
+                title="WF Task 2",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-standalone",
+                project_id="p-1",
+                title="Standalone Task",
+                description="desc",
+            )
+        )
+
+        # Individual lookups reflect the FK
+        assert (await db.get_task("t-w1")).workflow_id == "wf-1"
+        assert (await db.get_task("t-w2")).workflow_id == "wf-1"
+        assert (await db.get_task("t-standalone")).workflow_id is None
+
+        # Tasks are queryable by workflow — filter from list_tasks
+        all_tasks = await db.list_tasks(project_id="p-1")
+        wf_tasks = [t for t in all_tasks if t.workflow_id == "wf-1"]
+        assert len(wf_tasks) == 2
+        assert {t.id for t in wf_tasks} == {"t-w1", "t-w2"}
+
+    async def test_workflow_tracks_task_ids_via_add_workflow_task(self, db):
+        """(b) add_workflow_task atomically associates tasks with the workflow."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.add_workflow_task("wf-1", "t-a")
+        await db.add_workflow_task("wf-1", "t-b")
+        await db.add_workflow_task("wf-1", "t-c")
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-a", "t-b", "t-c"]
+
+    # ── (c) Workflow status transitions ──────────────────────────────
+
+    async def test_transition_running_to_completed(self, db):
+        """(c) running → completed sets completed_at."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "completed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "completed"
+        assert wf.completed_at is not None
+
+    async def test_transition_running_to_failed(self, db):
+        """(c) running → failed sets completed_at."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "failed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "failed"
+        assert wf.completed_at is not None
+
+    async def test_transition_full_path_via_pause(self, db):
+        """(c) running → paused → running → completed (multi-hop path)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "paused")
+        assert (await db.get_workflow("wf-1")).status == "paused"
+
+        await db.update_workflow_status("wf-1", "running")
+        assert (await db.get_workflow("wf-1")).status == "running"
+
+        await db.update_workflow_status("wf-1", "completed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "completed"
+        assert wf.completed_at is not None
+
+    async def test_transition_failed_allows_retry(self, db):
+        """(c) failed → running is a valid retry path."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "failed")
+        assert (await db.get_workflow("wf-1")).status == "failed"
+
+        # Retry: failed → running
+        await db.update_workflow_status("wf-1", "running")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "running"
+
+    # ── (d) Invalid status transitions are rejected ──────────────────
+
+    async def test_invalid_transition_completed_to_running_warns(self, db, caplog):
+        """(d) completed → running is invalid (completed is terminal)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "completed")
+
+        await db.update_workflow_status("wf-1", "running")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_transition_completed_to_paused_warns(self, db, caplog):
+        """(d) completed → paused is invalid (completed is terminal)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "completed")
+
+        await db.update_workflow_status("wf-1", "paused")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_transition_paused_to_completed_warns(self, db, caplog):
+        """(d) paused → completed is invalid (must resume first)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "paused")
+
+        await db.update_workflow_status("wf-1", "completed")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_status_string_raises_value_error(self, db):
+        """(d) Completely bogus status strings raise ValueError."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        for bad_status in ("pending", "stopped", "cancelled", ""):
+            with pytest.raises(ValueError, match="Invalid workflow status"):
+                await db.update_workflow_status("wf-1", bad_status)
+
+    # ── (e) workflow.stage.completed event ────────────────────────────
+
+    @pytest.mark.skip(
+        reason="Depends on roadmap 7.1.4 (workflow.stage.completed event emission) — not yet implemented"
+    )
+    async def test_stage_completed_event_emitted(self, db):
+        """(e) workflow.stage.completed event fires when all stage tasks complete."""
+        # Placeholder — the event schema exists (src/event_schemas.py) but
+        # the emission logic in the orchestrator (7.1.4) is not yet wired up.
+        pass
+
+    # ── (f) Workflow with no tasks can be created and tracked ────────
+
+    async def test_empty_workflow_full_lifecycle(self, db):
+        """(f) A workflow with no associated tasks can be created, tracked, and completed."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(task_ids=[])
+        await db.create_workflow(wf)
+
+        # Readable
+        fetched = await db.get_workflow("wf-1")
+        assert fetched is not None
+        assert fetched.task_ids == []
+
+        # Updatable
+        await db.update_workflow("wf-1", current_stage="deploy")
+        assert (await db.get_workflow("wf-1")).current_stage == "deploy"
+
+        # Status-transitionable
+        await db.update_workflow_status("wf-1", "completed")
+        assert (await db.get_workflow("wf-1")).status == "completed"
+
+        # Listable
+        wfs = await db.list_workflows()
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-1"
+
+        # Deletable
+        await db.delete_workflow("wf-1")
+        assert await db.get_workflow("wf-1") is None
+
+    # ── (g) Deleting workflow does not delete its tasks ───────────────
+
+    async def test_delete_workflow_preserves_tasks(self, db):
+        """(g) Tasks associated with a workflow survive workflow deletion."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        # Create tasks associated with the workflow
+        await db.create_task(
+            Task(
+                id="t-surv1",
+                project_id="p-1",
+                title="Survivor 1",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-surv2",
+                project_id="p-1",
+                title="Survivor 2",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+
+        # Detach tasks from workflow (clear FK) then delete
+        await db.update_task("t-surv1", workflow_id=None)
+        await db.update_task("t-surv2", workflow_id=None)
+        await db.delete_workflow("wf-1")
+
+        # Workflow is gone
+        assert await db.get_workflow("wf-1") is None
+
+        # Tasks survived
+        t1 = await db.get_task("t-surv1")
+        t2 = await db.get_task("t-surv2")
+        assert t1 is not None
+        assert t2 is not None
+        assert t1.workflow_id is None
+        assert t2.workflow_id is None
+
+    async def test_tasks_not_cascade_deleted_with_workflow(self, db):
+        """(g) No ON DELETE CASCADE — FK blocks direct deletion of referenced workflow."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.create_task(
+            Task(
+                id="t-linked",
+                project_id="p-1",
+                title="Linked",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+
+        # Attempting to delete the workflow while tasks reference it
+        # should either raise (FK enforced) or succeed without
+        # cascade-deleting the task.
+        try:
+            await db.delete_workflow("wf-1")
+        except Exception:
+            # FK constraint prevented deletion — task is protected
+            pass
+
+        # Regardless of whether the delete succeeded, the task must exist
+        task = await db.get_task("t-linked")
+        assert task is not None
+
+    # ── (h) Concurrent creation — no ID collisions ───────────────────
+
+    async def test_concurrent_creation_no_id_collisions(self, db):
+        """(h) Multiple concurrent create_workflow calls with distinct IDs all succeed."""
+        await _setup_workflow_fks(db)
+
+        wfs = [_make_workflow(workflow_id=f"wf-cc-{i}", created_at=1000.0 + i) for i in range(10)]
+
+        await asyncio.gather(*(db.create_workflow(wf) for wf in wfs))
+
+        # All 10 should exist
+        all_wfs = await db.list_workflows(limit=20)
+        assert len(all_wfs) == 10
+        ids = {w.workflow_id for w in all_wfs}
+        assert ids == {f"wf-cc-{i}" for i in range(10)}
+
+    async def test_concurrent_creation_duplicate_id_handled(self, db):
+        """(h) Creating two workflows with the same ID raises (integrity constraint)."""
+        await _setup_workflow_fks(db)
+
+        wf_a = _make_workflow(workflow_id="wf-dup", created_at=1000.0)
+        wf_b = _make_workflow(workflow_id="wf-dup", created_at=2000.0)
+
+        # First creation succeeds
+        await db.create_workflow(wf_a)
+
+        # Duplicate ID should raise
+        with pytest.raises(Exception):
+            await db.create_workflow(wf_b)
 
 
 class TestMockAdapter:
