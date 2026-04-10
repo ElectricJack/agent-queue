@@ -20,6 +20,13 @@ runs in the background after the WorkspaceSpecWatcher has already written the
 basic stub with metadata and excerpt.  If the LLM call fails, the stub
 retains its placeholder text and will be retried on the next change.
 
+**Source hash tracking (Roadmap 6.3.3):** Before calling the LLM, the enricher
+compares the current source file's content hash against the ``source_hash``
+stored in the stub's YAML frontmatter.  If the hashes match *and* the stub has
+already been enriched (i.e. placeholder sections have been replaced), the
+enrichment is skipped to avoid redundant LLM calls.  A ``force`` parameter
+allows bypassing this check when re-enrichment is explicitly desired.
+
 Configuration is via ``MemoryConfig`` fields prefixed with ``stub_enrichment_``.
 The LLM provider falls back through:
 ``stub_enrichment_provider`` -> ``revision_provider`` -> ``"anthropic"``
@@ -101,15 +108,18 @@ class EnrichmentResult:
         project_id: The project that owns the stub.
         stub_name: Filename of the stub (e.g. ``spec-orchestrator.md``).
         success: Whether the enrichment succeeded.
-        summary: The generated summary text (empty on failure).
-        key_decisions: The generated key decisions text (empty on failure).
-        key_interfaces: The generated key interfaces text (empty on failure).
+        skipped: Whether enrichment was skipped because the source hash
+            matched the existing stub and the stub was already enriched.
+        summary: The generated summary text (empty on failure/skip).
+        key_decisions: The generated key decisions text (empty on failure/skip).
+        key_interfaces: The generated key interfaces text (empty on failure/skip).
         error: Error message if enrichment failed, empty on success.
     """
 
     project_id: str
     stub_name: str
     success: bool
+    skipped: bool = False
     summary: str = ""
     key_decisions: str = ""
     key_interfaces: str = ""
@@ -204,6 +214,98 @@ def update_stub_content(existing_content: str, sections: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Source hash extraction and stub state detection
+# ---------------------------------------------------------------------------
+
+
+# Placeholder patterns that indicate a stub section has NOT been enriched yet.
+_PLACEHOLDER_PATTERNS = (
+    "*summary pending",
+    "*pending llm extraction",
+    "*pending llm extraction.*",
+    "*summary pending --",
+    "*summary pending —",
+)
+
+
+def extract_source_hash_from_frontmatter(content: str) -> str:
+    """Extract the ``source_hash`` value from a stub file's YAML frontmatter.
+
+    Parses the YAML frontmatter delimited by ``---`` lines and returns the
+    value of the ``source_hash`` field.  Returns an empty string if the
+    field is not found or the content has no valid frontmatter.
+
+    Parameters
+    ----------
+    content:
+        The full text of a stub file.
+
+    Returns
+    -------
+    str
+        The source_hash value, or ``""`` if not found.
+    """
+    if not content or not content.startswith("---"):
+        return ""
+
+    # Find closing frontmatter delimiter
+    end_idx = content.find("\n---", 3)
+    if end_idx == -1:
+        return ""
+
+    frontmatter = content[3:end_idx]
+
+    # Simple line-based YAML parsing — avoids dependency on pyyaml here
+    for line in frontmatter.splitlines():
+        line = line.strip()
+        if line.startswith("source_hash:"):
+            value = line[len("source_hash:") :].strip()
+            # Remove optional quotes
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value
+
+    return ""
+
+
+def stub_is_enriched(content: str) -> bool:
+    """Check whether a stub's LLM sections contain real (non-placeholder) content.
+
+    Returns ``True`` if at least one of the Summary, Key Decisions, or
+    Key Interfaces sections has been filled in with content beyond the
+    default placeholders.
+
+    Parameters
+    ----------
+    content:
+        The full text of a stub file.
+
+    Returns
+    -------
+    bool
+        ``True`` if the stub has been enriched, ``False`` if all sections
+        still contain placeholders.
+    """
+    if not content:
+        return False
+
+    # Extract the content of each section
+    section_pattern = r"## (?:Summary|Key Decisions|Key Interfaces)\n\n(.*?)(?=\n## |\Z)"
+    matches = re.findall(section_pattern, content, re.DOTALL)
+
+    for section_content in matches:
+        text = section_content.strip().lower()
+        if not text:
+            continue
+        # Check if it's a placeholder
+        is_placeholder = any(text.startswith(p) for p in _PLACEHOLDER_PATTERNS)
+        if not is_placeholder:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main enricher class
 # ---------------------------------------------------------------------------
 
@@ -252,6 +354,7 @@ class ReferenceStubEnricher:
         # Statistics
         self._total_enriched: int = 0
         self._total_failed: int = 0
+        self._total_skipped: int = 0
 
         # EventBus unsubscribe handle
         self._unsubscribe: callable | None = None
@@ -275,6 +378,10 @@ class ReferenceStubEnricher:
     @property
     def total_failed(self) -> int:
         return self._total_failed
+
+    @property
+    def total_skipped(self) -> int:
+        return self._total_skipped
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -323,6 +430,7 @@ class ReferenceStubEnricher:
         project_id = data.get("project_id", "")
         abs_path = data.get("abs_path", "")
         stub_name = data.get("stub_name", "")
+        content_hash = data.get("content_hash", "")
 
         if not all([project_id, abs_path, stub_name]):
             logger.warning(
@@ -342,9 +450,16 @@ class ReferenceStubEnricher:
             project_id=project_id,
             abs_path=abs_path,
             stub_name=stub_name,
+            content_hash=content_hash,
         )
 
-        if result.success:
+        if result.skipped:
+            logger.info(
+                "ReferenceStubEnricher: skipped %s/%s (source unchanged)",
+                project_id,
+                stub_name,
+            )
+        elif result.success:
             logger.info(
                 "ReferenceStubEnricher: enriched %s/%s",
                 project_id,
@@ -368,11 +483,20 @@ class ReferenceStubEnricher:
         project_id: str,
         abs_path: str,
         stub_name: str,
+        content_hash: str = "",
+        force: bool = False,
     ) -> EnrichmentResult:
         """Read a source doc, LLM-summarize it, and update the vault stub.
 
         This is the main entry point for enrichment.  It can be called
         directly (e.g. for batch re-enrichment) or via the event handler.
+
+        Before calling the LLM, this method compares the current source
+        file's content hash against the ``source_hash`` stored in the
+        stub's YAML frontmatter.  If the hashes match and the stub has
+        already been enriched with non-placeholder content, the LLM call
+        is skipped (Roadmap 6.3.3).  Pass ``force=True`` to bypass this
+        check and always re-enrich.
 
         Parameters
         ----------
@@ -382,12 +506,36 @@ class ReferenceStubEnricher:
             Absolute path to the source document in the workspace.
         stub_name:
             Filename of the stub (e.g. ``spec-orchestrator.md``).
+        content_hash:
+            Pre-computed content hash of the source file.  If empty,
+            the hash will be computed from the file at ``abs_path``.
+        force:
+            If ``True``, skip the hash comparison and always enrich.
 
         Returns
         -------
         EnrichmentResult
             Result with success status and extracted sections.
         """
+        stub_path = os.path.join(
+            self._vault_projects_dir,
+            project_id,
+            "references",
+            stub_name,
+        )
+
+        # 0. Source hash comparison — skip enrichment if unchanged (6.3.3)
+        if not force:
+            skip_result = self._check_skip_enrichment(
+                abs_path=abs_path,
+                stub_path=stub_path,
+                content_hash=content_hash,
+                project_id=project_id,
+                stub_name=stub_name,
+            )
+            if skip_result is not None:
+                return skip_result
+
         # 1. Read the source document
         source_content = self._read_source(abs_path)
         if not source_content:
@@ -432,13 +580,6 @@ class ReferenceStubEnricher:
             )
 
         # 4. Update the stub file
-        stub_path = os.path.join(
-            self._vault_projects_dir,
-            project_id,
-            "references",
-            stub_name,
-        )
-
         try:
             updated = self._update_stub_file(stub_path, sections)
         except Exception as e:
@@ -472,6 +613,89 @@ class ReferenceStubEnricher:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _check_skip_enrichment(
+        self,
+        *,
+        abs_path: str,
+        stub_path: str,
+        content_hash: str,
+        project_id: str,
+        stub_name: str,
+    ) -> EnrichmentResult | None:
+        """Check whether enrichment can be skipped for an unchanged source.
+
+        Compares the source file's content hash against the ``source_hash``
+        stored in the stub's YAML frontmatter.  If they match and the stub
+        has already been enriched (non-placeholder content), returns an
+        ``EnrichmentResult`` with ``skipped=True``.  Otherwise returns
+        ``None`` to indicate enrichment should proceed.
+
+        Parameters
+        ----------
+        abs_path:
+            Absolute path to the source document.
+        stub_path:
+            Absolute path to the stub file in the vault.
+        content_hash:
+            Pre-computed content hash, or empty to compute on the fly.
+        project_id:
+            The project identifier.
+        stub_name:
+            The stub filename.
+
+        Returns
+        -------
+        EnrichmentResult | None
+            A skipped result if enrichment can be avoided, ``None`` otherwise.
+        """
+        # Read the existing stub
+        if not os.path.isfile(stub_path):
+            return None  # No stub yet — must enrich
+
+        try:
+            with open(stub_path, encoding="utf-8") as f:
+                stub_content = f.read()
+        except OSError:
+            return None  # Can't read stub — proceed with enrichment
+
+        # Extract hash from stub frontmatter
+        existing_hash = extract_source_hash_from_frontmatter(stub_content)
+        if not existing_hash:
+            return None  # No hash recorded — must enrich
+
+        # Compute current source hash if not provided
+        source_hash = content_hash
+        if not source_hash:
+            from src.workspace_spec_watcher import compute_content_hash
+
+            source_hash = compute_content_hash(abs_path)
+
+        if not source_hash:
+            return None  # Can't compute hash — proceed with enrichment
+
+        # Compare hashes
+        if source_hash != existing_hash:
+            return None  # Hash changed — must re-enrich
+
+        # Hashes match — check if stub is already enriched
+        if not stub_is_enriched(stub_content):
+            return None  # Stub still has placeholders — must enrich
+
+        # All checks passed: skip enrichment
+        self._total_skipped += 1
+        logger.debug(
+            "ReferenceStubEnricher: skipping %s/%s — source_hash %s unchanged",
+            project_id,
+            stub_name,
+            source_hash,
+        )
+        return EnrichmentResult(
+            project_id=project_id,
+            stub_name=stub_name,
+            success=True,
+            skipped=True,
+        )
 
     def _read_source(self, abs_path: str) -> str:
         """Read the full source document, truncating if necessary.
@@ -515,11 +739,7 @@ class ReferenceStubEnricher:
                 or self._config.revision_provider
                 or "anthropic"
             )
-            model_name = (
-                self._config.stub_enrichment_model
-                or self._config.revision_model
-                or ""
-            )
+            model_name = self._config.stub_enrichment_model or self._config.revision_model or ""
 
             provider_config = ChatProviderConfig(
                 provider=provider_name,
