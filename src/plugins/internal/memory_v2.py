@@ -78,6 +78,7 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_update",
         "memory_promote",
         "memory_health",
+        "memory_stale",
     }
 )
 
@@ -895,6 +896,63 @@ TOOL_DEFINITIONS: list[dict] = [
                         "Number of most-retrieved documents to include.  Default 10."
                     ),
                     "default": 10,
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    # ---- Stale memory detection (spec §6 — Roadmap 6.5.3) ----
+    {
+        "name": "memory_stale",
+        "description": (
+            "Find stale memory documents — candidates for archival.  "
+            "Returns documents not retrieved in N days (default 30) or "
+            "never retrieved at all.  Each result includes days since "
+            "last retrieval, retrieval count, creation date, and a "
+            "content preview.  Supports pagination via offset/limit.  "
+            "Per spec §6 — Memory Health View: 'Stale memories — Not "
+            "retrieved in N days — candidates for archival.'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to find stale memories for.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Scope to inspect.  Defaults to project scope.",
+                },
+                "stale_days": {
+                    "type": "integer",
+                    "description": (
+                        "Number of days without retrieval before a document is "
+                        "considered stale.  Default 30."
+                    ),
+                    "default": 30,
+                },
+                "sort": {
+                    "type": "string",
+                    "description": (
+                        "Sort order: 'staleness' (default, never-retrieved first "
+                        "then oldest-retrieved), 'created' (oldest first), "
+                        "'retrieval_count' (least retrieved first)."
+                    ),
+                    "enum": ["staleness", "created", "retrieval_count"],
+                    "default": "staleness",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of entries to skip for pagination.  Default 0.",
+                    "default": 0,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum entries to return.  Default 50, max 200."
+                    ),
+                    "default": 50,
                 },
             },
             "required": ["project_id"],
@@ -2895,6 +2953,37 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_health failed: %s", e, exc_info=True)
             return {"error": f"Health check failed: {e}"}
+
+    async def cmd_memory_stale(self, args: dict) -> dict:
+        """Find stale memory documents — candidates for archival (spec §6, 6.5.3)."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_stale")
+
+        scope = args.get("scope")
+        stale_days = args.get("stale_days", 30)
+        sort = args.get("sort", "staleness")
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 50)
+
+        try:
+            result = await self._service.find_stale(
+                project_id,
+                scope=scope,
+                stale_days=int(stale_days),
+                sort=str(sort),
+                offset=int(offset),
+                limit=int(limit),
+            )
+            if "error" in result:
+                return result
+            return {"success": True, **result}
+        except Exception as e:
+            self._log.error("memory_stale failed: %s", e, exc_info=True)
+            return {"error": f"Stale memory detection failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command stubs — Profile / Factsheet / Knowledge

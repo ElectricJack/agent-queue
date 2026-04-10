@@ -1914,6 +1914,182 @@ class MemoryV2Service:
         }
 
     # ------------------------------------------------------------------
+    # Stale memory detection (spec §6 — Roadmap 6.5.3)
+    # ------------------------------------------------------------------
+
+    async def find_stale(
+        self,
+        project_id: str,
+        *,
+        scope: str | None = None,
+        stale_days: int = 30,
+        sort: str = "staleness",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Find stale memory documents — candidates for archival.
+
+        Returns documents that have **not been retrieved** in *stale_days*
+        or have **never been retrieved** (``last_retrieved == 0``).
+
+        Per spec §6 (Memory Health View): "Stale memories — Not retrieved
+        in N days — candidates for archival."
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier (determines default scope).
+        scope:
+            Explicit scope override.  ``None`` for project scope.
+        stale_days:
+            Number of days without retrieval before a document is
+            considered stale.  Default 30.
+        sort:
+            Sort order for results.  ``"staleness"`` (default) puts
+            never-retrieved first, then oldest-retrieved.
+            ``"created"`` sorts by creation date (oldest first).
+            ``"retrieval_count"`` sorts by retrieval count (least first).
+        offset:
+            Number of entries to skip (for pagination).
+        limit:
+            Maximum entries to return (default 50, max 200).
+
+        Returns
+        -------
+        dict
+            Contains ``stale_documents`` list, ``total_stale``,
+            ``never_retrieved_count``, ``threshold_days``, and
+            ``threshold_date``.
+        """
+        if not self.available:
+            return {"error": "MemoryV2Service not available"}
+
+        store = self._get_store(project_id, scope)
+        mem_scope, scope_id = self._resolve_scope(project_id, scope)
+        coll_name = collection_name(mem_scope, scope_id)
+        limit = min(limit, 200)
+
+        # Fetch all document entries (no retrieval tracking for internal queries)
+        all_entries = await asyncio.to_thread(
+            store.query, filter_expr='entry_type == "document"', track=False
+        )
+
+        now = time.time()
+        stale_threshold = now - (stale_days * 86400)
+        threshold_date = datetime.fromtimestamp(
+            stale_threshold, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
+
+        # Partition into never-retrieved vs. stale-retrieved
+        never_retrieved: list[dict[str, Any]] = []
+        stale_retrieved: list[dict[str, Any]] = []
+
+        for doc in all_entries:
+            last_ret = doc.get("last_retrieved", 0)
+            if last_ret == 0 or last_ret is None:
+                never_retrieved.append(doc)
+            elif last_ret < stale_threshold:
+                stale_retrieved.append(doc)
+            # else: recently retrieved — not stale
+
+        # Sort each partition
+        def _by_updated(d: dict) -> float:
+            return d.get("updated_at", 0)
+
+        def _by_retrieval_count(d: dict) -> int:
+            return d.get("retrieval_count", 0)
+
+        if sort == "created":
+            never_retrieved.sort(key=_by_updated)
+            stale_retrieved.sort(key=_by_updated)
+        elif sort == "retrieval_count":
+            never_retrieved.sort(key=_by_retrieval_count)
+            stale_retrieved.sort(key=_by_retrieval_count)
+        else:
+            # "staleness" — never-retrieved first, then oldest last_retrieved
+            stale_retrieved.sort(key=lambda d: d.get("last_retrieved", 0))
+
+        # Combine: never-retrieved come first (most actionable), then stale
+        combined = never_retrieved + stale_retrieved
+        total_stale = len(combined)
+
+        # Apply pagination
+        paginated = combined[offset : offset + limit]
+
+        # Format each document with archival-relevant metadata
+        stale_docs: list[dict[str, Any]] = []
+        for doc in paginated:
+            last_ret = doc.get("last_retrieved", 0)
+            if last_ret and last_ret > 0:
+                days_since = int((now - last_ret) / 86400)
+                last_retrieved_date = datetime.fromtimestamp(
+                    last_ret, tz=timezone.utc
+                ).strftime("%Y-%m-%d")
+            else:
+                days_since = None  # never retrieved
+                last_retrieved_date = None
+
+            created_at = doc.get("updated_at", 0)
+            created_date = (
+                datetime.fromtimestamp(created_at, tz=timezone.utc).strftime("%Y-%m-%d")
+                if created_at
+                else None
+            )
+
+            import json as _json
+
+            tags_raw = doc.get("tags", "[]")
+            try:
+                tags = _json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+            except (_json.JSONDecodeError, TypeError):
+                tags = []
+
+            content = doc.get("content", "")
+            preview = content[:200] + "…" if len(content) > 200 else content
+
+            stale_docs.append(
+                {
+                    "chunk_hash": doc.get("chunk_hash", ""),
+                    "title": doc.get("heading", "") or self._title_from_content(content),
+                    "topic": doc.get("topic", ""),
+                    "tags": tags if isinstance(tags, list) else [],
+                    "source": doc.get("source", ""),
+                    "retrieval_count": doc.get("retrieval_count", 0),
+                    "last_retrieved_date": last_retrieved_date,
+                    "days_since_retrieval": days_since,
+                    "created_date": created_date,
+                    "content_preview": preview,
+                    "reason": (
+                        "never_retrieved" if last_retrieved_date is None else "stale"
+                    ),
+                }
+            )
+
+        return {
+            "collection": coll_name,
+            "scope": mem_scope.value,
+            "scope_id": scope_id,
+            "threshold_days": stale_days,
+            "threshold_date": threshold_date,
+            "total_stale": total_stale,
+            "never_retrieved_count": len(never_retrieved),
+            "stale_retrieved_count": len(stale_retrieved),
+            "offset": offset,
+            "limit": limit,
+            "stale_documents": stale_docs,
+        }
+
+    @staticmethod
+    def _title_from_content(content: str) -> str:
+        """Extract a title from the first line of content."""
+        if not content:
+            return ""
+        first_line = content.split("\n", 1)[0].strip()
+        if first_line.startswith("#"):
+            first_line = first_line.lstrip("#").strip()
+        return first_line[:80] if len(first_line) > 80 else first_line
+
+    # ------------------------------------------------------------------
     # Browse / List memories
     # ------------------------------------------------------------------
 
