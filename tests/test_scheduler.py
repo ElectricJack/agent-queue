@@ -1280,3 +1280,144 @@ class TestAgentAffinity:
         # created_at=0 → bounded wait skipped → tier 1 → immediate fallback
         assert len(actions) == 1
         assert actions[0].agent_id == "a-idle"
+
+    # ── Roadmap 7.3.4 cases (c), (e), (f) ─────────────────────────────
+
+    def test_fallback_agent_matches_agent_type(self):
+        """(c) When affinity wait expires and task falls back, the fallback
+        agent must still match the task's agent_type requirement."""
+        now = time.time()
+        state = SchedulerState(
+            projects=[make_project(max_agents=2)],
+            tasks=[
+                make_task(
+                    id="t-review",
+                    agent_type="code-review",
+                    affinity_agent_id="a-busy",
+                    created_at=now - 200,  # past 120s wait window
+                ),
+            ],
+            agents=[
+                # a-busy is the preferred agent (code-review type, but busy)
+                Agent(
+                    id="a-busy", name="busy-reviewer", agent_type="code-review",
+                    state=AgentState.BUSY, current_task_id="t-other",
+                ),
+                # a-coding is idle but wrong type — should NOT pick up the task
+                Agent(id="a-coding", name="coder", agent_type="coding", state=AgentState.IDLE),
+                # a-review is idle with correct type — SHOULD pick up the task
+                Agent(
+                    id="a-review", name="reviewer", agent_type="code-review",
+                    state=AgentState.IDLE,
+                ),
+            ],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            now=now,
+            affinity_wait_seconds=120,
+        )
+        actions = Scheduler.schedule(state)
+        # Affinity wait expired → falls to tier 1 → but agent_type filtering
+        # still applies → a-coding excluded → a-review picks it up
+        assert len(actions) == 1
+        assert actions[0].agent_id == "a-review"
+        assert actions[0].task_id == "t-review"
+
+    def test_affinity_agent_becomes_idle_within_wait_window(self):
+        """(e) Affinity agent that becomes idle within the wait window gets
+        the task — not the fallback agent.
+
+        Simulates two scheduler rounds: in round 1 the preferred agent is
+        busy so the task is deferred; in round 2 the preferred agent is
+        idle and picks up the task (tier 0) while the fallback gets a
+        different task."""
+        now = time.time()
+
+        # Round 1: affinity agent is busy, task is within wait window → deferred
+        state_round1 = SchedulerState(
+            projects=[make_project(max_agents=2)],
+            tasks=[
+                make_task(
+                    id="t-affinity",
+                    affinity_agent_id="a-pref",
+                    created_at=now - 30,  # 30s ago, within 120s window
+                ),
+            ],
+            agents=[
+                make_agent(id="a-fallback", name="fallback"),
+                make_agent(
+                    id="a-pref", name="preferred", state=AgentState.BUSY,
+                    current_task_id="t-other",
+                ),
+            ],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            now=now,
+            affinity_wait_seconds=120,
+        )
+        actions_r1 = Scheduler.schedule(state_round1)
+        # Only affinity task exists, still in wait window → no assignment
+        assert len(actions_r1) == 0
+
+        # Round 2: 10 seconds later, affinity agent has finished its work
+        # and become idle.  A second task is also available now.
+        now2 = now + 10
+        state_round2 = SchedulerState(
+            projects=[make_project(max_agents=2)],
+            tasks=[
+                make_task(
+                    id="t-affinity",
+                    affinity_agent_id="a-pref",
+                    created_at=now - 30,  # still within 120s window
+                ),
+                make_task(id="t-normal", priority=50),
+            ],
+            agents=[
+                make_agent(id="a-fallback", name="fallback"),
+                make_agent(id="a-pref", name="preferred"),  # now IDLE
+            ],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            now=now2,
+            affinity_wait_seconds=120,
+        )
+        actions_r2 = Scheduler.schedule(state_round2)
+        # Both agents idle, both tasks available:
+        # a-pref gets t-affinity (tier 0), a-fallback gets t-normal
+        assert len(actions_r2) == 2
+        by_agent = {a.agent_id: a.task_id for a in actions_r2}
+        assert by_agent["a-pref"] == "t-affinity"
+        assert by_agent["a-fallback"] == "t-normal"
+
+    def test_affinity_reason_logged(self, caplog):
+        """(f) affinity_reason is logged for debugging when a task with
+        affinity is assigned."""
+        now = time.time()
+        with caplog.at_level(logging.DEBUG, logger="src.scheduler"):
+            state = SchedulerState(
+                projects=[make_project()],
+                tasks=[
+                    make_task(
+                        id="t-branch",
+                        affinity_agent_id="a-1",
+                        affinity_reason="context",
+                        created_at=now - 10,
+                    ),
+                ],
+                agents=[make_agent(id="a-1")],
+                project_token_usage={},
+                project_active_agent_counts={},
+                tasks_completed_in_window={},
+                now=now,
+            )
+            actions = Scheduler.schedule(state)
+
+        assert len(actions) == 1
+        assert actions[0].agent_id == "a-1"
+        # Verify affinity_reason appears in debug logs
+        assert "context" in caplog.text
+        assert "t-branch" in caplog.text
+        assert "a-1" in caplog.text
