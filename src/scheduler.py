@@ -70,6 +70,7 @@ from src.models import (
     Agent,
     AgentState,
     Project,
+    ProjectConstraint,
     ProjectStatus,
     Task,
     TaskStatus,
@@ -141,6 +142,11 @@ class SchedulerState:
     # This supports per-provider session limits without affecting other
     # provider types.
     provider_cooldowns: dict[str, float] = field(default_factory=dict)
+    # Active project constraints, keyed by project_id.  The scheduler
+    # checks these to enforce exclusive access, per-type agent limits,
+    # and scheduling pauses.  Constraints are set via set_project_constraint
+    # and persist until explicitly released via release_project_constraint.
+    project_constraints: dict[str, ProjectConstraint] = field(default_factory=dict)
 
 
 def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
@@ -152,6 +158,46 @@ def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
     if not task.preferred_workspace_id or not locks:
         return True
     return locks.get(task.preferred_workspace_id) is None
+
+
+def _is_scheduling_paused(project_id: str, constraints: dict[str, ProjectConstraint]) -> bool:
+    """Return True if a project has an active pause_scheduling constraint."""
+    c = constraints.get(project_id)
+    return bool(c and c.pause_scheduling)
+
+
+def _agent_type_allowed(
+    agent: Agent,
+    project_id: str,
+    max_by_type: dict[str, int],
+    state: "SchedulerState",
+    assigned_agents: set[str],
+) -> bool:
+    """Check if assigning *agent* would violate a per-agent-type limit.
+
+    Only agent types listed in ``max_by_type`` are constrained; unlisted
+    types are unrestricted.  Returns True if the assignment is allowed.
+    """
+    atype = agent.agent_type
+    if atype not in max_by_type:
+        return True  # no limit for this type
+
+    limit = max_by_type[atype]
+
+    # Count agents of the same type currently working on this project.
+    # An agent is "active on a project" if it is BUSY and its current
+    # task belongs to the project.
+    count = 0
+    for a in state.agents:
+        if a.agent_type != atype or a.id in assigned_agents:
+            continue
+        if a.state == AgentState.BUSY and a.current_task_id:
+            for t in state.tasks:
+                if t.id == a.current_task_id and t.project_id == project_id:
+                    count += 1
+                    break
+
+    return count < limit
 
 
 class Scheduler:
@@ -186,8 +232,7 @@ class Scheduler:
         idle_agents = [
             a
             for a in state.agents
-            if a.state == AgentState.IDLE
-            and state.provider_cooldowns.get(a.agent_type, 0) <= now
+            if a.state == AgentState.IDLE and state.provider_cooldowns.get(a.agent_type, 0) <= now
         ]
         if not idle_agents:
             return []
@@ -236,11 +281,15 @@ class Scheduler:
                     t for t in ready_by_project[pid] if t.task_type == TaskType.SYNC
                 ]
 
-        # Filter to active projects with ready tasks
+        # Filter to active projects with ready tasks.
+        # Also enforce project constraints:
+        # - pause_scheduling=True → skip the project entirely
         active_projects = [
             p
             for p in state.projects
-            if p.status == ProjectStatus.ACTIVE and p.id in ready_by_project
+            if p.status == ProjectStatus.ACTIVE
+            and p.id in ready_by_project
+            and not _is_scheduling_paused(p.id, state.project_constraints)
         ]
         if not active_projects:
             return []
@@ -304,9 +353,24 @@ class Scheduler:
                 ):
                     continue
 
-                # Check concurrency limit
+                # Check concurrency limit.
+                # When exclusive=True constraint is active, override to 1.
+                max_agents = project.max_concurrent_agents
+                constraint = state.project_constraints.get(project.id)
+                if constraint and constraint.exclusive:
+                    max_agents = 1
                 current_agents = round_agent_counts.get(project.id, 0)
-                if current_agents >= project.max_concurrent_agents:
+                if current_agents >= max_agents:
+                    continue
+
+                # Check per-agent-type limits from constraints.
+                if (
+                    constraint
+                    and constraint.max_agents_by_type
+                    and not _agent_type_allowed(
+                        agent, project.id, constraint.max_agents_by_type, state, assigned_agents
+                    )
+                ):
                     continue
 
                 # Skip projects with no available workspaces.

@@ -2470,6 +2470,11 @@ class Orchestrator:
         all_workspaces = await self.db.list_workspaces()
         workspace_locks = {ws.id: ws.locked_by_task_id for ws in all_workspaces}
 
+        # Load active project constraints (exclusive, pause_scheduling,
+        # max_agents_by_type) so the scheduler can enforce them.
+        constraint_list = await self.db.list_project_constraints()
+        constraint_map = {c.project_id: c for c in constraint_list}
+
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -2482,6 +2487,7 @@ class Orchestrator:
             global_budget=self.config.global_token_budget_daily,
             global_tokens_used=total_used,
             provider_cooldowns=self._provider_cooldowns,
+            project_constraints=constraint_map,
         )
 
         return Scheduler.schedule(state)

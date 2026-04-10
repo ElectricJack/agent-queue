@@ -86,9 +86,7 @@ tasks = Table(
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
-    Column(
-        "workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True
-    ),
+    Column("workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -333,6 +331,17 @@ archived_tasks = Table(
     Column("archived_at", Float, nullable=False),
 )
 
+project_constraints = Table(
+    "project_constraints",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), primary_key=True),
+    Column("exclusive", Integer, nullable=False, server_default="0"),
+    Column("max_agents_by_type", Text, nullable=False, server_default="'{}'"),
+    Column("pause_scheduling", Integer, nullable=False, server_default="0"),
+    Column("created_by", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+)
+
 plugins = Table(
     "plugins",
     metadata,
@@ -395,9 +404,7 @@ workflows = Table(
     metadata,
     Column("workflow_id", Text, primary_key=True),
     Column("playbook_id", Text, nullable=False),
-    Column(
-        "playbook_run_id", Text, ForeignKey("playbook_runs.run_id"), nullable=False
-    ),
+    Column("playbook_run_id", Text, ForeignKey("playbook_runs.run_id"), nullable=False),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
     Column(
         "status",
