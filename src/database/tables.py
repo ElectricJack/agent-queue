@@ -385,3 +385,33 @@ playbook_runs = Table(
     Index("idx_playbook_runs_playbook_id", "playbook_id"),
     Index("idx_playbook_runs_status", "status"),
 )
+
+workflows = Table(
+    "workflows",
+    metadata,
+    Column("workflow_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column(
+        "playbook_run_id", Text, ForeignKey("playbook_runs.run_id"), nullable=False
+    ),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column(
+        "status",
+        Text,
+        nullable=False,
+        server_default="'running'",
+    ),
+    Column("current_stage", Text, nullable=True),
+    Column("task_ids", Text, nullable=False, server_default="'[]'"),
+    Column("agent_affinity", Text, nullable=False, server_default="'{}'"),
+    Column("created_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    CheckConstraint(
+        "status IN ('running', 'paused', 'completed', 'failed')",
+        name="ck_workflows_status",
+    ),
+    Index("idx_workflows_playbook_id", "playbook_id"),
+    Index("idx_workflows_project_id", "project_id"),
+    Index("idx_workflows_status", "status"),
+    Index("idx_workflows_playbook_run_id", "playbook_run_id"),
+)
