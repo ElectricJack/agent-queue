@@ -1,7 +1,8 @@
 """Tests for src/readme_handler — project README.md vault watcher handler.
 
 Covers Phase 6 implementation: actual orchestrator summary generation,
-startup scanning, and VaultWatcher dispatch integration.
+startup scanning, VaultWatcher dispatch integration, and event bus
+integration (Roadmap 6.4.2 — README change triggers summary update).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import time
 
 import pytest
 
+from src.event_bus import EventBus
 from src.readme_handler import (
     README_PATTERN,
     ReadmeChangeInfo,
@@ -920,3 +922,366 @@ class TestEndToEndDispatch:
         content = summary.read_text()
         assert "A great project" in content
         assert 'project_id: "my-app"' in content
+
+    @pytest.mark.asyncio
+    async def test_full_handler_updates_summary_on_modify(self, tmp_path):
+        """Register via register_readme_handlers and verify summary updates on modify."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n\nVersion 1.\n")
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot (includes existing README)
+        await watcher.check()
+
+        # Modify the README
+        time.sleep(0.05)
+        readme.write_text("# My App\n\nVersion 2 — updated.\n")
+
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        assert summary.is_file()
+        content = summary.read_text()
+        assert "Version 2" in content
+        assert "Version 1" not in content
+
+    @pytest.mark.asyncio
+    async def test_full_handler_removes_summary_on_delete(self, tmp_path):
+        """Register via register_readme_handlers and verify summary removed on delete."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n")
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot — README exists
+        await watcher.check()
+
+        # Create summary by modifying the README
+        time.sleep(0.05)
+        readme.write_text("# My App\n\nUpdated.\n")
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        assert summary.is_file()
+
+        # Delete the README
+        readme.unlink()
+        await watcher.check()
+
+        assert not summary.is_file()
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_create_modify_delete(self, tmp_path):
+        """End-to-end lifecycle: create → modify → delete through VaultWatcher."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        register_readme_handlers(watcher, vault_root=str(vault))
+
+        # Initial snapshot (empty)
+        await watcher.check()
+
+        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+
+        # Phase 1: Create
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n\nInitial version.\n")
+        await watcher.check()
+
+        assert summary.is_file()
+        assert "Initial version" in summary.read_text()
+
+        # Phase 2: Modify
+        time.sleep(0.05)
+        readme.write_text("# My App\n\nRevised version.\n")
+        await watcher.check()
+
+        assert summary.is_file()
+        content = summary.read_text()
+        assert "Revised version" in content
+        assert "Initial version" not in content
+
+        # Phase 3: Delete
+        readme.unlink()
+        await watcher.check()
+
+        assert not summary.is_file()
+
+
+# ---------------------------------------------------------------------------
+# Event bus integration (Roadmap 6.4.2)
+# ---------------------------------------------------------------------------
+
+
+class TestEventBusIntegration:
+    """Tests for event emission when README summaries are created/updated/removed."""
+
+    @pytest.mark.asyncio
+    async def test_emits_event_on_create(self, tmp_path):
+        """Emits notify.readme_summary_updated with action='created'."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n")
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        change = VaultChange(
+            path=str(readme),
+            rel_path="projects/my-app/README.md",
+            operation="created",
+        )
+        await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert len(events) == 1
+        assert events[0]["action"] == "created"
+        assert events[0]["project_id"] == "my-app"
+        assert "source_path" in events[0]
+        assert "summary_path" in events[0]
+
+    @pytest.mark.asyncio
+    async def test_emits_event_on_update(self, tmp_path):
+        """Emits notify.readme_summary_updated with action='updated'."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n\nUpdated.\n")
+
+        # Pre-create summary
+        _write_summary(str(vault), "my-app", "# Old\n")
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        change = VaultChange(
+            path=str(readme),
+            rel_path="projects/my-app/README.md",
+            operation="modified",
+        )
+        await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert len(events) == 1
+        assert events[0]["action"] == "updated"
+        assert events[0]["project_id"] == "my-app"
+
+    @pytest.mark.asyncio
+    async def test_emits_event_on_delete(self, tmp_path):
+        """Emits notify.readme_summary_updated with action='removed'."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        # Pre-create summary
+        _write_summary(str(vault), "my-app", "# My App\n")
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        change = VaultChange(
+            path=str(vault / "projects" / "my-app" / "README.md"),
+            rel_path="projects/my-app/README.md",
+            operation="deleted",
+        )
+        await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert len(events) == 1
+        assert events[0]["action"] == "removed"
+        assert events[0]["project_id"] == "my-app"
+
+    @pytest.mark.asyncio
+    async def test_no_event_on_delete_nonexistent_summary(self, tmp_path):
+        """No event emitted when deleting a README that has no summary."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        change = VaultChange(
+            path=str(vault / "projects" / "my-app" / "README.md"),
+            rel_path="projects/my-app/README.md",
+            operation="deleted",
+        )
+        await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_emits_failed_event_on_read_error(self, tmp_path):
+        """Emits notify.readme_summary_failed when README cannot be read."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        bus = EventBus(validate_events=False)
+        failed_events: list[dict] = []
+        bus.subscribe("notify.readme_summary_failed", lambda data: failed_events.append(data))
+
+        change = VaultChange(
+            path=str(vault / "projects" / "my-app" / "README.md"),
+            rel_path="projects/my-app/README.md",
+            operation="created",
+        )
+        # File doesn't exist — will fail to read
+        await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert len(failed_events) == 1
+        assert failed_events[0]["project_id"] == "my-app"
+        assert len(failed_events[0]["errors"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_no_events_without_event_bus(self, tmp_path):
+        """When event_bus is None, no errors are raised."""
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "README.md").write_text("# My App\n")
+
+        change = VaultChange(
+            path=str(proj_dir / "README.md"),
+            rel_path="projects/my-app/README.md",
+            operation="created",
+        )
+        # Should work fine without event_bus
+        results = await on_readme_changed([change], vault_root=str(vault))
+        assert len(results) == 1
+        assert results[0].success
+
+    @pytest.mark.asyncio
+    async def test_event_bus_wired_through_register(self, tmp_path):
+        """Event bus is propagated through register_readme_handlers."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        register_readme_handlers(watcher, vault_root=str(vault), event_bus=bus)
+
+        # Initial snapshot
+        await watcher.check()
+
+        # Create a project README
+        (vault / "projects" / "my-app").mkdir(parents=True)
+        (vault / "projects" / "my-app" / "README.md").write_text("# My App\n")
+
+        await watcher.check()
+
+        assert len(events) == 1
+        assert events[0]["action"] == "created"
+        assert events[0]["project_id"] == "my-app"
+
+    @pytest.mark.asyncio
+    async def test_multiple_events_in_batch(self, tmp_path):
+        """Multiple README changes produce one event per project."""
+        vault = tmp_path / "vault"
+        for pid in ("app-one", "app-two"):
+            proj_dir = vault / "projects" / pid
+            proj_dir.mkdir(parents=True)
+            (proj_dir / "README.md").write_text(f"# {pid}\n")
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        changes = [
+            VaultChange(
+                path=str(vault / "projects" / pid / "README.md"),
+                rel_path=f"projects/{pid}/README.md",
+                operation="created",
+            )
+            for pid in ("app-one", "app-two")
+        ]
+        await on_readme_changed(changes, vault_root=str(vault), event_bus=bus)
+
+        assert len(events) == 2
+        project_ids = {e["project_id"] for e in events}
+        assert project_ids == {"app-one", "app-two"}
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_with_events(self, tmp_path):
+        """Create → modify → delete lifecycle emits correct events."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+
+        register_readme_handlers(watcher, vault_root=str(vault), event_bus=bus)
+
+        # Initial snapshot
+        await watcher.check()
+
+        # Create
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n\nVersion 1.\n")
+        await watcher.check()
+
+        assert len(events) == 1
+        assert events[0]["action"] == "created"
+
+        # Modify
+        time.sleep(0.05)
+        readme.write_text("# My App\n\nVersion 2.\n")
+        await watcher.check()
+
+        assert len(events) == 2
+        assert events[1]["action"] == "updated"
+
+        # Delete
+        readme.unlink()
+        await watcher.check()
+
+        assert len(events) == 3
+        assert events[2]["action"] == "removed"
+
+        # All events for same project
+        assert all(e["project_id"] == "my-app" for e in events)

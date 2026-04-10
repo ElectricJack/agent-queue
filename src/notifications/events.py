@@ -226,6 +226,45 @@ class ProfileSyncFailedEvent(NotifyEvent):
 
 
 # ---------------------------------------------------------------------------
+# README summary events
+# ---------------------------------------------------------------------------
+
+
+class ReadmeSummaryUpdatedEvent(NotifyEvent):
+    """Emitted when a project README change triggers an orchestrator summary update.
+
+    The orchestrator watches ``vault/projects/*/README.md`` files and
+    generates/updates structured summaries in
+    ``vault/orchestrator/memory/project-{id}.md``.  This event fires on
+    every successful create, update, or removal so hooks, dashboards, and
+    other subsystems can react.
+
+    See ``docs/specs/design/self-improvement.md`` Section 5 — Orchestrator
+    Memory.
+    """
+
+    event_type: str = "notify.readme_summary_updated"
+    category: str = "system"
+    action: str = ""  # "created", "updated", "removed"
+    source_path: str = ""
+    summary_path: str = ""
+
+
+class ReadmeSummaryFailedEvent(NotifyEvent):
+    """Emitted when a README summary generation fails.
+
+    Covers file-read errors, write errors, and path-resolution failures.
+    The orchestrator's existing summary (if any) remains unchanged.
+    """
+
+    event_type: str = "notify.readme_summary_failed"
+    severity: str = "error"
+    category: str = "system"
+    source_path: str = ""
+    errors: list[str] = []
+
+
+# ---------------------------------------------------------------------------
 # Playbook compilation events
 # ---------------------------------------------------------------------------
 

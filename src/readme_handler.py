@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from src.event_bus import EventBus
     from src.vault_watcher import VaultChange, VaultWatcher
 
 logger = logging.getLogger(__name__)
@@ -254,10 +255,57 @@ def _remove_summary(vault_root: str, project_id: str) -> bool:
         return False
 
 
+async def _emit_summary_updated(
+    event_bus: EventBus | None,
+    project_id: str,
+    action: str,
+    source_path: str,
+    summary_path: str = "",
+) -> None:
+    """Emit a ``notify.readme_summary_updated`` event if an event bus is available."""
+    if event_bus is None:
+        return
+    try:
+        from src.notifications.events import ReadmeSummaryUpdatedEvent
+
+        event = ReadmeSummaryUpdatedEvent(
+            project_id=project_id,
+            action=action,
+            source_path=source_path,
+            summary_path=summary_path,
+        )
+        await event_bus.emit(event.event_type, event.model_dump(mode="json"))
+    except Exception:
+        logger.debug("Failed to emit readme summary updated notification", exc_info=True)
+
+
+async def _emit_summary_failed(
+    event_bus: EventBus | None,
+    project_id: str,
+    source_path: str,
+    errors: list[str],
+) -> None:
+    """Emit a ``notify.readme_summary_failed`` event if an event bus is available."""
+    if event_bus is None:
+        return
+    try:
+        from src.notifications.events import ReadmeSummaryFailedEvent
+
+        event = ReadmeSummaryFailedEvent(
+            project_id=project_id,
+            source_path=source_path,
+            errors=errors,
+        )
+        await event_bus.emit(event.event_type, event.model_dump(mode="json"))
+    except Exception:
+        logger.debug("Failed to emit readme summary failed notification", exc_info=True)
+
+
 async def on_readme_changed(
     changes: list[VaultChange],
     *,
     vault_root: str = "",
+    event_bus: EventBus | None = None,
 ) -> list[ReadmeScanResult]:
     """Handle project README.md file changes detected by the VaultWatcher.
 
@@ -322,10 +370,18 @@ async def on_readme_changed(
                 project_id,
                 action,
             )
+            if removed:
+                await _emit_summary_updated(
+                    event_bus,
+                    project_id,
+                    action="removed",
+                    source_path=change.path,
+                )
             continue
 
         # created or modified — read and generate summary
         if not effective_root:
+            error_msg = "Could not derive vault_root from change path"
             logger.warning(
                 "README handler: cannot derive vault_root for project %s — skipping summary",
                 project_id,
@@ -335,14 +391,18 @@ async def on_readme_changed(
                     project_id=project_id,
                     success=False,
                     action="error",
-                    errors=["Could not derive vault_root from change path"],
+                    errors=[error_msg],
                 )
+            )
+            await _emit_summary_failed(
+                event_bus, project_id, change.path, [error_msg]
             )
             continue
 
         try:
             readme_text = Path(change.path).read_text(encoding="utf-8")
         except OSError as exc:
+            error_msg = f"Could not read file: {exc}"
             logger.error(
                 "README handler: could not read %s: %s",
                 change.path,
@@ -353,8 +413,11 @@ async def on_readme_changed(
                     project_id=project_id,
                     success=False,
                     action="error",
-                    errors=[f"Could not read file: {exc}"],
+                    errors=[error_msg],
                 )
+            )
+            await _emit_summary_failed(
+                event_bus, project_id, change.path, [error_msg]
             )
             continue
 
@@ -376,7 +439,15 @@ async def on_readme_changed(
                 action,
                 summary_file,
             )
+            await _emit_summary_updated(
+                event_bus,
+                project_id,
+                action=action,
+                source_path=change.path,
+                summary_path=summary_file,
+            )
         except OSError as exc:
+            error_msg = f"Could not write summary: {exc}"
             logger.error(
                 "README handler: could not write summary for %s: %s",
                 project_id,
@@ -387,23 +458,29 @@ async def on_readme_changed(
                     project_id=project_id,
                     success=False,
                     action="error",
-                    errors=[f"Could not write summary: {exc}"],
+                    errors=[error_msg],
                 )
+            )
+            await _emit_summary_failed(
+                event_bus, project_id, change.path, [error_msg]
             )
 
     return results
 
 
-def _make_watcher_callback(vault_root: str):
+def _make_watcher_callback(
+    vault_root: str,
+    event_bus: EventBus | None = None,
+):
     """Create a VaultWatcher callback bound to a specific *vault_root*.
 
     The VaultWatcher invokes callbacks with a single ``changes`` argument.
-    This factory binds the vault_root so the handler can resolve summary
-    paths without guessing.
+    This factory binds the vault_root and event_bus so the handler can
+    resolve summary paths without guessing and emit lifecycle events.
     """
 
     async def _callback(changes: list[VaultChange]) -> None:
-        await on_readme_changed(changes, vault_root=vault_root)
+        await on_readme_changed(changes, vault_root=vault_root, event_bus=event_bus)
 
     return _callback
 
@@ -412,6 +489,7 @@ def register_readme_handlers(
     watcher: VaultWatcher,
     *,
     vault_root: str = "",
+    event_bus: EventBus | None = None,
 ) -> str:
     """Register the project README watcher handler on the given *watcher*.
 
@@ -427,13 +505,23 @@ def register_readme_handlers(
         Absolute path to the vault root.  When provided, the handler can
         reliably resolve summary output paths.  When empty, the handler
         derives vault_root from each change's absolute path.
+    event_bus:
+        Optional :class:`~src.event_bus.EventBus` for emitting
+        ``notify.readme_summary_updated`` and
+        ``notify.readme_summary_failed`` events.  When ``None``, event
+        emission is silently skipped.
 
     Returns
     -------
     str
         The handler ID assigned by the watcher.
     """
-    callback = _make_watcher_callback(vault_root) if vault_root else on_readme_changed
+    if vault_root:
+        callback = _make_watcher_callback(vault_root, event_bus=event_bus)
+    elif event_bus:
+        callback = _make_watcher_callback("", event_bus=event_bus)
+    else:
+        callback = on_readme_changed
     handler_id = watcher.register_handler(
         README_PATTERN,
         callback,

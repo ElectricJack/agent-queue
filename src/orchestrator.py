@@ -1012,10 +1012,16 @@ class Orchestrator:
         # Detects changes to project README files so the orchestrator
         # generates/updates per-project summaries in orchestrator memory.
         # Passing vault_root lets the handler resolve summary output paths
-        # without guessing from change events.
+        # without guessing from change events.  The event_bus enables
+        # notify.readme_summary_updated / notify.readme_summary_failed
+        # events for observability and downstream hook triggers.
         from src.readme_handler import register_readme_handlers
 
-        register_readme_handlers(self.vault_watcher, vault_root=self.config.vault_root)
+        register_readme_handlers(
+            self.vault_watcher,
+            vault_root=self.config.vault_root,
+            event_bus=self.bus,
+        )
 
         # Workspace spec/doc change detector (vault.md §4).
         # Monitors project workspace directories for changes to spec and

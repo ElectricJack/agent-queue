@@ -278,6 +278,21 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "profile_id", "source_path", "errors", "warnings"],
     },
+    # -- README summary notifications (self-improvement spec §5) --
+    "notify.readme_summary_updated": {
+        "required": [*_NOTIFY_BASE_FIELDS],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "project_id",
+            "action",
+            "source_path",
+            "summary_path",
+        ],
+    },
+    "notify.readme_summary_failed": {
+        "required": [*_NOTIFY_BASE_FIELDS],
+        "optional": [*_NOTIFY_BASE_OPTIONAL, "project_id", "source_path", "errors"],
+    },
     # -- Playbook run lifecycle notifications --
     "notify.playbook_run_completed": {
         "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id"],
