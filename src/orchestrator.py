@@ -1043,6 +1043,27 @@ class Orchestrator:
                 self.config.memory.spec_watcher_patterns,
             )
 
+        # Reference stub LLM enricher (roadmap 6.3.2 — vault.md §4).
+        # Subscribes to workspace.spec.changed events emitted by the
+        # WorkspaceSpecWatcher and enriches stubs with LLM-generated
+        # summaries (Summary, Key Decisions, Key Interfaces).
+        from src.reference_stub_enricher import ReferenceStubEnricher
+
+        self.reference_stub_enricher: ReferenceStubEnricher | None = None
+        if (
+            self.config.memory.spec_watcher_enabled
+            and self.config.memory.stub_enrichment_enabled
+        ):
+            self.reference_stub_enricher = ReferenceStubEnricher(
+                bus=self.bus,
+                vault_projects_dir=self.config.vault_projects,
+                config=self.config.memory,
+                enabled=True,
+                max_source_chars=self.config.memory.stub_enrichment_max_source_chars,
+            )
+            self.reference_stub_enricher.subscribe()
+            logger.info("ReferenceStubEnricher initialized and subscribed")
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services

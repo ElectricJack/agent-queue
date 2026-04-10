@@ -384,6 +384,11 @@ class MemoryConfig:
         "docs/**/*.md",
     )
     spec_watcher_max_excerpt_lines: int = 30  # lines of source to include in stub
+    # Reference stub LLM enrichment (roadmap 6.3.2 — vault.md §4)
+    stub_enrichment_enabled: bool = True  # enrich stubs with LLM summaries
+    stub_enrichment_provider: str = ""  # LLM provider (falls back to revision_provider)
+    stub_enrichment_model: str = ""  # model override for enrichment
+    stub_enrichment_max_source_chars: int = 20_000  # max chars sent to LLM (~5k tokens)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
