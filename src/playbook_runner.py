@@ -275,6 +275,8 @@ _EVENT_FALLBACK_STATUS: dict[PlaybookRunEvent, PlaybookRunStatus] = {
     PlaybookRunEvent.BUDGET_EXCEEDED: PlaybookRunStatus.FAILED,
     PlaybookRunEvent.HUMAN_WAIT: PlaybookRunStatus.PAUSED,
     PlaybookRunEvent.HUMAN_RESUMED: PlaybookRunStatus.RUNNING,
+    PlaybookRunEvent.EVENT_WAIT: PlaybookRunStatus.PAUSED,
+    PlaybookRunEvent.EVENT_RESUMED: PlaybookRunStatus.RUNNING,
     PlaybookRunEvent.PAUSE_TIMEOUT: PlaybookRunStatus.TIMED_OUT,
 }
 
@@ -877,6 +879,15 @@ class PlaybookRunner:
             if node.get("wait_for_human") and not self._dry_run:
                 return await self._pause(db_run, current_node_id, started_at)
 
+            # Event-triggered pause — park the run until an external event
+            # fires (e.g. workflow.stage.completed).  Skipped in dry-run mode.
+            wait_event = node.get("wait_for_event")
+            if wait_event and not self._dry_run:
+                event_type = (
+                    wait_event if isinstance(wait_event, str) else wait_event.get("event", "")
+                )
+                return await self._pause_for_event(db_run, current_node_id, started_at, event_type)
+
             # Determine next node via transition evaluation
             try:
                 next_node_id, t_method = await self._evaluate_transition(
@@ -1162,6 +1173,15 @@ class PlaybookRunner:
             if node.get("wait_for_human"):
                 return await runner._pause(db_run, current_node_id, started_at)
 
+            wait_event = node.get("wait_for_event")
+            if wait_event:
+                event_type = (
+                    wait_event if isinstance(wait_event, str) else wait_event.get("event", "")
+                )
+                return await runner._pause_for_event(
+                    db_run, current_node_id, started_at, event_type
+                )
+
             try:
                 next_node_id, t_method = await runner._evaluate_transition(
                     current_node_id, node, response
@@ -1201,6 +1221,297 @@ class PlaybookRunner:
             )
 
         # Emit playbook.run.completed event (roadmap 5.3.6)
+        await runner._emit_completed_event(
+            final_context=final_response,
+            started_at=db_run.started_at,
+        )
+
+        return RunResult(
+            run_id=db_run.run_id,
+            status=runner._status.value,
+            node_trace=trace_dicts,
+            tokens_used=runner.tokens_used,
+            final_response=final_response,
+        )
+
+    # ------------------------------------------------------------------
+    # Event-triggered resume (roadmap 7.5.5)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def resume_from_event(
+        cls,
+        db_run: PlaybookRun,
+        graph: dict,
+        supervisor: Supervisor,
+        event_data: dict,
+        db: DatabaseBackend | None = None,
+        on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
+    ) -> RunResult:
+        """Resume a paused playbook run with event data.
+
+        Like :meth:`resume`, but designed for event-triggered resumption
+        rather than human input.  The ``event_data`` (e.g., the payload
+        from ``workflow.stage.completed``) is injected into conversation
+        history so the LLM can act on it when evaluating the next
+        transition and executing subsequent nodes.
+
+        This implements the long-running playbook support for coordination
+        workflows that span multiple stages (Roadmap 7.5.5).  The pattern
+        is: a coordination playbook creates tasks for a stage, pauses at a
+        ``wait_for_event`` node, then resumes here when the event fires.
+
+        Parameters
+        ----------
+        db_run:
+            The persisted :class:`PlaybookRun` with status ``"paused"``
+            and ``waiting_for_event`` set.
+        graph:
+            Fallback compiled playbook graph (used when no ``pinned_graph``
+            is stored in the run record).
+        supervisor:
+            Supervisor instance for LLM calls.
+        event_data:
+            The event payload that triggered the resume (e.g.,
+            ``{"workflow_id": ..., "stage": ..., "task_ids": [...]}``)
+        db:
+            Database backend for persisting updates.
+        on_progress:
+            Optional progress callback.
+        event_bus:
+            EventBus for emitting lifecycle events.
+        """
+        # Resolve the graph (pinned or caller-supplied)
+        if db_run.pinned_graph:
+            effective_graph = json.loads(db_run.pinned_graph)
+            logger.debug(
+                "Event-resuming run %s with pinned graph v%d",
+                db_run.run_id,
+                effective_graph.get("version", 0),
+            )
+        else:
+            effective_graph = graph
+            logger.debug(
+                "Event-resuming run %s without pinned graph — using current v%d",
+                db_run.run_id,
+                graph.get("version", 0),
+            )
+
+        runner = cls(
+            effective_graph,
+            json.loads(db_run.trigger_event),
+            supervisor,
+            db,
+            on_progress,
+            event_bus=event_bus,
+        )
+        runner.run_id = db_run.run_id
+        runner.messages = json.loads(db_run.conversation_history)
+        runner.node_trace = [NodeTraceEntry(**entry) for entry in json.loads(db_run.node_trace)]
+        runner.tokens_used = db_run.tokens_used
+
+        # Transition from PAUSED → RUNNING via EVENT_RESUMED
+        runner._status = PlaybookRunStatus.PAUSED
+        runner._transition(PlaybookRunEvent.EVENT_RESUMED)
+
+        # Inject event data into conversation so the LLM has context
+        # about what happened (e.g., which stage completed, which tasks
+        # finished, what the results were).
+        event_summary = json.dumps(event_data, indent=2)
+        event_type = db_run.waiting_for_event or "unknown"
+        runner.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[Event received: {event_type}]\n"
+                    f"The event you were waiting for has fired. "
+                    f"Here is the event data:\n\n{event_summary}"
+                ),
+            }
+        )
+
+        # Update DB status and clear waiting_for_event
+        if db:
+            await db.update_playbook_run(
+                db_run.run_id,
+                status=runner._status.value,
+                waiting_for_event=None,
+            )
+
+        # Emit playbook.run.resumed event for audit/notification
+        paused_node_id = db_run.current_node
+        if paused_node_id:
+            payload: dict[str, Any] = {
+                "playbook_id": runner._playbook_id,
+                "run_id": runner.run_id,
+                "node_id": paused_node_id,
+                "resumed_by_event": event_type,
+            }
+            await runner._emit_bus_event("playbook.run.resumed", payload)
+
+        # Find the next node after the paused one
+        if not paused_node_id:
+            return await runner._fail(
+                db_run,
+                "Cannot resume from event: no current_node recorded",
+                db_run.started_at,
+                event=PlaybookRunEvent.GRAPH_ERROR,
+            )
+
+        paused_node = effective_graph["nodes"].get(paused_node_id)
+        if not paused_node:
+            return await runner._fail(
+                db_run,
+                f"Cannot resume from event: node '{paused_node_id}' not found",
+                db_run.started_at,
+                event=PlaybookRunEvent.GRAPH_ERROR,
+            )
+
+        # Get the last response from conversation for transition evaluation
+        last_response = ""
+        for msg in reversed(runner.messages):
+            if msg["role"] == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    last_response = content
+                    break
+
+        # Evaluate transition from paused node (event data is now in context)
+        try:
+            next_node_id, _t_method = await runner._evaluate_transition(
+                paused_node_id, paused_node, last_response
+            )
+        except Exception as exc:
+            return await runner._fail(
+                db_run,
+                f"Transition from event-paused node failed: {exc}",
+                db_run.started_at,
+                event=PlaybookRunEvent.TRANSITION_FAILED,
+            )
+
+        if next_node_id is None:
+            # No transition — completed
+            runner._transition(PlaybookRunEvent.TERMINAL_REACHED)
+            completed_at = time.time()
+            trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
+            if db:
+                await db.update_playbook_run(
+                    db_run.run_id,
+                    status=runner._status.value,
+                    conversation_history=json.dumps(runner.messages),
+                    node_trace=json.dumps(trace_dicts),
+                    tokens_used=runner.tokens_used,
+                    completed_at=completed_at,
+                )
+            await runner._emit_completed_event(started_at=db_run.started_at)
+            return RunResult(
+                run_id=db_run.run_id,
+                status=runner._status.value,
+                node_trace=trace_dicts,
+                tokens_used=runner.tokens_used,
+            )
+
+        # Continue walking the graph from the next node
+        started_at = db_run.started_at
+        current_node_id = next_node_id
+        final_response: str | None = None
+
+        while True:
+            node = effective_graph["nodes"].get(current_node_id)
+            if node is None:
+                return await runner._fail(
+                    db_run,
+                    f"Node '{current_node_id}' not found in graph",
+                    started_at,
+                    event=PlaybookRunEvent.GRAPH_ERROR,
+                )
+
+            if node.get("terminal"):
+                break
+
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
+                return await runner._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted before node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
+                    started_at,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
+                )
+
+            try:
+                response = await runner._execute_node(current_node_id, node, db_run)
+                final_response = response
+            except Exception as exc:
+                return await runner._fail(
+                    db_run,
+                    f"Node '{current_node_id}' failed: {exc}",
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.NODE_FAILED,
+                )
+
+            if runner._max_tokens is not None and runner.tokens_used >= runner._max_tokens:
+                return await runner._fail(
+                    db_run,
+                    (
+                        f"token_budget_exceeded: budget {runner._max_tokens} "
+                        f"exhausted after node '{current_node_id}' "
+                        f"(used {runner.tokens_used})"
+                    ),
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.BUDGET_EXCEEDED,
+                )
+
+            if node.get("wait_for_human"):
+                return await runner._pause(db_run, current_node_id, started_at)
+
+            wait_event = node.get("wait_for_event")
+            if wait_event:
+                evt = wait_event if isinstance(wait_event, str) else wait_event.get("event", "")
+                return await runner._pause_for_event(db_run, current_node_id, started_at, evt)
+
+            try:
+                next_node_id, t_method = await runner._evaluate_transition(
+                    current_node_id, node, response
+                )
+            except Exception as exc:
+                return await runner._fail(
+                    db_run,
+                    f"Transition from '{current_node_id}' failed: {exc}",
+                    started_at,
+                    current_node=current_node_id,
+                    event=PlaybookRunEvent.TRANSITION_FAILED,
+                )
+
+            if runner.node_trace:
+                runner.node_trace[-1].transition_to = next_node_id
+                runner.node_trace[-1].transition_method = t_method
+
+            if next_node_id is None:
+                break
+
+            current_node_id = next_node_id
+
+        # Completed successfully
+        runner._transition(PlaybookRunEvent.TERMINAL_REACHED)
+        completed_at = time.time()
+        trace_dicts = [runner._trace_to_dict(t) for t in runner.node_trace]
+
+        if db:
+            await db.update_playbook_run(
+                db_run.run_id,
+                status=runner._status.value,
+                conversation_history=json.dumps(runner.messages),
+                node_trace=json.dumps(trace_dicts),
+                tokens_used=runner.tokens_used,
+                completed_at=completed_at,
+            )
+
         await runner._emit_completed_event(
             final_context=final_response,
             started_at=db_run.started_at,
@@ -1466,6 +1777,15 @@ class PlaybookRunner:
 
             if node.get("wait_for_human"):
                 return await runner._pause(db_run, current_node_id, started_at)
+
+            wait_event = node.get("wait_for_event")
+            if wait_event:
+                event_type = (
+                    wait_event if isinstance(wait_event, str) else wait_event.get("event", "")
+                )
+                return await runner._pause_for_event(
+                    db_run, current_node_id, started_at, event_type
+                )
 
             try:
                 next_node_id, t_method = await runner._evaluate_transition(
@@ -2503,6 +2823,80 @@ class PlaybookRunner:
             started_at=started_at,
             paused_at=paused_at,
         )
+
+        return RunResult(
+            run_id=self.run_id,
+            status=self._status.value,
+            node_trace=trace_dicts,
+            tokens_used=self.tokens_used,
+        )
+
+    async def _pause_for_event(
+        self,
+        db_run: PlaybookRun,
+        node_id: str,
+        started_at: float,
+        event_type: str,
+    ) -> RunResult:
+        """Pause the run until an external event fires.
+
+        Similar to :meth:`_pause` (human-in-the-loop) but the run is waiting
+        for a system event (e.g. ``workflow.stage.completed``) rather than
+        human input.  The ``waiting_for_event`` field is persisted so the
+        :class:`WorkflowStageResumeHandler` (or any event-driven handler) can
+        find and resume the correct run when the event fires.
+
+        This implements long-running playbook support for coordination
+        workflows that span multiple stages (Roadmap 7.5.5).  A coordination
+        playbook creates tasks for a stage, then pauses at a
+        ``wait_for_event`` node until ``workflow.stage.completed`` fires,
+        at which point it resumes to create the next stage.
+
+        Unlike ``wait_for_human``, no notification is emitted to human
+        review channels — the resumption is fully automated.
+        """
+        self._transition(PlaybookRunEvent.EVENT_WAIT)
+
+        paused_at = time.time()
+
+        logger.info(
+            "Playbook '%s' run %s paused at node '%s' waiting for event '%s'",
+            self._playbook_id,
+            self.run_id,
+            node_id,
+            event_type,
+        )
+
+        trace_dicts = [self._trace_to_dict(t) for t in self.node_trace]
+
+        if self.db:
+            await self.db.update_playbook_run(
+                self.run_id,
+                status=self._status.value,
+                current_node=node_id,
+                conversation_history=json.dumps(self.messages),
+                node_trace=json.dumps(trace_dicts),
+                tokens_used=self.tokens_used,
+                paused_at=paused_at,
+                waiting_for_event=event_type,
+            )
+
+        if self.on_progress:
+            await self.on_progress("playbook_paused_for_event", node_id)
+
+        # Emit playbook.run.paused event with event context (no human
+        # notification — event-triggered resumption is automated).
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "node_id": node_id,
+            "waiting_for_event": event_type,
+        }
+        if started_at is not None:
+            payload["running_seconds"] = round(paused_at - started_at, 2)
+        payload["paused_at"] = paused_at
+        payload["tokens_used"] = self.tokens_used
+        await self._emit_bus_event("playbook.run.paused", payload)
 
         return RunResult(
             run_id=self.run_id,

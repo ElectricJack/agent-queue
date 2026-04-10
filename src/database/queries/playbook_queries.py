@@ -41,6 +41,7 @@ class PlaybookQueryMixin:
                     error=run.error,
                     pinned_graph=run.pinned_graph,
                     paused_at=run.paused_at,
+                    waiting_for_event=run.waiting_for_event,
                 )
             )
 
@@ -131,4 +132,5 @@ class PlaybookQueryMixin:
             error=row["error"],
             pinned_graph=row["pinned_graph"],
             paused_at=row["paused_at"],
+            waiting_for_event=row.get("waiting_for_event"),
         )

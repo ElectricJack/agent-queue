@@ -1028,6 +1028,22 @@ class Orchestrator:
         )
         self.playbook_resume_handler.subscribe()
 
+        # Workflow stage resume handler (Roadmap 7.5.5) — subscribes to
+        # ``workflow.stage.completed`` events and automatically resumes
+        # coordination playbook runs that are paused waiting for stage
+        # completion.  This enables long-running playbooks that span
+        # multiple workflow stages with event-triggered resumption.
+        from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
+
+        self.workflow_stage_resume_handler = WorkflowStageResumeHandler(
+            db=self.db,
+            event_bus=self.bus,
+            orchestrator=self,
+            playbook_manager=self.playbook_manager,
+            config=self.config,
+        )
+        self.workflow_stage_resume_handler.subscribe()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -1603,6 +1619,8 @@ class Orchestrator:
             self.timer_service.stop()
         if hasattr(self, "playbook_resume_handler") and self.playbook_resume_handler:
             self.playbook_resume_handler.shutdown()
+        if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:
+            self.workflow_stage_resume_handler.shutdown()
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:

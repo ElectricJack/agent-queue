@@ -400,6 +400,7 @@ playbook_runs = Table(
     Column("error", Text, nullable=True),
     Column("pinned_graph", Text, nullable=True),
     Column("paused_at", Float, nullable=True),
+    Column("waiting_for_event", Text, nullable=True),
     CheckConstraint(
         "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
         name="ck_playbook_runs_status",

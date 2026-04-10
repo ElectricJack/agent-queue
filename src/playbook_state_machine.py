@@ -20,12 +20,14 @@ State diagram::
     │         │  BUDGET_EXCEEDED    │        │
     │         ├─────────────────────►│        │
     │         │                      └────────┘
-    │         │  HUMAN_WAIT          ┌────────┐
+    │         │  HUMAN_WAIT /        ┌────────┐
+    │         │  EVENT_WAIT         │        │
     │         ├─────────────────────►│ PAUSED │
     └────▲────┘                      │        │
-         │      HUMAN_RESUMED        │        ├──PAUSE_TIMEOUT──►┌───────────┐
-         └───────────────────────────┤        │                  │ TIMED_OUT │
-                                     └────────┘                  └───────────┘
+         │      HUMAN_RESUMED /      │        ├──PAUSE_TIMEOUT──►┌───────────┐
+         │      EVENT_RESUMED        │        │                  │ TIMED_OUT │
+         └───────────────────────────┤        │                  └───────────┘
+                                     └────────┘
 
 See docs/specs/design/playbooks.md §6 for the execution model specification.
 """
@@ -63,8 +65,12 @@ VALID_PLAYBOOK_RUN_TRANSITIONS: dict[
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.BUDGET_EXCEEDED): PlaybookRunStatus.FAILED,
     # --- Running → paused (human-in-the-loop) ---
     (PlaybookRunStatus.RUNNING, PlaybookRunEvent.HUMAN_WAIT): PlaybookRunStatus.PAUSED,
+    # --- Running → paused (event-triggered, e.g. waiting for workflow stage) ---
+    (PlaybookRunStatus.RUNNING, PlaybookRunEvent.EVENT_WAIT): PlaybookRunStatus.PAUSED,
     # --- Paused → running (resume) ---
     (PlaybookRunStatus.PAUSED, PlaybookRunEvent.HUMAN_RESUMED): PlaybookRunStatus.RUNNING,
+    # --- Paused → running (event-triggered resume) ---
+    (PlaybookRunStatus.PAUSED, PlaybookRunEvent.EVENT_RESUMED): PlaybookRunStatus.RUNNING,
     # --- Paused → timed out (pause timeout expired) ---
     (PlaybookRunStatus.PAUSED, PlaybookRunEvent.PAUSE_TIMEOUT): PlaybookRunStatus.TIMED_OUT,
 }

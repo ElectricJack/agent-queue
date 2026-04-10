@@ -378,11 +378,12 @@ _PLAYBOOK_SCHEMAS: dict[str, EventSchema] = {
             "paused_at",
             "tokens_used",
             "project_id",
+            "waiting_for_event",
         ],
     },
     "playbook.run.resumed": {
-        "required": ["playbook_id", "run_id", "node_id", "decision"],
-        "optional": ["project_id"],
+        "required": ["playbook_id", "run_id", "node_id"],
+        "optional": ["project_id", "decision", "resumed_by_event"],
     },
 }
 

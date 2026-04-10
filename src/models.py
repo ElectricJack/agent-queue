@@ -710,6 +710,8 @@ class PlaybookRunEvent(Enum):
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     HUMAN_WAIT = "HUMAN_WAIT"
     HUMAN_RESUMED = "HUMAN_RESUMED"
+    EVENT_WAIT = "EVENT_WAIT"
+    EVENT_RESUMED = "EVENT_RESUMED"
     PAUSE_TIMEOUT = "PAUSE_TIMEOUT"
 
 
@@ -742,6 +744,9 @@ class PlaybookRun:
     error: str | None = None
     pinned_graph: str | None = None  # JSON-serialised compiled graph for version pinning
     paused_at: float | None = None  # Unix timestamp when the run was paused
+    waiting_for_event: str | None = (
+        None  # Event type the run is waiting for (event-triggered pause)
+    )
 
 
 @dataclass
