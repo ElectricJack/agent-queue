@@ -123,43 +123,10 @@ class TestMetaFields:
 
 
 # ---------------------------------------------------------------------------
-# Test: hooks.py notify.text emits include required fields
+# Test: hooks.py notify.text emits — REMOVED
+# hooks.py was deleted as part of playbooks spec §13 Phase 3.
+# The TestHooksNotifyTextEmits regression test is no longer applicable.
 # ---------------------------------------------------------------------------
-
-
-class TestHooksNotifyTextEmits:
-    """Verify hooks.py notify.text emits include severity and category.
-
-    This is a regression test — hooks.py previously emitted notify.text
-    payloads without the required ``severity`` and ``category`` fields.
-    """
-
-    def test_hooks_notify_text_payloads_have_required_fields(self):
-        """Parse hooks.py and verify all notify.text dict literals include
-        severity and category."""
-        hooks_path = SRC_DIR / "hooks.py"
-        source = hooks_path.read_text()
-
-        # Find all notify.text emit blocks — they use raw dict literals
-        # Pattern: emit("notify.text", { ... })
-        # We extract the dict content between the braces
-        pattern = re.compile(
-            r'emit\(\s*"notify\.text"\s*,\s*\{([^}]+)\}',
-            re.DOTALL,
-        )
-        matches = list(pattern.finditer(source))
-        assert len(matches) > 0, "Expected to find notify.text emits in hooks.py"
-
-        schema = EVENT_SCHEMAS["notify.text"]
-        for match in matches:
-            dict_content = match.group(1)
-            # Extract all string keys from the dict literal
-            keys = set(re.findall(r'"(\w+)"', dict_content))
-            for req in schema["required"]:
-                assert req in keys, (
-                    f"hooks.py notify.text emit near offset {match.start()} "
-                    f"is missing required field '{req}': found keys {keys}"
-                )
 
 
 # ---------------------------------------------------------------------------
