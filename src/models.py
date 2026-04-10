@@ -771,6 +771,7 @@ class Workflow:
     current_stage: str | None = None
     task_ids: list[str] = field(default_factory=list)
     agent_affinity: dict[str, str] = field(default_factory=dict)
+    stages: list[dict] = field(default_factory=list)  # stage history for pipeline view
     created_at: float = 0.0
     completed_at: float | None = None
 

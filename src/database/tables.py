@@ -425,6 +425,7 @@ workflows = Table(
     Column("current_stage", Text, nullable=True),
     Column("task_ids", Text, nullable=False, server_default="'[]'"),
     Column("agent_affinity", Text, nullable=False, server_default="'{}'"),
+    Column("stages", Text, nullable=False, server_default="'[]'"),
     Column("created_at", Float, nullable=False),
     Column("completed_at", Float, nullable=True),
     CheckConstraint(

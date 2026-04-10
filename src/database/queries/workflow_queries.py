@@ -66,6 +66,7 @@ class WorkflowQueryMixin:
                     current_stage=workflow.current_stage,
                     task_ids=json.dumps(workflow.task_ids),
                     agent_affinity=json.dumps(workflow.agent_affinity),
+                    stages=json.dumps(workflow.stages),
                     created_at=workflow.created_at or time.time(),
                     completed_at=workflow.completed_at,
                 )
@@ -264,6 +265,7 @@ class WorkflowQueryMixin:
             current_stage=row["current_stage"],
             task_ids=json.loads(row["task_ids"]) if row["task_ids"] else [],
             agent_affinity=json.loads(row["agent_affinity"]) if row["agent_affinity"] else {},
+            stages=json.loads(row["stages"]) if row.get("stages") else [],
             created_at=row["created_at"],
             completed_at=row["completed_at"],
         )
