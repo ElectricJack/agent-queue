@@ -5896,6 +5896,939 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.followup.send(embed=embed)
 
     # ===================================================================
+    # ADDITIONAL MEMORY COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="memory-recall", description="Smart retrieval — KV exact match then semantic")
+    @app_commands.describe(
+        query="Search query (used as KV key and semantic query)",
+        project="Project ID (defaults to channel's project)",
+        topic="Topic filter for semantic fallback",
+    )
+    async def memory_recall_command(
+        interaction: discord.Interaction,
+        query: str,
+        project: str | None = None,
+        topic: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {"query": query, "project_id": project_id}
+        if topic:
+            args["topic"] = topic
+        result = await handler.execute("memory_recall", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        # Format similarly to memory-get
+        kv_value = result.get("value")
+        if kv_value is not None:
+            await _send_success(
+                interaction, f"Recall: {query}",
+                description=f"**KV match:**\n```\n{kv_value}\n```",
+                followup=True,
+            )
+            return
+        results = result.get("results", [])
+        if not results:
+            await _send_info(interaction, "Not Found",
+                             description=f"No results for `{query}`.", followup=True)
+            return
+        desc_parts = []
+        for r in results:
+            content = r.get("content", "").replace("\n", " ")[:150]
+            score = r.get("score", 0)
+            desc_parts.append(f"• ({score * 100:.0f}%) {content}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Recall — {len(results)} results", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-kv-get", description="Exact key-value lookup")
+    @app_commands.describe(
+        namespace="KV namespace (e.g. 'project', 'conventions')",
+        key="The key to look up",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_kv_get_command(
+        interaction: discord.Interaction,
+        namespace: str,
+        key: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        result = await handler.execute(
+            "memory_kv_get", {"project_id": project_id, "namespace": namespace, "key": key}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        value = result.get("value")
+        if value is None:
+            await _send_info(interaction, "Not Found",
+                             description=f"`{namespace}/{key}` not set in `{project_id}`.")
+        else:
+            await _send_success(interaction, f"{namespace}/{key}",
+                                description=f"```\n{value}\n```")
+
+    @bot.tree.command(name="memory-kv-set", description="Store a key-value pair")
+    @app_commands.describe(
+        namespace="KV namespace (e.g. 'project', 'conventions')",
+        key="The key to set",
+        value="The value to store",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_kv_set_command(
+        interaction: discord.Interaction,
+        namespace: str,
+        key: str,
+        value: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        result = await handler.execute(
+            "memory_kv_set",
+            {"project_id": project_id, "namespace": namespace, "key": key, "value": value},
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(interaction, "KV Stored",
+                            description=f"`{namespace}/{key}` = `{value}`", result=result)
+
+    @bot.tree.command(name="memory-kv-list", description="List key-value entries in a namespace")
+    @app_commands.describe(
+        namespace="KV namespace to list",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_kv_list_command(
+        interaction: discord.Interaction,
+        namespace: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute(
+            "memory_kv_list", {"project_id": project_id, "namespace": namespace}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        entries = result.get("entries", [])
+        if not entries:
+            await _send_info(interaction, "Empty Namespace",
+                             description=f"No entries in `{namespace}`.", followup=True)
+            return
+        desc_parts = [f"**Namespace:** `{namespace}` in `{project_id}`\n"]
+        for e in entries:
+            k = e.get("key", "?")
+            v = str(e.get("value", ""))[:80]
+            desc_parts.append(f"`{k}` = {v}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"KV Entries — {len(entries)}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-fact-history", description="Full history of a temporal fact")
+    @app_commands.describe(
+        key="Temporal fact key",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_fact_history_command(
+        interaction: discord.Interaction,
+        key: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute(
+            "memory_fact_history", {"project_id": project_id, "key": key}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        history = result.get("history", [])
+        if not history:
+            await _send_info(interaction, f"No History: {key}",
+                             description="No history found.", followup=True)
+            return
+        desc_parts = [f"**Fact:** `{key}` in `{project_id}`\n"]
+        for h in history:
+            val = h.get("value", "?")
+            valid_from = h.get("valid_from", "?")
+            valid_to = h.get("valid_to", "current")
+            desc_parts.append(f"• `{val}` — {valid_from} → {valid_to}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Fact History — {key}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-tag-search", description="Cross-scope tag search")
+    @app_commands.describe(
+        tag="Tag to search for across all scopes",
+        limit="Max results (default 10)",
+    )
+    async def memory_tag_search_command(
+        interaction: discord.Interaction,
+        tag: str,
+        limit: int = 10,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("memory_search_by_tag", {"tag": tag, "limit": limit})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        results = result.get("results", [])
+        if not results:
+            await _send_info(interaction, f"No Results for #{tag}",
+                             description="No entries found with that tag.", followup=True)
+            return
+        desc_parts = []
+        for r in results:
+            scope = r.get("scope", "?")
+            content = r.get("content", "").replace("\n", " ")[:120]
+            desc_parts.append(f"• `{scope}` — {content}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Tag: #{tag} — {len(results)} results", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-stale", description="Find stale memory documents")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        stale_days="Days without retrieval to consider stale (default 30)",
+        limit="Max results (default 50)",
+    )
+    async def memory_stale_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        stale_days: int = 30,
+        limit: int = 50,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute(
+            "memory_stale",
+            {"project_id": project_id, "stale_days": stale_days, "limit": limit},
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        entries = result.get("entries", [])
+        if not entries:
+            await _send_success(interaction, "No Stale Memories",
+                                description=f"All memories in `{project_id}` are fresh!",
+                                followup=True)
+            return
+        desc_parts = [f"**{len(entries)}** stale entries (>{stale_days} days)\n"]
+        for e in entries:
+            heading = e.get("heading", e.get("chunk_hash", "?")[:12])
+            days = e.get("days_stale", "?")
+            desc_parts.append(f"• **{heading}** — {days} days stale")
+        description = "\n".join(desc_parts[:30])
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = warning_embed(f"Stale Memories — {project_id}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-reindex", description="Reindex vault files into memory")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        full="Drop and rebuild from scratch (default: incremental)",
+    )
+    async def memory_reindex_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        full: bool = False,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if full:
+            args["full"] = True
+        result = await handler.execute("memory_reindex", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        indexed = result.get("indexed", 0)
+        await _send_success(
+            interaction, "Reindex Complete",
+            description=f"Indexed **{indexed}** entries for `{project_id}`.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="memory-compact", description="Compact and summarize older memories")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_compact_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("compact_memory", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Memory Compacted",
+            description=f"Compaction complete for `{project_id}`.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="memory-consolidate", description="Run knowledge consolidation")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        mode="Consolidation mode",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="daily", value="daily"),
+            app_commands.Choice(name="deep", value="deep"),
+            app_commands.Choice(name="bootstrap", value="bootstrap"),
+        ]
+    )
+    async def memory_consolidate_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        mode: app_commands.Choice[str] | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if mode:
+            args["mode"] = mode.value
+        result = await handler.execute("consolidate", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Consolidation Complete",
+            description=f"Knowledge consolidation ({mode.value if mode else 'daily'}) "
+                        f"complete for `{project_id}`.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="project-profile", description="View project memory profile")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+    )
+    async def view_profile_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("view_profile", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        content = result.get("content", result.get("profile", str(result)))
+        await _send_long_interaction(
+            content, interaction.followup.send,
+            filename=f"{project_id}-profile.md",
+        )
+
+    @bot.tree.command(name="project-factsheet", description="View or update project factsheet")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        action="View or update",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="view", value="view"),
+            app_commands.Choice(name="update", value="update"),
+        ]
+    )
+    async def project_factsheet_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        action: app_commands.Choice[str] | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if action:
+            args["action"] = action.value
+        result = await handler.execute("project_factsheet", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        content = result.get("content", result.get("factsheet", str(result)))
+        await _send_long_interaction(
+            content, interaction.followup.send,
+            filename=f"{project_id}-factsheet.yaml",
+        )
+
+    @bot.tree.command(name="project-knowledge", description="Read organized topic knowledge")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        action="Read a topic or list available topics",
+        topic="Topic to read (e.g. 'architecture', 'testing')",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="read", value="read"),
+            app_commands.Choice(name="list", value="list"),
+        ]
+    )
+    async def project_knowledge_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        action: app_commands.Choice[str] | None = None,
+        topic: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if action:
+            args["action"] = action.value
+        if topic:
+            args["topic"] = topic
+        result = await handler.execute("project_knowledge", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        content = result.get("content", result.get("knowledge", str(result)))
+        if isinstance(content, list):
+            content = "\n".join(f"• {t}" for t in content)
+        await _send_long_interaction(
+            content, interaction.followup.send,
+            filename=f"{project_id}-knowledge.md",
+        )
+
+    # ===================================================================
+    # ADDITIONAL TASK COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="task-deps", description="View dependency graph for a task")
+    @app_commands.describe(task_id="Task ID to inspect")
+    async def task_deps_command(
+        interaction: discord.Interaction,
+        task_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("get_task_dependencies", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        upstream = result.get("upstream", [])
+        downstream = result.get("downstream", [])
+        desc_parts = [f"**Task:** `{task_id}`\n"]
+        if upstream:
+            desc_parts.append("**Depends on:**")
+            for u in upstream:
+                uid = u.get("id", "?") if isinstance(u, dict) else str(u)
+                ustatus = u.get("status", "") if isinstance(u, dict) else ""
+                icon = "✅" if ustatus == "COMPLETED" else "⏳"
+                desc_parts.append(f"  {icon} `{uid}` {ustatus}")
+        else:
+            desc_parts.append("**Depends on:** none")
+        if downstream:
+            desc_parts.append("\n**Blocks:**")
+            for d in downstream:
+                did = d.get("id", "?") if isinstance(d, dict) else str(d)
+                dstatus = d.get("status", "") if isinstance(d, dict) else ""
+                desc_parts.append(f"  `{did}` {dstatus}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed("Task Dependencies", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="task-tree", description="Subtask hierarchy for a parent task")
+    @app_commands.describe(task_id="Root/parent task ID")
+    async def task_tree_command(
+        interaction: discord.Interaction,
+        task_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("get_task_tree", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        tree_text = result.get("tree", result.get("output", str(result)))
+        await _send_long_interaction(
+            f"```\n{tree_text}\n```", interaction.followup.send,
+            filename=f"{task_id}-tree.txt",
+        )
+
+    @bot.tree.command(name="chain-health", description="Check dependency chain health")
+    @app_commands.describe(
+        task_id="Check a specific task (optional)",
+        project="Check all chains in a project (optional)",
+    )
+    async def chain_health_command(
+        interaction: discord.Interaction,
+        task_id: str | None = None,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        await interaction.response.defer()
+        args: dict = {}
+        if task_id:
+            args["task_id"] = task_id
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("get_chain_health", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        chains = result.get("stuck_chains", [])
+        if not chains:
+            scope = f"`{task_id}`" if task_id else f"`{project_id}`"
+            await _send_success(interaction, "Chain Health OK",
+                                description=f"No stuck chains in {scope}.", followup=True)
+            return
+        desc_parts = [f"**{len(chains)} stuck chain(s)**\n"]
+        for c in chains:
+            blocker = c.get("blocker", "?")
+            blocked = c.get("blocked_count", 0)
+            desc_parts.append(f"• `{blocker}` blocks {blocked} downstream task(s)")
+        description = "\n".join(desc_parts)
+        embed = warning_embed("Chain Health Issues", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="add-dep", description="Add a dependency between tasks")
+    @app_commands.describe(
+        task_id="Task that should wait (downstream)",
+        depends_on="Task that must complete first (upstream)",
+    )
+    async def add_dep_command(
+        interaction: discord.Interaction,
+        task_id: str,
+        depends_on: str,
+    ):
+        result = await handler.execute(
+            "add_dependency", {"task_id": task_id, "depends_on": depends_on}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Dependency Added",
+            description=f"`{task_id}` now depends on `{depends_on}`.",
+            result=result,
+        )
+
+    @bot.tree.command(name="remove-dep", description="Remove a dependency between tasks")
+    @app_commands.describe(
+        task_id="Downstream task to unlink",
+        depends_on="Upstream task to remove",
+    )
+    async def remove_dep_command(
+        interaction: discord.Interaction,
+        task_id: str,
+        depends_on: str,
+    ):
+        result = await handler.execute(
+            "remove_dependency", {"task_id": task_id, "depends_on": depends_on}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Dependency Removed",
+            description=f"`{task_id}` no longer depends on `{depends_on}`.",
+            result=result,
+        )
+
+    @bot.tree.command(name="reopen-task", description="Reopen a task with feedback")
+    @app_commands.describe(
+        task_id="Task ID to reopen",
+        feedback="What needs to be fixed or changed",
+    )
+    async def reopen_task_command(
+        interaction: discord.Interaction,
+        task_id: str,
+        feedback: str,
+    ):
+        result = await handler.execute(
+            "reopen_with_feedback", {"task_id": task_id, "feedback": feedback}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Task Reopened",
+            description=f"`{task_id}` reopened with feedback.",
+            result=result,
+        )
+
+    @bot.tree.command(name="approve-plan", description="Approve a task plan and create subtasks")
+    @app_commands.describe(task_id="Task ID whose plan to approve")
+    async def approve_plan_command(
+        interaction: discord.Interaction,
+        task_id: str,
+    ):
+        result = await handler.execute("approve_plan", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        subtasks = result.get("subtasks_created", result.get("subtasks", 0))
+        await _send_success(
+            interaction, "Plan Approved",
+            description=f"Plan for `{task_id}` approved. {subtasks} subtask(s) created.",
+            result=result,
+        )
+
+    @bot.tree.command(name="reject-plan", description="Reject a task plan with feedback")
+    @app_commands.describe(
+        task_id="Task ID whose plan to reject",
+        feedback="What changes are needed",
+    )
+    async def reject_plan_command(
+        interaction: discord.Interaction,
+        task_id: str,
+        feedback: str,
+    ):
+        result = await handler.execute(
+            "reject_plan", {"task_id": task_id, "feedback": feedback}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Plan Rejected",
+            description=f"Plan for `{task_id}` rejected. Task reopened with feedback.",
+            result=result,
+        )
+
+    @bot.tree.command(name="set-status", description="Set a task's status directly (admin)")
+    @app_commands.describe(
+        task_id="Task ID",
+        status="New status",
+    )
+    @app_commands.choices(
+        status=[
+            app_commands.Choice(name="DEFINED", value="DEFINED"),
+            app_commands.Choice(name="READY", value="READY"),
+            app_commands.Choice(name="COMPLETED", value="COMPLETED"),
+            app_commands.Choice(name="FAILED", value="FAILED"),
+            app_commands.Choice(name="BLOCKED", value="BLOCKED"),
+        ]
+    )
+    async def set_status_command(
+        interaction: discord.Interaction,
+        task_id: str,
+        status: app_commands.Choice[str],
+    ):
+        result = await handler.execute(
+            "set_task_status", {"task_id": task_id, "status": status.value}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Status Updated",
+            description=f"`{task_id}` → **{status.value}**",
+            result=result,
+        )
+
+    @bot.tree.command(name="all-tasks", description="Active tasks across all projects")
+    async def all_tasks_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("list_active_tasks_all_projects", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        projects = result.get("projects", {})
+        if not projects:
+            await _send_info(interaction, "No Active Tasks",
+                             description="No active tasks across any project.", followup=True)
+            return
+        desc_parts = []
+        for proj_id, tasks in projects.items():
+            task_lines = []
+            for t in tasks[:5]:
+                tid = t.get("id", "?") if isinstance(t, dict) else str(t)
+                tstatus = t.get("status", "") if isinstance(t, dict) else ""
+                ttitle = t.get("title", "") if isinstance(t, dict) else ""
+                emoji = STATUS_EMOJIS.get(tstatus, "⚪")
+                task_lines.append(f"  {emoji} `{tid}` {ttitle[:40]}")
+            extra = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
+            desc_parts.append(f"**{proj_id}** — {len(tasks)} task(s){extra}\n"
+                              + "\n".join(task_lines))
+        description = "\n\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed("Active Tasks — All Projects", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="archived-tasks", description="List archived tasks")
+    @app_commands.describe(
+        project="Project ID (optional)",
+        limit="Max results (default 50)",
+    )
+    async def archived_tasks_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        limit: int = 50,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        await interaction.response.defer()
+        args: dict = {"limit": limit}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("list_archived", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        tasks = result.get("tasks", [])
+        if not tasks:
+            await _send_info(interaction, "No Archived Tasks",
+                             description="No archived tasks found.", followup=True)
+            return
+        desc_parts = []
+        for t in tasks[:20]:
+            tid = t.get("id", "?") if isinstance(t, dict) else str(t)
+            ttitle = t.get("title", "") if isinstance(t, dict) else ""
+            desc_parts.append(f"• `{tid}` {ttitle[:50]}")
+        if len(tasks) > 20:
+            desc_parts.append(f"\n*... and {len(tasks) - 20} more*")
+        description = "\n".join(desc_parts)
+        embed = info_embed(f"Archived Tasks — {len(tasks)}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    # ===================================================================
+    # AGENT PROFILE COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="profiles", description="List all agent profiles")
+    async def list_profiles_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("list_profiles", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        profiles = result.get("profiles", [])
+        if not profiles:
+            await _send_info(interaction, "No Profiles",
+                             description="No agent profiles configured.", followup=True)
+            return
+        desc_parts = []
+        for p in profiles:
+            pid = p.get("id", "?") if isinstance(p, dict) else str(p)
+            pname = p.get("name", pid) if isinstance(p, dict) else pid
+            model = p.get("model", "") if isinstance(p, dict) else ""
+            model_str = f" · `{model}`" if model else ""
+            desc_parts.append(f"• **{pname}** (`{pid}`){model_str}")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Agent Profiles — {len(profiles)}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="profile", description="View agent profile details")
+    @app_commands.describe(profile_id="Profile ID to view")
+    async def get_profile_command(
+        interaction: discord.Interaction,
+        profile_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("get_profile", {"profile_id": profile_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        name = result.get("name", profile_id)
+        model = result.get("model", "default")
+        tools = result.get("allowed_tools", [])
+        desc = result.get("description", "")
+        fields = [
+            ("ID", f"`{profile_id}`", True),
+            ("Model", f"`{model}`", True),
+        ]
+        if tools:
+            tools_str = ", ".join(f"`{t}`" for t in tools[:10])
+            if len(tools) > 10:
+                tools_str += f" +{len(tools) - 10} more"
+            fields.append(("Tools", tools_str, False))
+        await _send_info(
+            interaction, f"Profile: {name}",
+            description=desc or None,
+            fields=fields, followup=True,
+        )
+
+    # ===================================================================
+    # PROJECT CONSTRAINT COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="set-constraint", description="Set scheduling constraint on a project")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        exclusive="Only one agent at a time",
+        pause_scheduling="Pause all scheduling for this project",
+    )
+    async def set_constraint_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        exclusive: bool = False,
+        pause_scheduling: bool = False,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        args: dict = {"project_id": project_id}
+        if exclusive:
+            args["exclusive"] = True
+        if pause_scheduling:
+            args["pause_scheduling"] = True
+        result = await handler.execute("set_project_constraint", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        constraints = []
+        if exclusive:
+            constraints.append("exclusive")
+        if pause_scheduling:
+            constraints.append("paused")
+        await _send_success(
+            interaction, "Constraint Set",
+            description=f"`{project_id}`: {', '.join(constraints) or 'updated'}",
+            result=result,
+        )
+
+    @bot.tree.command(name="release-constraint", description="Release scheduling constraint")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+    )
+    async def release_constraint_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        result = await handler.execute(
+            "release_project_constraint", {"project_id": project_id}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        await _send_success(
+            interaction, "Constraint Released",
+            description=f"Constraints on `{project_id}` have been released.",
+            result=result,
+        )
+
+    @bot.tree.command(name="sync-workspaces", description="Sync project workspaces")
+    @app_commands.describe(project="Project ID (defaults to channel's project)")
+    async def sync_workspaces_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("queue_sync_workspaces", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Workspace Sync Queued",
+            description=f"Sync task created for `{project_id}`.",
+            followup=True, result=result,
+        )
+
+    @bot.tree.command(name="token-audit", description="Token usage audit")
+    @app_commands.describe(
+        days="Number of days to audit (default 7)",
+        project="Filter to a specific project",
+    )
+    async def token_audit_command(
+        interaction: discord.Interaction,
+        days: int = 7,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        await interaction.response.defer()
+        args: dict = {"days": days}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("token_audit", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        # Format audit data
+        total = result.get("total_tokens", 0)
+        by_project = result.get("by_project", {})
+        desc_parts = [f"**Period:** {days} days", f"**Total tokens:** {total:,}\n"]
+        if by_project:
+            for pid, count in sorted(by_project.items(), key=lambda x: -x[1]):
+                pct = (count / total * 100) if total else 0
+                desc_parts.append(f"• `{pid}`: {count:,} ({pct:.1f}%)")
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed("Token Audit", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="recover-workflow", description="Recover an orphaned workflow")
+    @app_commands.describe(workflow_id="The workflow ID to recover")
+    async def recover_workflow_command(
+        interaction: discord.Interaction,
+        workflow_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("recover_workflow", {"workflow_id": workflow_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Workflow Recovered",
+            description=f"Workflow `{workflow_id}` has been recovered.",
+            followup=True, result=result,
+        )
+
+    # ===================================================================
     # SYSTEM CONTROL COMMANDS
     # ===================================================================
 
