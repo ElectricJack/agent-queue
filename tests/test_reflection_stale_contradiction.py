@@ -14,17 +14,18 @@ Verifies:
      quickly without taking action
   5. The playbook describes resolution strategies for contradictions
   6. The playbook describes triage actions for stale memories (delete/refresh/keep)
+  7. The playbook instructs checking both project and agent-type scopes
+  8. The playbook references actual API response field names
+  9. memory_health and memory_stale return structures matching playbook expectations
 """
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.playbook_models import CompiledPlaybook, PlaybookNode
-from src.playbook_runner import PlaybookRunner, RunResult
+from src.playbook_runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------
@@ -908,3 +909,454 @@ class TestExtendedReflectionDryRun:
         executed = [t["node_id"] for t in result.node_trace]
         assert "review_task" in executed
         assert len(executed) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Scope guidance — both project and agent-type scopes
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookScopeGuidance:
+    """Verify the playbook instructs checking both project and agent-type scopes."""
+
+    @pytest.fixture
+    def playbook_source(self) -> str:
+        import os
+
+        path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "vault",
+            "agent-types",
+            "coding",
+            "playbooks",
+            "reflection.md",
+        )
+        with open(path) as f:
+            return f.read()
+
+    def _get_section(self, source: str, heading: str, next_heading: str) -> str:
+        lower = source.lower()
+        start = lower.index(heading.lower())
+        end = lower.index(next_heading.lower())
+        return source[start:end]
+
+    def test_contradiction_section_mentions_agent_type_scope(
+        self, playbook_source: str
+    ) -> None:
+        """The contradiction section instructs checking agent-type scope."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "agenttype_coding" in section
+
+    def test_contradiction_section_mentions_project_scope(
+        self, playbook_source: str
+    ) -> None:
+        """The contradiction section instructs checking project scope."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "project" in section.lower()
+
+    def test_stale_section_mentions_agent_type_scope(self, playbook_source: str) -> None:
+        """The stale section instructs checking agent-type scope."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "agenttype_coding" in section
+
+    def test_stale_section_mentions_project_scope(self, playbook_source: str) -> None:
+        """The stale section instructs checking project scope."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "project" in section.lower()
+
+    def test_stale_section_specifies_limit_10(self, playbook_source: str) -> None:
+        """The stale section specifies passing limit: 10 to memory_stale."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "limit: 10" in section or "limit:10" in section
+
+
+# ---------------------------------------------------------------------------
+# Tests: API response field references in playbook
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybookApiFieldReferences:
+    """Verify the playbook references actual field names from the API responses."""
+
+    @pytest.fixture
+    def playbook_source(self) -> str:
+        import os
+
+        path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "vault",
+            "agent-types",
+            "coding",
+            "playbooks",
+            "reflection.md",
+        )
+        with open(path) as f:
+            return f.read()
+
+    def _get_section(self, source: str, heading: str, next_heading: str) -> str:
+        lower = source.lower()
+        start = lower.index(heading.lower())
+        end = lower.index(next_heading.lower())
+        return source[start:end]
+
+    def test_contradiction_section_references_contradiction_count(
+        self, playbook_source: str
+    ) -> None:
+        """The playbook references contradiction_count from memory_health response."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "contradiction_count" in section
+
+    def test_contradiction_section_references_contradictions_list(
+        self, playbook_source: str
+    ) -> None:
+        """The playbook references contradictions list from memory_health response."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "contradictions" in section.lower()
+
+    def test_contradiction_section_references_chunk_hash(
+        self, playbook_source: str
+    ) -> None:
+        """The playbook references chunk_hash field for identifying contested entries."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "chunk_hash" in section
+
+    def test_stale_section_references_total_stale(self, playbook_source: str) -> None:
+        """The playbook references total_stale from memory_stale response."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "total_stale" in section
+
+    def test_stale_section_references_stale_documents(self, playbook_source: str) -> None:
+        """The playbook references stale_documents list from memory_stale response."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "stale_documents" in section
+
+    def test_stale_section_references_reason_field(self, playbook_source: str) -> None:
+        """The playbook references the reason field (never_retrieved/stale)."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "never_retrieved" in section
+        assert '"stale"' in section or "`stale`" in section or "stale" in section.lower()
+
+    def test_stale_section_references_days_since_retrieval(
+        self, playbook_source: str
+    ) -> None:
+        """The playbook references days_since_retrieval field."""
+        section = self._get_section(
+            playbook_source, "## Flag stale memories", "## Skip conditions"
+        )
+        assert "days_since_retrieval" in section
+
+    def test_contradiction_section_references_topic(self, playbook_source: str) -> None:
+        """The playbook references the topic field from contradictions list."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "topic" in section.lower()
+
+    def test_contradiction_section_mentions_memory_search_by_tag(
+        self, playbook_source: str
+    ) -> None:
+        """The playbook mentions memory_search_by_tag for finding opposing entries."""
+        section = self._get_section(
+            playbook_source, "## Surface contradictions", "## Flag stale"
+        )
+        assert "memory_search_by_tag" in section
+
+
+# ---------------------------------------------------------------------------
+# Tests: API response structure compatibility (service-level)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHealthResponseCompatibility:
+    """Verify memory_health returns the fields the playbook expects.
+
+    These tests use the real MemoryV2Service.health() method (with a mock
+    store) to confirm the response structure matches playbook expectations.
+    """
+
+    async def test_health_response_has_contradiction_count(self) -> None:
+        """memory_health response includes contradiction_count field."""
+        response = await self._get_health_response()
+        assert "contradiction_count" in response
+
+    async def test_health_response_has_contradictions_list(self) -> None:
+        """memory_health response includes contradictions list."""
+        response = await self._get_health_response()
+        assert "contradictions" in response
+        assert isinstance(response["contradictions"], list)
+
+    async def test_health_contested_entry_has_chunk_hash(self) -> None:
+        """Each contested entry in contradictions list has chunk_hash."""
+        response = await self._get_health_response(with_contested=True)
+        assert len(response["contradictions"]) > 0
+        entry = response["contradictions"][0]
+        assert "chunk_hash" in entry
+
+    async def test_health_contested_entry_has_topic(self) -> None:
+        """Each contested entry in contradictions list has topic."""
+        response = await self._get_health_response(with_contested=True)
+        entry = response["contradictions"][0]
+        assert "topic" in entry
+
+    async def test_health_contested_entry_has_heading(self) -> None:
+        """Each contested entry in contradictions list has heading."""
+        response = await self._get_health_response(with_contested=True)
+        entry = response["contradictions"][0]
+        assert "heading" in entry
+
+    async def test_health_contested_entry_has_tags(self) -> None:
+        """Each contested entry in contradictions list has tags."""
+        response = await self._get_health_response(with_contested=True)
+        entry = response["contradictions"][0]
+        assert "tags" in entry
+        assert isinstance(entry["tags"], list)
+        assert "contested" in entry["tags"]
+
+    async def _get_health_response(
+        self, *, with_contested: bool = False
+    ) -> dict:
+        """Build a realistic health() response using the real service method.
+
+        We mock the store to avoid needing a real Milvus/vector DB.
+        """
+        from unittest.mock import MagicMock, PropertyMock, patch
+        import time
+
+        try:
+            from memsearch.scoping import MemoryScope
+        except ImportError:
+            pytest.skip("memsearch not installed")
+
+        now = time.time()
+        entries = [
+            {
+                "chunk_hash": f"hash_{i}",
+                "entry_type": "document",
+                "heading": f"Insight {i}",
+                "topic": f"topic_{i}",
+                "tags": '["insight"]',
+                "retrieval_count": i,
+                "last_retrieved": now - (i * 86400),
+                "updated_at": now - (i * 86400 * 2),
+                "content": f"Content for insight {i}",
+            }
+            for i in range(5)
+        ]
+        if with_contested:
+            entries.append(
+                {
+                    "chunk_hash": "contested_hash_1",
+                    "entry_type": "document",
+                    "heading": "Contested insight",
+                    "topic": "async patterns",
+                    "tags": '["insight", "contested"]',
+                    "retrieval_count": 2,
+                    "last_retrieved": now - 86400,
+                    "updated_at": now - (3 * 86400),
+                    "content": "Use asyncio.gather for parallel tasks",
+                }
+            )
+
+        mock_store = MagicMock()
+        mock_store.query.return_value = entries
+
+        from src.memory_v2_service import MemoryV2Service
+
+        service = MemoryV2Service.__new__(MemoryV2Service)
+
+        with (
+            patch.object(
+                type(service), "available", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(service, "_get_store", return_value=mock_store),
+            patch.object(
+                service,
+                "_resolve_scope",
+                return_value=(MemoryScope.PROJECT, "test-project"),
+            ),
+        ):
+            return await service.health("test-project")
+
+
+class TestMemoryStaleResponseCompatibility:
+    """Verify memory_stale returns the fields the playbook expects.
+
+    These tests use the real MemoryV2Service.find_stale() method (with a
+    mock store) to confirm the response structure matches playbook expectations.
+    """
+
+    async def test_stale_response_has_total_stale(self) -> None:
+        """memory_stale response includes total_stale field."""
+        response = await self._get_stale_response()
+        assert "total_stale" in response
+
+    async def test_stale_response_has_stale_documents_list(self) -> None:
+        """memory_stale response includes stale_documents list."""
+        response = await self._get_stale_response()
+        assert "stale_documents" in response
+        assert isinstance(response["stale_documents"], list)
+
+    async def test_stale_response_has_never_retrieved_count(self) -> None:
+        """memory_stale response includes never_retrieved_count field."""
+        response = await self._get_stale_response()
+        assert "never_retrieved_count" in response
+
+    async def test_stale_document_has_chunk_hash(self) -> None:
+        """Each stale document has chunk_hash for deletion/update."""
+        response = await self._get_stale_response()
+        assert len(response["stale_documents"]) > 0
+        doc = response["stale_documents"][0]
+        assert "chunk_hash" in doc
+
+    async def test_stale_document_has_title(self) -> None:
+        """Each stale document has title for human-readable display."""
+        response = await self._get_stale_response()
+        doc = response["stale_documents"][0]
+        assert "title" in doc
+
+    async def test_stale_document_has_topic(self) -> None:
+        """Each stale document has topic field."""
+        response = await self._get_stale_response()
+        doc = response["stale_documents"][0]
+        assert "topic" in doc
+
+    async def test_stale_document_has_tags(self) -> None:
+        """Each stale document has tags list."""
+        response = await self._get_stale_response()
+        doc = response["stale_documents"][0]
+        assert "tags" in doc
+        assert isinstance(doc["tags"], list)
+
+    async def test_stale_document_has_content_preview(self) -> None:
+        """Each stale document has content_preview for quick review."""
+        response = await self._get_stale_response()
+        doc = response["stale_documents"][0]
+        assert "content_preview" in doc
+
+    async def test_stale_document_has_reason(self) -> None:
+        """Each stale document has reason (never_retrieved or stale)."""
+        response = await self._get_stale_response()
+        docs = response["stale_documents"]
+        reasons = {d["reason"] for d in docs}
+        # Should have at least one of the two reason types
+        assert reasons <= {"never_retrieved", "stale"}
+        assert len(reasons) > 0
+
+    async def test_stale_document_has_days_since_retrieval(self) -> None:
+        """Each stale document has days_since_retrieval field."""
+        response = await self._get_stale_response()
+        doc = response["stale_documents"][0]
+        assert "days_since_retrieval" in doc
+
+    async def test_stale_respects_limit_parameter(self) -> None:
+        """memory_stale respects the limit parameter (playbook uses 10)."""
+        response = await self._get_stale_response(limit=2)
+        assert len(response["stale_documents"]) <= 2
+        assert response["limit"] == 2
+
+    async def test_never_retrieved_sorted_first(self) -> None:
+        """Default staleness sort puts never-retrieved entries first."""
+        response = await self._get_stale_response()
+        docs = response["stale_documents"]
+        # Never-retrieved should come before stale
+        never_seen = [i for i, d in enumerate(docs) if d["reason"] == "never_retrieved"]
+        stale_seen = [i for i, d in enumerate(docs) if d["reason"] == "stale"]
+        if never_seen and stale_seen:
+            assert max(never_seen) < min(stale_seen)
+
+    async def _get_stale_response(self, *, limit: int = 50) -> dict:
+        """Build a realistic find_stale() response using the real service method."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        import time
+
+        try:
+            from memsearch.scoping import MemoryScope
+        except ImportError:
+            pytest.skip("memsearch not installed")
+
+        now = time.time()
+        entries = [
+            # Never retrieved
+            {
+                "chunk_hash": "never_1",
+                "entry_type": "document",
+                "heading": "Old insight never used",
+                "topic": "testing",
+                "tags": '["testing", "provisional"]',
+                "retrieval_count": 0,
+                "last_retrieved": 0,
+                "updated_at": now - (60 * 86400),
+                "content": "Always run pytest with -v flag for verbose output",
+                "source": "task-001",
+            },
+            # Stale (retrieved 45 days ago)
+            {
+                "chunk_hash": "stale_1",
+                "entry_type": "document",
+                "heading": "Async pattern insight",
+                "topic": "async",
+                "tags": '["async", "verified"]',
+                "retrieval_count": 3,
+                "last_retrieved": now - (45 * 86400),
+                "updated_at": now - (90 * 86400),
+                "content": "Use asyncio.gather for parallel I/O operations",
+                "source": "task-042",
+            },
+            # Fresh (retrieved yesterday) — should NOT appear
+            {
+                "chunk_hash": "fresh_1",
+                "entry_type": "document",
+                "heading": "Fresh insight",
+                "topic": "recent",
+                "tags": '["recent"]',
+                "retrieval_count": 10,
+                "last_retrieved": now - 86400,
+                "updated_at": now - (5 * 86400),
+                "content": "This was recently retrieved and is not stale",
+                "source": "task-099",
+            },
+        ]
+
+        mock_store = MagicMock()
+        mock_store.query.return_value = entries
+
+        from src.memory_v2_service import MemoryV2Service
+
+        service = MemoryV2Service.__new__(MemoryV2Service)
+
+        with (
+            patch.object(
+                type(service), "available", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(service, "_get_store", return_value=mock_store),
+            patch.object(
+                service,
+                "_resolve_scope",
+                return_value=(MemoryScope.PROJECT, "test-project"),
+            ),
+        ):
+            return await service.find_stale("test-project", limit=limit)

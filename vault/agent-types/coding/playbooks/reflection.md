@@ -120,20 +120,26 @@ all agent-type memory in every reflection run.
 
 ## Surface contradictions
 
-After consolidation, call `memory_health` for the project to check for
-memories tagged `#contested`. These are pairs of memories that made
-contradictory claims about the same topic and were flagged during
-dedup-merge rather than blindly merged.
+After consolidation, check both the project scope and the agent-type
+scope for memories tagged `#contested`. Call `memory_health` for the
+project (default scope) first, then call it again with
+`scope: "agenttype_coding"` for agent-type level memories. These are
+pairs of memories that made contradictory claims about the same topic
+and were flagged during dedup-merge rather than blindly merged.
 
-If `contradiction_count` is zero, skip this section.
+If `contradiction_count` is zero in both scopes, skip this section.
 
-For each contested memory returned in the `contradictions` list:
+For each contested memory returned in the `contradictions` list
+(which contains `chunk_hash`, `heading`, `topic`, and `tags` for each
+entry):
 
   1. Read the full content of the contested entry using `memory_get`
      with its `chunk_hash`.
   2. Search for the opposing entry — there will be at least one other
-     memory with `#contested` on the same topic. Use `memory_search`
-     with the topic text to find it.
+     memory with `#contested` on the same topic. Use
+     `memory_search_by_tag` with tag `"contested"` in the same scope,
+     then filter results by matching topic. If that doesn't find it,
+     fall back to `memory_search` with the topic text.
   3. Evaluate the contradiction in light of the current task's outcome.
      Does this task's experience confirm one side over the other? If
      so, use `memory_update` to update the confirmed entry — remove
@@ -152,10 +158,17 @@ domain. Ignore contested entries in unrelated areas.
 
 ## Flag stale memories
 
-Call `memory_stale` for the project to find memory documents that have
-not been retrieved recently — these are candidates for archival.
+Call `memory_stale` for the project with `limit: 10` to find the top
+memory documents that have not been retrieved recently — these are
+candidates for archival. Then call it again with
+`scope: "agenttype_coding"` and `limit: 10` to check agent-type level
+memories too. The response includes `total_stale`,
+`never_retrieved_count`, and a `stale_documents` list where each entry
+has `chunk_hash`, `title`, `topic`, `tags`, `content_preview`,
+`reason` (`"never_retrieved"` or `"stale"`), and
+`days_since_retrieval`.
 
-If the result is empty (no stale memories), skip this section.
+If `total_stale` is zero in both scopes, skip this section.
 
 Review the returned candidates, prioritizing entries sorted by
 staleness (never-retrieved first, then longest since last retrieval).
