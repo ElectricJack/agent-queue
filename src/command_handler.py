@@ -2098,10 +2098,16 @@ class CommandHandler:
                 hidden_count = all_count - len(tasks)
             # else: include_completed=True — return everything unfiltered.
 
-        task_dicts = [self._task_to_dict(t) for t in tasks[:200]]
+        # Always show all active tasks; only cap completed/finished ones so
+        # that active work (DEFINED, READY, IN_PROGRESS, …) is never hidden.
+        active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+        finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+        cap = max(0, 200 - len(active))
+        capped_tasks = active + finished[:cap]
+        task_dicts = [self._task_to_dict(t) for t in capped_tasks]
 
         if show_dependencies:
-            await self._enrich_with_dependencies(task_dicts, tasks[:200])
+            await self._enrich_with_dependencies(task_dicts, capped_tasks)
 
         result: dict = {
             "display_mode": "flat",
@@ -2168,8 +2174,13 @@ class CommandHandler:
         for t in tasks:
             by_project.setdefault(t.project_id, []).append(_entry(t))
 
-        # Also build a flat list (capped at 200) for simple consumers.
-        flat = [_entry(t, include_project=True) for t in tasks[:200]]
+        # Build a flat list — always include all active tasks; only cap
+        # completed/finished so active work is never hidden.
+        _terminal = {TaskStatus.COMPLETED}
+        active_tasks = [t for t in tasks if t.status not in _terminal]
+        finished_tasks = [t for t in tasks if t.status in _terminal]
+        cap = max(0, 200 - len(active_tasks))
+        flat = [_entry(t, include_project=True) for t in active_tasks + finished_tasks[:cap]]
 
         return {
             "by_project": by_project,
@@ -2221,7 +2232,13 @@ class CommandHandler:
         raw_trees: list[tuple[Task, list[dict]]] = []
         total_tasks = 0
 
-        for root in root_tasks[:200]:
+        # Always show all active root tasks; only cap completed ones.
+        active_roots = [r for r in root_tasks if r.status not in self._FINISHED_STATUSES]
+        finished_roots = [r for r in root_tasks if r.status in self._FINISHED_STATUSES]
+        cap = max(0, 200 - len(active_roots))
+        capped_roots = active_roots + finished_roots[:cap]
+
+        for root in capped_roots:
             tree_data = await self.db.get_task_tree(root.id)
             if tree_data is None:
                 # Shouldn't happen — root was just fetched — but be safe.
@@ -2588,9 +2605,7 @@ class CommandHandler:
         # Warn if directory-isolated is set — it's accepted for storage but
         # not yet implemented.  The orchestrator will reject it at execution
         # time with a clear error.
-        warn_deferred_mode = (
-            workspace_mode == WorkspaceMode.DIRECTORY_ISOLATED
-        )
+        warn_deferred_mode = workspace_mode == WorkspaceMode.DIRECTORY_ISOLATED
 
         initial_status = (
             TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY

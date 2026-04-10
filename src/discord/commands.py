@@ -783,20 +783,6 @@ class MenuView(discord.ui.View):
             parts.append(f"{blocked} blocked")
         lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
 
-        agents = result.get("agents", [])
-        if agents:
-            lines.append("\n**Agents:**")
-            for a in agents:
-                working_on = a.get("working_on")
-                if working_on:
-                    lines.append(
-                        f"• **{a['name']}** ({a['state']}) → "
-                        f"**{working_on['project_id']}** / "
-                        f"`{working_on['task_id']}` — {working_on['title']}"
-                    )
-                else:
-                    lines.append(f"• **{a['name']}** ({a['state']})")
-
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @discord.ui.button(
@@ -1146,8 +1132,15 @@ class _EditRuleModal(discord.ui.Modal, title="Edit Rule"):
         max_length=4000,
     )
 
-    def __init__(self, rule_id: str, project_id: str | None, current_type: str,
-                 current_content: str, handler, parent_view: "_RuleContentView") -> None:
+    def __init__(
+        self,
+        rule_id: str,
+        project_id: str | None,
+        current_type: str,
+        current_content: str,
+        handler,
+        parent_view: "_RuleContentView",
+    ) -> None:
         super().__init__()
         self._rule_id = rule_id
         self._project_id = project_id
@@ -1344,13 +1337,9 @@ class _RuleContentView(discord.ui.View):
         current_enabled = exec_info.get("enabled", True)
         # If mixed or True, disable; if False, enable
         new_enabled = current_enabled is False
-        result = await self._handler.execute(
-            "toggle_rule", {"id": rule_id, "enabled": new_enabled}
-        )
+        result = await self._handler.execute("toggle_rule", {"id": rule_id, "enabled": new_enabled})
         if "error" in result:
-            await interaction.response.send_message(
-                f"\u274c {result['error']}", ephemeral=True
-            )
+            await interaction.response.send_message(f"\u274c {result['error']}", ephemeral=True)
             return
         action = result.get("action", "toggled")
         updated = result.get("hooks_updated", 0)
@@ -1531,9 +1520,7 @@ class RulesListView(discord.ui.View):
             # Escape pipes in description to avoid breaking markdown table
             desc = desc.replace("|", "\\|")
 
-            rows.append(
-                f"| {type_icon} **{name}** | `{scope}` | {status_cell} | {desc} |"
-            )
+            rows.append(f"| {type_icon} **{name}** | `{scope}` | {status_cell} | {desc} |")
 
         body = "\n".join(rows)
 
@@ -1834,25 +1821,12 @@ def setup_commands(bot: commands.Bot) -> None:
             view._all_tasks = tasks
             # Refresh thread URLs
             view._thread_urls = bot.get_task_thread_urls()
-            # Refresh header lines if this is a status view
+            # Refresh header lines if this is a status view (orchestrator state only)
             if view._show_agent_header:
                 status_result = await self._handler.execute("get_status", {})
                 header: list[str] = []
                 if status_result.get("orchestrator_paused"):
                     header.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
-                agents = status_result.get("agents", [])
-                if agents:
-                    header.append("**Agents:**")
-                    for a in agents:
-                        working_on = a.get("working_on")
-                        if working_on:
-                            header.append(
-                                f"• **{a['name']}** ({a['state']}) → "
-                                f"**{working_on['project_id']}** / "
-                                f"`{working_on['task_id']}` — {working_on['title']}"
-                            )
-                        else:
-                            header.append(f"• **{a['name']}** ({a['state']})")
                 view._header_lines = header
             # Rebuild subtask maps
             view._subtask_ids = set()
@@ -1869,7 +1843,7 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     # StatusReportView removed — /status now uses TaskReportView with
-    # agent info in header_lines for a consolidated view.
+    # orchestrator state in header_lines for a consolidated view.
 
     class TaskReportView(discord.ui.View):
         """Grouped task report with collapsible status sections and detail select.
@@ -2232,20 +2206,20 @@ def setup_commands(bot: commands.Bot) -> None:
             # Resolve project from channel context (like /tasks does)
             project_id = await _resolve_project_from_context(interaction, None)
 
-            # Get agent/orchestrator status for the header (scoped to project)
+            # Get orchestrator status for the header (scoped to project)
             status_args: dict = {}
             if project_id:
                 status_args["project_id"] = project_id
             status_result = await handler.execute("get_status", status_args)
 
-            # Build header lines from status info
+            # Build header lines — orchestrator state only (no agent info)
             header_lines: list[str] = []
             if status_result.get("orchestrator_paused"):
                 header_lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
 
-            # Fetch tasks using the same backend as /tasks
+            # Fetch active tasks only — status focuses on current work
             args: dict = {
-                "include_completed": True,
+                "include_completed": False,
                 "display_mode": "flat",
             }
             if project_id:
@@ -4961,9 +4935,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="rule-runs", description="Show execution history for a rule")
     @app_commands.describe(rule_id="Rule ID", limit="Number of runs to show (default 10)")
-    async def rule_runs_command(
-        interaction: discord.Interaction, rule_id: str, limit: int = 10
-    ):
+    async def rule_runs_command(interaction: discord.Interaction, rule_id: str, limit: int = 10):
         result = await handler.execute("rule_runs", {"id": rule_id, "limit": limit})
         if "error" in result:
             await interaction.response.send_message(
@@ -5000,9 +4972,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="toggle-rule", description="Enable or disable a rule")
     @app_commands.describe(rule_id="Rule ID", enabled="True to enable, False to disable")
-    async def toggle_rule_command(
-        interaction: discord.Interaction, rule_id: str, enabled: bool
-    ):
+    async def toggle_rule_command(interaction: discord.Interaction, rule_id: str, enabled: bool):
         result = await handler.execute("toggle_rule", {"id": rule_id, "enabled": enabled})
         if "error" in result:
             await interaction.response.send_message(
