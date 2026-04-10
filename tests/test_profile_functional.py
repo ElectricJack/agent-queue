@@ -340,6 +340,7 @@ class TestCheckProfileFunctional:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()

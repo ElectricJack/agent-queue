@@ -35,6 +35,7 @@ def config_auto_create_off(tmp_path):
         ),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 
@@ -49,6 +50,7 @@ def config_auto_create_on(tmp_path):
         ),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 

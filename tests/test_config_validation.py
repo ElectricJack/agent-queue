@@ -269,25 +269,27 @@ class TestAgentProfileConfigValidation:
 
 
 class TestAppConfigValidation:
-    def test_valid_defaults_have_discord_warnings(self):
+    def test_valid_defaults_have_discord_warnings(self, tmp_path):
         """Default AppConfig has empty discord tokens, so validate returns errors."""
-        cfg = AppConfig()
+        cfg = AppConfig(data_dir=str(tmp_path / "data"))
         errors = cfg.validate()
         # Should have discord errors (empty bot_token and guild_id)
         discord_errors = [e for e in errors if e.section == "discord"]
         assert len(discord_errors) == 2
 
-    def test_valid_config_no_errors(self):
+    def test_valid_config_no_errors(self, tmp_path):
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         errors = cfg.validate()
         fatal = [e for e in errors if e.severity == "error"]
         assert fatal == []
 
-    def test_collects_all_errors(self):
+    def test_collects_all_errors(self, tmp_path):
         """Validation should collect ALL errors, not stop at first."""
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             workspace_dir="",
             database_path="",
             scheduling=SchedulingConfig(rolling_window_hours=0),
@@ -301,6 +303,7 @@ class TestAppConfigValidation:
     def test_cross_field_workspace_warning(self, tmp_path):
         """Workspace dir warning when path doesn't exist and parent not writable."""
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             workspace_dir="/nonexistent/deeply/nested/path",
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
@@ -309,10 +312,11 @@ class TestAppConfigValidation:
         # At minimum, should not crash
         assert isinstance(errors, list)
 
-    def test_health_check_port_invalid(self):
+    def test_health_check_port_invalid(self, tmp_path):
         from src.config import HealthCheckConfig
 
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
             health_check=HealthCheckConfig(enabled=True, port=99999),
         )
@@ -320,8 +324,9 @@ class TestAppConfigValidation:
         port_errors = [e for e in errors if e.field == "port"]
         assert len(port_errors) == 1
 
-    def test_rate_limits_invalid_structure(self):
+    def test_rate_limits_invalid_structure(self, tmp_path):
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
             rate_limits={"global": "not-a-dict"},
         )
@@ -329,8 +334,9 @@ class TestAppConfigValidation:
         rl_errors = [e for e in errors if e.section == "rate_limits"]
         assert len(rl_errors) == 1
 
-    def test_agent_profiles_delegated(self):
+    def test_agent_profiles_delegated(self, tmp_path):
         cfg = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
             agent_profiles=[AgentProfileConfig(id="", name="Bad")],
         )

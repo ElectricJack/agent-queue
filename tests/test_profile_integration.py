@@ -702,6 +702,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
         )
         orch = Orchestrator(config, adapter_factory=factory)
@@ -718,6 +719,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=False),
         )
         orch = Orchestrator(config, adapter_factory=factory)
@@ -734,6 +736,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(
                 enabled=True,
                 host="127.0.0.1",

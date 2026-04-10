@@ -75,6 +75,7 @@ async def orch(tmp_path):
     config = AppConfig(
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
     o = Orchestrator(config, adapter_factory=MockAdapterFactory())
     await o.initialize()
@@ -497,6 +498,7 @@ class TestPlanApprovalBlocking:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(workspace),
+            data_dir=str(tmp_path / "data"),
         )
         config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
@@ -674,6 +676,7 @@ class TestIsLastSubtask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(workspace),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -789,6 +792,7 @@ class TestPrepareWorkspaceCleanDefault:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
@@ -920,6 +924,7 @@ class TestPhaseVerifyNormalTask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1285,6 +1290,7 @@ class TestPhaseVerifyApprovalTask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1393,6 +1399,7 @@ class TestPhaseVerifyIntermediateSubtask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1529,6 +1536,7 @@ class TestCleanupWorkspaceForNextTask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1599,6 +1607,7 @@ class TestVerificationReopen:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             auto_task=AutoTaskConfig(max_verification_retries=2),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
@@ -1702,6 +1711,7 @@ class TestCompletionPipelineVerify:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()

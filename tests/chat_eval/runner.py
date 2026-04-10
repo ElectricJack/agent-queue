@@ -273,6 +273,7 @@ async def _main(args: argparse.Namespace) -> None:
         config = AppConfig(
             database_path=str(Path(tmp) / "eval.db"),
             workspace_dir=str(Path(tmp) / "workspaces"),
+            data_dir=str(Path(tmp) / "data"),
             chat_provider=ChatProviderConfig(
                 provider=provider_name,
                 model=model_name,

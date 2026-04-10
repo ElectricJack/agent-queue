@@ -85,6 +85,7 @@ async def orch(tmp_path):
     config = AppConfig(
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
     o = Orchestrator(config)
     await o.initialize()
@@ -103,6 +104,7 @@ async def handler(orch, tmp_path):
     config = AppConfig(
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
     return CommandHandler(orch, config)
 

@@ -188,6 +188,7 @@ def git_repo(tmp_path):
 async def orch(tmp_path):
     """Create an orchestrator with mock adapters and a fresh database."""
     config = AppConfig(
+        data_dir=str(tmp_path / "data"),
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
     )
@@ -424,6 +425,7 @@ class TestGitMutexSerialization:
         """The orchestrator's _resolve_git_lock maps worktree paths to the
         base workspace's mutex."""
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
         )

@@ -378,11 +378,11 @@ def test_full_integration_supervisor_replaces_chat_agent():
     assert hasattr(sup, "reflect")
 
 
-def test_reflection_engine_wired_to_config():
+def test_reflection_engine_wired_to_config(tmp_path):
     """ReflectionEngine uses config values from SupervisorConfig."""
     from src.config import AppConfig
 
-    app = AppConfig()
+    app = AppConfig(data_dir=str(tmp_path / "data"))
     from src.reflection import ReflectionEngine
 
     engine = ReflectionEngine(app.supervisor.reflection)

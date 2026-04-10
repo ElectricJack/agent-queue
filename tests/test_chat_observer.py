@@ -189,11 +189,11 @@ def test_full_flow_filter_buffer_flush():
     assert "deploy" in batch[1]["content"]
 
 
-def test_observer_config_wired_to_supervisor_config():
+def test_observer_config_wired_to_supervisor_config(tmp_path):
     """ObservationConfig is accessible from SupervisorConfig."""
     from src.config import AppConfig
 
-    app = AppConfig()
+    app = AppConfig(data_dir=str(tmp_path / "data"))
     assert hasattr(app.supervisor, "observation")
     assert app.supervisor.observation.enabled is True
     assert app.supervisor.observation.batch_window_seconds == 60

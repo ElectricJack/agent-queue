@@ -83,6 +83,7 @@ async def eval_setup(tmp_path, eval_provider_config):
     config = AppConfig(
         database_path=str(tmp_path / "eval.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
         chat_provider=eval_provider_config,
     )
 

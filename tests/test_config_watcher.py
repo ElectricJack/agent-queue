@@ -37,52 +37,52 @@ from src.event_bus import EventBus
 class TestDiffConfigs:
     """Tests for diff_configs() helper."""
 
-    def test_identical_configs_no_diff(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_identical_configs_no_diff(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         assert diff_configs(a, b) == set()
 
-    def test_scheduling_change_detected(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_scheduling_change_detected(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b.scheduling = SchedulingConfig(rolling_window_hours=48)
         result = diff_configs(a, b)
         assert "scheduling" in result
 
-    def test_multiple_changes_detected(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_multiple_changes_detected(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b.scheduling = SchedulingConfig(rolling_window_hours=48)
         b.archive = ArchiveConfig(after_hours=72)
         result = diff_configs(a, b)
         assert result == {"scheduling", "archive"}
 
-    def test_restart_required_section_detected(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_restart_required_section_detected(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b.discord = DiscordConfig(bot_token="new-token")
         result = diff_configs(a, b)
         assert "discord" in result
 
-    def test_mixed_hot_and_restart_changes(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_mixed_hot_and_restart_changes(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b.scheduling = SchedulingConfig(rolling_window_hours=48)
         b.discord = DiscordConfig(bot_token="new-token")
         result = diff_configs(a, b)
         assert result == {"scheduling", "discord"}
 
-    def test_scalar_field_change(self):
-        a = AppConfig()
-        b = AppConfig()
+    def test_scalar_field_change(self, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b.global_token_budget_daily = 100000
         result = diff_configs(a, b)
         assert "global_token_budget_daily" in result
 
-    def test_no_private_fields_in_diff(self):
+    def test_no_private_fields_in_diff(self, tmp_path):
         """Internal fields like _config_path should not appear in diff."""
-        a = AppConfig()
-        b = AppConfig()
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
         b._config_path = "/some/path"
         result = diff_configs(a, b)
         assert "_config_path" not in result
@@ -295,14 +295,14 @@ class TestReloadConfigCommand:
     """Test the reload_config command handler integration."""
 
     @pytest.mark.asyncio
-    async def test_no_watcher_returns_error(self):
+    async def test_no_watcher_returns_error(self, tmp_path):
         """When config watcher is not active, command returns error."""
         from unittest.mock import AsyncMock, MagicMock
         from src.command_handler import CommandHandler
 
         orch = MagicMock()
         orch._config_watcher = None
-        config = AppConfig()
+        config = AppConfig(data_dir=str(tmp_path / "data"))
 
         handler = CommandHandler(orch, config)
         result = await handler.execute("reload_config", {})
@@ -326,7 +326,7 @@ class TestReloadConfigCommand:
 
         orch = MagicMock()
         orch._config_watcher = mock_watcher
-        config = AppConfig()
+        config = AppConfig(data_dir=str(tmp_path / "data"))
 
         handler = CommandHandler(orch, config)
         result = await handler.execute("reload_config", {})
@@ -334,7 +334,7 @@ class TestReloadConfigCommand:
         assert "scheduling" in result["applied"]
 
     @pytest.mark.asyncio
-    async def test_reload_no_changes(self):
+    async def test_reload_no_changes(self, tmp_path):
         """When no changes detected, returns appropriate message."""
         from unittest.mock import AsyncMock, MagicMock
         from src.command_handler import CommandHandler
@@ -350,7 +350,7 @@ class TestReloadConfigCommand:
 
         orch = MagicMock()
         orch._config_watcher = mock_watcher
-        config = AppConfig()
+        config = AppConfig(data_dir=str(tmp_path / "data"))
 
         handler = CommandHandler(orch, config)
         result = await handler.execute("reload_config", {})

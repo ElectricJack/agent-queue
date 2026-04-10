@@ -747,6 +747,7 @@ class TestAutoArchive:
     @pytest.fixture
     async def orchestrator(self, db, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=str(tmp_path / "workspaces"),
             database_path=str(tmp_path / "test.db"),
