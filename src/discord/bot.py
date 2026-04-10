@@ -918,18 +918,13 @@ class AgentQueueBot(commands.Bot):
         await channel.send(embed=embed, view=view)
 
     async def _store_observation_memory(self, project_id: str, content: str) -> None:
-        """Store observation content in project memory."""
-        if not content:
-            return
-        try:
-            if hasattr(self.orchestrator, "memory_manager") and self.orchestrator.memory_manager:
-                await self.orchestrator.memory_manager.add_memory(
-                    project_id=project_id,
-                    content=f"[Observed] {content}",
-                    source="chat_observation",
-                )
-        except Exception as e:
-            logger.error("Error storing observation memory: %s", e)
+        """Store observation content in project memory.
+
+        V1 MemoryManager integration removed (roadmap 8.6).
+        Observation storage should be wired to MemoryV2Plugin's save_document.
+        """
+        # TODO: wire to MemoryV2Plugin save_document via event bus
+        pass
 
     def _build_project_profiles(self) -> dict[str, set[str]]:
         """Build keyword sets from registered projects for the ChatObserver."""

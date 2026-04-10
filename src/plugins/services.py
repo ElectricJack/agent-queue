@@ -6,11 +6,11 @@ contract; implementation wrappers delegate to the real managers.
 
 Services available to internal plugins via ``ctx.get_service(name)``:
 
-- ``"git"``       — :class:`GitService`
-- ``"db"``        — :class:`DatabaseService`
-- ``"memory"``    — :class:`MemoryService`
-- ``"workspace"`` — :class:`WorkspaceService`
-- ``"config"``    — :class:`ConfigService`
+- ``"git"``        — :class:`GitService`
+- ``"db"``         — :class:`DatabaseService`
+- ``"memory_v2"``  — :class:`MemoryV2ServiceProtocol`
+- ``"workspace"``  — :class:`WorkspaceService`
+- ``"config"``     — :class:`ConfigService`
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from src.config import AppConfig
     from src.database import Database
     from src.git.manager import GitManager
-    from src.models import Project, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -86,65 +85,6 @@ class DatabaseService(Protocol):
     async def update_profile(self, profile_id: str, **kwargs: Any) -> None: ...
     async def delete_profile(self, profile_id: str) -> None: ...
     async def get_project_workspace_path(self, project_id: str) -> str | None: ...
-
-
-@runtime_checkable
-class MemoryService(Protocol):
-    """Semantic search and memory management."""
-
-    async def search(
-        self, project_id: str, workspace: str, query: str, *, top_k: int = 10
-    ) -> list[dict]: ...
-    async def batch_search(
-        self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10
-    ) -> dict[str, list[dict]]: ...
-    async def reindex(self, project_id: str, workspace: str) -> int: ...
-    async def compact(self, project_id: str, workspace: str) -> dict: ...
-    async def stats(self, project_id: str, workspace: str) -> dict: ...
-    async def write_memory(
-        self, project_id: str, workspace: str, key: str, content: str
-    ) -> str | None: ...
-    async def read_memory(self, project_id: str, key: str) -> str | None: ...
-    async def get_profile(self, project_id: str) -> str | None: ...
-    async def promote_note(
-        self, project_id: str, note_filename: str, note_content: str, workspace: str
-    ) -> str | None: ...
-    async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None: ...
-    async def regenerate_profile(self, project_id: str, workspace: str) -> str | None: ...
-    # Consolidation
-    async def run_daily_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
-    async def run_deep_consolidation(self, project_id: str, workspace_path: str = "") -> dict: ...
-    async def bootstrap_consolidation(
-        self,
-        project_id: str,
-        workspace_path: str = "",
-        *,
-        project_name: str = "",
-        repo_url: str = "",
-    ) -> dict: ...
-    # Factsheet & knowledge
-    async def read_factsheet_raw(self, project_id: str) -> str | None: ...
-    def parse_factsheet_yaml(self, content: str) -> dict: ...
-    async def write_factsheet_raw(
-        self, project_id: str, content: str, workspace_path: str = ""
-    ) -> str | None: ...
-    async def update_factsheet_field(
-        self,
-        project_id: str,
-        dotted_key: str,
-        value: Any,
-        workspace_path: str = "",
-        *,
-        project_name: str = "",
-        repo_url: str = "",
-    ) -> str | None: ...
-    async def list_knowledge_topics(self, project_id: str) -> list[dict]: ...
-    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None: ...
-    async def search_all_project_factsheets(
-        self, project_ids: list[str], query: str = "", field: str = ""
-    ) -> list[dict]: ...
-    @property
-    def notes_inform_profile(self) -> bool: ...
 
 
 @runtime_checkable
@@ -418,219 +358,6 @@ class DatabaseServiceImpl:
         return await self._db.get_project_workspace_path(project_id)
 
 
-class MemoryServiceImpl:
-    """Wraps ``MemoryManager`` behind the :class:`MemoryService` protocol."""
-
-    def __init__(self, memory_manager: Any) -> None:
-        self._mm = memory_manager
-
-    async def search(
-        self, project_id: str, workspace: str, query: str, *, top_k: int = 10
-    ) -> list[dict]:
-        if not self._mm:
-            return []
-        return await self._mm.search(project_id, workspace, query, top_k=top_k)
-
-    async def batch_search(
-        self, project_id: str, workspace: str, queries: list[str], *, top_k: int = 10
-    ) -> dict[str, list[dict]]:
-        if not self._mm:
-            return {q: [] for q in queries}
-        return await self._mm.batch_search(project_id, workspace, queries, top_k=top_k)
-
-    async def scoped_search(
-        self,
-        query: str,
-        *,
-        project_id: str | None = None,
-        agent_type: str | None = None,
-        topic: str | None = None,
-        top_k: int = 10,
-        weights: dict | None = None,
-        full: bool = False,
-    ) -> list[dict]:
-        """Multi-scope weighted search per spec §6."""
-        if not self._mm:
-            return []
-        return await self._mm.scoped_search(
-            query,
-            project_id=project_id,
-            agent_type=agent_type,
-            topic=topic,
-            top_k=top_k,
-            weights=weights,
-            full=full,
-        )
-
-    async def scoped_batch_search(
-        self,
-        queries: list[str],
-        *,
-        project_id: str | None = None,
-        agent_type: str | None = None,
-        topic: str | None = None,
-        top_k: int = 10,
-        weights: dict | None = None,
-        full: bool = False,
-    ) -> dict[str, list[dict]]:
-        """Multi-scope weighted batch search per spec §6."""
-        if not self._mm:
-            return {q: [] for q in queries}
-        return await self._mm.scoped_batch_search(
-            queries,
-            project_id=project_id,
-            agent_type=agent_type,
-            topic=topic,
-            top_k=top_k,
-            weights=weights,
-            full=full,
-        )
-
-    async def write_memory(
-        self, project_id: str, workspace: str, key: str, content: str
-    ) -> str | None:
-        if not self._mm:
-            raise RuntimeError(
-                "Memory manager is not enabled. "
-                "Ensure 'memory.enabled' is set to true in your configuration."
-            )
-        return await self._mm.write_memory(project_id, workspace, key, content)
-
-    async def read_memory(self, project_id: str, key: str) -> str | None:
-        if not self._mm:
-            raise RuntimeError(
-                "Memory manager is not enabled. "
-                "Ensure 'memory.enabled' is set to true in your configuration."
-            )
-        return await self._mm.read_memory(project_id, key)
-
-    async def reindex(self, project_id: str, workspace: str) -> int:
-        if not self._mm:
-            return 0
-        return await self._mm.reindex(project_id, workspace)
-
-    async def compact(self, project_id: str, workspace: str) -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.compact(project_id, workspace)
-
-    async def stats(self, project_id: str, workspace: str) -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.stats(project_id, workspace)
-
-    async def get_profile(self, project_id: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.get_profile(project_id)
-
-    async def promote_note(
-        self, project_id: str, note_filename: str, note_content: str, workspace: str
-    ) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.promote_note(project_id, note_filename, note_content, workspace)
-
-    async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.update_profile(project_id, content, workspace)
-
-    async def regenerate_profile(self, project_id: str, workspace: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.regenerate_profile(project_id, workspace)
-
-    # --- Consolidation ---
-
-    async def run_daily_consolidation(self, project_id: str, workspace_path: str = "") -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.run_daily_consolidation(project_id, workspace_path)
-
-    async def run_deep_consolidation(self, project_id: str, workspace_path: str = "") -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.run_deep_consolidation(project_id, workspace_path)
-
-    async def bootstrap_consolidation(
-        self,
-        project_id: str,
-        workspace_path: str = "",
-        *,
-        project_name: str = "",
-        repo_url: str = "",
-    ) -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.bootstrap_consolidation(
-            project_id, workspace_path, project_name=project_name, repo_url=repo_url
-        )
-
-    # --- Factsheet & Knowledge ---
-
-    async def read_factsheet_raw(self, project_id: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.read_factsheet_raw(project_id)
-
-    def parse_factsheet_yaml(self, content: str) -> dict:
-        if not self._mm:
-            return {}
-        return self._mm.parse_factsheet_yaml(content)
-
-    async def write_factsheet_raw(
-        self, project_id: str, content: str, workspace_path: str = ""
-    ) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.write_factsheet_raw(project_id, content, workspace_path)
-
-    async def update_factsheet_field(
-        self,
-        project_id: str,
-        dotted_key: str,
-        value: Any,
-        workspace_path: str = "",
-        *,
-        project_name: str = "",
-        repo_url: str = "",
-    ) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.update_factsheet_field(
-            project_id,
-            dotted_key,
-            value,
-            workspace_path,
-            project_name=project_name,
-            repo_url=repo_url,
-        )
-
-    async def list_knowledge_topics(self, project_id: str) -> list[dict]:
-        if not self._mm:
-            return []
-        return await self._mm.list_knowledge_topics(project_id)
-
-    async def read_knowledge_topic(self, project_id: str, topic: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.read_knowledge_topic(project_id, topic)
-
-    async def search_all_project_factsheets(
-        self, project_ids: list[str], query: str = "", field: str = ""
-    ) -> list[dict]:
-        if not self._mm:
-            return []
-        return await self._mm.search_all_project_factsheets(project_ids, query=query, field=field)
-
-    @property
-    def notes_inform_profile(self) -> bool:
-        if not self._mm:
-            return False
-        return getattr(self._mm.config, "notes_inform_profile", False)
-
-
 class WorkspaceServiceImpl:
     """Path resolution and validation helpers.
 
@@ -827,7 +554,6 @@ def build_internal_services(
     db: Database,
     git: GitManager,
     config: AppConfig,
-    memory_manager: Any = None,
     memory_v2_service: Any = None,
 ) -> dict[str, Any]:
     """Build the services dict for internal plugin contexts.
@@ -842,8 +568,6 @@ def build_internal_services(
         Git manager instance.
     config:
         Application configuration.
-    memory_manager:
-        Optional v1 MemoryManager instance.
     memory_v2_service:
         Optional v2 MemoryV2Service instance.  When provided, exposed
         as ``"memory_v2"`` for plugins that need v2-specific operations
@@ -852,7 +576,6 @@ def build_internal_services(
     services: dict[str, Any] = {
         "git": GitServiceImpl(git),
         "db": DatabaseServiceImpl(db),
-        "memory": MemoryServiceImpl(memory_manager),
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),
     }

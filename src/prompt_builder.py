@@ -103,7 +103,6 @@ class PromptBuilder:
     def __init__(
         self,
         project_id: str | None = None,
-        memory_manager: Any | None = None,
         rule_manager: Any | None = None,
         prompts_dir: Path | str | None = None,
     ):
@@ -113,15 +112,12 @@ class PromptBuilder:
             project_id: Active project for context loading.  When set,
                 layers 2 (project context) and 3 (rules) can auto-load
                 relevant data.
-            memory_manager: A ``MemoryManager`` instance for loading project
-                profiles (layer 2).  May be ``None`` — layer 2 is skipped.
             rule_manager: A ``RuleManager`` instance for loading applicable
                 rules (layer 3).  May be ``None`` — layer 3 is skipped.
             prompts_dir: Override for the template directory.  Defaults to
                 ``src/prompts/``.
         """
         self._project_id = project_id
-        self._memory_manager = memory_manager
         self._rule_manager = rule_manager
         self._prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
 
@@ -338,17 +334,13 @@ class PromptBuilder:
         self._identity = rendered or ""
 
     async def load_project_context(self) -> None:
-        """Layer 2: Load project context from memory system."""
-        if not self._memory_manager or not self._project_id:
-            return
-        try:
-            ctx = await self._memory_manager.build_context(
-                self._project_id, task=None, workspace_path=""
-            )
-            if ctx and not ctx.is_empty():
-                self._project_context = ctx.to_context_block()
-        except Exception:
-            pass  # graceful degradation
+        """Layer 2: Load project context from memory system.
+
+        V1 MemoryManager integration removed (roadmap 8.6).
+        Project context is now injected by MemoryV2Plugin via L1 facts.
+        This method is retained as a no-op for API compatibility.
+        """
+        pass
 
     async def load_relevant_rules(self, query: str) -> None:
         """Layer 3: Load relevant rules from the rule system.

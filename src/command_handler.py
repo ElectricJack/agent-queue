@@ -5694,53 +5694,10 @@ feature work stuck on feature branches across multiple workspaces.
     # _trigger_note_profile_revision → moved to src/plugins/internal/notes.py (aq-notes plugin)
 
     # -----------------------------------------------------------------------
-    # Memory commands -- semantic search, stats, and reindex for the
-    # memsearch-powered project memory subsystem.  These delegate to
-    # MemoryManager on the orchestrator.  When memory is not enabled or
-    # memsearch is not installed, commands return informative errors.
+    # Memory commands — V1 MemoryManager commands removed (roadmap 8.6).
+    # All memory operations are now handled by MemoryV2Plugin
+    # (src/plugins/internal/memory_v2.py).
     # -----------------------------------------------------------------------
-
-    # _cmd_memory_search → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_memory_stats → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_memory_reindex → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_view_profile → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_edit_project_profile → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_regenerate_profile → moved to src/plugins/internal/memory.py (aq-memory plugin)
-    # _cmd_compact_memory → moved to src/plugins/internal/memory.py (aq-memory plugin)
-
-    async def _cmd_recall_topic_context(self, args: dict) -> dict:
-        """Load L2 topic context on-demand when a topic emerges mid-task.
-
-        Detects topics from the provided text (or uses explicit topic names),
-        then loads matching knowledge files and memories.  Returns formatted
-        context ready for injection into the agent's working memory.
-
-        This implements roadmap 3.3.6 — agents call this tool when they
-        encounter a new topic during execution rather than relying solely on
-        the initial topic context loaded at task start.
-        """
-        memory_mgr = getattr(self.orchestrator, "memory_manager", None)
-        if not memory_mgr:
-            return {"error": "Memory system is not available."}
-
-        project_id = args.get("project_id") or self._active_project_id
-        if not project_id:
-            return {"error": "project_id is required."}
-
-        text = args.get("text", "")
-        topics = args.get("topics")
-        exclude_topics = args.get("exclude_topics")
-
-        if not text and not topics:
-            return {"error": "Either 'text' or 'topics' must be provided."}
-
-        result = await memory_mgr.load_topic_context_on_demand(
-            project_id,
-            text,
-            topics=topics,
-            exclude_topics=exclude_topics,
-        )
-        return result
 
     # -----------------------------------------------------------------------
     # Reference stub staleness scanning (Roadmap 6.3.4)
@@ -6244,17 +6201,8 @@ feature work stuck on feature branches across multiple workspaces.
                 "error": (f"Profile file written to vault but DB sync failed: {sync_result.errors}")
             }
 
-        # Ensure the agent-type memory collection exists (memory scoping spec §4).
-        memory_mgr = getattr(self.orchestrator, "memory_manager", None)
-        if memory_mgr:
-            try:
-                await memory_mgr.ensure_agent_type_collection(profile_id)
-            except Exception:
-                logger.warning(
-                    "Failed to ensure agent-type memory collection for profile '%s'",
-                    profile_id,
-                    exc_info=True,
-                )
+        # V1 ensure_agent_type_collection removed (roadmap 8.6).
+        # Agent-type collections are now managed by MemoryV2Plugin.
 
         result: dict = {"created": profile_id, "name": name}
         if starter_result["copied"]:

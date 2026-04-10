@@ -155,11 +155,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "rule_runs": "rules",
     "toggle_rule": "rules",
     "refresh_rules": "rules",
-    # memory
-    "recall_topic_context": "memory",
     # vault — reference stub management
     "scan_stub_staleness": "system",
-    # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory.py)
+    # memory — migrated to aq-memory-v2 internal plugin (src/plugins/internal/memory_v2.py)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results
@@ -1832,61 +1830,9 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["source"],
         },
     },
-    # Memory tools (memory_search, memory_stats, memory_reindex, view_profile,
-    # edit_project_profile, regenerate_profile, compact_memory) migrated to
-    # aq-memory internal plugin.
-    # ------------------------------------------------------------------
-    # On-demand L2 topic context — roadmap 3.3.6
-    # ------------------------------------------------------------------
-    {
-        "name": "recall_topic_context",
-        "description": (
-            "Load topic-filtered knowledge and memories on-demand when a new "
-            "topic emerges during task execution.  Detects topics from the "
-            "provided text (or accepts explicit topic names) and returns "
-            "matching knowledge-base files and memories.  Use this when you "
-            "encounter a topic area that wasn't covered by the initial task "
-            "context — e.g. you're working on a UI feature but discover you "
-            "need deployment knowledge.  Returns a formatted context block "
-            "with relevant project knowledge and past insights."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID (defaults to active project).",
-                },
-                "text": {
-                    "type": "string",
-                    "description": (
-                        "Context text to detect topics from.  Can be a "
-                        "description of what you're working on, a code "
-                        "snippet, or conversation excerpt.  Topics are "
-                        "detected via keyword matching."
-                    ),
-                },
-                "topics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Explicit list of topic names to load (e.g. "
-                        "['deployment', 'testing']).  When provided, "
-                        "topic detection is skipped."
-                    ),
-                },
-                "exclude_topics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Topics already loaded in your context (e.g. from "
-                        "task start).  These will be excluded to avoid "
-                        "duplicate content."
-                    ),
-                },
-            },
-        },
-    },
+    # Memory tools migrated to aq-memory-v2 internal plugin (roadmap 8.6).
+    # recall_topic_context removed (roadmap 8.6 — v1 MemoryManager deleted).
+    # On-demand topic context is now handled by MemoryV2Plugin's memory_recall tool.
     # ------------------------------------------------------------------
     # Vault / reference stub management (Roadmap 6.3.4)
     # ------------------------------------------------------------------

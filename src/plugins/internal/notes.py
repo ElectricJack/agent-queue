@@ -269,7 +269,7 @@ class NotesPlugin(InternalPlugin):
         self._ctx = ctx
         self._ws = ctx.get_service("workspace")
         self._db = ctx.get_service("db")
-        self._mem = ctx.get_service("memory")
+        self._mem = ctx.get_service("memory")  # may be None (v1 removed, roadmap 8.6)
         self._git = ctx.get_service("git")
         self._cfg = ctx.get_service("config")
 
@@ -301,7 +301,7 @@ class NotesPlugin(InternalPlugin):
         note_filename: str,
         note_content: str,
     ) -> None:
-        if not self._mem.notes_inform_profile:
+        if not self._mem or not getattr(self._mem, "notes_inform_profile", False):
             return
         try:
             workspace = await self._db.get_project_workspace_path(project_id)
@@ -504,6 +504,11 @@ class NotesPlugin(InternalPlugin):
 
         note_filename = os.path.basename(fpath)
 
+        if not self._mem:
+            return {
+                "error": "Memory service not available (v1 removed). "
+                "Note promotion requires the memory system."
+            }
         try:
             new_profile = await self._mem.promote_note(
                 project_id, note_filename, note_content, workspace
