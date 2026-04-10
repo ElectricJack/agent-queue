@@ -1009,12 +1009,13 @@ class Orchestrator:
         register_override_handlers(self.vault_watcher)
 
         # Register project README.md watcher handler (self-improvement spec §5).
-        # Detects changes to project README files so the orchestrator can
-        # update its per-project summaries.  Phase 5 is a logging stub;
-        # actual summary generation is wired in Phase 6.
+        # Detects changes to project README files so the orchestrator
+        # generates/updates per-project summaries in orchestrator memory.
+        # Passing vault_root lets the handler resolve summary output paths
+        # without guessing from change events.
         from src.readme_handler import register_readme_handlers
 
-        register_readme_handlers(self.vault_watcher)
+        register_readme_handlers(self.vault_watcher, vault_root=self.config.vault_root)
 
         # Workspace spec/doc change detector (vault.md §4).
         # Monitors project workspace directories for changes to spec and
@@ -1218,6 +1219,19 @@ class Orchestrator:
             self.db,
             event_bus=self.bus,
         )
+
+        # Startup scan: generate orchestrator summaries for all existing
+        # project READMEs (self-improvement spec §5).  The VaultWatcher
+        # handles changes going forward, but pre-existing files need this
+        # one-time scan.  Summaries are written to
+        # vault/orchestrator/memory/project-{id}.md and are skipped when
+        # already up-to-date (mtime comparison), keeping startup fast.
+        from src.readme_handler import scan_and_generate_readme_summaries
+
+        try:
+            await scan_and_generate_readme_summaries(self.config.vault_root)
+        except Exception as e:
+            logger.warning("Startup README scan failed: %s", e)
 
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
