@@ -27,6 +27,7 @@ from src.models import (
     RepoSourceType,
     Task,
     TaskStatus,
+    Workflow,
     Workspace,
 )
 
@@ -1441,6 +1442,354 @@ class TestRoadmap5217DB:
                 f"Node '{entry['node_id']}': expected duration "
                 f"{expected_durations[entry['node_id']]}, got {duration}"
             )
+
+
+# ── Workflow Queries ─────────────────────────────────────────────────────
+
+
+def _make_playbook_run_for_workflow(
+    run_id: str = "pbr-wf-1",
+    playbook_id: str = "pb-coord",
+) -> PlaybookRun:
+    """Helper to create a playbook run record for workflow FK constraints."""
+    return PlaybookRun(
+        run_id=run_id,
+        playbook_id=playbook_id,
+        playbook_version=1,
+        trigger_event=json.dumps({"type": "test"}),
+        status="running",
+        started_at=time.time(),
+    )
+
+
+def _make_workflow(
+    workflow_id: str = "wf-1",
+    playbook_id: str = "pb-coord",
+    playbook_run_id: str = "pbr-wf-1",
+    project_id: str = "p-1",
+    status: str = "running",
+    current_stage: str | None = None,
+    task_ids: list[str] | None = None,
+    agent_affinity: dict | None = None,
+    created_at: float = 0.0,
+    completed_at: float | None = None,
+) -> Workflow:
+    """Helper to build a Workflow with sensible defaults."""
+    return Workflow(
+        workflow_id=workflow_id,
+        playbook_id=playbook_id,
+        playbook_run_id=playbook_run_id,
+        project_id=project_id,
+        status=status,
+        current_stage=current_stage,
+        task_ids=task_ids or [],
+        agent_affinity=agent_affinity or {},
+        created_at=created_at or time.time(),
+        completed_at=completed_at,
+    )
+
+
+async def _setup_workflow_fks(db, project_id="p-1", run_id="pbr-wf-1"):
+    """Create the project and playbook_run that workflows FK-reference."""
+    await _make_project(db, project_id)
+    await db.create_playbook_run(_make_playbook_run_for_workflow(run_id=run_id))
+
+
+class TestWorkflowQueries:
+    """Integration tests for Workflow CRUD — real SQLite, not mocks."""
+
+    # ── Create + Get ─────────────────────────────────────────────────
+
+    async def test_create_and_get_workflow(self, db):
+        await _setup_workflow_fks(db)
+        wf = _make_workflow()
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched is not None
+        assert fetched.workflow_id == "wf-1"
+        assert fetched.playbook_id == "pb-coord"
+        assert fetched.playbook_run_id == "pbr-wf-1"
+        assert fetched.project_id == "p-1"
+        assert fetched.status == "running"
+
+    async def test_get_nonexistent_returns_none(self, db):
+        assert await db.get_workflow("nope") is None
+
+    async def test_create_with_all_fields(self, db):
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(
+            current_stage="build",
+            task_ids=["t-1", "t-2"],
+            agent_affinity={"t-1": "agent-3"},
+            created_at=1000.0,
+        )
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.current_stage == "build"
+        assert fetched.task_ids == ["t-1", "t-2"]
+        assert fetched.agent_affinity == {"t-1": "agent-3"}
+        assert fetched.created_at == 1000.0
+        assert fetched.completed_at is None
+
+    # ── Update Status ────────────────────────────────────────────────
+
+    async def test_update_workflow_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "paused")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "paused"
+        assert fetched.completed_at is None  # not terminal
+
+    async def test_update_workflow_status_to_completed_sets_timestamp(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "completed")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "completed"
+        assert fetched.completed_at is not None
+
+    async def test_update_workflow_status_to_failed_sets_timestamp(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "failed")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "failed"
+        assert fetched.completed_at is not None
+
+    async def test_update_workflow_status_explicit_completed_at(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "completed", completed_at=9999.0)
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.completed_at == 9999.0
+
+    async def test_update_workflow_status_noop_same_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(created_at=1000.0))
+
+        await db.update_workflow_status("wf-1", "running")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "running"
+
+    async def test_update_workflow_status_invalid_raises(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        with pytest.raises(ValueError, match="Invalid workflow status"):
+            await db.update_workflow_status("wf-1", "bogus")
+
+    async def test_update_workflow_status_invalid_transition_logs_warning(self, db, caplog):
+        """Invalid transitions log a warning but still apply."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        # running -> running is a no-op (tested above), but
+        # completed -> running would be invalid if we could get to completed
+        await db.update_workflow_status("wf-1", "completed")
+        await db.update_workflow_status("wf-1", "paused")  # completed -> paused is invalid
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "paused"  # still applied
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_update_workflow_status_nonexistent_logs_warning(self, db, caplog):
+        await db.update_workflow_status("nope", "completed")
+        assert any("not found" in r.message for r in caplog.records)
+
+    # ── Add Task ─────────────────────────────────────────────────────
+
+    async def test_add_workflow_task(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.add_workflow_task("wf-1", "t-100")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-100"]
+
+    async def test_add_workflow_task_appends(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=["t-1"]))
+
+        await db.add_workflow_task("wf-1", "t-2")
+        await db.add_workflow_task("wf-1", "t-3")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-1", "t-2", "t-3"]
+
+    async def test_add_workflow_task_idempotent(self, db):
+        """Adding the same task ID twice should not duplicate it."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=["t-1"]))
+
+        await db.add_workflow_task("wf-1", "t-1")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-1"]
+
+    async def test_add_workflow_task_nonexistent_logs_warning(self, db, caplog):
+        await db.add_workflow_task("nope", "t-1")
+        assert any("not found" in r.message for r in caplog.records)
+
+    # ── Generic Update ───────────────────────────────────────────────
+
+    async def test_update_workflow_generic(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow("wf-1", current_stage="deploy")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.current_stage == "deploy"
+
+    async def test_update_workflow_agent_affinity(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        new_affinity = json.dumps({"stage-build": "agent-5"})
+        await db.update_workflow("wf-1", agent_affinity=new_affinity)
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == {"stage-build": "agent-5"}
+
+    # ── List ─────────────────────────────────────────────────────────
+
+    async def test_list_workflows_newest_first(self, db):
+        await _setup_workflow_fks(db)
+        for i in range(3):
+            await db.create_workflow(
+                _make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i)
+            )
+
+        wfs = await db.list_workflows()
+        assert len(wfs) == 3
+        assert wfs[0].workflow_id == "wf-2"  # newest
+        assert wfs[2].workflow_id == "wf-0"  # oldest
+
+    async def test_list_filter_by_project_id(self, db):
+        await _make_project(db, "p-1")
+        await _make_project(db, "p-2")
+        await db.create_playbook_run(_make_playbook_run_for_workflow())
+
+        await db.create_workflow(_make_workflow(workflow_id="wf-a", project_id="p-1"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-b", project_id="p-2"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-c", project_id="p-1"))
+
+        wfs = await db.list_workflows(project_id="p-1")
+        assert len(wfs) == 2
+        assert all(w.project_id == "p-1" for w in wfs)
+
+    async def test_list_filter_by_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(workflow_id="wf-r", status="running"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-p", status="paused"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-c", status="completed"))
+
+        running = await db.list_workflows(status="running")
+        assert len(running) == 1
+        assert running[0].workflow_id == "wf-r"
+
+    async def test_list_filter_by_playbook_id(self, db):
+        await _make_project(db, "p-1")
+        await db.create_playbook_run(_make_playbook_run_for_workflow(run_id="pbr-wf-1"))
+        await db.create_playbook_run(
+            _make_playbook_run_for_workflow(run_id="pbr-wf-2", playbook_id="pb-other")
+        )
+
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-a", playbook_id="pb-coord")
+        )
+        await db.create_workflow(
+            _make_workflow(
+                workflow_id="wf-b",
+                playbook_id="pb-other",
+                playbook_run_id="pbr-wf-2",
+            )
+        )
+
+        wfs = await db.list_workflows(playbook_id="pb-coord")
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-a"
+
+    async def test_list_with_limit(self, db):
+        await _setup_workflow_fks(db)
+        for i in range(5):
+            await db.create_workflow(
+                _make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i)
+            )
+
+        wfs = await db.list_workflows(limit=2)
+        assert len(wfs) == 2
+        assert wfs[0].workflow_id == "wf-4"  # newest
+
+    async def test_list_combined_filters(self, db):
+        await _make_project(db, "p-1")
+        await _make_project(db, "p-2")
+        await db.create_playbook_run(_make_playbook_run_for_workflow())
+
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-1", project_id="p-1", status="completed")
+        )
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-2", project_id="p-1", status="running")
+        )
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-3", project_id="p-2", status="completed")
+        )
+
+        wfs = await db.list_workflows(project_id="p-1", status="completed")
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-1"
+
+    # ── Delete ───────────────────────────────────────────────────────
+
+    async def test_delete_workflow(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+        await db.delete_workflow("wf-1")
+        assert await db.get_workflow("wf-1") is None
+
+    async def test_delete_nonexistent_is_noop(self, db):
+        # Should not raise
+        await db.delete_workflow("nonexistent")
+
+    # ── JSON Round-trips ─────────────────────────────────────────────
+
+    async def test_task_ids_json_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        ids = ["t-alpha", "t-beta", "t-gamma"]
+        await db.create_workflow(_make_workflow(task_ids=ids))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ids
+
+    async def test_agent_affinity_json_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        affinity = {
+            "build-stage": "agent-1",
+            "test-stage": "agent-2",
+            "deploy-stage": "agent-1",
+        }
+        await db.create_workflow(_make_workflow(agent_affinity=affinity))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == affinity
+
+    async def test_empty_task_ids_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=[]))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == []
+
+    async def test_empty_agent_affinity_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(agent_affinity={}))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == {}
 
 
 class TestMockAdapter:

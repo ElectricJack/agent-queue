@@ -687,6 +687,31 @@ class PlaybookRun:
     paused_at: float | None = None  # Unix timestamp when the run was paused
 
 
+@dataclass
+class Workflow:
+    """A coordination workflow spawned by a playbook run.
+
+    Workflows track the lifecycle of a coordination playbook execution:
+    which stages have run, which tasks were created, and agent affinity
+    preferences for context continuity.  The workflow is created in the
+    first node of a coordination playbook and updated as the playbook
+    progresses through its graph.
+
+    See docs/specs/design/agent-coordination.md §6 (Workflow Runtime).
+    """
+
+    workflow_id: str
+    playbook_id: str
+    playbook_run_id: str
+    project_id: str
+    status: str = "running"  # running, paused, completed, failed
+    current_stage: str | None = None
+    task_ids: list[str] = field(default_factory=list)
+    agent_affinity: dict[str, str] = field(default_factory=dict)
+    created_at: float = 0.0
+    completed_at: float | None = None
+
+
 class PhaseResult(Enum):
     """Outcome of a single completion pipeline phase."""
 

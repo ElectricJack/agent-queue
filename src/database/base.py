@@ -30,6 +30,7 @@ from src.models import (
     RepoConfig,
     Task,
     TaskStatus,
+    Workflow,
     Workspace,
 )
 
@@ -266,6 +267,28 @@ class DatabaseBackend(Protocol):
     ) -> list[PlaybookRun]: ...
     async def update_playbook_run(self, run_id: str, **kwargs) -> None: ...
     async def delete_playbook_run(self, run_id: str) -> None: ...
+
+    # --- Workflows ---
+
+    async def create_workflow(self, workflow: Workflow) -> None: ...
+    async def get_workflow(self, workflow_id: str) -> Workflow | None: ...
+    async def list_workflows(
+        self,
+        project_id: str | None = None,
+        playbook_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Workflow]: ...
+    async def update_workflow(self, workflow_id: str, **kwargs) -> None: ...
+    async def update_workflow_status(
+        self,
+        workflow_id: str,
+        new_status: str,
+        *,
+        completed_at: float | None = None,
+    ) -> None: ...
+    async def add_workflow_task(self, workflow_id: str, task_id: str) -> None: ...
+    async def delete_workflow(self, workflow_id: str) -> None: ...
 
     # --- Atomic Operations ---
 
