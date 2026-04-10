@@ -63,7 +63,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "rules": CategoryMeta(
         name="rules",
-        description=("Automation rules — list, view, create, fire, toggle, run history"),
+        description=(
+            "DEPRECATED — rules have been replaced by playbooks. "
+            "Use the playbooks category instead."
+        ),
     ),
     "memory": CategoryMeta(
         name="memory",
@@ -145,7 +148,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_agent": "agent",
     "pause_agent": "agent",
     "resume_agent": "agent",
-    # hooks (read-only / execution — all creation goes through rules)
+    # rules — deprecated, redirecting to playbooks (playbooks spec §13 Phase 3)
     "browse_rules": "rules",
     "list_rules": "rules",
     "load_rule": "rules",
@@ -1519,8 +1522,8 @@ _ALL_TOOL_DEFINITIONS = [
             },
         },
     },
-    # Hook tool definitions removed — hooks are now an internal implementation
-    # detail. All automation is managed through rules (see rule tools below).
+    # Hook and rule tool definitions removed (playbooks spec §13 Phase 3).
+    # All automation is now managed through playbooks.
     # Notes tools (list_notes, write_note, delete_note, read_note,
     # append_note, promote_note, compare_specs_notes) migrated to
     # aq-notes internal plugin.
@@ -1861,107 +1864,46 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # ------------------------------------------------------------------
-    # Rule management tools — primary automation interface exposed via MCP
+    # Rule tools — DEPRECATED (playbooks spec §13 Phase 3)
+    # All rule commands return deprecation notices and redirect to playbooks.
     # ------------------------------------------------------------------
     {
         "name": "list_rules",
         "description": (
-            "List all automation rules for the current project and globals. "
-            "Rules are the ONLY way to create automation — each active rule "
-            "generates hooks that execute automatically. "
-            "Alias: browse_rules"
+            "DEPRECATED — use list_playbooks instead. "
+            "Rules have been replaced by playbooks."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": ("Project ID (optional, defaults to active project)"),
+                    "description": "Project ID (optional)",
                 },
             },
-        },
-    },
-    {
-        "name": "load_rule",
-        "description": (
-            "Load a specific rule's full content and metadata, including its generated hook IDs."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Rule ID",
-                },
-            },
-            "required": ["id"],
         },
     },
     {
         "name": "save_rule",
         "description": (
-            "Create or update an automation rule. This is the ONLY way to "
-            "create automation — never create hooks directly. Active rules with "
-            "triggers automatically generate hooks that execute on schedule or "
-            "in response to events. Passive rules influence reasoning without "
-            "triggering actions. "
-            "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
-            "'When a task is completed'), and ## Logic section in the content. "
-            "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
-            "save_rule to store data, timestamps, or key-value state. Use "
-            "write_memory/read_memory for persistent data storage."
+            "DEPRECATED — use compile_playbook instead. "
+            "Rules have been replaced by playbooks."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "id": {
-                    "type": "string",
-                    "description": ("Rule ID (auto-generated if omitted)"),
-                },
-                "project_id": {
-                    "type": "string",
-                    "description": ("Project ID (null = global rule visible to all projects)"),
-                },
-                "type": {
-                    "type": "string",
-                    "enum": ["active", "passive"],
-                    "description": (
-                        "Rule type: 'active' for triggered automation, "
-                        "'passive' for reasoning guidance"
-                    ),
-                },
                 "content": {
                     "type": "string",
-                    "description": "Rule content (markdown with # Title, ## Trigger, ## Logic sections)",
+                    "description": "Rule content (deprecated)",
                 },
             },
-            "required": ["type", "content"],
-        },
-    },
-    {
-        "name": "delete_rule",
-        "description": (
-            "Remove an automation rule and all its generated hooks. "
-            "This is the only way to remove automation — do not delete hooks directly."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Rule ID",
-                },
-            },
-            "required": ["id"],
         },
     },
     {
         "name": "refresh_hooks",
         "description": (
-            "DEPRECATED — use refresh_rules instead. "
-            "Redirects to refresh_rules. Force reconciliation of all rules "
-            "and their hooks. Re-reads all rule files, regenerates hooks "
-            "for active rules, and cleans up orphaned hooks."
+            "DEPRECATED — hooks and rules have been removed. "
+            "Playbooks are compiled automatically."
         ),
         "input_schema": {
             "type": "object",
@@ -2174,27 +2116,61 @@ _ALL_TOOL_DEFINITIONS = [
     # GitHub operations + convenience git commands (create_github_repo, generate_readme,
     # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
     # migrated to aq-git internal plugin.
-    # --- Rule tools ---
+    # --- Rule tools — DEPRECATED (playbooks spec §13 Phase 3) ---
     {
         "name": "browse_rules",
-        "description": "List rules for a project (plus globals). Alias for list_rules.",
+        "description": (
+            "DEPRECATED — use list_playbooks instead. "
+            "Rules have been replaced by playbooks."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID (optional, defaults to active project)",
+                    "description": "Project ID (optional)",
                 },
             },
         },
     },
     {
         "name": "fire_rule",
-        "description": "Manually trigger all hooks for a rule, ignoring cooldowns.",
+        "description": (
+            "DEPRECATED — use dry_run_playbook instead. "
+            "Rules have been replaced by playbooks."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Rule ID to fire"},
+                "id": {"type": "string", "description": "Rule ID (deprecated)"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "load_rule",
+        "description": (
+            "DEPRECATED — use list_playbooks instead. "
+            "Rules have been replaced by playbooks."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID (deprecated)"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "delete_rule",
+        "description": (
+            "DEPRECATED — rules have been replaced by playbooks. "
+            "Delete the playbook file from the vault instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID (deprecated)"},
             },
             "required": ["id"],
         },
@@ -2202,83 +2178,47 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "rule_runs",
         "description": (
-            "Show recent execution history for a rule (aggregated across all its hooks)."
+            "DEPRECATED — use list_playbook_runs instead. "
+            "Rules have been replaced by playbooks."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Rule ID"},
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of runs to show (default 10)",
-                    "default": 10,
-                },
+                "id": {"type": "string", "description": "Rule ID (deprecated)"},
             },
             "required": ["id"],
         },
     },
     {
         "name": "toggle_rule",
-        "description": "Enable or disable all hooks for a rule.",
+        "description": (
+            "DEPRECATED — rules have been replaced by playbooks. "
+            "Edit the playbook's enabled field instead."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Rule ID"},
-                "enabled": {
-                    "type": "boolean",
-                    "description": "True to enable, false to disable",
-                },
+                "id": {"type": "string", "description": "Rule ID (deprecated)"},
+                "enabled": {"type": "boolean", "description": "Enabled state (deprecated)"},
             },
-            "required": ["id", "enabled"],
+            "required": ["id"],
         },
     },
     {
         "name": "refresh_rules",
         "description": (
-            "Force reconciliation of all rules and their hooks. Re-reads all "
-            "rule files and regenerates hooks for active rules."
+            "DEPRECATED — rules have been replaced by playbooks. "
+            "Playbooks are compiled automatically."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "migrate_rules_to_playbooks",
         "description": (
-            "Phase 2 migration: convert user-created active rules to playbook "
-            "markdown files. Passive rules are moved to memory files. "
-            "Use dry_run=true to preview changes without writing files."
+            "DEPRECATED — migration is complete. Rules have been replaced "
+            "by playbooks (playbooks spec §13 Phase 3)."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dry_run": {
-                    "type": "boolean",
-                    "description": (
-                        "Preview what would happen without writing files. Default: false."
-                    ),
-                },
-                "include_defaults": {
-                    "type": "boolean",
-                    "description": (
-                        "Also migrate default rules (normally handled separately). "
-                        "Default: false."
-                    ),
-                },
-                "cleanup_hooks": {
-                    "type": "boolean",
-                    "description": (
-                        "After migration, remove hooks derived from migrated rules. "
-                        "Default: true."
-                    ),
-                },
-                "archive_rules": {
-                    "type": "boolean",
-                    "description": (
-                        "After migration, archive original rule files. "
-                        "Default: false."
-                    ),
-                },
-            },
-        },
+        "input_schema": {"type": "object", "properties": {}},
     },
     # --- Communication ---
     {
@@ -2732,7 +2672,7 @@ class ToolRegistry:
         self._plugin_registry = plugin_registry
 
     def _ensure_navigation_tools(self) -> None:
-        """Add browse_tools, load_tools, send_message, reply_to_user, and rule stubs if absent.
+        """Add browse_tools, load_tools, send_message, reply_to_user stubs if absent.
 
         These tools are synthesised at init time rather than being defined in
         ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
@@ -2822,128 +2762,9 @@ class ToolRegistry:
                     "required": ["message"],
                 },
             }
-        # Rule tools — primary automation interface
-        for rule_tool in self._get_rule_tools():
-            if rule_tool["name"] not in self._all_tools:
-                self._all_tools[rule_tool["name"]] = rule_tool
-
-    @staticmethod
-    def _get_rule_tools() -> list[dict]:
-        """Return tool definitions for the rule-based automation interface.
-
-        Rules are the primary (and only) way to create automation. Hooks are
-        internal execution artifacts generated from rules automatically.
-        """
-        return [
-            {
-                "name": "list_rules",
-                "description": (
-                    "List all automation rules for the current project and globals. "
-                    "Rules are the ONLY way to create automation — each active rule "
-                    "generates hooks that execute automatically. "
-                    "Alias: browse_rules"
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": ("Project ID (optional, defaults to active project)"),
-                        },
-                    },
-                },
-            },
-            {
-                "name": "load_rule",
-                "description": (
-                    "Load a specific rule's full content and metadata, "
-                    "including its generated hook IDs."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Rule ID",
-                        },
-                    },
-                    "required": ["id"],
-                },
-            },
-            {
-                "name": "save_rule",
-                "description": (
-                    "Create or update an automation rule. This is the ONLY way to "
-                    "create automation — never create hooks directly. Active rules with "
-                    "triggers automatically generate hooks that execute on schedule or "
-                    "in response to events. Passive rules influence reasoning without "
-                    "triggering actions. "
-                    "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
-                    "'When a task is completed'), and ## Logic section in the content. "
-                    "IMPORTANT: Rules are for behavioral logic ONLY — do NOT use "
-                    "save_rule to store data, timestamps, or key-value state. Use "
-                    "write_memory/read_memory for persistent data storage."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": ("Rule ID (auto-generated if omitted)"),
-                        },
-                        "project_id": {
-                            "type": "string",
-                            "description": (
-                                "Project ID (null = global rule visible to all projects)"
-                            ),
-                        },
-                        "type": {
-                            "type": "string",
-                            "enum": ["active", "passive"],
-                            "description": (
-                                "Rule type: 'active' for triggered automation, "
-                                "'passive' for reasoning guidance"
-                            ),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Rule content (markdown with # Title, ## Trigger, ## Logic sections)",
-                        },
-                    },
-                    "required": ["type", "content"],
-                },
-            },
-            {
-                "name": "delete_rule",
-                "description": (
-                    "Remove an automation rule and all its generated hooks. "
-                    "This is the only way to remove automation — do not delete hooks directly."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Rule ID",
-                        },
-                    },
-                    "required": ["id"],
-                },
-            },
-            {
-                "name": "refresh_hooks",
-                "description": (
-                    "DEPRECATED — use refresh_rules instead. "
-                    "Redirects to refresh_rules. Force reconciliation of all rules "
-                    "and their hooks. Re-reads all rule files, regenerates hooks "
-                    "for active rules, and cleans up orphaned hooks."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        ]
+        # Rule tools removed — rules have been replaced by playbooks
+        # (playbooks spec §13 Phase 3). Deprecated stub definitions remain
+        # in _ALL_TOOL_DEFINITIONS for backward compatibility.
 
     # ------------------------------------------------------------------
     # Schema compression for small-context LLMs

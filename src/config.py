@@ -509,16 +509,6 @@ class SupervisorConfig:
 
 
 @dataclass
-class HookEngineConfig:
-    enabled: bool = True
-    max_concurrent_hooks: int = 2
-    file_watcher_enabled: bool = True
-    file_watcher_poll_interval: float = 10.0
-    file_watcher_debounce_seconds: float = 5.0
-    hook_timeout_seconds: int = 300  # 5 minutes
-
-
-@dataclass
 class ChatProviderConfig:
     """LLM provider settings for the Discord chat agent (not the coding agents)."""
 
@@ -778,7 +768,6 @@ class AppConfig:
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
-    hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -953,7 +942,7 @@ class AppConfig:
 
         Non-critical settings (safe to change at runtime without restart):
         - scheduling, pause_retry, auto_task, archive, monitoring
-        - hook_engine, llm_logging
+        - llm_logging
 
         Critical settings (NOT reloaded — require restart):
         - discord, database_path, workspace_dir, chat_provider, memory,
@@ -979,7 +968,6 @@ class AppConfig:
         updated.auto_task = fresh.auto_task
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
-        updated.hook_engine = fresh.hook_engine
         updated.llm_logging = fresh.llm_logging
         updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
         updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
@@ -994,7 +982,6 @@ class AppConfig:
 HOT_RELOADABLE_SECTIONS = {
     "scheduling",
     "monitoring",
-    "hook_engine",
     "archive",
     "llm_logging",
     "pause_retry",
@@ -1036,7 +1023,6 @@ _SECTION_FIELDS = {
     "scheduling",
     "pause_retry",
     "chat_provider",
-    "hook_engine",
     "health_check",
     "logging",
     "monitoring",
@@ -1477,15 +1463,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
         )
 
-    if "hook_engine" in raw:
-        h = raw["hook_engine"]
-        config.hook_engine = HookEngineConfig(
-            enabled=h.get("enabled", True),
-            max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
-            file_watcher_enabled=h.get("file_watcher_enabled", True),
-            file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
-            file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
-        )
+    # hook_engine config section removed (playbooks spec §13 Phase 3).
+    # Existing config files with hook_engine section are silently ignored.
 
     if "logging" in raw:
         lg = raw["logging"]

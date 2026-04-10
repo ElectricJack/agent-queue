@@ -29,7 +29,6 @@ from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
-from src.database.queries.hook_queries import HookQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
@@ -58,7 +57,6 @@ class SQLiteDatabaseAdapter(
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,
-    HookQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
     PluginQueryMixin,

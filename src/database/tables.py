@@ -230,45 +230,8 @@ workspaces = Table(
     UniqueConstraint("project_id", "workspace_path"),
 )
 
-hooks = Table(
-    "hooks",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("name", Text, nullable=False),
-    Column("enabled", Integer, nullable=False, server_default="1"),
-    Column("trigger", Text, nullable=False),
-    Column("context_steps", Text, nullable=False, server_default="'[]'"),
-    Column("prompt_template", Text, nullable=False),
-    Column("llm_config", Text, nullable=True),
-    Column("cooldown_seconds", Integer, nullable=False, server_default="3600"),
-    Column("max_tokens_per_run", Integer, nullable=True),
-    Column("last_triggered_at", Float, nullable=True),
-    Column("plugin_id", Text, nullable=True),
-    Column("source_hash", Text, nullable=True),
-    Column("created_at", Float, nullable=False),
-    Column("updated_at", Float, nullable=False),
-    Index("idx_hooks_plugin_id", "plugin_id"),
-)
-
-hook_runs = Table(
-    "hook_runs",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("hook_id", Text, ForeignKey("hooks.id"), nullable=False),
-    Column("project_id", Text, nullable=False),
-    Column("trigger_reason", Text, nullable=False),
-    Column("event_data", Text, nullable=True),
-    Column("context_results", Text, nullable=True),
-    Column("prompt_sent", Text, nullable=True),
-    Column("llm_response", Text, nullable=True),
-    Column("actions_taken", Text, nullable=True),
-    Column("skipped_reason", Text, nullable=True),
-    Column("tokens_used", Integer, nullable=False, server_default="0"),
-    Column("status", Text, nullable=False, server_default="'running'"),
-    Column("started_at", Float, nullable=False),
-    Column("completed_at", Float, nullable=True),
-)
+# hooks and hook_runs tables removed (playbooks spec §13 Phase 3).
+# Migration drops these tables from existing databases.
 
 agent_profiles = Table(
     "agent_profiles",

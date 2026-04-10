@@ -1,7 +1,7 @@
 """Chat provider abstraction for the LLM control plane.
 
 This package is used by the ChatAgent (Discord chat interface) and the
-HookEngine (automated event-driven hooks) -- NOT by agent execution, which
+PlaybookExecutor (automated playbook runs) -- NOT by agent execution, which
 goes through the separate AgentAdapter layer in ``src/adapters/``.
 
 The factory function ``create_chat_provider`` selects between Anthropic

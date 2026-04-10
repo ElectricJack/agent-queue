@@ -19,8 +19,6 @@ from src.models import (
     Agent,
     AgentProfile,
     AgentState,
-    Hook,
-    HookRun,
     PlaybookRun,
     Project,
     ProjectStatus,
@@ -551,115 +549,7 @@ class TestEventQueries:
         assert events[0]["event_type"] == "test_event"
 
 
-# ── Hook Queries ─────────────────────────────────────────────────────────
-
-
-class TestHookQueries:
-    async def test_create_get_hook(self, db):
-        await _make_project(db)
-        hook = Hook(
-            id="h-1",
-            project_id="p-1",
-            name="test-hook",
-            trigger="task_completed",
-            prompt_template="Do stuff",
-        )
-        await db.create_hook(hook)
-        h = await db.get_hook("h-1")
-        assert h is not None
-        assert h.name == "test-hook"
-
-    async def test_list_hooks_by_project(self, db):
-        await _make_project(db, "p-1")
-        await _make_project(db, "p-2")
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.create_hook(
-            Hook(
-                id="h-2",
-                project_id="p-2",
-                name="b",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        hooks = await db.list_hooks(project_id="p-1")
-        assert len(hooks) == 1
-
-    async def test_delete_hook(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.delete_hook("h-1")
-        assert await db.get_hook("h-1") is None
-
-    async def test_hook_run_lifecycle(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        run = HookRun(
-            id="hr-1",
-            hook_id="h-1",
-            project_id="p-1",
-            trigger_reason="manual",
-            status="running",
-            started_at=time.time(),
-        )
-        await db.create_hook_run(run)
-        last = await db.get_last_hook_run("h-1")
-        assert last is not None
-        assert last.id == "hr-1"
-
-        await db.update_hook_run("hr-1", status="completed")
-        runs = await db.list_hook_runs("h-1")
-        assert runs[0].status == "completed"
-
-    async def test_hooks_by_prefix(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="rule-abc-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.create_hook(
-            Hook(
-                id="rule-abc-2",
-                project_id="p-1",
-                name="b",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        hooks = await db.list_hooks_by_id_prefix("rule-abc")
-        assert len(hooks) == 2
-
-        deleted = await db.delete_hooks_by_id_prefix("rule-abc")
-        assert deleted == 2
+# ── Hook Queries removed (playbooks spec §13 Phase 3) ────────────────────
 
 
 # ── Archive Queries ──────────────────────────────────────────────────────

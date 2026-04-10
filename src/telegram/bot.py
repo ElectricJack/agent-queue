@@ -174,9 +174,7 @@ class TelegramBot:
         self.orchestrator.set_command_handler(self.handler)
         self.orchestrator.set_supervisor(self._supervisor)
 
-        # Wire HookEngine supervisor
-        if hasattr(self.orchestrator, "hooks") and self.orchestrator.hooks:
-            self.orchestrator.hooks.set_supervisor(self._supervisor)
+        # HookEngine removed (playbooks spec §13 Phase 3).
 
         self._ready_event.set()
         logger.info("Telegram bot started (chat_id: %s)", self._main_chat_id)
