@@ -2424,6 +2424,61 @@ def setup_commands(bot: commands.Bot) -> None:
     # PROJECT COMMANDS
     # ===================================================================
 
+    @bot.tree.command(name="channel-map", description="Show all project-to-channel mappings")
+    async def channel_map_command(interaction: discord.Interaction):
+        result = await handler.execute("list_projects", {})
+        projects = result.get("projects", [])
+        if not projects:
+            await _send_info(interaction, "No Projects", description="No projects configured.")
+            return
+        lines = ["**Channel Map**\n"]
+        assigned = []
+        unassigned = []
+        for p in projects:
+            channel_id = p.get("discord_channel_id")
+            if channel_id:
+                assigned.append(f"**{p['name']}** (`{p['id']}`) → <#{channel_id}>")
+            else:
+                unassigned.append(f"`{p['id']}`")
+        if assigned:
+            lines.append("**Projects with dedicated channels:**")
+            for entry in assigned:
+                lines.append(f"• {entry}")
+        else:
+            lines.append("_No projects have dedicated channels yet._")
+        if unassigned:
+            lines.append(f"\n**Using global channels:** {', '.join(unassigned)}")
+        lines.append("\n_Use `/set-channel` or `/create-channel` to assign project channels._")
+        await interaction.response.send_message("\n".join(lines))
+
+    @bot.tree.command(name="set-default-branch", description="Set the default branch for a project")
+    @app_commands.describe(
+        project_id="Project ID",
+        branch="Branch name to use as default (e.g. dev, main)",
+    )
+    async def set_default_branch_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        branch: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute(
+            "set_default_branch", {"project_id": project_id, "branch": branch}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        desc = (
+            f"Project `{project_id}` default branch set to `{result['default_branch']}`"
+            f"\n(was `{result['previous_branch']}`)"
+        )
+        if result.get("branch_created"):
+            desc += f"\n\nBranch `{branch}` was created on the remote."
+        await _send_success(
+            interaction, "Default Branch Updated",
+            description=desc, followup=True,
+        )
+
     @bot.tree.command(
         name="new-project",
         description="Create a new project with an interactive wizard",
@@ -2702,6 +2757,27 @@ def setup_commands(bot: commands.Bot) -> None:
     # TASK COMMANDS
     # ===================================================================
 
+    @bot.tree.command(name="process-plan", description="Scan workspaces for plan.md files and process them")
+    @app_commands.describe(project="Project ID (defaults to channel's project)")
+    async def process_plan_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("process_plan", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        await _send_success(
+            interaction, "Plan Processed",
+            description=result.get("message", "Plan processing complete."),
+            followup=True, result=result,
+        )
+
     @bot.tree.command(name="tasks", description="List tasks for a project")
     async def tasks_command(
         interaction: discord.Interaction,
@@ -2941,67 +3017,6 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
-        name="archive-tasks",
-        description="Archive completed tasks (DB + markdown notes in workspace)",
-    )
-    @app_commands.describe(
-        project_id="Project to archive completed tasks from (optional — omit for all projects)",
-        include_failed="Also archive FAILED and BLOCKED tasks (default: false)",
-    )
-    async def archive_tasks_command(
-        interaction: discord.Interaction,
-        project_id: str | None = None,
-        include_failed: bool = False,
-    ):
-        args: dict = {"include_failed": include_failed}
-        if project_id:
-            args["project_id"] = project_id
-        await interaction.response.defer()
-        result = await handler.execute("archive_tasks", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        if "message" in result:
-            await _send_info(
-                interaction,
-                "Nothing to Archive",
-                description=result["message"],
-                followup=True,
-            )
-            return
-        count = result.get("archived_count", 0)
-        scope = f" from `{project_id}`" if project_id else ""
-        archive_dir = result.get("archive_dir")
-        desc = f"Archived **{count}** task{'s' if count != 1 else ''}{scope}."
-        if archive_dir:
-            desc += f"\nNotes written to `{archive_dir}`"
-        await _send_success(
-            interaction,
-            "Tasks Archived",
-            description=desc,
-            followup=True,
-        )
-
-    @bot.tree.command(
-        name="archive-task",
-        description="Archive a single completed/failed/blocked task",
-    )
-    @app_commands.describe(task_id="Task ID to archive")
-    async def archive_task_command(interaction: discord.Interaction, task_id: str):
-        result = await handler.execute("archive_task", {"task_id": task_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        await _send_success(
-            interaction,
-            "Task Archived",
-            description=(
-                f"Task `{task_id}` ({result.get('title', '')}) archived "
-                f"(was {result.get('status', '?')})."
-            ),
-        )
-
-    @bot.tree.command(
         name="restore-task",
         description="Restore an archived task back to active status",
     )
@@ -3232,47 +3247,6 @@ def setup_commands(bot: commands.Bot) -> None:
             fields=fields,
         )
         await interaction.response.send_message(embed=embed)
-
-    @bot.tree.command(
-        name="agent-error",
-        description="Show the last error recorded for a task",
-    )
-    @app_commands.describe(task_id="Task ID to inspect")
-    async def agent_error_command(interaction: discord.Interaction, task_id: str):
-        await interaction.response.defer(ephemeral=True)
-        result = await handler.execute("get_agent_error", {"task_id": task_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        fields: list[tuple[str, str, bool]] = [
-            ("Task", result.get("title", ""), False),
-            ("Status", result.get("status", ""), True),
-            ("Retries", result.get("retries", ""), True),
-        ]
-
-        if result.get("message"):
-            embed = error_embed(
-                f"Agent Error Report: {task_id}",
-                description=f"_{result['message']}_",
-                fields=fields,
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        fields.append(("Result", result.get("result", "unknown"), True))
-        fields.append(("Error Type", f"**{result.get('error_type', 'unknown')}**", False))
-        error_msg = result.get("error_message") or ""
-        if error_msg:
-            snippet = truncate(error_msg, 990)
-            fields.append(("Error Detail", f"```\n{snippet}\n```", False))
-        else:
-            fields.append(("Error Detail", "_No error message recorded._", False))
-        fields.append(("Suggested Fix", result.get("suggested_fix", "Review the logs"), False))
-        summary = result.get("agent_summary") or ""
-        if summary:
-            fields.append(("Agent Summary", truncate(summary, 500), False))
-        embed = error_embed(f"Agent Error Report: {task_id}", fields=fields)
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ===================================================================
     # AGENT COMMANDS
@@ -5057,41 +5031,6 @@ def setup_commands(bot: commands.Bot) -> None:
         embed = info_embed("Active Tasks — All Projects", description=description)
         await interaction.followup.send(embed=embed)
 
-    @bot.tree.command(name="archived-tasks", description="List archived tasks")
-    @app_commands.describe(
-        project="Project ID (optional)",
-        limit="Max results (default 50)",
-    )
-    async def archived_tasks_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        limit: int = 50,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        await interaction.response.defer()
-        args: dict = {"limit": limit}
-        if project_id:
-            args["project_id"] = project_id
-        result = await handler.execute("list_archived", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        tasks = result.get("tasks", [])
-        if not tasks:
-            await _send_info(interaction, "No Archived Tasks",
-                             description="No archived tasks found.", followup=True)
-            return
-        desc_parts = []
-        for t in tasks[:20]:
-            tid = t.get("id", "?") if isinstance(t, dict) else str(t)
-            ttitle = t.get("title", "") if isinstance(t, dict) else ""
-            desc_parts.append(f"• `{tid}` {ttitle[:50]}")
-        if len(tasks) > 20:
-            desc_parts.append(f"\n*... and {len(tasks) - 20} more*")
-        description = "\n".join(desc_parts)
-        embed = info_embed(f"Archived Tasks — {len(tasks)}", description=description)
-        await interaction.followup.send(embed=embed)
-
     # ===================================================================
     # AGENT PROFILE COMMANDS
     # ===================================================================
@@ -5353,6 +5292,14 @@ def setup_commands(bot: commands.Bot) -> None:
             "restart_daemon", {"reason": full_reason, "wait_for_tasks": wait_for_tasks}
         )
 
+    @bot.tree.command(name="shutdown", description="Shut down the agent-queue daemon")
+    async def shutdown_command(interaction: discord.Interaction):
+        await _send_warning(
+            interaction, "Shutting Down",
+            description="Agent-queue daemon is shutting down...",
+        )
+        await handler.execute("shutdown", {})
+
     @bot.tree.command(
         name="browse",
         description="Browse project repository files and directories",
@@ -5414,199 +5361,33 @@ def setup_commands(bot: commands.Bot) -> None:
                 break
         return choices
 
-    @bot.tree.command(name="plugin-list", description="List all installed plugins")
-    async def plugin_list_command(interaction: discord.Interaction):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_list", {})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        plugins = result.get("plugins", [])
-        if not plugins:
-            await _send_info(
-                interaction,
-                "No Plugins",
-                description="No plugins are currently installed.",
-                followup=True,
-            )
-            return
-        lines = []
-        for p in plugins:
-            status = "✅" if p.get("enabled") else "❌"
-            version = p.get("version", "unknown")
-            lines.append(
-                f"{status} **{p['name']}** `v{version}` — {p.get('description', 'No description')}"
-            )
-        await _send_success(
-            interaction,
-            f"Installed Plugins ({len(plugins)})",
-            description="\n".join(lines),
-            followup=True,
-        )
-
-    @bot.tree.command(
-        name="plugin-install",
-        description="Install a plugin from a git repository",
-    )
+    @bot.tree.command(name="edit-file", description="Edit a file in a project workspace")
     @app_commands.describe(
-        url="Git repository URL for the plugin",
-        branch="Git branch to install from (optional)",
+        path="File path relative to the workspace root",
+        content="New file content",
+        project="Project ID (defaults to channel's project)",
     )
-    async def plugin_install_command(
+    async def edit_file_command(
         interaction: discord.Interaction,
-        url: str,
-        branch: str | None = None,
+        path: str,
+        content: str,
+        project: str | None = None,
     ):
-        await interaction.response.defer()
-        args: dict = {"url": url}
-        if branch:
-            args["branch"] = branch
-        result = await handler.execute("plugin_install", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        name = result.get("name", "unknown")
-        version = result.get("version", "unknown")
-        await _send_success(
-            interaction,
-            "Plugin Installed",
-            description=f"**{name}** `v{version}` has been installed successfully.",
-            followup=True,
-            result=result,
-        )
-
-    @bot.tree.command(name="plugin-update", description="Update an installed plugin")
-    @app_commands.describe(name="Name of the plugin to update")
-    async def plugin_update_command(interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-        result = await handler.execute("plugin_update", {"name": name})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        old_ver = result.get("old_version", "unknown")
-        new_ver = result.get("version", "unknown")
-        desc = f"**{name}** updated from `v{old_ver}` to `v{new_ver}`."
-        await _send_success(
-            interaction,
-            "Plugin Updated",
-            description=desc,
-            followup=True,
-            result=result,
+        result = await handler.execute(
+            "edit_file", {"project_id": project_id, "path": path, "content": content}
         )
-
-    @bot.tree.command(name="plugin-remove", description="Remove an installed plugin")
-    @app_commands.describe(name="Name of the plugin to remove")
-    async def plugin_remove_command(interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_remove", {"name": name})
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
             return
         await _send_success(
-            interaction,
-            "Plugin Removed",
-            description=f"**{name}** has been removed.",
-            followup=True,
-            result=result,
-        )
-
-    @bot.tree.command(
-        name="plugin-toggle",
-        description="Enable or disable an installed plugin",
-    )
-    @app_commands.describe(name="Name of the plugin to toggle")
-    async def plugin_toggle_command(interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_toggle", {"name": name})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        enabled = result.get("enabled", False)
-        state = "enabled" if enabled else "disabled"
-        emoji = "✅" if enabled else "❌"
-        await _send_success(
-            interaction,
-            "Plugin Toggled",
-            description=f"{emoji} **{name}** is now **{state}**.",
-            followup=True,
-            result=result,
-        )
-
-    @bot.tree.command(name="plugin-info", description="Show detailed plugin information")
-    @app_commands.describe(name="Name of the plugin")
-    async def plugin_info_command(interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_info", {"name": name})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        plugin = result.get("plugin", result)
-        enabled = "Enabled" if plugin.get("enabled") else "Disabled"
-        fields = [
-            ("Version", f"`{plugin.get('version', 'unknown')}`", True),
-            ("Status", enabled, True),
-            ("Author", plugin.get("author", "unknown"), True),
-        ]
-        if plugin.get("url"):
-            fields.append(("Repository", plugin["url"], False))
-        hooks = plugin.get("hooks", [])
-        if hooks:
-            fields.append(("Hooks", ", ".join(f"`{h}`" for h in hooks), False))
-        commands_list = plugin.get("commands", [])
-        if commands_list:
-            fields.append(("Commands", ", ".join(f"`{c}`" for c in commands_list), False))
-        await _send_info(
-            interaction,
-            f"Plugin: {plugin.get('name', name)}",
-            description=plugin.get("description", "No description available."),
-            fields=fields,
-            followup=True,
-        )
-
-    @bot.tree.command(
-        name="plugin-config",
-        description="Show configuration for a plugin",
-    )
-    @app_commands.describe(name="Name of the plugin")
-    async def plugin_config_command(interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_config", {"name": name})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        config = result.get("config", {})
-        if not config:
-            await _send_info(
-                interaction,
-                f"Plugin Config: {name}",
-                description="This plugin has no configuration.",
-                followup=True,
-            )
-            return
-        lines = []
-        for key, value in config.items():
-            lines.append(f"**{key}:** `{value}`")
-        await _send_info(
-            interaction,
-            f"Plugin Config: {name}",
-            description="\n".join(lines),
-            followup=True,
-        )
-
-    @bot.tree.command(name="plugin-reload", description="Reload a plugin")
-    @app_commands.describe(name="Name of the plugin to reload")
-    async def plugin_reload_command(interaction: discord.Interaction, name: str):
-        await interaction.response.defer()
-        result = await handler.execute("plugin_reload", {"name": name})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        await _send_success(
-            interaction,
-            "Plugin Reloaded",
-            description=f"**{name}** has been reloaded successfully.",
-            followup=True,
-            result=result,
+            interaction, "File Updated",
+            description=f"Updated `{path}` in `{project_id}`.",
+            followup=True, result=result,
         )
 
     # ===================================================================
