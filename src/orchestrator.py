@@ -543,6 +543,9 @@ class Orchestrator:
             payload=f"skipped from {task.status.value}",
         )
 
+        # Check if this skip-to-completed finishes a workflow stage
+        await self._check_workflow_stage_completion(task)
+
         # Find which downstream tasks will now become unblocked.
         # After we set this task to COMPLETED, any direct dependents
         # whose other deps are also met will be promoted by the
@@ -1056,10 +1059,7 @@ class Orchestrator:
         from src.reference_stub_enricher import ReferenceStubEnricher
 
         self.reference_stub_enricher: ReferenceStubEnricher | None = None
-        if (
-            self.config.memory.spec_watcher_enabled
-            and self.config.memory.stub_enrichment_enabled
-        ):
+        if self.config.memory.spec_watcher_enabled and self.config.memory.stub_enrichment_enabled:
             self.reference_stub_enricher = ReferenceStubEnricher(
                 bus=self.bus,
                 vault_projects_dir=self.config.vault_projects,
@@ -2021,6 +2021,8 @@ class Orchestrator:
                     task.id,
                     len(subtasks),
                 )
+                # Check if this plan-parent completion finishes a workflow stage
+                await self._check_workflow_stage_completion(task)
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Monitoring: detect DEFINED tasks stuck waiting for dependencies.
@@ -4365,6 +4367,8 @@ class Orchestrator:
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
                 project_id=task.project_id,
             )
+            # Check if this completion finishes a workflow stage
+            await self._check_workflow_stage_completion(task)
             # Clean up the task branch (remote may already be deleted by GitHub)
             if task.branch_name:
                 try:
@@ -5911,6 +5915,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     },
                 )
 
+                # Check if this completion finishes a workflow stage
+                await self._check_workflow_stage_completion(task)
+
                 # Auto-reload plugin if the task modified a plugin workspace
                 await self._check_plugin_workspace_update(task, ws)
                 # Mark for thread root update
@@ -6346,6 +6353,86 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s", action.task_id, e)
+
+    # ------------------------------------------------------------------
+    # Workflow stage completion detection
+    # ------------------------------------------------------------------
+
+    async def _check_workflow_stage_completion(self, task: Task) -> None:
+        """Check if a completed task finishes a workflow stage and emit an event.
+
+        Called after a task transitions to COMPLETED.  If the task belongs
+        to a workflow (``task.workflow_id`` is set), this method loads the
+        workflow and checks whether **all** tasks tracked by the workflow
+        have reached COMPLETED status.  When they have, a
+        ``workflow.stage.completed`` event is emitted on the bus so that
+        coordination playbooks can advance to the next stage.
+
+        The check is intentionally conservative — only COMPLETED tasks count.
+        Failed or blocked tasks do NOT satisfy stage completion; the playbook
+        is expected to handle those via ``task.failed`` listeners.
+
+        Args:
+            task: The task that just completed.
+        """
+        if not task.workflow_id:
+            return
+
+        try:
+            workflow = await self.db.get_workflow(task.workflow_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch workflow %s for stage completion check: %s",
+                task.workflow_id,
+                e,
+            )
+            return
+
+        if not workflow:
+            logger.debug(
+                "Workflow %s not found for task %s — skipping stage check",
+                task.workflow_id,
+                task.id,
+            )
+            return
+
+        if workflow.status != "running":
+            logger.debug(
+                "Workflow %s is '%s', not 'running' — skipping stage check",
+                workflow.workflow_id,
+                workflow.status,
+            )
+            return
+
+        if not workflow.task_ids:
+            return
+
+        # Check whether every task in the workflow has reached COMPLETED.
+        for tid in workflow.task_ids:
+            try:
+                t = await self.db.get_task(tid)
+            except Exception:
+                logger.debug("Could not fetch task %s during stage check", tid)
+                return
+            if not t or t.status != TaskStatus.COMPLETED:
+                return  # At least one task is still outstanding
+
+        # All tasks completed — emit stage completion event.
+        stage = workflow.current_stage or ""
+        logger.info(
+            "Workflow %s stage '%s' completed (all %d tasks done)",
+            workflow.workflow_id,
+            stage,
+            len(workflow.task_ids),
+        )
+        await self.bus.emit(
+            "workflow.stage.completed",
+            {
+                "workflow_id": workflow.workflow_id,
+                "stage": stage,
+                "task_ids": list(workflow.task_ids),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Plugin self-update detection
