@@ -5266,6 +5266,636 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.followup.send(embed=embed)
 
     # ===================================================================
+    # PLAYBOOK COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="playbook-list", description="List all playbooks across scopes")
+    @app_commands.describe(
+        scope="Filter by scope type (system, project, agent-type)",
+    )
+    async def playbook_list_command(
+        interaction: discord.Interaction,
+        scope: str | None = None,
+    ):
+        await interaction.response.defer()
+        args: dict = {}
+        if scope:
+            args["scope"] = scope
+        result = await handler.execute("list_playbooks", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        playbooks = result.get("playbooks", [])
+        count = result.get("count", len(playbooks))
+
+        if count == 0:
+            await _send_info(
+                interaction,
+                "No Playbooks",
+                description="No compiled playbooks found. Use `/playbook-compile` to compile one.",
+                followup=True,
+            )
+            return
+
+        desc_parts = []
+        for p in playbooks:
+            pid = p.get("id", "?")
+            p_scope = p.get("scope", "?")
+            triggers = ", ".join(
+                t if isinstance(t, str) else t.get("event_type", "?")
+                for t in p.get("triggers", [])
+            )
+            status_icon = "🟢" if p.get("status") == "active" else "⚠️"
+            cooldown = p.get("cooldown_seconds", "—")
+            last_run = p.get("last_run", "never")
+            desc_parts.append(
+                f"{status_icon} **{pid}** (`{p_scope}`)\n"
+                f"> Triggers: `{triggers}`\n"
+                f"> Cooldown: {cooldown}s · Last run: {last_run}"
+            )
+
+        description = "\n\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(
+            f"Playbooks — {count} found",
+            description=description,
+        )
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="playbook-compile", description="Compile a playbook markdown file")
+    @app_commands.describe(
+        path="Absolute path to the playbook .md file",
+        force="Force recompilation even if source is unchanged",
+    )
+    async def playbook_compile_command(
+        interaction: discord.Interaction,
+        path: str,
+        force: bool = False,
+    ):
+        await interaction.response.defer()
+        args: dict = {"path": path}
+        if force:
+            args["force"] = True
+        result = await handler.execute("compile_playbook", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        playbook_id = result.get("playbook_id", "?")
+        version = result.get("version", "?")
+        nodes = result.get("node_count", "?")
+        await _send_success(
+            interaction,
+            "Playbook Compiled",
+            fields=[
+                ("ID", f"`{playbook_id}`", True),
+                ("Version", str(version), True),
+                ("Nodes", str(nodes), True),
+            ],
+            followup=True,
+            result=result,
+        )
+
+    @bot.tree.command(name="playbook-graph", description="Show a playbook's compiled graph")
+    @app_commands.describe(
+        playbook_id="The playbook identifier to render",
+        format="Output format: ascii or mermaid",
+        show_prompts="Include prompt previews in node labels",
+    )
+    @app_commands.choices(
+        format=[
+            app_commands.Choice(name="ascii", value="ascii"),
+            app_commands.Choice(name="mermaid", value="mermaid"),
+        ]
+    )
+    async def playbook_graph_command(
+        interaction: discord.Interaction,
+        playbook_id: str,
+        format: app_commands.Choice[str] | None = None,
+        show_prompts: bool = False,
+    ):
+        await interaction.response.defer()
+        args: dict = {"playbook_id": playbook_id, "show_prompts": show_prompts}
+        if format:
+            args["format"] = format.value
+        result = await handler.execute("show_playbook_graph", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        graph_text = result.get("graph", result.get("output", str(result)))
+        await _send_long_interaction(
+            f"```\n{graph_text}\n```",
+            interaction.followup.send,
+            filename=f"{playbook_id}-graph.txt",
+        )
+
+    @bot.tree.command(name="playbook-dry-run", description="Simulate a playbook without side effects")
+    @app_commands.describe(
+        playbook_id="The compiled playbook ID to simulate",
+    )
+    async def playbook_dry_run_command(
+        interaction: discord.Interaction,
+        playbook_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("dry_run_playbook", {"playbook_id": playbook_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        nodes_visited = result.get("nodes_visited", [])
+        final_status = result.get("status", "?")
+        tokens = result.get("total_tokens", "?")
+
+        desc_parts = [f"**Status:** {final_status}", f"**Tokens:** {tokens}", ""]
+        for node in nodes_visited:
+            name = node if isinstance(node, str) else node.get("node_id", "?")
+            desc_parts.append(f"→ `{name}`")
+
+        await _send_info(
+            interaction,
+            f"Dry Run — {playbook_id}",
+            description="\n".join(desc_parts),
+            followup=True,
+        )
+
+    @bot.tree.command(name="playbook-runs", description="List recent playbook runs")
+    @app_commands.describe(
+        playbook_id="Filter to a specific playbook",
+        status="Filter by run status",
+        limit="Max results (default 20)",
+    )
+    @app_commands.choices(
+        status=[
+            app_commands.Choice(name="running", value="running"),
+            app_commands.Choice(name="paused", value="paused"),
+            app_commands.Choice(name="completed", value="completed"),
+            app_commands.Choice(name="failed", value="failed"),
+            app_commands.Choice(name="timed_out", value="timed_out"),
+        ]
+    )
+    async def playbook_runs_command(
+        interaction: discord.Interaction,
+        playbook_id: str | None = None,
+        status: app_commands.Choice[str] | None = None,
+        limit: int = 20,
+    ):
+        await interaction.response.defer()
+        args: dict = {"limit": limit}
+        if playbook_id:
+            args["playbook_id"] = playbook_id
+        if status:
+            args["status"] = status.value
+        result = await handler.execute("list_playbook_runs", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        runs = result.get("runs", [])
+        if not runs:
+            await _send_info(
+                interaction,
+                "No Playbook Runs",
+                description="No runs match the given filters.",
+                followup=True,
+            )
+            return
+
+        status_icons = {
+            "running": "▶️", "paused": "⏸", "completed": "✅",
+            "failed": "❌", "timed_out": "⏰",
+        }
+        desc_parts = []
+        for r in runs:
+            icon = status_icons.get(r.get("status", ""), "⚪")
+            rid = r.get("run_id", "?")[:12]
+            pid = r.get("playbook_id", "?")
+            run_status = r.get("status", "?")
+            path = " → ".join(r.get("node_path", [])) if r.get("node_path") else "—"
+            desc_parts.append(
+                f"{icon} `{rid}…` **{pid}** — {run_status}\n> Path: {path}"
+            )
+
+        description = "\n\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Playbook Runs — {len(runs)} found", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="playbook-inspect", description="Inspect a playbook run in detail")
+    @app_commands.describe(run_id="The playbook run ID to inspect")
+    async def playbook_inspect_command(
+        interaction: discord.Interaction,
+        run_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("inspect_playbook_run", {"run_id": run_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        playbook_id = result.get("playbook_id", "?")
+        run_status = result.get("status", "?")
+        tokens = result.get("total_tokens", "?")
+        node_trace = result.get("node_trace", [])
+
+        desc_parts = [
+            f"**Playbook:** `{playbook_id}`",
+            f"**Status:** {run_status}",
+            f"**Total tokens:** {tokens}",
+            "",
+        ]
+        for node in node_trace:
+            name = node.get("node_id", "?") if isinstance(node, dict) else str(node)
+            node_tokens = node.get("tokens", "") if isinstance(node, dict) else ""
+            token_str = f" ({node_tokens} tokens)" if node_tokens else ""
+            desc_parts.append(f"→ `{name}`{token_str}")
+
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Run {run_id[:16]}…", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="playbook-resume", description="Resume a paused playbook run")
+    @app_commands.describe(
+        run_id="The paused playbook run ID",
+        human_input="Your review decision or feedback",
+    )
+    async def playbook_resume_command(
+        interaction: discord.Interaction,
+        run_id: str,
+        human_input: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute(
+            "resume_playbook", {"run_id": run_id, "human_input": human_input}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        await _send_success(
+            interaction,
+            "Playbook Resumed",
+            description=f"Run `{run_id[:16]}…` has been resumed with your input.",
+            followup=True,
+            result=result,
+        )
+
+    @bot.tree.command(name="playbook-health", description="Playbook health metrics")
+    @app_commands.describe(
+        playbook_id="Filter to a specific playbook (omit for all)",
+        limit="Max runs to analyse (default 200)",
+    )
+    async def playbook_health_command(
+        interaction: discord.Interaction,
+        playbook_id: str | None = None,
+        limit: int = 200,
+    ):
+        await interaction.response.defer()
+        args: dict = {"limit": limit}
+        if playbook_id:
+            args["playbook_id"] = playbook_id
+        result = await handler.execute("playbook_health", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        # Format health metrics
+        playbooks = result.get("playbooks", [result] if "playbook_id" in result else [])
+        if not playbooks:
+            await _send_info(
+                interaction, "No Health Data",
+                description="No playbook run data available yet.",
+                followup=True,
+            )
+            return
+
+        desc_parts = []
+        for p in playbooks:
+            pid = p.get("playbook_id", "?")
+            total_runs = p.get("total_runs", 0)
+            success_rate = p.get("success_rate", 0)
+            avg_duration = p.get("avg_duration_seconds", 0)
+            avg_tokens = p.get("avg_tokens", 0)
+            desc_parts.append(
+                f"**{pid}**\n"
+                f"> Runs: {total_runs} · Success: {success_rate:.0%}\n"
+                f"> Avg duration: {avg_duration:.1f}s · Avg tokens: {avg_tokens:.0f}"
+            )
+
+        description = "\n\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed("Playbook Health", description=description)
+        await interaction.followup.send(embed=embed)
+
+    # ===================================================================
+    # MEMORY COMMANDS (NEW)
+    # ===================================================================
+
+    @bot.tree.command(name="memory-save", description="Save an insight to project memory")
+    @app_commands.describe(
+        content="The insight or learning to save",
+        project="Project ID (defaults to channel's project)",
+        topic="Topic for filtering (e.g. 'authentication', 'testing')",
+        tags="Comma-separated tags (e.g. 'insight,auth,important')",
+    )
+    async def memory_save_command(
+        interaction: discord.Interaction,
+        content: str,
+        project: str | None = None,
+        topic: str | None = None,
+        tags: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        args: dict = {"project_id": project_id, "content": content}
+        if topic:
+            args["topic"] = topic
+        if tags:
+            args["tags"] = [t.strip() for t in tags.split(",")]
+        result = await handler.execute("memory_save", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+
+        preview = content[:100] + "..." if len(content) > 100 else content
+        await _send_success(
+            interaction,
+            "Memory Saved",
+            description=f"Saved to `{project_id}` memory:\n> {preview}",
+            result=result,
+        )
+
+    @bot.tree.command(name="memory-list", description="Browse memories in a scope")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+        topic="Filter by topic",
+        tag="Filter by tag",
+        limit="Max entries (default 20)",
+    )
+    async def memory_list_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+        topic: str | None = None,
+        tag: str | None = None,
+        limit: int = 20,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id, "limit": limit}
+        if topic:
+            args["topic"] = topic
+        if tag:
+            args["tag"] = tag
+        result = await handler.execute("memory_list", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        entries = result.get("entries", [])
+        if not entries:
+            await _send_info(
+                interaction, "No Memories",
+                description=f"No memories found in `{project_id}`.",
+                followup=True,
+            )
+            return
+
+        desc_parts = [f"**Project:** `{project_id}` — {len(entries)} entries\n"]
+        for e in entries:
+            heading = e.get("heading", "")
+            entry_topic = e.get("topic", "")
+            preview = e.get("content", "")[:120].replace("\n", " ")
+            topic_tag = f" `#{entry_topic}`" if entry_topic else ""
+            label = heading or preview
+            desc_parts.append(f"• **{label}**{topic_tag}")
+
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Memories — {project_id}", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-get", description="Retrieve information from memory (KV + semantic)")
+    @app_commands.describe(
+        query="What to retrieve",
+        project="Project ID (defaults to channel's project)",
+        topic="Topic filter for semantic search",
+    )
+    async def memory_get_command(
+        interaction: discord.Interaction,
+        query: str,
+        project: str | None = None,
+        topic: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+        args: dict = {"query": query, "project_id": project_id}
+        if topic:
+            args["topic"] = topic
+        result = await handler.execute("memory_get", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        # memory_get returns either KV result or semantic results
+        kv_value = result.get("value")
+        if kv_value is not None:
+            await _send_success(
+                interaction,
+                f"Memory: {query}",
+                description=f"```\n{kv_value}\n```",
+                followup=True,
+            )
+            return
+
+        results = result.get("results", [])
+        if not results:
+            await _send_info(
+                interaction, "Not Found",
+                description=f"No memories matched `{query}` in `{project_id}`.",
+                followup=True,
+            )
+            return
+
+        desc_parts = [f"**Query:** {query}\n"]
+        for r in results:
+            score = r.get("score", 0)
+            content = r.get("content", "").replace("\n", " ")[:150]
+            source = r.get("source", "")
+            source_short = source.rsplit("/", 1)[-1] if "/" in source else source
+            score_pct = f"{score * 100:.1f}%" if isinstance(score, (int, float)) else ""
+            desc_parts.append(f"• `{source_short}` ({score_pct})\n> {content}")
+
+        description = "\n\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Memory Results — {len(results)} found", description=description)
+        await interaction.followup.send(embed=embed)
+
+    @bot.tree.command(name="memory-health", description="Memory health metrics for a project")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_health_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+        result = await handler.execute("memory_health", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        fields = []
+        for key in ("total_entries", "collection_size", "stale_count",
+                     "growth_rate", "retrieval_hit_rate", "contradictions"):
+            val = result.get(key)
+            if val is not None:
+                label = key.replace("_", " ").title()
+                fields.append((label, str(val), True))
+
+        await _send_info(
+            interaction,
+            f"Memory Health — {project_id}",
+            fields=fields if fields else [("Status", "No data available", False)],
+            followup=True,
+        )
+
+    @bot.tree.command(name="memory-fact-get", description="Get a temporal fact's current value")
+    @app_commands.describe(
+        key="Fact key (e.g. 'deploy_branch')",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_fact_get_command(
+        interaction: discord.Interaction,
+        key: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        result = await handler.execute(
+            "memory_fact_get", {"project_id": project_id, "key": key}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+
+        value = result.get("value")
+        if value is None:
+            await _send_info(
+                interaction,
+                f"Fact: {key}",
+                description=f"No value set for `{key}` in `{project_id}`.",
+            )
+        else:
+            await _send_success(
+                interaction,
+                f"Fact: {key}",
+                description=f"```\n{value}\n```",
+                fields=[("Project", f"`{project_id}`", True)],
+            )
+
+    @bot.tree.command(name="memory-fact-set", description="Set a temporal fact")
+    @app_commands.describe(
+        key="Fact key (e.g. 'deploy_branch')",
+        value="New value for the fact",
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_fact_set_command(
+        interaction: discord.Interaction,
+        key: str,
+        value: str,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        result = await handler.execute(
+            "memory_fact_set",
+            {"project_id": project_id, "key": key, "value": value},
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+
+        await _send_success(
+            interaction,
+            "Fact Updated",
+            description=f"`{key}` = `{value}` in `{project_id}`",
+            result=result,
+        )
+
+    @bot.tree.command(name="memory-fact-list", description="List temporal facts for a project")
+    @app_commands.describe(
+        project="Project ID (defaults to channel's project)",
+    )
+    async def memory_fact_list_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+        result = await handler.execute(
+            "memory_fact_list", {"project_id": project_id}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        facts = result.get("facts", [])
+        if not facts:
+            await _send_info(
+                interaction, "No Facts",
+                description=f"No temporal facts in `{project_id}`.",
+                followup=True,
+            )
+            return
+
+        desc_parts = []
+        for f in facts:
+            k = f.get("key", "?")
+            v = f.get("value", "?")
+            desc_parts.append(f"`{k}` = {v}")
+
+        description = "\n".join(desc_parts)
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+        embed = info_embed(f"Facts — {project_id} ({len(facts)})", description=description)
+        await interaction.followup.send(embed=embed)
+
+    # ===================================================================
     # SYSTEM CONTROL COMMANDS
     # ===================================================================
 
