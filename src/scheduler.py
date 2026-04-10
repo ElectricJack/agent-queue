@@ -386,8 +386,8 @@ class Scheduler:
                 ):
                     continue
 
-                # Pick highest priority ready task not yet assigned
-                # Also filter out tasks whose preferred workspace is locked
+                # Pick highest priority ready task not yet assigned.
+                # Also filter out tasks whose preferred workspace is locked.
                 available = [
                     t
                     for t in ready_by_project.get(project.id, [])
@@ -395,6 +395,30 @@ class Scheduler:
                 ]
                 if not available:
                     continue
+
+                # Apply agent affinity ordering (three tiers):
+                #
+                #  0 — Task prefers *this* agent: prioritize it.
+                #  1 — Task has no affinity, or its affinity agent is
+                #      busy/assigned: treat normally.
+                #  2 — Task prefers *another* idle agent: defer so that
+                #      agent can pick it up instead.
+                #
+                # Within each tier, the existing priority/id ordering
+                # (set by the pre-sort above) is preserved.
+                # This is advisory — if the only available tasks are in
+                # tier 2, the current agent still picks one up (no
+                # starvation).
+                idle_agent_ids = {a.id for a in idle_agents if a.id not in assigned_agents}
+
+                def _affinity_key(t: Task) -> tuple[int, int, str]:
+                    if t.affinity_agent_id == agent.id:
+                        return (0, t.priority, t.id)
+                    if t.affinity_agent_id and t.affinity_agent_id in idle_agent_ids:
+                        return (2, t.priority, t.id)
+                    return (1, t.priority, t.id)
+
+                available.sort(key=_affinity_key)
 
                 task = available[0]
                 actions.append(
