@@ -375,6 +375,15 @@ class MemoryConfig:
     consolidation_max_batch_size: int = 50  # max staging files per consolidation run
     consolidation_similarity_threshold: float = 0.7  # similarity threshold for memory clustering
     consolidation_cooldown_minutes: int = 30  # min minutes between auto-triggered consolidations
+    # Workspace spec/doc change detector (vault.md §4 — reference stubs)
+    spec_watcher_enabled: bool = True  # detect spec/doc changes in project workspaces
+    spec_watcher_poll_interval: int = 60  # seconds between workspace scans
+    spec_watcher_patterns: tuple[str, ...] = (
+        "specs/**/*.md",
+        "docs/specs/**/*.md",
+        "docs/**/*.md",
+    )
+    spec_watcher_max_excerpt_lines: int = 30  # lines of source to include in stub
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

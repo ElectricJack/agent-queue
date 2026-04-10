@@ -301,6 +301,7 @@ class Orchestrator:
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
         self.vault_watcher = None
+        self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
         # Semantic memory manager — optional integration with memsearch.
         # Initialized only when config.memory.enabled is True and the
@@ -1015,6 +1016,32 @@ class Orchestrator:
 
         register_readme_handlers(self.vault_watcher)
 
+        # Workspace spec/doc change detector (vault.md §4).
+        # Monitors project workspace directories for changes to spec and
+        # documentation files and generates reference stubs in the vault
+        # at vault/projects/{id}/references/spec-{name}.md.  Runs via
+        # tick-driven polling (rate-limited internally to once per
+        # spec_watcher_poll_interval seconds) called in run_one_cycle().
+        from src.workspace_spec_watcher import WorkspaceSpecWatcher
+
+        self.workspace_spec_watcher: WorkspaceSpecWatcher | None = None
+        if self.config.memory.spec_watcher_enabled:
+            self.workspace_spec_watcher = WorkspaceSpecWatcher(
+                db=self.db,
+                bus=self.bus,
+                git=self.git,
+                vault_projects_dir=self.config.vault_projects,
+                file_patterns=self.config.memory.spec_watcher_patterns,
+                poll_interval_seconds=self.config.memory.spec_watcher_poll_interval,
+                max_excerpt_lines=self.config.memory.spec_watcher_max_excerpt_lines,
+                enabled=True,
+            )
+            logger.info(
+                "WorkspaceSpecWatcher initialized (poll=%ds, patterns=%s)",
+                self.config.memory.spec_watcher_poll_interval,
+                self.config.memory.spec_watcher_patterns,
+            )
+
         # Initialize plugin registry (after DB, before hooks)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
@@ -1647,6 +1674,16 @@ class Orchestrator:
                     await self.vault_watcher.check()
                 except Exception as e:
                     logger.warning("VaultWatcher check failed: %s", e)
+
+            # 7d. Workspace spec/doc change detector (vault.md §4).
+            # Polls project workspace directories for spec/doc file changes
+            # and writes reference stubs to vault/projects/{id}/references/.
+            # Rate-limited internally to once per spec_watcher_poll_interval.
+            if self.workspace_spec_watcher:
+                try:
+                    await self.workspace_spec_watcher.check()
+                except Exception as e:
+                    logger.warning("WorkspaceSpecWatcher check failed: %s", e)
 
             # 8. Config hot-reload is handled by ConfigWatcher (background task).
 
