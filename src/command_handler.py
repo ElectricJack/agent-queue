@@ -5378,20 +5378,74 @@ feature work stuck on feature branches across multiple workspaces.
     # -----------------------------------------------------------------------
 
     async def _cmd_fire_hook(self, args: dict) -> dict:
-        """Internal: fire a single hook. Used by _cmd_fire_rule."""
-        hook_id = args["hook_id"]
-        hooks_engine = self.orchestrator.hooks
-        if not hooks_engine:
-            return {"error": "Hook engine is not enabled"}
-        try:
-            await hooks_engine.fire_hook(hook_id)
-            return {"fired": hook_id, "status": "running"}
-        except ValueError as e:
-            return {"error": str(e)}
+        """Deprecated: use fire_rule or compile_playbook instead."""
+        return {
+            "error": "fire_hook is deprecated.",
+            "_deprecated": (
+                "fire_hook is deprecated. "
+                "Use fire_rule for rule-based automation, "
+                "or compile_playbook for playbook-based automation."
+            ),
+            "replacements": ["fire_rule", "compile_playbook"],
+        }
 
-    # Hook CRUD commands removed — hooks are now an internal implementation
-    # detail managed through rules. See _cmd_fire_rule, _cmd_rule_runs,
-    # _cmd_toggle_rule, and _cmd_refresh_rules above.
+    async def _cmd_list_hooks(self, args: dict) -> dict:
+        """Deprecated: redirects to list_playbooks."""
+        result = await self._cmd_list_playbooks(args)
+        result["_deprecated"] = (
+            "list_hooks is deprecated — use list_playbooks instead. "
+            "Hooks are now an internal detail; playbooks are the replacement."
+        )
+        return result
+
+    async def _cmd_create_hook(self, args: dict) -> dict:
+        """Deprecated: use compile_playbook or save_rule instead."""
+        return {
+            "error": "create_hook is deprecated.",
+            "_deprecated": (
+                "Hooks can no longer be created directly. "
+                "Use compile_playbook for playbook-based automation, "
+                "or save_rule for rule-based automation."
+            ),
+            "replacements": ["compile_playbook", "save_rule"],
+        }
+
+    async def _cmd_edit_hook(self, args: dict) -> dict:
+        """Deprecated: use compile_playbook or save_rule instead."""
+        return {
+            "error": "edit_hook is deprecated.",
+            "_deprecated": (
+                "Hooks can no longer be edited directly. "
+                "Use compile_playbook for playbook-based automation, "
+                "or save_rule for rule-based automation."
+            ),
+            "replacements": ["compile_playbook", "save_rule"],
+        }
+
+    async def _cmd_delete_hook(self, args: dict) -> dict:
+        """Deprecated: use delete_rule instead."""
+        return {
+            "error": "delete_hook is deprecated.",
+            "_deprecated": (
+                "Hooks can no longer be deleted directly. "
+                "Use delete_rule to remove rule-based automation."
+            ),
+            "replacements": ["delete_rule"],
+        }
+
+    async def _cmd_list_hook_runs(self, args: dict) -> dict:
+        """Deprecated: redirects to list_playbook_runs."""
+        result = await self._cmd_list_playbook_runs(args)
+        result["_deprecated"] = (
+            "list_hook_runs is deprecated — use list_playbook_runs instead."
+        )
+        return result
+
+    # Hook CRUD commands have been replaced by playbook and rule equivalents.
+    # The redirects above ensure backward compatibility with deprecation notices.
+    # See _cmd_fire_rule, _cmd_rule_runs, _cmd_toggle_rule, _cmd_refresh_rules
+    # for rule-based automation. See _cmd_compile_playbook, _cmd_list_playbooks,
+    # _cmd_list_playbook_runs for playbook-based automation.
 
     # -----------------------------------------------------------------------
     # Rule commands -- persistent autonomous behaviors stored as markdown.
@@ -5503,8 +5557,12 @@ feature work stuck on feature branches across multiple workspaces.
         return loaded
 
     async def _cmd_refresh_hooks(self, args: dict) -> dict:
-        """Backward compat alias — delegates to refresh_rules."""
-        return await self._cmd_refresh_rules(args)
+        """Deprecated: redirects to refresh_rules."""
+        result = await self._cmd_refresh_rules(args)
+        result["_deprecated"] = (
+            "refresh_hooks is deprecated — use refresh_rules instead."
+        )
+        return result
 
     async def _cmd_refresh_rules(self, args: dict) -> dict:
         """Reconcile hooks from current rule files.

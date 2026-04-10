@@ -1958,10 +1958,10 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "refresh_hooks",
         "description": (
-            "Force reconciliation of all rules and their hooks. "
-            "Re-reads all rule files, regenerates hooks for active rules, "
-            "and cleans up orphaned hooks. Normally not needed — the file "
-            "watcher auto-reconciles when rule files change on disk."
+            "DEPRECATED — use refresh_rules instead. "
+            "Redirects to refresh_rules. Force reconciliation of all rules "
+            "and their hooks. Re-reads all rule files, regenerates hooks "
+            "for active rules, and cleans up orphaned hooks."
         ),
         "input_schema": {
             "type": "object",
@@ -2933,10 +2933,10 @@ class ToolRegistry:
             {
                 "name": "refresh_hooks",
                 "description": (
-                    "Force reconciliation of all rules and their hooks. "
-                    "Re-reads all rule files, regenerates hooks for active rules, "
-                    "and cleans up orphaned hooks. Normally not needed — the file "
-                    "watcher auto-reconciles when rule files change on disk."
+                    "DEPRECATED — use refresh_rules instead. "
+                    "Redirects to refresh_rules. Force reconciliation of all rules "
+                    "and their hooks. Re-reads all rule files, regenerates hooks "
+                    "for active rules, and cleans up orphaned hooks."
                 ),
                 "input_schema": {
                     "type": "object",
