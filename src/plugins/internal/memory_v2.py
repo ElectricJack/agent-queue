@@ -774,9 +774,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "chunk_hash": {
                     "type": "string",
-                    "description": (
-                        "The chunk_hash of the source memory entry to promote."
-                    ),
+                    "description": ("The chunk_hash of the source memory entry to promote."),
                 },
                 "source_scope": {
                     "type": "string",
@@ -1881,17 +1879,42 @@ class MemoryV2Plugin(InternalPlugin):
         source_playbook: str | None = None,
         scope: str | None,
     ) -> dict:
-        """Handle related dedup (similarity 0.8–0.95) — merge via LLM.
+        """Handle related dedup (similarity 0.8–0.95) — merge or contest.
 
-        Invokes the LLM to combine old + new content, then updates the
-        existing entry with the merged result.  If the merged content
-        exceeds ~200 tokens, a summary is generated per spec §9 —
-        the summary is embedded/indexed and the full merged content
-        is preserved as ``original``.
+        First checks whether the new content *contradicts* the existing
+        memory (spec §7 Q2 — contradiction detection).  If a contradiction
+        is detected, both memories are tagged ``#contested`` and saved as
+        separate entries so a human can review them.
+
+        If no contradiction, proceeds with the normal merge flow: invokes
+        the LLM to combine old + new content, then updates the existing
+        entry with the merged result.  If the merged content exceeds
+        ~200 tokens, a summary is generated per spec §9.
         """
         chunk_hash = existing.get("chunk_hash", "")
         old_content = existing.get("content", "")
         old_tags = self._decode_tags(existing.get("tags", "[]"))
+
+        # --- Contradiction detection (spec §7 Q2) ---
+        # Before merging, check if the new content contradicts the existing
+        # memory.  Contradictory memories are tagged #contested and kept
+        # separate for human review.
+        is_contradiction = await self._detect_contradiction(old_content, content)
+
+        if is_contradiction:
+            return await self._handle_contradiction(
+                project_id=project_id,
+                content=content,
+                existing=existing,
+                similarity=similarity,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                source_playbook=source_playbook,
+                scope=scope,
+            )
+
+        # --- Normal merge flow (no contradiction) ---
 
         # Merge tags (preserve both, deduplicate)
         merged_tags = list(dict.fromkeys(old_tags + tags))
@@ -1943,6 +1966,102 @@ class MemoryV2Plugin(InternalPlugin):
             "has_summary": summary is not None,
             **result,
         }
+
+    async def _handle_contradiction(
+        self,
+        *,
+        project_id: str,
+        content: str,
+        existing: dict,
+        similarity: float,
+        tags: list[str],
+        topic: str | None,
+        source_task: str | None,
+        source_playbook: str | None = None,
+        scope: str | None,
+    ) -> dict:
+        """Handle contradictory memories — tag as ``#contested`` and keep both.
+
+        Per spec §7 Q2 (Memory conflicts between agents): when two memories
+        contradict each other, both are tagged ``#contested`` and the new
+        memory is saved as a separate entry.  This preserves both viewpoints
+        for human review.
+
+        The existing memory's tags are updated to include ``contested``.
+        The new memory is created with ``contested`` in its tags.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.
+        content:
+            The new (contradictory) content.
+        existing:
+            The existing memory entry that was matched.
+        similarity:
+            Similarity score between old and new.
+        tags:
+            Tags for the new memory.
+        topic:
+            Topic for the new memory.
+        source_task:
+            Source task ID.
+        source_playbook:
+            Source playbook name.
+        scope:
+            Memory scope.
+
+        Returns
+        -------
+        dict
+            Result with ``action: "contested"``, details of both memories.
+        """
+        chunk_hash = existing.get("chunk_hash", "")
+        old_tags = self._decode_tags(existing.get("tags", "[]"))
+
+        # --- Tag the existing memory as contested ---
+        if chunk_hash and "contested" not in old_tags:
+            contested_old_tags = list(dict.fromkeys(old_tags + ["contested"]))
+            try:
+                await self._service.update_document_content(
+                    project_id,
+                    chunk_hash,
+                    existing.get("content", ""),
+                    tags=contested_old_tags,
+                    source_task=source_task,
+                    scope=scope,
+                )
+                self._log.info(
+                    "Tagged existing memory %s as #contested (contradiction detected)",
+                    chunk_hash,
+                )
+            except Exception:
+                self._log.warning(
+                    "Failed to tag existing memory %s as #contested",
+                    chunk_hash,
+                    exc_info=True,
+                )
+
+        # --- Create the new memory as a separate contested entry ---
+        contested_new_tags = list(dict.fromkeys(tags + ["contested"]))
+
+        result = await self._handle_create_new(
+            project_id=project_id,
+            content=content,
+            tags=contested_new_tags,
+            topic=topic,
+            source_task=source_task,
+            source_playbook=source_playbook,
+            scope=scope,
+        )
+
+        # Override action to indicate this was a contradiction, not a fresh create
+        result["action"] = "contested"
+        result["contradiction"] = True
+        result["contested_with"] = chunk_hash
+        result["similarity_score"] = round(similarity, 4)
+        result["existing_content_preview"] = existing.get("content", "")[:200]
+        return result
 
     async def _handle_create_new(
         self,
@@ -2082,6 +2201,74 @@ class MemoryV2Plugin(InternalPlugin):
                 truncated.append(line)
                 char_count += len(line)
             return "\n".join(truncated)
+
+    # -----------------------------------------------------------------
+    # Contradiction detection (spec §7 Q2)
+    # -----------------------------------------------------------------
+
+    async def _detect_contradiction(
+        self,
+        existing_content: str,
+        new_content: str,
+    ) -> bool:
+        """Detect whether two memories contradict each other.
+
+        Per spec §7 Q2 (self-improvement.md): two agents might write
+        contradictory insights.  This method uses a lightweight LLM call
+        to determine if the new content contradicts the existing content.
+
+        Returns ``True`` if a contradiction is detected, ``False`` if the
+        memories are compatible (complementary, overlapping, or unrelated).
+
+        Falls back to ``False`` (no contradiction) if the LLM is
+        unavailable — this is a conservative default that preserves the
+        existing merge behavior when detection is not possible.
+
+        Parameters
+        ----------
+        existing_content:
+            The content of the existing memory entry.
+        new_content:
+            The content of the incoming memory entry.
+
+        Returns
+        -------
+        bool
+            ``True`` if the memories contradict each other.
+        """
+        prompt = (
+            "You are a contradiction detector for a developer knowledge base.\n\n"
+            "EXISTING MEMORY:\n"
+            f"{existing_content[:1500]}\n\n"
+            "NEW MEMORY:\n"
+            f"{new_content[:1500]}\n\n"
+            "INSTRUCTIONS:\n"
+            "Determine if these two memories CONTRADICT each other. "
+            "A contradiction means they make opposing or mutually exclusive claims "
+            "about the same topic — for example:\n"
+            '- "Use approach A" vs "Never use approach A"\n'
+            '- "Feature X is enabled" vs "Feature X is disabled"\n'
+            '- "The default timeout is 30s" vs "The default timeout is 60s"\n\n'
+            "The following are NOT contradictions:\n"
+            "- One memory adds detail the other lacks (complementary)\n"
+            "- Both say similar things in different words (overlapping)\n"
+            "- They discuss different aspects of the same topic (orthogonal)\n"
+            "- One is a more recent update that supersedes the other (evolution)\n\n"
+            "Output ONLY one word: CONTRADICTION or COMPATIBLE\n"
+        )
+        try:
+            raw = await self._ctx.invoke_llm(
+                prompt,
+                model="claude-haiku-4-20250514",
+            )
+            result = raw.strip().upper()
+            is_contradiction = "CONTRADICTION" in result
+            if is_contradiction:
+                self._log.info("Contradiction detected between existing and new memory")
+            return is_contradiction
+        except Exception:
+            self._log.debug("LLM contradiction detection unavailable, assuming compatible")
+            return False
 
     # -----------------------------------------------------------------
     # Command handlers — Semantic Search
@@ -2770,9 +2957,7 @@ class MemoryV2Plugin(InternalPlugin):
         scope = args.get("scope")
 
         try:
-            result = await self._service.delete_document(
-                project_id, chunk_hash, scope=scope
-            )
+            result = await self._service.delete_document(project_id, chunk_hash, scope=scope)
             return {"success": True, "action": "deleted", **result}
         except ValueError as e:
             return {"error": str(e)}
@@ -2873,14 +3058,10 @@ class MemoryV2Plugin(InternalPlugin):
             source_deleted = False
             if delete_source and result.get("success"):
                 try:
-                    await self._service.delete_document(
-                        project_id, chunk_hash, scope=source_scope
-                    )
+                    await self._service.delete_document(project_id, chunk_hash, scope=source_scope)
                     source_deleted = True
                 except Exception as e:
-                    self._log.warning(
-                        "Failed to delete source after promote: %s", e
-                    )
+                    self._log.warning("Failed to delete source after promote: %s", e)
 
             return {
                 "success": True,

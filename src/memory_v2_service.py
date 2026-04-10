@@ -1233,9 +1233,7 @@ class MemoryV2Service:
                     )
 
                 # Update retrieval_count (increment by 1)
-                count_match = re.search(
-                    r"^retrieval_count:\s*(\d+)$", text, flags=re.MULTILINE
-                )
+                count_match = re.search(r"^retrieval_count:\s*(\d+)$", text, flags=re.MULTILINE)
                 if count_match:
                     old_count = int(count_match.group(1))
                     text = text.replace(
@@ -1254,9 +1252,7 @@ class MemoryV2Service:
 
                 filepath.write_text(text, encoding="utf-8")
             except Exception:
-                logger.debug(
-                    "Failed to update retrieval stats for %s", path_str, exc_info=True
-                )
+                logger.debug("Failed to update retrieval stats for %s", path_str, exc_info=True)
 
     async def save_document(
         self,
@@ -1636,9 +1632,7 @@ class MemoryV2Service:
             return
         text = filepath.read_text(encoding="utf-8")
         if re.search(r"^topic:\s*", text, flags=re.MULTILINE):
-            text = re.sub(
-                r"^topic:.*$", f"topic: {topic}", text, count=1, flags=re.MULTILINE
-            )
+            text = re.sub(r"^topic:.*$", f"topic: {topic}", text, count=1, flags=re.MULTILINE)
         else:
             # Add topic after tags line
             text = re.sub(
@@ -1755,6 +1749,9 @@ class MemoryV2Service:
             doc_task, kv_task, temporal_task
         )
 
+        # Count contested memories (tagged #contested) — per spec §6/§7 Q2.
+        contested_count = await self.count_by_tag(project_id, "contested", scope=scope)
+
         return {
             "collection": coll_name,
             "scope": mem_scope.value,
@@ -1763,9 +1760,54 @@ class MemoryV2Service:
             "documents": len(doc_results),
             "kv_entries": len(kv_results),
             "temporal_entries": len(temporal_results),
+            "contested_memories": contested_count,
             "embedding_model": model,
             "needs_reindex": store.needs_reindex,
         }
+
+    async def count_by_tag(
+        self,
+        project_id: str,
+        tag: str,
+        *,
+        scope: str | None = None,
+    ) -> int:
+        """Count entries in a scoped collection that contain a specific tag.
+
+        Uses a scalar query on the ``tags`` JSON field.  Since tags are
+        stored as a JSON-encoded array string, the filter uses ``like``
+        to match the tag within the JSON text.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier (determines default scope).
+        tag:
+            Tag to search for (e.g. ``"contested"``).
+        scope:
+            Explicit scope override.
+
+        Returns
+        -------
+        int
+            Number of entries containing the specified tag.
+        """
+        if not self.available:
+            return 0
+
+        store = self._get_store(project_id, scope)
+        # Tags are stored as JSON array strings, e.g. '["insight", "contested"]'.
+        # Use a ``like`` filter to match entries containing the tag.
+        from memsearch.store import _escape_filter_value
+
+        escaped = _escape_filter_value(tag)
+        filter_expr = f'tags like "%{escaped}%"'
+        try:
+            results = await asyncio.to_thread(store.query, filter_expr=filter_expr)
+            return len(results)
+        except Exception:
+            logger.debug("count_by_tag query failed for tag=%s", tag, exc_info=True)
+            return 0
 
     # ------------------------------------------------------------------
     # Health (spec §6 — Memory Health View)
