@@ -22,7 +22,7 @@ from src.database.tables import (
     token_ledger,
     workspaces,
 )
-from src.models import Task, TaskStatus, TaskType, VerificationType
+from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 
 
 class ArchiveQueryMixin:
@@ -71,6 +71,10 @@ class ArchiveQueryMixin:
                     auto_approve_plan=int(task.auto_approve_plan),
                     skip_verification=int(task.skip_verification),
                     workflow_id=task.workflow_id,
+                    agent_type=task.agent_type,
+                    affinity_agent_id=task.affinity_agent_id,
+                    affinity_reason=task.affinity_reason,
+                    workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,
@@ -214,6 +218,14 @@ class ArchiveQueryMixin:
             is_plan_subtask=archived["is_plan_subtask"],
             task_type=TaskType(archived["task_type"]) if archived["task_type"] else None,
             workflow_id=archived.get("workflow_id"),
+            agent_type=archived.get("agent_type"),
+            affinity_agent_id=archived.get("affinity_agent_id"),
+            affinity_reason=archived.get("affinity_reason"),
+            workspace_mode=(
+                WorkspaceMode(archived["workspace_mode"])
+                if archived.get("workspace_mode")
+                else None
+            ),
         )
         await self.create_task(task)
         async with self._engine.begin() as conn:
@@ -268,6 +280,10 @@ class ArchiveQueryMixin:
             "is_plan_subtask": bool(row.get("is_plan_subtask", 0)),
             "task_type": row.get("task_type"),
             "workflow_id": row.get("workflow_id"),
+            "agent_type": row.get("agent_type"),
+            "affinity_agent_id": row.get("affinity_agent_id"),
+            "affinity_reason": row.get("affinity_reason"),
+            "workspace_mode": row.get("workspace_mode"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

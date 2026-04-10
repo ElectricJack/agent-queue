@@ -48,7 +48,9 @@ from src.models import (
     TaskStatus,
     TaskType,
     VerificationType,
+    WorkspaceMode,
     TASK_TYPE_VALUES,
+    WORKSPACE_MODE_VALUES,
     Workspace,
 )
 from src.orchestrator import Orchestrator
@@ -2412,6 +2414,43 @@ class CommandHandler:
                     return {"error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
+        # Validate optional agent_type (free-form string, just ensure non-empty if given)
+        agent_type = args.get("agent_type")
+        if agent_type is not None and not isinstance(agent_type, str):
+            return {"error": "agent_type must be a string"}
+        if agent_type is not None:
+            agent_type = agent_type.strip()
+            if not agent_type:
+                return {"error": "agent_type cannot be empty"}
+
+        # Validate optional affinity_agent_id
+        affinity_agent_id = args.get("affinity_agent_id")
+        if affinity_agent_id:
+            agent = await self.db.get_agent(affinity_agent_id)
+            if not agent:
+                return {"error": f"Agent '{affinity_agent_id}' not found for affinity"}
+
+        # Validate optional affinity_reason
+        affinity_reason = args.get("affinity_reason")
+        valid_affinity_reasons = {"context", "workspace", "type"}
+        if affinity_reason and affinity_reason not in valid_affinity_reasons:
+            return {
+                "error": f"Invalid affinity_reason '{affinity_reason}'. "
+                f"Allowed: {', '.join(sorted(valid_affinity_reasons))}"
+            }
+
+        # Validate optional workspace_mode
+        raw_workspace_mode = args.get("workspace_mode")
+        workspace_mode: WorkspaceMode | None = None
+        if raw_workspace_mode:
+            if raw_workspace_mode in WORKSPACE_MODE_VALUES:
+                workspace_mode = WorkspaceMode(raw_workspace_mode)
+            else:
+                return {
+                    "error": f"Invalid workspace_mode '{raw_workspace_mode}'. "
+                    f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
+                }
+
         initial_status = (
             TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
         )
@@ -2433,6 +2472,10 @@ class CommandHandler:
             auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             workflow_id=workflow_id,
+            agent_type=agent_type,
+            affinity_agent_id=affinity_agent_id,
+            affinity_reason=affinity_reason,
+            workspace_mode=workspace_mode,
         )
         await self.db.create_task(task)
 
@@ -2468,6 +2511,14 @@ class CommandHandler:
             result["skip_verification"] = True
         if workflow_id:
             result["workflow_id"] = workflow_id
+        if agent_type:
+            result["agent_type"] = agent_type
+        if affinity_agent_id:
+            result["affinity_agent_id"] = affinity_agent_id
+        if affinity_reason:
+            result["affinity_reason"] = affinity_reason
+        if workspace_mode:
+            result["workspace_mode"] = workspace_mode.value
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),
@@ -2512,6 +2563,10 @@ class CommandHandler:
             "auto_approve_plan": task.auto_approve_plan,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
+            "agent_type": task.agent_type,
+            "affinity_agent_id": task.affinity_agent_id,
+            "affinity_reason": task.affinity_reason,
+            "workspace_mode": task.workspace_mode.value if task.workspace_mode else None,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -2777,6 +2832,40 @@ class CommandHandler:
             updates["skip_verification"] = bool(args["skip_verification"])
         if "workflow_id" in args:
             updates["workflow_id"] = args["workflow_id"]  # None clears the workflow
+        if "agent_type" in args:
+            val = args["agent_type"]
+            if val is not None:
+                val = str(val).strip()
+                if not val:
+                    return {"error": "agent_type cannot be empty (use null to clear)"}
+            updates["agent_type"] = val  # None clears the agent_type
+        if "affinity_agent_id" in args:
+            val = args["affinity_agent_id"]
+            if val is not None:
+                agent = await self.db.get_agent(val)
+                if not agent:
+                    return {"error": f"Agent '{val}' not found for affinity"}
+            updates["affinity_agent_id"] = val  # None clears affinity
+        if "affinity_reason" in args:
+            val = args["affinity_reason"]
+            valid_reasons = {"context", "workspace", "type"}
+            if val is not None and val not in valid_reasons:
+                return {
+                    "error": f"Invalid affinity_reason '{val}'. "
+                    f"Allowed: {', '.join(sorted(valid_reasons))}"
+                }
+            updates["affinity_reason"] = val  # None clears affinity_reason
+        if "workspace_mode" in args:
+            val = args["workspace_mode"]
+            if val is None:
+                updates["workspace_mode"] = None
+            elif val in WORKSPACE_MODE_VALUES:
+                updates["workspace_mode"] = WorkspaceMode(val)
+            else:
+                return {
+                    "error": f"Invalid workspace_mode '{val}'. "
+                    f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
+                }
 
         if updates:
             await self.db.update_task(args["task_id"], **updates)
@@ -2790,7 +2879,8 @@ class CommandHandler:
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
-                    "auto_approve_plan, or skip_verification."
+                    "auto_approve_plan, skip_verification, agent_type, affinity_agent_id, "
+                    "affinity_reason, or workspace_mode."
                 )
             }
 

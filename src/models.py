@@ -109,6 +109,26 @@ class TaskType(Enum):
 TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
 
 
+class WorkspaceMode(Enum):
+    """Lock mode for workspace access during task execution.
+
+    Controls how agents share (or don't share) workspace resources.
+    The coordination playbook specifies this when creating tasks.
+
+    See docs/specs/design/agent-coordination.md §7 (Workspace Strategy).
+    """
+
+    EXCLUSIVE = "exclusive"  # One agent, one workspace (current default)
+    BRANCH_ISOLATED = "branch-isolated"  # Multiple agents, same repo, different branches
+    DIRECTORY_ISOLATED = (
+        "directory-isolated"  # Multiple agents, same branch, different dirs (future)
+    )
+
+
+# Convenience set for validation without constructing enum members.
+WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
+
+
 class AgentState(Enum):
     """Tracks the runtime state of an agent process from the orchestrator's perspective.
 
@@ -260,6 +280,10 @@ class Task:
     auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
     skip_verification: bool = False  # if True, skip git verification on completion
     workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
+    agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")
+    affinity_agent_id: str | None = None  # preferred agent ID for context continuity
+    affinity_reason: str | None = None  # why: "context", "workspace", "type"
+    workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
 
 
 @dataclass

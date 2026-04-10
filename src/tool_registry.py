@@ -650,6 +650,41 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                     "default": False,
                 },
+                "agent_type": {
+                    "type": "string",
+                    "description": (
+                        "Type of agent needed for this task (e.g. 'coding', "
+                        "'code-review', 'qa'). Used by coordination playbooks "
+                        "to match tasks with appropriately-typed agents."
+                    ),
+                },
+                "affinity_agent_id": {
+                    "type": "string",
+                    "description": (
+                        "Preferred agent ID for context continuity. The scheduler "
+                        "will prefer this agent when assigning the task, but will "
+                        "fall back to any available agent if the preferred one is busy."
+                    ),
+                },
+                "affinity_reason": {
+                    "type": "string",
+                    "enum": ["context", "workspace", "type"],
+                    "description": (
+                        "Why this agent is preferred: 'context' (has relevant "
+                        "conversation history), 'workspace' (already has the "
+                        "workspace locked), 'type' (matches the required agent type)."
+                    ),
+                },
+                "workspace_mode": {
+                    "type": "string",
+                    "enum": ["exclusive", "branch-isolated", "directory-isolated"],
+                    "description": (
+                        "Workspace lock mode. 'exclusive' (default): one agent per "
+                        "workspace. 'branch-isolated': multiple agents on separate "
+                        "branches in the same repo. 'directory-isolated': multiple "
+                        "agents on separate directories (future)."
+                    ),
+                },
             },
             "required": ["title"],
         },
@@ -817,9 +852,11 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
             "status, max_retries, verification_type, profile_id, auto_approve_plan, "
-            "or skip_verification. Use this "
+            "skip_verification, agent_type, affinity_agent_id, affinity_reason, "
+            "or workspace_mode. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
-            "(admin), assign a profile, or adjust retry/verification settings."
+            "(admin), assign a profile, adjust retry/verification settings, or set coordination "
+            "parameters."
         ),
         "input_schema": {
             "type": "object",
@@ -869,6 +906,29 @@ _ALL_TOOL_DEFINITIONS = [
                 "skip_verification": {
                     "type": "boolean",
                     "description": "If true, skip git verification on task completion (optional)",
+                },
+                "agent_type": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Type of agent needed (e.g. 'coding', 'code-review', 'qa'). "
+                        "Set to null to clear (optional)"
+                    ),
+                },
+                "affinity_agent_id": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Preferred agent ID for context continuity. Set to null to clear (optional)"
+                    ),
+                },
+                "affinity_reason": {
+                    "type": ["string", "null"],
+                    "enum": ["context", "workspace", "type", None],
+                    "description": ("Why this agent is preferred. Set to null to clear (optional)"),
+                },
+                "workspace_mode": {
+                    "type": ["string", "null"],
+                    "enum": ["exclusive", "branch-isolated", "directory-isolated", None],
+                    "description": ("Workspace lock mode. Set to null to clear (optional)"),
                 },
             },
             "required": ["task_id"],
