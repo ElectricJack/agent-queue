@@ -1511,3 +1511,283 @@ class TestSourceHashPersistence:
         assert result.success is True
         assert result.skipped is True
         assert enricher2.total_skipped == 1
+
+
+# ---------------------------------------------------------------------------
+# Stale stub detection tests (6.3.6d)
+# ---------------------------------------------------------------------------
+
+
+class TestStaleStubDetection:
+    """Test stale stub detection when source is manually edited.
+
+    Corresponds to Roadmap 6.3.6(d): manually editing source file without
+    triggering watcher flags stub as potentially stale (hash mismatch
+    detected by the enricher).
+    """
+
+    @pytest.mark.asyncio
+    async def test_manual_source_edit_detected_as_stale(self, enricher, vault_dir, tmp_path):
+        """Editing source file on disk → hash mismatch → stub re-enriched (not skipped)."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        original_hash = compute_content_hash(source_path)
+        _create_enriched_stub_file(vault_dir, project_id, stub_name, source_hash=original_hash)
+
+        # Manually edit the source file (simulating edit outside the watcher flow)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec v2\n\n## Updated Content\nCompletely rewritten.\n")
+
+        # Verify hash actually changed
+        new_hash = compute_content_hash(source_path)
+        assert new_hash != original_hash
+
+        # Call enrich_stub WITHOUT providing content_hash — enricher must compute it
+        result = await enricher.enrich_stub(
+            project_id=project_id,
+            abs_path=source_path,
+            stub_name=stub_name,
+        )
+
+        # Should NOT be skipped — stale stub detected via hash mismatch
+        assert result.skipped is False
+        assert result.success is True
+        assert enricher.total_enriched == 1
+        assert enricher.total_skipped == 0
+        # LLM SHOULD have been called to re-enrich
+        enricher._provider.create_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_check_skip_returns_none_on_stale_hash(self, enricher, vault_dir, tmp_path):
+        """_check_skip_enrichment returns None when source was manually edited."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        original_hash = compute_content_hash(source_path)
+        stub_path = _create_enriched_stub_file(
+            vault_dir, project_id, stub_name, source_hash=original_hash
+        )
+
+        # Manually edit source (simulating external edit without watcher)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Completely New Content\n\nThis file was manually changed.\n")
+
+        # _check_skip_enrichment should detect the hash mismatch
+        result = enricher._check_skip_enrichment(
+            abs_path=source_path,
+            stub_path=stub_path,
+            content_hash="",  # Force enricher to compute from file
+            project_id=project_id,
+            stub_name=stub_name,
+        )
+
+        # None means "do not skip — proceed with enrichment" (stub is stale)
+        assert result is None
+        assert enricher.total_skipped == 0
+
+    @pytest.mark.asyncio
+    async def test_stale_detection_in_event_flow(self, enricher, vault_dir, tmp_path):
+        """Event handler detects stale stub when source changed between events."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        original_hash = compute_content_hash(source_path)
+        _create_enriched_stub_file(vault_dir, project_id, stub_name, source_hash=original_hash)
+
+        # Source was edited; watcher detected the change and sends event with new hash
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec v2\n\nRewritten content.\n")
+        new_hash = compute_content_hash(source_path)
+        assert new_hash != original_hash
+
+        event_data = {
+            "_event_type": "workspace.spec.changed",
+            "project_id": project_id,
+            "workspace_path": str(tmp_path / "workspace"),
+            "rel_path": "specs/orchestrator.md",
+            "abs_path": source_path,
+            "operation": "modified",
+            "content_hash": new_hash,
+            "stub_name": stub_name,
+        }
+
+        await enricher._on_spec_changed(event_data)
+
+        # Stale detected → LLM called for re-enrichment
+        assert enricher.total_enriched == 1
+        assert enricher.total_skipped == 0
+        enricher._provider.create_message.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Deleted source / orphaned stub tests (6.3.6f)
+# ---------------------------------------------------------------------------
+
+
+class TestDeletedSourceOrphanedStub:
+    """Test stub orphan handling when source file is deleted.
+
+    Corresponds to Roadmap 6.3.6(f): deleting source file flags
+    corresponding stub as orphaned.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deleted_source_fails_enrichment(self, enricher, vault_dir, tmp_path):
+        """Enrichment fails gracefully when source file has been deleted."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        real_hash = compute_content_hash(source_path)
+        _create_enriched_stub_file(vault_dir, project_id, stub_name, source_hash=real_hash)
+
+        # Delete the source file (simulating user removing the spec)
+        os.remove(source_path)
+
+        result = await enricher.enrich_stub(
+            project_id=project_id,
+            abs_path=source_path,
+            stub_name=stub_name,
+        )
+
+        # Should NOT be skipped — hash can't be computed for deleted file
+        assert result.skipped is False
+        # Enrichment fails because source can't be read
+        assert result.success is False
+        assert "Could not read source file" in result.error
+        assert enricher.total_failed == 1
+
+    @pytest.mark.asyncio
+    async def test_deleted_source_hash_returns_empty(self, enricher, vault_dir, tmp_path):
+        """compute_content_hash returns '' for deleted file; skip check proceeds."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        real_hash = compute_content_hash(source_path)
+        stub_path = _create_enriched_stub_file(
+            vault_dir, project_id, stub_name, source_hash=real_hash
+        )
+
+        # Delete the source file
+        os.remove(source_path)
+
+        # Hash computation should return empty for non-existent file
+        new_hash = compute_content_hash(source_path)
+        assert new_hash == ""
+
+        # _check_skip_enrichment should NOT skip (can't verify source hash)
+        result = enricher._check_skip_enrichment(
+            abs_path=source_path,
+            stub_path=stub_path,
+            content_hash="",
+            project_id=project_id,
+            stub_name=stub_name,
+        )
+
+        # None = proceed with enrichment (can't confirm stub is current)
+        assert result is None
+        assert enricher.total_skipped == 0
+
+    @pytest.mark.asyncio
+    async def test_deleted_event_ignored_by_enricher(self, enricher, vault_dir, tmp_path):
+        """Enricher ignores 'deleted' events — watcher handles stub removal."""
+        project_id = "test-project"
+        stub_name = "spec-orchestrator.md"
+        source_path = _create_source_file(tmp_path)
+
+        from src.workspace_spec_watcher import compute_content_hash
+
+        real_hash = compute_content_hash(source_path)
+        _create_enriched_stub_file(vault_dir, project_id, stub_name, source_hash=real_hash)
+
+        event_data = {
+            "_event_type": "workspace.spec.changed",
+            "project_id": project_id,
+            "workspace_path": str(tmp_path / "workspace"),
+            "rel_path": "specs/orchestrator.md",
+            "abs_path": source_path,
+            "operation": "deleted",
+            "content_hash": "",
+            "stub_name": stub_name,
+        }
+
+        await enricher._on_spec_changed(event_data)
+
+        # Enricher should not attempt to enrich deleted files
+        assert enricher.total_enriched == 0
+        assert enricher.total_skipped == 0
+        assert enricher.total_failed == 0
+        enricher._provider.create_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_watcher_removes_stub_on_source_deletion(self, tmp_path):
+        """WorkspaceSpecWatcher removes the stub file when source is deleted."""
+        from src.workspace_spec_watcher import SpecChange, WorkspaceSpecWatcher, compute_content_hash
+
+        # Setup vault and watcher
+        vault_dir = str(tmp_path / "vault" / "projects")
+        os.makedirs(vault_dir, exist_ok=True)
+
+        fake_bus = MagicMock()
+        fake_bus.emit = AsyncMock()
+        fake_db = MagicMock()
+        fake_git = MagicMock()
+
+        watcher = WorkspaceSpecWatcher(
+            db=fake_db,
+            bus=fake_bus,
+            git=fake_git,
+            vault_projects_dir=vault_dir,
+        )
+
+        # Create workspace with a spec file
+        ws = str(tmp_path / "workspace")
+        os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
+        spec_file = os.path.join(ws, "specs", "orchestrator.md")
+        with open(spec_file, "w", encoding="utf-8") as f:
+            f.write("# Orchestrator Spec\n\nContent here.\n")
+
+        # Write a stub via watcher
+        change = SpecChange(
+            project_id="test-project",
+            workspace_path=ws,
+            rel_path="specs/orchestrator.md",
+            abs_path=spec_file,
+            operation="created",
+            content_hash=compute_content_hash(spec_file),
+        )
+        stub_path = watcher._write_stub(change)
+        assert stub_path is not None
+        assert os.path.isfile(stub_path)
+
+        # Delete the source file
+        os.remove(spec_file)
+
+        # Watcher detects deletion and removes the orphaned stub
+        delete_change = SpecChange(
+            project_id="test-project",
+            workspace_path=ws,
+            rel_path="specs/orchestrator.md",
+            abs_path=spec_file,
+            operation="deleted",
+            content_hash="",
+        )
+        deleted = watcher._delete_stub(delete_change)
+        assert deleted is True
+        assert not os.path.isfile(stub_path)
+        assert watcher.total_stubs_deleted == 1
