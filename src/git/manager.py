@@ -69,6 +69,7 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -97,6 +98,31 @@ class GitManager:
     # on large repos so we allow a generous window, but never infinite.
     _GIT_TIMEOUT = 120
 
+    # Git subcommands that modify shared repository state (pack files,
+    # object store) and must be serialized when multiple worktrees share
+    # the same underlying repository.  ``pull`` includes an implicit
+    # ``fetch`` and therefore also needs serialization.
+    _SERIALIZED_SUBCOMMANDS: frozenset[str] = frozenset({"fetch", "gc", "pull"})
+
+    def __init__(self) -> None:
+        # Optional lock provider for serializing shared git operations
+        # across branch-isolated worktrees.  When set, ``_arun`` acquires
+        # the returned lock before executing serialized subcommands.
+        self._lock_provider: Callable[[str], asyncio.Lock | None] | None = None
+
+    def set_lock_provider(
+        self,
+        provider: Callable[[str], asyncio.Lock | None] | None,
+    ) -> None:
+        """Register a callback that resolves a workspace path to a shared lock.
+
+        The provider receives the ``cwd`` argument from ``_arun`` and should
+        return an :class:`asyncio.Lock` if the path belongs to a shared
+        repository (e.g. a branch-isolated workspace or one of its
+        worktrees), or ``None`` if no serialization is needed.
+        """
+        self._lock_provider = provider
+
     def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str:
         try:
             result = subprocess.run(
@@ -123,6 +149,32 @@ class GitManager:
 
         Does not block the event loop — suitable for use from the orchestrator
         and Discord bot coroutines.
+
+        When a :meth:`set_lock_provider` callback is registered and the git
+        subcommand is in :attr:`_SERIALIZED_SUBCOMMANDS`, the returned lock
+        is acquired before the subprocess executes.  This serializes shared
+        operations (fetch, gc, pull) across branch-isolated worktrees that
+        share the same underlying git object store.
+        """
+        lock: asyncio.Lock | None = None
+        if self._lock_provider and cwd and args and args[0] in self._SERIALIZED_SUBCOMMANDS:
+            lock = self._lock_provider(cwd)
+
+        if lock is not None:
+            async with lock:
+                return await self._arun_unlocked(args, cwd, timeout)
+        return await self._arun_unlocked(args, cwd, timeout)
+
+    async def _arun_unlocked(
+        self, args: list[str], cwd: str | None = None, timeout: int | None = None
+    ) -> str:
+        """Execute a git command without lock acquisition.
+
+        This is the raw subprocess implementation.  Most callers should use
+        :meth:`_arun` which adds automatic serialization for shared git
+        operations.  Use ``_arun_unlocked`` only when the caller has already
+        acquired the appropriate lock (e.g. for compound operations that need
+        a single lock scope spanning multiple git commands).
         """
         effective_timeout = timeout or self._GIT_TIMEOUT
         try:

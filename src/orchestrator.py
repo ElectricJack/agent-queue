@@ -230,6 +230,7 @@ class Orchestrator:
         )
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
+        self.git.set_lock_provider(self._resolve_git_lock)
         self._adapter_factory = adapter_factory
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
@@ -335,6 +336,18 @@ class Orchestrator:
         if workspace_path not in self._git_mutexes:
             self._git_mutexes[workspace_path] = asyncio.Lock()
         return self._git_mutexes[workspace_path]
+
+    def _resolve_git_lock(self, cwd: str) -> asyncio.Lock | None:
+        """Lock provider for :class:`GitManager`.
+
+        Resolves a ``cwd`` path to the appropriate shared git mutex.  For
+        worktree paths, the base workspace path is derived first.  Returns
+        ``None`` when the path is not part of a branch-isolated setup (i.e.
+        no serialization needed).
+        """
+        base = self._get_worktree_base_path(cwd)
+        key = base if base else cwd
+        return self._git_mutexes.get(key)
 
     def set_command_handler(self, handler: Any) -> None:
         """Store a reference to the command handler for interactive views."""
@@ -2575,6 +2588,17 @@ class Orchestrator:
         workspace = ws.workspace_path
         is_worktree = ws.source_type == RepoSourceType.WORKTREE
 
+        # Register a git mutex for branch-isolated workspaces.  This ensures
+        # that all shared git operations (fetch, gc, pull) routed through
+        # GitManager._arun are serialized for this workspace and any
+        # worktrees derived from it.  The mutex is keyed by the base
+        # workspace path (for worktrees, the parent repo; otherwise the
+        # workspace itself).
+        if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
+            base = self._get_worktree_base_path(workspace) if is_worktree else None
+            mutex_key = base if base else workspace
+            self._git_mutex(mutex_key)  # ensure the lock exists in the dict
+
         # Layer 2: Filesystem sentinel — detect concurrent access that slipped
         # past the DB-level path lock (e.g. race condition, stale lock).
         # If the sentinel's owner task is no longer IN_PROGRESS, the sentinel
@@ -2652,13 +2676,11 @@ class Orchestrator:
             if is_worktree:
                 # WORKTREE: Created by _create_branch_isolated_worktree().
                 # The worktree directory and branch already exist.
-                # Serialize fetch operations via the git mutex to prevent
-                # concurrent git index corruption across worktrees sharing
-                # the same repository objects.
+                # Fetch is automatically serialized by the GitManager lock
+                # provider — no need for explicit mutex acquisition here.
                 base_path = self._get_worktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
-                    async with self._git_mutex(base_path):
-                        await self.git._arun(["fetch", "origin"], cwd=base_path)
+                    await self.git._arun(["fetch", "origin"], cwd=base_path)
             else:
                 # Workspace source types determine the git setup strategy:
                 #
@@ -2708,14 +2730,10 @@ class Orchestrator:
                             await self.git.aforce_clean_workspace(workspace)
                         except GitError:
                             pass  # Best-effort cleanup
-                    # Use git mutex for fetch when workspace is branch-isolated,
-                    # as other worktrees may share this repo's git objects.
+                    # Fetch is automatically serialized by the GitManager
+                    # lock provider for branch-isolated workspaces.
                     if await self.git.ahas_remote(workspace):
-                        if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
-                            async with self._git_mutex(workspace):
-                                await self.git._arun(["fetch", "origin"], cwd=workspace)
-                        else:
-                            await self.git._arun(["fetch", "origin"], cwd=workspace)
+                        await self.git._arun(["fetch", "origin"], cwd=workspace)
                     try:
                         await self.git._arun(["checkout", default_branch], cwd=workspace)
                     except GitError:
@@ -2790,7 +2808,12 @@ class Orchestrator:
         worktree_path = os.path.join(base_dir, f".worktrees-{base_name}", slug)
 
         try:
-            await self.git.acreate_worktree(base_ws.workspace_path, worktree_path, branch_name)
+            # Serialize worktree creation via the git mutex to prevent
+            # concurrent modifications to the shared .git/worktrees/ dir.
+            async with self._git_mutex(base_ws.workspace_path):
+                await self.git.acreate_worktree(
+                    base_ws.workspace_path, worktree_path, branch_name
+                )
         except GitError as e:
             logger.error(
                 "Failed to create worktree for task %s from %s: %s",
@@ -2864,7 +2887,10 @@ class Orchestrator:
         base_path = self._get_worktree_base_path(ws.workspace_path)
         if base_path:
             try:
-                await self.git.aremove_worktree(base_path, ws.workspace_path)
+                # Serialize worktree removal via the git mutex to prevent
+                # concurrent modifications to the shared .git/worktrees/ dir.
+                async with self._git_mutex(base_path):
+                    await self.git.aremove_worktree(base_path, ws.workspace_path)
             except GitError as e:
                 logger.warning("Failed to remove worktree %s: %s", ws.workspace_path, e)
                 # Best-effort: try to remove the directory directly
