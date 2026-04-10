@@ -407,6 +407,16 @@ _WORKFLOW_SCHEMAS: dict[str, EventSchema] = {
         "required": ["workflow_id", "stage"],
         "optional": ["task_ids"],
     },
+    "workflow.orphaned": {
+        "required": ["workflow_id", "playbook_id", "project_id", "reason"],
+        "optional": [
+            "run_id",
+            "error",
+            "current_stage",
+            "task_ids",
+            "recovery_requested",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------

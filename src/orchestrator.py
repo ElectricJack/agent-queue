@@ -1044,6 +1044,23 @@ class Orchestrator:
         )
         self.workflow_stage_resume_handler.subscribe()
 
+        # Orphan workflow recovery (Roadmap 7.5.6) — detect and recover
+        # workflows whose coordination playbook died (crashed, failed,
+        # timed out).  Tasks continue independently; this module handles
+        # re-emitting missed events and alerting operators.
+        from src.orphan_workflow_recovery import OrphanWorkflowRecovery
+
+        self.orphan_workflow_recovery = OrphanWorkflowRecovery(
+            db=self.db,
+            event_bus=self.bus,
+        )
+        recovery_summary = await self.orphan_workflow_recovery.recover_on_startup()
+        if recovery_summary.get("checked"):
+            logger.info(
+                "Orphan workflow recovery: %s",
+                {k: v for k, v in recovery_summary.items() if k != "details"},
+            )
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -1779,6 +1796,15 @@ class Orchestrator:
                     await self.workspace_spec_watcher.check()
                 except Exception as e:
                     logger.warning("WorkspaceSpecWatcher check failed: %s", e)
+
+            # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
+            # Detects workflows whose coordination playbook died and emits
+            # workflow.orphaned events.  Rate-limited internally (~60s).
+            if hasattr(self, "orphan_workflow_recovery") and self.orphan_workflow_recovery:
+                try:
+                    await self.orphan_workflow_recovery.check_periodic()
+                except Exception as e:
+                    logger.warning("Orphan workflow check failed: %s", e)
 
             # 8. Config hot-reload is handled by ConfigWatcher (background task).
 

@@ -197,6 +197,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_playbook_runs": "playbook",
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
+    "recover_workflow": "playbook",
     "playbook_health": "playbook",
     "playbook_graph_view": "playbook",
     # plugin — installation, configuration, lifecycle
@@ -2576,6 +2577,28 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["run_id", "human_input"],
+        },
+    },
+    {
+        "name": "recover_workflow",
+        "description": (
+            "Recover an orphaned coordination workflow whose playbook run "
+            "has died (crashed, failed, timed out). If the playbook was "
+            "paused waiting for stage completion and all tasks are done, "
+            "re-emits the missed event to resume the playbook. If the "
+            "playbook run failed, emits a workflow.orphaned event for "
+            "manual intervention. Tasks in the workflow continue executing "
+            "independently regardless of playbook state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "The workflow ID to recover",
+                },
+            },
+            "required": ["workflow_id"],
         },
     },
     {

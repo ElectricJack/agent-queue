@@ -7546,6 +7546,36 @@ feature work stuck on feature branches across multiple workspaces.
             resp["error"] = result.error
         return resp
 
+    async def _cmd_recover_workflow(self, args: dict) -> dict:
+        """Recover an orphaned coordination workflow (Roadmap 7.5.6).
+
+        If the coordination playbook for a workflow has died (crashed,
+        failed, timed out), this command attempts recovery:
+
+        - If the playbook was paused waiting for stage completion and all
+          tasks are done, re-emits the missed ``workflow.stage.completed``
+          event to resume the playbook automatically.
+        - If the playbook run failed/timed_out, emits a ``workflow.orphaned``
+          event for operator alerting and manual re-triggering.
+        - If the playbook is still running or paused for human input,
+          reports the current state (no recovery needed).
+
+        Tasks in the workflow continue executing independently regardless
+        of playbook state — this command only re-establishes playbook control.
+
+        Args:
+            workflow_id: The workflow ID to recover.
+        """
+        workflow_id = args.get("workflow_id")
+        if not workflow_id:
+            return {"error": "workflow_id is required"}
+
+        recovery = getattr(self.orchestrator, "orphan_workflow_recovery", None)
+        if not recovery:
+            return {"error": "Orphan workflow recovery not initialized"}
+
+        return await recovery.recover_workflow(workflow_id)
+
     async def _cmd_compile_playbook(self, args: dict) -> dict:
         """Manually trigger compilation of a playbook markdown.
 
