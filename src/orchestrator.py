@@ -4954,6 +4954,9 @@ class Orchestrator:
             max_wait = 3600  # 1 hour max wait
             poll_interval = 10  # seconds between checks
             waited = 0
+            notify_interval = 60  # start notifying after 1 minute
+            next_notify_at = notify_interval  # first notification at 60s
+            max_notify_interval = 960  # cap at ~16 minutes
 
             while waited < max_wait:
                 active_tasks = await self.db.list_active_tasks(
@@ -4970,12 +4973,15 @@ class Orchestrator:
                 if not running:
                     break
 
-                if waited % 60 == 0 and waited > 0:  # Log progress every minute
+                if waited >= next_notify_at:  # Exponential backoff for notifications
                     running_ids = ", ".join(f"`{t.id}`" for t in running[:5])
                     await _notify(
                         f"🔄 **Sync `{task.id}`** — Still waiting for "
                         f"{len(running)} task(s): {running_ids}"
                     )
+                    # Double the interval for next notification, with a cap
+                    notify_interval = min(notify_interval * 2, max_notify_interval)
+                    next_notify_at = waited + notify_interval
 
                 await asyncio.sleep(poll_interval)
                 waited += poll_interval
