@@ -105,23 +105,82 @@ what you find:
   - **Update outdated insights** — if recent evidence confirms or
     contradicts an existing memory, use `memory_update` to change its
     content or tags directly. Bump `#provisional` to `#verified` if
-    confirmed by this task. Mark as `#contested` if contradicted.
-    Change the content to reflect current understanding.
+    confirmed by this task. Change the content to reflect current
+    understanding.
   - **Promote cross-project patterns** — use `memory_search_by_tag` to
     check if a project-specific insight also appears in other projects'
     memories. If the same pattern has been discovered independently in
     multiple projects, use `memory_promote` to copy it from project
     scope to agent-type scope (set `target_scope` to
     `agenttype_coding` and `delete_source` to true).
-  - **Archive stale memories** — if an insight hasn't been retrieved
-    recently and the current task provides no supporting evidence,
-    use `memory_delete` to remove clearly outdated knowledge. Don't
-    delete aggressively — only remove entries that are demonstrably
-    wrong or superseded.
 
 Keep consolidation lightweight. Only touch memories that are directly
 related to the current task's domain. Do not attempt a full audit of
 all agent-type memory in every reflection run.
+
+## Surface contradictions
+
+After consolidation, call `memory_health` for the project to check for
+memories tagged `#contested`. These are pairs of memories that made
+contradictory claims about the same topic and were flagged during
+dedup-merge rather than blindly merged.
+
+If `contradiction_count` is zero, skip this section.
+
+For each contested memory returned in the `contradictions` list:
+
+  1. Read the full content of the contested entry using `memory_get`
+     with its `chunk_hash`.
+  2. Search for the opposing entry — there will be at least one other
+     memory with `#contested` on the same topic. Use `memory_search`
+     with the topic text to find it.
+  3. Evaluate the contradiction in light of the current task's outcome.
+     Does this task's experience confirm one side over the other? If
+     so, use `memory_update` to update the confirmed entry — remove
+     the `#contested` tag and add `#verified`. Then `memory_delete`
+     the refuted entry.
+  4. If this task provides no evidence to resolve the contradiction,
+     leave both entries tagged `#contested`. Do not guess — unresolved
+     contradictions are better than silently choosing wrong.
+  5. If both entries turn out to be valid in different contexts (e.g.,
+     one applies to Python 3.11, the other to 3.12), update both to
+     clarify their scope, remove `#contested`, and tag with the
+     appropriate context (e.g., `#py311`, `#py312`).
+
+Only attempt to resolve contradictions related to the current task's
+domain. Ignore contested entries in unrelated areas.
+
+## Flag stale memories
+
+Call `memory_stale` for the project to find memory documents that have
+not been retrieved recently — these are candidates for archival.
+
+If the result is empty (no stale memories), skip this section.
+
+Review the returned candidates, prioritizing entries sorted by
+staleness (never-retrieved first, then longest since last retrieval).
+For each stale entry, decide one of three actions:
+
+  - **Delete** — the insight is clearly outdated, wrong, or superseded
+    by a newer memory. Use `memory_delete` with the entry's
+    `chunk_hash`. Examples: references to removed APIs, conventions
+    that have changed, workarounds for bugs that have been fixed.
+  - **Refresh** — the insight is still valid but the content is stale
+    or imprecise. Use `memory_update` to rewrite it with current
+    understanding. This resets the retrieval tracking so it won't
+    immediately reappear as stale.
+  - **Keep** — the insight is valid and specific but the topic simply
+    hasn't come up recently. Leave it untouched. Rarely-needed
+    knowledge (e.g., a tricky migration procedure) is still valuable
+    even if it hasn't been retrieved in months.
+
+Do not delete aggressively. The bar for deletion is: "this information
+is demonstrably wrong or has been fully superseded." When in doubt,
+keep the entry.
+
+Limit stale memory review to the top 10 candidates per run. A full
+audit every reflection cycle is unnecessary — stale entries will
+surface again on the next run if they remain unaddressed.
 
 ## Skip conditions
 
