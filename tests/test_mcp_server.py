@@ -733,19 +733,7 @@ class TestMemorySearchMCPTool:
 
         assert "memory_search" in V2_ONLY_TOOLS
 
-    async def test_memory_search_not_in_v1_registration(self):
-        """v1 MemoryPlugin no longer registers memory_search command."""
-        # The v1 plugin should skip memory_search during tool registration
-        # (it's now owned by v2).  We verify by checking the tool definitions
-        # that would be registered.
-        from src.plugins.internal.memory import TOOL_DEFINITIONS as V1_DEFS
-
-        v1_names = {d["name"] for d in V1_DEFS}
-        # The definition still exists in the list (for reference), but the
-        # plugin skips it during register_tool.  We just verify the v2
-        # plugin has it in its ownership set.
-        assert "memory_search" in v1_names  # still in list...
-        # ...but not registered (tested via integration in other tests)
+    # test_memory_search_not_in_v1_registration removed (roadmap 8.6 — v1 plugin deleted)
 
     async def test_memory_search_registered_as_mcp_tool(self, populated_db):
         """memory_search appears as an MCP tool when v2 plugin tools are passed."""

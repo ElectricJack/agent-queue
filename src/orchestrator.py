@@ -275,7 +275,7 @@ class Orchestrator:
         )
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
-        self._last_memory_compact: float = 0.0
+        self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
         self._last_failed_blocked_report: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
         self._supervisor = None  # Set via set_supervisor() in Discord bot
@@ -306,17 +306,8 @@ class Orchestrator:
         self.vault_watcher = None
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
-        # Semantic memory manager — optional integration with memsearch.
-        # Initialized only when config.memory.enabled is True and the
-        # memsearch package is installed.
-        self.memory_manager: "MemoryManager | None" = None
-        if hasattr(config, "memory") and config.memory.enabled:
-            try:
-                from src.memory import MemoryManager
-
-                self.memory_manager = MemoryManager(config.memory, storage_root=config.data_dir)
-            except Exception as e:
-                logger.warning("Memory manager initialization failed: %s", e)
+        # V1 MemoryManager removed (roadmap 8.6 — memory-plugin.md §2).
+        # Memory is now handled entirely by MemoryV2Plugin (src/plugins/internal/memory_v2.py).
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -968,13 +959,8 @@ class Orchestrator:
 
         register_facts_handlers(self.vault_watcher)
 
-        # Register memory/*.md watcher handlers (vault spec §5).
-        # Detects changes to memory markdown files across all vault scopes
-        # so they can be re-indexed into the vector DB.  Phase 1 is a
-        # logging stub; actual re-indexing is wired in Phase 2/3.
-        from src.memory_handler import register_memory_handlers
-
-        register_memory_handlers(self.vault_watcher)
+        # V1 memory/*.md watcher handlers removed (roadmap 8.6).
+        # Memory file watching is now handled by MemoryV2Plugin.
 
         # Register playbook .md watcher handlers (playbooks spec §17).
         # Detects changes to playbook files across all vault scopes so they
@@ -1139,12 +1125,10 @@ class Orchestrator:
         )
 
         # Build and inject services for internal plugins
-        memory_mgr = getattr(self, "memory_manager", None)
         internal_services = build_internal_services(
             db=self.db,
             git=self.git,
             config=self.config,
-            memory_manager=memory_mgr,
         )
         self.plugin_registry.set_internal_services(internal_services)
 
@@ -1177,41 +1161,8 @@ class Orchestrator:
                 self._memory_v2_service = svc
                 logger.info("Wired MemoryV2Service to facts.md watcher handlers")
 
-        # Ensure memory collections exist eagerly on startup so they're
-        # available for writes and searches from the very first operation.
-        # This is done after the vault structure and memory plugins are
-        # initialized but before hooks/rules, since hooks may trigger
-        # memory operations.
-        #   - Legacy migration (roadmap 3.1.5): rename aq_{id}_memory → aq_project_{id}
-        #   - aq_system (roadmap 3.1.3): cross-cutting knowledge
-        #   - aq_orchestrator (roadmap 3.1.4): operational knowledge
-        if self.memory_manager:
-            try:
-                await self.memory_manager.migrate_legacy_project_collections()
-                await self.memory_manager.ensure_system_collection()
-                await self.memory_manager.ensure_orchestrator_collection()
-            except Exception as e:
-                logger.warning("Memory collection initialization failed: %s", e)
-
-            # Wire the override indexer into the vault watcher callback
-            # (roadmap 3.2.2) so that override file changes detected by the
-            # watcher trigger re-indexing into the project Milvus collection.
-            try:
-                wired = await self.memory_manager.setup_override_watcher()
-                if wired:
-                    logger.info("Override watcher wired to OverrideIndexer")
-            except Exception as e:
-                logger.warning("Override watcher setup failed: %s", e)
-
-            # Index any override files that were created/modified while
-            # the daemon was stopped (startup catch-up).
-            try:
-                vault_root = os.path.join(self.config.data_dir, "vault")
-                n_chunks = await self.memory_manager.index_project_overrides(vault_root)
-                if n_chunks > 0:
-                    logger.info("Startup override indexing: %d chunks indexed", n_chunks)
-            except Exception as e:
-                logger.warning("Startup override indexing failed: %s", e)
+        # V1 MemoryManager collection initialization removed (roadmap 8.6).
+        # Collection management is now handled by MemoryV2Plugin.
 
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)
@@ -1550,62 +1501,6 @@ class Orchestrator:
         else:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _format_memory_context(self, memories: list[dict]) -> str:
-        """Format memsearch results as a readable context block for the agent.
-
-        Each memory entry is rendered with its source file, section heading,
-        content text, and relevance score so the agent can see where the
-        information came from and how relevant it is.  The output is a single
-        markdown string suitable for appending to ``TaskContext.attached_context``.
-
-        Memory entries come from the ``MemoryManager.recall()`` call in
-        ``_execute_task`` (step 4) and typically include past task results,
-        project documentation, and knowledge-base entries that are
-        semantically similar to the current task's description.
-        """
-        lines = ["## Relevant Context from Project Memory\n"]
-        for i, mem in enumerate(memories, 1):
-            source = mem.get("source", "unknown")
-            heading = mem.get("heading", "")
-            content = mem.get("content", "")
-            score = mem.get("score", 0)
-            lines.append(f"### Memory {i} (relevance: {score:.2f})")
-            lines.append(f"*Source: {source}*")
-            if heading:
-                lines.append(f"*Section: {heading}*\n")
-            lines.append(content)
-            lines.append("")
-        return "\n".join(lines)
-
-    async def _build_memory_context_block(self, task: Any, workspace: str) -> str | None:
-        """Build a tiered memory context block for agent injection.
-
-        Uses the new ``MemoryManager.build_context()`` to produce a
-        structured context with profile, notes, recent tasks, and search
-        results.  Falls back to the legacy ``recall()`` + ``_format_memory_context()``
-        if ``build_context()`` is not available.
-
-        Returns the formatted context string, or ``None`` if no memory is available.
-        """
-        if not self.memory_manager:
-            return None
-
-        try:
-            memory_ctx = await self.memory_manager.build_context(task.project_id, task, workspace)
-            if not memory_ctx.is_empty:
-                return memory_ctx.to_context_block()
-        except Exception as e:
-            logger.warning("Enhanced memory context failed for task %s: %s", task.id, e)
-            # Fall back to legacy recall
-            try:
-                memories = await self.memory_manager.recall(task, workspace)
-                if memories:
-                    return self._format_memory_context(memories)
-            except Exception as e2:
-                logger.warning("Legacy memory recall also failed for task %s: %s", task.id, e2)
-
-        return None
-
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems in dependency order.
 
@@ -1640,11 +1535,6 @@ class Orchestrator:
             self.workflow_stage_resume_handler.shutdown()
         if self.hooks:
             await self.hooks.shutdown()
-        if self.memory_manager:
-            try:
-                await self.memory_manager.close()
-            except Exception as e:
-                logger.warning("Memory manager shutdown error: %s", e)
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -1824,9 +1714,8 @@ class Orchestrator:
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
 
-            # 11. Periodic memory compaction — age out old task memories
-            # into weekly digests.  Rate-limited by compact_interval_hours.
-            await self._periodic_memory_compact()
+            # 11. V1 memory compaction removed (roadmap 8.6).
+            # Memory lifecycle is now managed by MemoryV2Plugin.
 
             # 12. Check paused playbook runs for timeout (roadmap 5.4.4).
             #     Sweeps paused runs and handles expired timeouts — either
@@ -2275,49 +2164,6 @@ class Orchestrator:
                     )
                 except Exception:
                     pass
-
-    async def _periodic_memory_compact(self) -> None:
-        """Periodically compact old task memories into weekly digests.
-
-        Runs at most once per ``compact_interval_hours`` (rate-limited via
-        ``_last_memory_compact``).  Only active when ``compact_enabled`` is
-        True and the memory manager is initialized.
-
-        Iterates all known projects and runs compaction for each.  Errors
-        are logged but never block the orchestrator cycle.
-        """
-        if not self.memory_manager:
-            return
-        if not self.config.memory.compact_enabled:
-            return
-
-        now = time.time()
-        interval_seconds = self.config.memory.compact_interval_hours * 3600
-        if now - self._last_memory_compact < interval_seconds:
-            return
-        self._last_memory_compact = now
-
-        try:
-            projects = await self.db.get_all_projects()
-        except Exception as e:
-            logger.error("Memory compaction: failed to list projects: %s", e)
-            return
-
-        for project in projects:
-            try:
-                workspace = await self.db.get_project_workspace_path(project.id)
-                if not workspace:
-                    continue
-                result = await self.memory_manager.compact(project.id, workspace)
-                if result.get("digests_created", 0) > 0 or result.get("files_removed", 0) > 0:
-                    logger.info(
-                        "Memory compaction for %s: %d digests created, %d files removed",
-                        project.id,
-                        result.get("digests_created", 0),
-                        result.get("files_removed", 0),
-                    )
-            except Exception as e:
-                logger.warning("Memory compaction failed for project %s: %s", project.id, e)
 
     async def _check_paused_playbook_timeouts(self) -> None:
         """Sweep paused playbook runs for expired timeouts (roadmap 5.4.4).
@@ -5755,17 +5601,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
             except Exception as e:
                 logger.warning("Task %s: failed to look up session_id: %s", task.id, e)
 
-        # Memory recall: inject relevant historical context from memsearch.
-        # Uses the enhanced tiered context (profile → notes → recent tasks →
-        # search results) when available, falling back to legacy flat recall.
-        # Failures are non-fatal.
-        if self.memory_manager:
-            try:
-                memory_block = await self._build_memory_context_block(task, workspace)
-                if memory_block:
-                    ctx.attached_context.append(memory_block)
-            except Exception as e:
-                logger.warning("Memory recall failed for task %s: %s", task.id, e)
+        # V1 memory recall removed (roadmap 8.6).
+        # Memory context injection is now handled by MemoryV2Plugin L1 facts.
 
         # Record execution start time so _discover_and_store_plan() can
         # detect stale plan files that predate this task's agent execution.
@@ -6388,58 +6225,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
             # Re-check DEFINED tasks so newly created subtasks get promoted
             await self._check_defined_tasks()
 
-            # Save completed task result as a memory for future recall,
-            # then revise the project profile and optionally generate notes.
-            if self.memory_manager and completed_ok:
-                try:
-                    await self.memory_manager.remember(task, output, workspace)
-                except Exception as e:
-                    logger.warning("Memory remember failed for task %s: %s", task.id, e)
-
-                # Post-task profile revision — only for COMPLETED tasks.
-                # Failed tasks still get remember() but don't revise the profile
-                # since they may contain incorrect understanding.
-                try:
-                    await self.memory_manager.revise_profile(
-                        task.project_id, task, output, workspace
-                    )
-                except Exception as e:
-                    logger.warning("Profile revision failed for task %s: %s", task.id, e)
-
-                # Auto-generate notes if enabled
-                try:
-                    note_paths = await self.memory_manager.generate_task_notes(
-                        task.project_id, task, output, workspace
-                    )
-                    if note_paths and self.bus:
-                        for note_path in note_paths:
-                            await self.bus.emit(
-                                "note.created",
-                                {
-                                    "project_id": task.project_id,
-                                    "task_id": task.id,
-                                    "note_path": note_path,
-                                },
-                            )
-                except Exception as e:
-                    logger.warning("Note generation failed for task %s: %s", task.id, e)
-
-                # Extract structured facts for later consolidation
-                try:
-                    staging_path = await self.memory_manager.extract_task_facts(
-                        task.project_id, task, output, workspace
-                    )
-                    if staging_path and self.bus:
-                        await self.bus.emit(
-                            "facts.extracted",
-                            {
-                                "project_id": task.project_id,
-                                "task_id": task.id,
-                                "staging_path": staging_path,
-                            },
-                        )
-                except Exception as e:
-                    logger.warning("Fact extraction failed for task %s: %s", task.id, e)
+            # V1 memory remember/revise/notes/facts removed (roadmap 8.6).
+            # Post-task memory operations are now handled by MemoryV2Plugin
+            # via event bus hooks (task.completed, facts.extracted).
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
@@ -6508,13 +6296,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             if new_retry >= task.max_retries:
                 await self._notify_stuck_chain(task)
 
-            # Save failed task result as a memory — failures are valuable
-            # context for future tasks working in the same area.
-            if self.memory_manager:
-                try:
-                    await self.memory_manager.remember(task, output, workspace)
-                except Exception as e:
-                    logger.warning("Memory remember failed for task %s: %s", task.id, e)
+            # V1 memory remember for failed tasks removed (roadmap 8.6).
 
             # Clean up workspace git state so it's ready for the next task.
             # For retries, this ensures the workspace isn't left dirty from

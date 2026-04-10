@@ -5,7 +5,3 @@ adapters) into cohesive workflows.  Services are intended to be stateful,
 long-lived objects that own scheduling, threshold tracking, and cross-cutting
 concerns that don't belong inside individual modules.
 """
-
-from src.services.memory_consolidator import ConsolidationResult, MemoryConsolidator
-
-__all__ = ["MemoryConsolidator", "ConsolidationResult"]
