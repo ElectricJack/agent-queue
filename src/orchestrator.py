@@ -2542,6 +2542,8 @@ class Orchestrator:
             global_tokens_used=total_used,
             provider_cooldowns=self._provider_cooldowns,
             project_constraints=constraint_map,
+            now=time.time(),
+            affinity_wait_seconds=self.config.scheduling.affinity_wait_seconds,
         )
 
         return Scheduler.schedule(state)

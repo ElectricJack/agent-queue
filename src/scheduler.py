@@ -150,6 +150,15 @@ class SchedulerState:
     # and scheduling pauses.  Constraints are set via set_project_constraint
     # and persist until explicitly released via release_project_constraint.
     project_constraints: dict[str, ProjectConstraint] = field(default_factory=dict)
+    # Current wall-clock time (Unix timestamp).  Used for bounded-wait
+    # affinity: when a task's preferred agent is busy, the scheduler
+    # defers assignment for up to ``affinity_wait_seconds`` before
+    # falling back to any idle agent.  0.0 disables time-based logic.
+    now: float = 0.0
+    # Maximum seconds to wait for a busy affinity agent before falling
+    # back to assigning any idle agent.  Sourced from
+    # ``config.scheduling.affinity_wait_seconds``.
+    affinity_wait_seconds: float = 120.0
 
 
 def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
@@ -439,29 +448,75 @@ class Scheduler:
                 if not available:
                     continue
 
-                # Apply agent affinity ordering (three tiers):
+                # ── Agent affinity ordering (four tiers) ─────────────────
                 #
                 #  0 — Task prefers *this* agent: prioritize it.
-                #  1 — Task has no affinity, or its affinity agent is
-                #      busy/assigned: treat normally.
+                #  1 — Task has no affinity, or affinity wait expired
+                #      (fallback): treat normally.
                 #  2 — Task prefers *another* idle agent: defer so that
                 #      agent can pick it up instead.
+                #  3 — Task prefers a busy agent and bounded wait has
+                #      NOT expired: defer (wait for preferred agent).
                 #
-                # Within each tier, the existing priority/id ordering
+                # Within each tier the existing priority/id ordering
                 # (set by the pre-sort above) is preserved.
+                #
+                # Tier 3 implements the *bounded wait* from the spec:
+                # when a task's preferred agent is busy, the scheduler
+                # defers assignment for up to ``affinity_wait_seconds``
+                # (measured from task.created_at).  After the wait
+                # expires the task falls through to tier 1 so any idle
+                # agent can pick it up — preventing starvation.
+                #
                 # This is advisory — if the only available tasks are in
-                # tier 2, the current agent still picks one up (no
+                # tier 2 or 3, the current agent still picks one up (no
                 # starvation).
                 idle_agent_ids = {a.id for a in idle_agents if a.id not in assigned_agents}
+                busy_agent_ids = {
+                    a.id
+                    for a in state.agents
+                    if a.state == AgentState.BUSY and a.id not in idle_agent_ids
+                }
+                wait_limit = state.affinity_wait_seconds
+                sched_now = state.now  # 0.0 disables time-based wait
 
                 def _affinity_key(t: Task) -> tuple[int, int, str]:
-                    if t.affinity_agent_id == agent.id:
+                    aff = t.affinity_agent_id
+                    if aff == agent.id:
+                        # Tier 0 — task prefers *this* agent
                         return (0, t.priority, t.id)
-                    if t.affinity_agent_id and t.affinity_agent_id in idle_agent_ids:
+                    if aff and aff in idle_agent_ids:
+                        # Tier 2 — another idle agent is preferred
                         return (2, t.priority, t.id)
+                    if (
+                        aff
+                        and aff in busy_agent_ids
+                        and sched_now > 0
+                        and wait_limit > 0
+                        and t.created_at > 0
+                    ):
+                        # Preferred agent is busy — bounded wait?
+                        waited = sched_now - t.created_at
+                        if waited < wait_limit:
+                            # Tier 3 — still within wait window
+                            return (3, t.priority, t.id)
+                    # Tier 1 — no affinity, unknown agent, or wait expired
                     return (1, t.priority, t.id)
 
                 available.sort(key=_affinity_key)
+
+                # If every candidate is in the bounded-wait tier (3),
+                # skip this project for the current agent — the
+                # preferred agents may become idle next cycle.  This
+                # prevents assigning work to a non-preferred agent when
+                # the wait window hasn't expired yet.
+                #
+                # We only skip if ALL tasks are tier 3; if at least one
+                # task is in tier 0/1/2 we proceed normally (no
+                # starvation).
+                top_tier = _affinity_key(available[0])[0]
+                if top_tier == 3:
+                    continue
 
                 task = available[0]
                 actions.append(

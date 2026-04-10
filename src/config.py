@@ -162,11 +162,16 @@ class SchedulingConfig:
 
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
+    affinity_wait_seconds: int = 120  # max seconds to wait for a busy affinity agent
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.rolling_window_hours <= 0:
             errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
+        if self.affinity_wait_seconds < 0:
+            errors.append(
+                ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0")
+            )
         return errors
 
 
@@ -1428,6 +1433,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.scheduling = SchedulingConfig(
             rolling_window_hours=s.get("rolling_window_hours", 24),
             min_task_guarantee=s.get("min_task_guarantee", True),
+            affinity_wait_seconds=s.get("affinity_wait_seconds", 120),
         )
 
     if "pause_retry" in raw:

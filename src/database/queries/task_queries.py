@@ -390,4 +390,5 @@ class TaskQueryMixin:
             workspace_mode=(
                 WorkspaceMode(row["workspace_mode"]) if row.get("workspace_mode") else None
             ),
+            created_at=row.get("created_at", 0.0),
         )
