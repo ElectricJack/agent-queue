@@ -67,11 +67,11 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
-        "optional": [],
+        "optional": ["agent_id", "agent_type"],
     },
     "task.failed": {
         "required": ["task_id", "project_id", "title", "status", "context"],
-        "optional": ["error"],
+        "optional": ["error", "agent_id", "agent_type"],
     },
     "task.paused": {
         "required": ["task_id", "project_id", "title", "reason"],

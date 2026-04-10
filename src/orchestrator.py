@@ -617,7 +617,14 @@ class Orchestrator:
             await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
-        await self._emit_task_failure(task, "stop_task", error="Manually stopped by user")
+        profile = await self._resolve_profile(task)
+        await self._emit_task_failure(
+            task,
+            "stop_task",
+            error="Manually stopped by user",
+            agent_id=agent_id,
+            agent_type=profile.id if profile else None,
+        )
         await self._emit_notify(
             "notify.task_stopped",
             TaskStoppedEvent(
@@ -662,15 +669,35 @@ class Orchestrator:
         payload.update(extra)
         await self.bus.emit(event_type, payload)
 
-    async def _emit_task_failure(self, task, context: str, error: str = "") -> None:
-        """Emit ``task.failed`` event so hooks can react to task failures."""
-        await self._emit_task_event(
-            "task.failed",
-            task,
-            status=task.status.value if hasattr(task.status, "value") else str(task.status),
-            context=context,
-            error=error,
-        )
+    async def _emit_task_failure(
+        self,
+        task,
+        context: str,
+        error: str = "",
+        *,
+        agent_id: str | None = None,
+        agent_type: str | None = None,
+    ) -> None:
+        """Emit ``task.failed`` event so hooks and playbooks can react.
+
+        Parameters
+        ----------
+        agent_id:
+            The agent that was executing the task (if known).
+        agent_type:
+            The vault agent-type identifier (resolved profile ID) for
+            agent-type-scoped playbook matching.  See roadmap 6.1.3.
+        """
+        extras: dict[str, Any] = {
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "context": context,
+            "error": error,
+        }
+        if agent_id is not None:
+            extras["agent_id"] = agent_id
+        if agent_type is not None:
+            extras["agent_type"] = agent_type
+        await self._emit_task_event("task.failed", task, **extras)
 
     async def _emit_notify(self, event_type: str, event: Any) -> None:
         """Emit a typed notification event on the bus.
@@ -1725,8 +1752,13 @@ class Orchestrator:
             self._adapters.pop(action.agent_id, None)
             task = await self.db.get_task(action.task_id)
             if task:
+                profile = await self._resolve_profile(task)
                 await self._emit_task_failure(
-                    task, "timeout", error=f"Task execution timed out after {timeout}s"
+                    task,
+                    "timeout",
+                    error=f"Task execution timed out after {timeout}s",
+                    agent_id=action.agent_id,
+                    agent_type=profile.id if profile else None,
                 )
             await self._emit_text_notify(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
@@ -4268,7 +4300,13 @@ class Orchestrator:
         elif merged is None:
             # Closed without merge
             await self.db.transition_task(task.id, TaskStatus.BLOCKED, context="pr_closed")
-            await self._emit_task_failure(task, "pr_closed", error="PR was closed without merging")
+            profile = await self._resolve_profile(task)
+            await self._emit_task_failure(
+                task,
+                "pr_closed",
+                error="PR was closed without merging",
+                agent_type=profile.id if profile else None,
+            )
             await self._emit_text_notify(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "
                 f"was closed without merging. Marked as BLOCKED.",
@@ -5790,6 +5828,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         "task_id": task.id,
                         "project_id": task.project_id,
                         "title": task.title,
+                        "agent_id": action.agent_id,
+                        "agent_type": profile.id if profile else None,
                     },
                 )
 
@@ -5853,6 +5893,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     task,
                     "verification_failed",
                     error="Post-task verification failed, max retries exhausted",
+                    agent_id=action.agent_id,
+                    agent_type=profile.id if profile else None,
                 )
                 await _post(
                     f"**Verification failed** for `{task.id}` — "
@@ -5948,6 +5990,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     task,
                     "max_retries",
                     error=f"Max retries ({task.max_retries}) exhausted",
+                    agent_id=action.agent_id,
+                    agent_type=profile.id if profile else None,
                 )
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "
