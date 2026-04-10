@@ -94,7 +94,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "system": CategoryMeta(
         name="system",
-        description=("Token usage, config reload, diagnostics, prompt management, daemon control"),
+        description=(
+            "Token usage, log access, event history, config reload, diagnostics, "
+            "prompt management, daemon control"
+        ),
     ),
 }
 
@@ -207,6 +210,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # system — diagnostics, config, prompts, daemon control
     "get_status": "system",
     "get_recent_events": "system",
+    "read_logs": "system",
     "get_token_usage": "system",
     "token_audit": "system",
     "claude_usage": "system",
@@ -1191,14 +1195,100 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "get_recent_events",
-        "description": "Get recent system events (task completions, failures, etc.).",
+        "description": (
+            "Get recent system events (task completions, failures, agent questions, "
+            "budget warnings, etc.) from the event database. Supports filtering by "
+            "event type, time range, project, agent, or task."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "description": "Number of events to return (default 10)",
+                    "description": "Maximum number of events to return (default 10).",
                     "default": 10,
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": (
+                        "Filter by event type. Exact match or prefix with '*' "
+                        "(e.g. 'task.*' matches task.started, task.completed, etc.)."
+                    ),
+                },
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Only return events newer than this relative time. "
+                        "Accepts durations like '5m', '1h', '2d', '30s'."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Filter by project ID.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Filter by agent ID.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Filter by task ID.",
+                },
+            },
+        },
+    },
+    {
+        "name": "read_logs",
+        "description": (
+            "Read and filter the daemon's structured JSONL log file. Returns parsed "
+            "log entries with severity, timestamps, and context fields. Use this to "
+            "inspect detailed system behavior, diagnose errors, or analyze "
+            "component-level activity."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "description": (
+                        "Minimum log severity level. Only entries at or above this "
+                        "level are returned."
+                    ),
+                    "enum": ["debug", "info", "warning", "error", "critical"],
+                    "default": "info",
+                },
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Only return log entries newer than this relative time. "
+                        "Accepts durations like '5m', '1h', '2d', '30s'."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": ("Maximum number of log entries to return (default 100)."),
+                    "default": 100,
+                },
+                "component": {
+                    "type": "string",
+                    "description": (
+                        "Filter by component name (e.g. 'orchestrator', 'supervisor', "
+                        "'api', 'hooks', 'discord')."
+                    ),
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Filter by task ID.",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Filter by project ID.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "Substring search in the log message/event field (case-insensitive)."
+                    ),
                 },
             },
         },

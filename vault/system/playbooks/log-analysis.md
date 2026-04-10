@@ -21,10 +21,19 @@ decisions, token budgets, error rates, and infrastructure health.
 
 ## Gather recent events and logs
 
-Start by reading the recent event log using `get_recent_events`. Pull
-the last 50 events and group them by event type. Also run `token_audit`
-to get a breakdown of token usage across projects and agents over the
-last 24 hours.
+Start by reading the recent event log using `get_recent_events` with
+`since: "1h"` to scope events to the last hour.  Pull up to 50 events
+and group them by event type.  Use the `event_type` filter to drill into
+specific categories if the initial scan is noisy (e.g.
+`event_type: "task.*"` for task lifecycle events only).
+
+Also run `read_logs` with `level: "warning"` and `since: "1h"` to
+surface warnings and errors from the daemon's structured log file.  For
+deeper investigation, narrow with `component`, `project_id`, or
+`pattern` filters.
+
+Run `token_audit` to get a breakdown of token usage across projects and
+agents over the last 24 hours.
 
 Check the system status using `get_status` to understand the current
 state — how many agents are running, how many tasks are queued, and

@@ -59,6 +59,77 @@ from src.workspace_names import generate_workspace_id
 
 logger = logging.getLogger(__name__)
 
+# ── Log / event time helpers ──────────────────────────────────────────
+
+_RELATIVE_TIME_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_relative_time(value: str) -> float:
+    """Parse a relative time string into a Unix epoch timestamp.
+
+    Accepts formats like ``"5m"``, ``"1h"``, ``"2d"``, ``"30s"``.
+    Returns the Unix timestamp corresponding to *now - delta*.
+    """
+    if not value:
+        return 0.0
+    unit = value[-1].lower()
+    multiplier = _RELATIVE_TIME_UNITS.get(unit)
+    if multiplier is None:
+        raise ValueError(f"Unknown time unit '{unit}'. Use s, m, h, or d.")
+    try:
+        amount = int(value[:-1])
+    except ValueError:
+        raise ValueError(f"Invalid number in '{value}'")
+    return time.time() - (amount * multiplier)
+
+
+# ── Log-level priority for JSONL filtering ────────────────────────────
+
+_LEVEL_PRIORITY = {
+    "debug": 10,
+    "info": 20,
+    "warning": 30,
+    "error": 40,
+    "critical": 50,
+}
+
+
+def _tail_log_lines(filepath: str, max_scan: int = 1000) -> list[str]:
+    """Read the last *max_scan* lines from a file efficiently.
+
+    Reads from the end of the file in chunks to avoid loading the entire
+    file into memory.  Returns lines in chronological order (oldest first).
+    """
+    try:
+        with open(filepath, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return []
+
+            chunk_size = min(8192, size)
+            lines: list[bytes] = []
+            pos = size
+
+            while len(lines) <= max_scan and pos > 0:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                chunk_lines = chunk.split(b"\n")
+
+                if lines:
+                    # Merge partial line from previous chunk
+                    chunk_lines[-1] = chunk_lines[-1] + lines[0]
+                    lines = chunk_lines + lines[1:]
+                else:
+                    lines = chunk_lines
+
+            decoded = [raw.decode("utf-8", errors="replace") for raw in lines if raw.strip()]
+            return decoded[-max_scan:]
+    except FileNotFoundError:
+        return []
+
 
 async def _run_subprocess(
     *args: str,
@@ -4841,7 +4912,25 @@ feature work stuck on feature branches across multiple workspaces.
 
     async def _cmd_get_recent_events(self, args: dict) -> dict:
         limit = args.get("limit", 10)
-        events = await self.db.get_recent_events(limit=limit)
+        event_type = args.get("event_type")
+        since = args.get("since")
+        project_id = args.get("project_id")
+        agent_id = args.get("agent_id")
+        task_id = args.get("task_id")
+
+        # Parse relative time strings (e.g. "5m", "1h", "2d") into Unix epoch
+        since_ts: float | None = None
+        if since:
+            since_ts = _parse_relative_time(since)
+
+        events = await self.db.get_recent_events(
+            limit=limit,
+            event_type=event_type,
+            since=since_ts,
+            project_id=project_id,
+            agent_id=agent_id,
+            task_id=task_id,
+        )
         return {"events": events}
 
     async def _cmd_get_token_usage(self, args: dict) -> dict:
@@ -4894,6 +4983,93 @@ feature work stuck on feature branches across multiple workspaces.
         days = args.get("days", 7)
         project_id = args.get("project_id")
         return await self.db.get_token_audit(days=days, project_id=project_id)
+
+    async def _cmd_read_logs(self, args: dict) -> dict:
+        """Read and filter the daemon's JSONL log file.
+
+        Supports filtering by severity level, time range, and context fields.
+        Returns parsed log entries as structured dicts.
+        """
+        level = (args.get("level") or "info").lower()
+        since = args.get("since")
+        limit = args.get("limit", 100)
+        component = args.get("component")
+        task_id = args.get("task_id")
+        project_id = args.get("project_id")
+        pattern = args.get("pattern")
+
+        # Resolve the log file path from config
+        log_file = self.config.logging.log_file or os.path.join(
+            self.config.data_dir, "logs", "agent-queue.log"
+        )
+
+        if not os.path.isfile(log_file):
+            return {"error": f"Log file not found: {log_file}"}
+
+        # Build threshold from level
+        threshold = _LEVEL_PRIORITY.get(level, 20)
+
+        # Parse relative time if provided
+        since_dt = None
+        if since:
+            try:
+                since_ts = _parse_relative_time(since)
+                since_dt = datetime.datetime.fromtimestamp(since_ts, tz=datetime.timezone.utc)
+            except ValueError as exc:
+                return {"error": str(exc)}
+
+        # Read the file from the end (tail) and filter
+        raw_lines = _tail_log_lines(log_file, max_scan=limit * 10)
+
+        entries: list[dict] = []
+        for raw in raw_lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            # Level filter (>= threshold)
+            entry_level = _LEVEL_PRIORITY.get(entry.get("level", "").lower(), 0)
+            if entry_level < threshold:
+                continue
+
+            # Time filter
+            if since_dt:
+                ts = entry.get("timestamp", "")
+                try:
+                    entry_dt = datetime.datetime.fromisoformat(ts)
+                    if entry_dt < since_dt:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # Context-field exact-match filters
+            if component and entry.get("component") != component:
+                continue
+            if task_id and entry.get("task_id") != task_id:
+                continue
+            if project_id and entry.get("project_id") != project_id:
+                continue
+
+            # Pattern (substring) filter on the event/message field
+            if pattern:
+                msg = entry.get("event") or entry.get("message", "")
+                if pattern.lower() not in msg.lower():
+                    continue
+
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+
+        return {
+            "log_file": log_file,
+            "level_filter": level,
+            "count": len(entries),
+            "entries": entries,
+        }
 
     # -----------------------------------------------------------------------
     # Git commands -- full git workflow via GitManager.
@@ -7347,10 +7523,14 @@ feature work stuck on feature branches across multiple workspaces.
         active_runs = None
         if include_live:
             running = await self.db.list_playbook_runs(
-                playbook_id=playbook_id, status="running", limit=50,
+                playbook_id=playbook_id,
+                status="running",
+                limit=50,
             )
             paused = await self.db.list_playbook_runs(
-                playbook_id=playbook_id, status="paused", limit=50,
+                playbook_id=playbook_id,
+                status="paused",
+                limit=50,
             )
             active_runs = running + paused if (running or paused) else None
 
@@ -7374,7 +7554,8 @@ feature work stuck on feature branches across multiple workspaces.
         if include_history or include_metrics:
             fetch_limit = max(history_limit, 200) if include_metrics else history_limit
             all_runs = await self.db.list_playbook_runs(
-                playbook_id=playbook_id, limit=fetch_limit,
+                playbook_id=playbook_id,
+                limit=fetch_limit,
             )
 
         if include_metrics and all_runs:
