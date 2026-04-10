@@ -21,8 +21,10 @@ from src.vault import (
     _scan_memory_copy,
     _scan_notes_migration,
     _scan_obsidian_migration,
+    _scan_passive_rule_migration,
     _scan_rule_migration,
     has_legacy_data,
+    migrate_passive_rules_to_memory,
     run_vault_migration,
     vault_has_content,
 )
@@ -646,3 +648,207 @@ def test_vault_has_content_with_memory_file(tmp_path):
     (mem / "profile.md").write_text("# Profile")
 
     assert vault_has_content(str(tmp_path)) is True
+
+
+# ------------------------------------------------------------------
+# Passive rule migration (playbooks spec §13, Phase 2)
+# ------------------------------------------------------------------
+
+
+def _write_rule_file(path, rule_id, rule_type, project_id=None, content="# Rule"):
+    """Helper to write a rule file with proper frontmatter."""
+    import yaml
+
+    meta = {
+        "id": rule_id,
+        "type": rule_type,
+        "project_id": project_id,
+        "hooks": [],
+        "created": "2024-01-01T00:00:00+00:00",
+        "updated": "2024-01-01T00:00:00+00:00",
+    }
+    frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
+    file_content = f"---\n{frontmatter}\n---\n\n{content}\n"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(file_content)
+
+
+def test_migrate_passive_rules_moves_to_guidance(tmp_path):
+    """Passive rules in playbooks/ are moved to memory/guidance/."""
+    data_dir = str(tmp_path)
+
+    # Create a passive rule in system playbooks
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(system_playbooks / "rule-style-guide.md"),
+        "rule-style-guide",
+        "passive",
+        content="# Style Guide\n\nUse consistent formatting.",
+    )
+
+    # Create a passive rule in project playbooks
+    proj_playbooks = tmp_path / "vault" / "projects" / "my-proj" / "playbooks"
+    proj_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(proj_playbooks / "rule-naming.md"),
+        "rule-naming",
+        "passive",
+        project_id="my-proj",
+        content="# Naming Conventions\n\nUse snake_case.",
+    )
+
+    # Create an active rule that should NOT be moved
+    _write_rule_file(
+        str(system_playbooks / "rule-monitor.md"),
+        "rule-monitor",
+        "active",
+        content="# Monitor\n\n## Trigger\nEvery 5 minutes.",
+    )
+
+    result = migrate_passive_rules_to_memory(data_dir)
+
+    assert result["moved"] == 2
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    # Passive rules should be at new locations
+    assert (tmp_path / "vault" / "system" / "memory" / "guidance" / "rule-style-guide.md").is_file()
+    assert (
+        tmp_path / "vault" / "projects" / "my-proj" / "memory" / "guidance" / "rule-naming.md"
+    ).is_file()
+
+    # Source files should be removed
+    assert not (system_playbooks / "rule-style-guide.md").exists()
+    assert not (proj_playbooks / "rule-naming.md").exists()
+
+    # Active rule should remain in playbooks
+    assert (system_playbooks / "rule-monitor.md").is_file()
+
+
+def test_migrate_passive_rules_idempotent(tmp_path):
+    """Second run skips already-migrated passive rules."""
+    data_dir = str(tmp_path)
+
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(system_playbooks / "rule-test.md"),
+        "rule-test",
+        "passive",
+    )
+
+    # First run
+    result1 = migrate_passive_rules_to_memory(data_dir)
+    assert result1["moved"] == 1
+
+    # Second run — nothing to move
+    result2 = migrate_passive_rules_to_memory(data_dir)
+    assert result2["moved"] == 0
+    assert result2["skipped"] == 0  # Source file was already removed
+
+
+def test_migrate_passive_rules_updates_frontmatter(tmp_path):
+    """Migrated files have tags added and hooks removed from frontmatter."""
+    import yaml
+
+    data_dir = str(tmp_path)
+
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(system_playbooks / "rule-guidance.md"),
+        "rule-guidance",
+        "passive",
+        content="# Guidance\n\nSome guidance.",
+    )
+
+    migrate_passive_rules_to_memory(data_dir)
+
+    dest = tmp_path / "vault" / "system" / "memory" / "guidance" / "rule-guidance.md"
+    assert dest.is_file()
+
+    raw = dest.read_text()
+    parts = raw.split("---", 2)
+    meta = yaml.safe_load(parts[1])
+
+    assert "tags" in meta
+    assert "guidance" in meta["tags"]
+    assert "passive-rule" in meta["tags"]
+    assert "hooks" not in meta  # hooks removed for memory files
+
+
+def test_migrate_passive_rules_preserves_dest_if_exists(tmp_path):
+    """If destination already exists, migration skips that file."""
+    data_dir = str(tmp_path)
+
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(system_playbooks / "rule-existing.md"),
+        "rule-existing",
+        "passive",
+    )
+
+    # Pre-create destination
+    dest_dir = tmp_path / "vault" / "system" / "memory" / "guidance"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "rule-existing.md").write_text("# Already here\n")
+
+    result = migrate_passive_rules_to_memory(data_dir)
+    assert result["moved"] == 0
+    assert result["skipped"] == 1
+
+    # Original should still exist (not deleted when skip)
+    assert (system_playbooks / "rule-existing.md").is_file()
+
+    # Destination should be unchanged
+    assert (dest_dir / "rule-existing.md").read_text() == "# Already here\n"
+
+
+def test_scan_passive_rule_migration_dry_run(tmp_path):
+    """Dry-run scan reports what would be moved."""
+    data_dir = str(tmp_path)
+
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    _write_rule_file(
+        str(system_playbooks / "rule-passive.md"),
+        "rule-passive",
+        "passive",
+    )
+    _write_rule_file(
+        str(system_playbooks / "rule-active.md"),
+        "rule-active",
+        "active",
+    )
+
+    scan = _scan_passive_rule_migration(data_dir)
+    assert scan["would_move"] == 1
+    assert scan["would_skip"] == 0
+    assert len(scan["details"]) == 1
+    assert "MOVE" in scan["details"][0]
+    assert "rule-passive.md" in scan["details"][0]
+
+
+def test_run_vault_migration_includes_passive_rules(tmp_path):
+    """run_vault_migration includes passive rule migration in report."""
+    data_dir = str(tmp_path)
+
+    # Set up vault layout
+    system_playbooks = tmp_path / "vault" / "system" / "playbooks"
+    system_playbooks.mkdir(parents=True)
+    (tmp_path / "vault" / "system" / "memory").mkdir(parents=True, exist_ok=True)
+
+    _write_rule_file(
+        str(system_playbooks / "rule-guidance.md"),
+        "rule-guidance",
+        "passive",
+    )
+
+    report = run_vault_migration(data_dir)
+
+    # Check passive_rules section exists in report
+    assert "passive_rules" in report
+    assert report["passive_rules"]["moved"] == 1

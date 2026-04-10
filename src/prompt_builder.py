@@ -343,11 +343,12 @@ class PromptBuilder:
         pass
 
     async def load_relevant_rules(self, query: str) -> None:
-        """Layer 3: Load relevant rules from the rule system.
+        """Layer 3: Load active rules from the rule system.
 
-        Uses RuleManager to load all applicable rules for the current
-        project (plus globals). Without memsearch, loads ALL rules.
-        Future: semantic search against query for relevance filtering.
+        Uses RuleManager to load applicable **active** rules for the current
+        project (plus globals).  Passive rules (contextual guidance) are now
+        stored as vault memory files (playbooks spec §13) and are surfaced
+        through memory search in Layer 2 rather than static rule injection.
         """
         if not self._rule_manager or not self._project_id:
             self._rules = ""

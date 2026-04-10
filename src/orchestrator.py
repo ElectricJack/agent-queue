@@ -1470,6 +1470,18 @@ class Orchestrator:
         elif all_profiles:
             logger.debug("Vault already has profile markdown — skipping profile auto-migration")
 
+        # Phase 2 migration: passive rules → vault memory guidance files.
+        # This runs unconditionally (idempotent) because passive rules may
+        # already be in the vault playbooks/ dirs and need moving to memory/.
+        from src.vault import migrate_passive_rules_to_memory
+
+        passive_report = migrate_passive_rules_to_memory(data_dir)
+        if passive_report["moved"]:
+            logger.info(
+                "Passive rule migration: %d moved to vault memory guidance",
+                passive_report["moved"],
+            )
+
         # Per-profile directories (vault/agent-types/{profile_id}/)
         for profile in all_profiles:
             self.vault_manager.register_agent_type(profile.id)
@@ -2716,9 +2728,7 @@ class Orchestrator:
             # Serialize worktree creation via the git mutex to prevent
             # concurrent modifications to the shared .git/worktrees/ dir.
             async with self._git_mutex(base_ws.workspace_path):
-                await self.git.acreate_worktree(
-                    base_ws.workspace_path, worktree_path, branch_name
-                )
+                await self.git.acreate_worktree(base_ws.workspace_path, worktree_path, branch_name)
         except GitError as e:
             logger.error(
                 "Failed to create worktree for task %s from %s: %s",

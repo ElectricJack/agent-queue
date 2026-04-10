@@ -24,7 +24,7 @@ def rule_manager(storage_root):
 
 
 def test_save_rule_creates_file(rule_manager, storage_root):
-    """save_rule writes a markdown file with YAML frontmatter."""
+    """save_rule writes a passive rule to vault memory guidance directory."""
     result = rule_manager.save_rule(
         id="rule-test",
         project_id="my-project",
@@ -33,9 +33,11 @@ def test_save_rule_creates_file(rule_manager, storage_root):
     )
     assert result["success"] is True
     assert result["id"] == "rule-test"
+    assert "memory_path" in result  # Passive rules report their memory path
 
+    # Passive rules go to memory/guidance/ (playbooks spec §13)
     rule_path = os.path.join(
-        storage_root, "vault", "projects", "my-project", "playbooks", "rule-test.md"
+        storage_root, "vault", "projects", "my-project", "memory", "guidance", "rule-test.md"
     )
     assert os.path.isfile(rule_path)
 
@@ -43,11 +45,12 @@ def test_save_rule_creates_file(rule_manager, storage_root):
         raw = f.read()
     assert "id: rule-test" in raw
     assert "type: passive" in raw
+    assert "guidance" in raw  # tags include "guidance"
     assert "# Test Rule" in raw
 
 
 def test_save_rule_global_scope(rule_manager, storage_root):
-    """project_id=None saves to global rules directory."""
+    """project_id=None saves passive rule to global memory guidance directory."""
     result = rule_manager.save_rule(
         id="rule-global",
         project_id=None,
@@ -56,7 +59,10 @@ def test_save_rule_global_scope(rule_manager, storage_root):
     )
     assert result["success"] is True
 
-    rule_path = os.path.join(storage_root, "vault", "system", "playbooks", "rule-global.md")
+    # Passive rules go to memory/guidance/ (playbooks spec §13)
+    rule_path = os.path.join(
+        storage_root, "vault", "system", "memory", "guidance", "rule-global.md"
+    )
     assert os.path.isfile(rule_path)
 
 
@@ -165,16 +171,17 @@ def test_browse_rules_summary_truncation(rule_manager):
 
 
 def test_get_rules_for_prompt(rule_manager):
-    """get_rules_for_prompt returns formatted markdown for PromptBuilder."""
+    """get_rules_for_prompt returns only active rules (spec §13)."""
     rule_manager.save_rule("rule-style", "proj", "passive", "# Code Style\n\n## Intent\nUse black.")
     rule_manager.save_rule("rule-glob", None, "active", "# Monitor\n\n## Trigger\nEvery 5 min.")
 
     text = rule_manager.get_rules_for_prompt("proj")
     assert "Applicable Rules" in text
-    assert "Code Style" in text
     assert "Monitor" in text
-    assert "[Passive]" in text
     assert "[Active]" in text
+    # Passive rules are no longer included in prompt (surfaced via memory search)
+    assert "Code Style" not in text
+    assert "[Passive]" not in text
 
 
 def test_get_rules_for_prompt_empty(rule_manager):
@@ -989,14 +996,14 @@ def test_on_rule_folder_changed_passive_rule_skipped(storage_root, mock_db):
 
     rm = RuleManager(storage_root=storage_root, db=mock_db)
 
-    # Create a passive rule file on disk (vault location)
+    # Create a passive rule file on disk (memory/guidance/ location per spec §13)
     rm.save_rule(
         id="rule-passive",
         project_id="proj",
         rule_type="passive",
         content="# Passive Rule\n\n## Intent\nJust guidance.",
     )
-    rules_dir = os.path.join(storage_root, "vault", "projects", "proj", "playbooks")
+    rules_dir = os.path.join(storage_root, "vault", "projects", "proj", "memory", "guidance")
 
     async def _run():
         await rm._on_rule_folder_changed(
@@ -1399,3 +1406,130 @@ def test_migrate_orphan_hooks_strips_rule_prefix(storage_root):
     )
     assert os.path.isfile(expected_path), f"Expected rule file at {expected_path}"
     assert not os.path.isfile(unexpected_path), f"Should NOT create duplicate at {unexpected_path}"
+
+
+# ------------------------------------------------------------------
+# Passive rule → memory guidance migration tests (playbooks spec §13)
+# ------------------------------------------------------------------
+
+
+def test_save_passive_rule_to_agent_type_scope(storage_root):
+    """Passive rules with agent_type go to vault/agent-types/{type}/memory/guidance/."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+
+    result = rm.save_rule(
+        id="rule-coding-style",
+        project_id=None,
+        rule_type="passive",
+        content="# Coding Style\n\nUse PEP 8.",
+        agent_type="coding",
+    )
+    assert result["success"] is True
+    assert "memory_path" in result
+
+    expected_path = os.path.join(
+        storage_root, "vault", "agent-types", "coding", "memory", "guidance", "rule-coding-style.md"
+    )
+    assert os.path.isfile(expected_path)
+
+
+def test_save_passive_rule_returns_memory_path(storage_root):
+    """Passive rule save includes memory_path in result."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+
+    result = rm.save_rule(
+        id="rule-test",
+        project_id="proj",
+        rule_type="passive",
+        content="# Test\n\nGuidance.",
+    )
+    assert result["success"] is True
+    assert "memory_path" in result
+    assert "memory/guidance" in result["memory_path"]
+
+
+def test_save_active_rule_no_memory_path(storage_root):
+    """Active rule save does NOT include memory_path."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+
+    result = rm.save_rule(
+        id="rule-active",
+        project_id="proj",
+        rule_type="active",
+        content="# Active\n\n## Trigger\nEvery 5 min.",
+    )
+    assert result["success"] is True
+    assert "memory_path" not in result
+
+    # Active rule should be in playbooks directory
+    expected_path = os.path.join(
+        storage_root, "vault", "projects", "proj", "playbooks", "rule-active.md"
+    )
+    assert os.path.isfile(expected_path)
+
+
+def test_passive_rule_has_guidance_tags(storage_root):
+    """Passive rules saved as memory files include guidance tags."""
+    import yaml
+
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+    rm.save_rule("rule-tagged", "proj", "passive", "# Tagged\n\nContent.")
+
+    path = os.path.join(
+        storage_root, "vault", "projects", "proj", "memory", "guidance", "rule-tagged.md"
+    )
+    with open(path) as f:
+        raw = f.read()
+
+    parts = raw.split("---", 2)
+    meta = yaml.safe_load(parts[1])
+    assert "tags" in meta
+    assert "guidance" in meta["tags"]
+    assert "passive-rule" in meta["tags"]
+    # No hooks field for passive rules
+    assert "hooks" not in meta
+
+
+def test_browse_rules_includes_passive_from_guidance(storage_root):
+    """browse_rules finds passive rules in memory/guidance/ directories."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+
+    rm.save_rule("rule-active-1", "proj", "active", "# Active\n\n## Trigger\nEvery 5 min.")
+    rm.save_rule("rule-passive-1", "proj", "passive", "# Passive\n\nGuidance.")
+    rm.save_rule("rule-passive-global", None, "passive", "# Global Passive\n\nGuidance.")
+
+    rules = rm.browse_rules("proj")
+    ids = [r["id"] for r in rules]
+    assert "rule-active-1" in ids
+    assert "rule-passive-1" in ids
+    assert "rule-passive-global" in ids
+
+    # Check types are correct
+    types_by_id = {r["id"]: r["type"] for r in rules}
+    assert types_by_id["rule-active-1"] == "active"
+    assert types_by_id["rule-passive-1"] == "passive"
+    assert types_by_id["rule-passive-global"] == "passive"
+
+
+def test_get_rules_for_prompt_excludes_passive(storage_root):
+    """get_rules_for_prompt only returns active rules after spec §13 migration."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+
+    rm.save_rule("rule-active", None, "active", "# Active Rule\n\n## Trigger\nEvery hour.")
+    rm.save_rule("rule-passive", None, "passive", "# Passive Rule\n\nGuidance only.")
+
+    text = rm.get_rules_for_prompt(None)
+    assert "Active Rule" in text
+    assert "Passive Rule" not in text

@@ -176,6 +176,16 @@ class VaultManager:
         """Return the overrides directory for *project_id*."""
         return os.path.join(self.get_project_dir(project_id), "overrides")
 
+    def get_guidance_dir(self, scope: Scope, identifier: str | None = None) -> str:
+        """Return the guidance directory for the given *scope*.
+
+        Guidance files are passive rules migrated to vault memory
+        (playbooks spec §13).  They live in ``{scope_dir}/memory/guidance/``.
+
+        Parameters are the same as :meth:`get_playbook_path`.
+        """
+        return os.path.join(self._scope_dir(scope, identifier), "memory", "guidance")
+
     def get_notes_dir(self, project_id: str) -> str:
         """Return the notes directory for *project_id*."""
         return os.path.join(self.get_project_dir(project_id), "notes")

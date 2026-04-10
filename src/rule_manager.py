@@ -7,22 +7,29 @@ vault playbook directories.  There are two rule types:
   rule is saved, the ``RuleManager`` creates (or updates) a corresponding
   hook in the hook engine so the rule's intent is carried out on a
   schedule or in response to events.
-- **Passive rules** influence reasoning via semantic search.  They are
-  injected into the Supervisor's system prompt when relevant to the
-  current conversation.
+- **Passive rules** are contextual guidance stored as vault memory files
+  (playbooks spec §13).  They live in ``vault/*/memory/guidance/`` and
+  are surfaced through memory search rather than static rule injection.
 
 Storage layout (vault)::
 
-    ~/.agent-queue/vault/system/playbooks/{rule_id}.md          (global)
-    ~/.agent-queue/vault/projects/{project_id}/playbooks/{rule_id}.md
+    ~/.agent-queue/vault/system/playbooks/{rule_id}.md          (active, global)
+    ~/.agent-queue/vault/projects/{project_id}/playbooks/{rule_id}.md  (active)
+    ~/.agent-queue/vault/system/memory/guidance/{rule_id}.md    (passive, global)
+    ~/.agent-queue/vault/projects/{project_id}/memory/guidance/{rule_id}.md  (passive)
+    ~/.agent-queue/vault/agent-types/{type}/memory/guidance/{rule_id}.md     (passive)
 
 Legacy layout (pre-vault, migrated at startup)::
 
     ~/.agent-queue/memory/global/rules/{rule_id}.md
     ~/.agent-queue/memory/{project_id}/rules/{rule_id}.md
 
-File format: YAML frontmatter (``id``, ``type``, ``project_id``, ``hooks``,
-``created``, ``updated``) followed by Markdown body content.
+File format (active): YAML frontmatter (``id``, ``type``, ``project_id``,
+``hooks``, ``created``, ``updated``) followed by Markdown body content.
+
+File format (passive): YAML frontmatter (``id``, ``tags``, ``project_id``,
+``created``, ``updated``) followed by Markdown body content.  Stored in
+vault memory directories for semantic search retrieval.
 
 The rule system intentionally keeps the rule file as the single source of
 truth.  Hooks are derived artifacts — ``reconcile_hooks()`` can always
@@ -130,7 +137,7 @@ class RuleManager:
     # ------------------------------------------------------------------
 
     def _rules_dir(self, project_id: str | None) -> str:
-        """Return the vault directory containing rules for a given scope.
+        """Return the vault directory containing active rules for a given scope.
 
         Global rules live under ``vault/system/playbooks/``, while
         project-scoped rules live under
@@ -146,31 +153,68 @@ class RuleManager:
             return os.path.join(self._storage_root, "vault", "projects", project_id, "playbooks")
         return os.path.join(self._storage_root, "vault", "system", "playbooks")
 
-    def _rule_path(self, rule_id: str, project_id: str | None) -> str:
+    def _memory_guidance_dir(
+        self,
+        project_id: str | None,
+        agent_type: str | None = None,
+    ) -> str:
+        """Return the vault directory for passive rule memory files.
+
+        Passive rules (playbooks spec §13) are stored as memory guidance
+        files rather than playbook files.  The scope hierarchy is:
+
+        - Agent-type: ``vault/agent-types/{type}/memory/guidance/``
+        - Project: ``vault/projects/{project_id}/memory/guidance/``
+        - Global: ``vault/system/memory/guidance/``
+
+        Args:
+            project_id: Project ID, or ``None`` for global scope.
+            agent_type: Agent type for agent-type scoping.
+        """
+        if project_id == "None":
+            project_id = None
+        if agent_type:
+            return os.path.join(
+                self._storage_root, "vault", "agent-types", agent_type, "memory", "guidance"
+            )
+        if project_id:
+            return os.path.join(
+                self._storage_root, "vault", "projects", project_id, "memory", "guidance"
+            )
+        return os.path.join(self._storage_root, "vault", "system", "memory", "guidance")
+
+    def _rule_path(self, rule_id: str, project_id: str | None, rule_type: str = "active") -> str:
         """Return the full filesystem path for a rule file.
+
+        Active rules go to playbook directories, passive rules go to
+        memory guidance directories (playbooks spec §13).
 
         Args:
             rule_id: Unique rule identifier (used as filename stem).
             project_id: Project scope, or ``None`` for global.
+            rule_type: ``"active"`` or ``"passive"``.
         """
+        if rule_type == "passive":
+            return os.path.join(self._memory_guidance_dir(project_id), f"{rule_id}.md")
         return os.path.join(self._rules_dir(project_id), f"{rule_id}.md")
 
     def _find_rule_path(self, rule_id: str) -> tuple[str, str | None] | None:
         """Find a rule file by ID across all vault scopes.
 
-        Searches vault playbook directories first (system, then per-project).
-        Falls back to legacy ``memory/`` locations for backward compatibility
-        with unmigrated files.
+        Searches vault playbook directories first (system, then per-project),
+        then vault memory guidance directories (for passive rules migrated
+        per playbooks spec §13), and finally falls back to legacy ``memory/``
+        locations for backward compatibility with unmigrated files.
 
         Returns ``(file_path, project_id_or_None)`` or ``None``.
         """
-        # 1. Check vault system playbooks (global scope)
+        # 1. Check vault system playbooks (global scope — active rules)
         system_dir = os.path.join(self._storage_root, "vault", "system", "playbooks")
         candidate = os.path.join(system_dir, f"{rule_id}.md")
         if os.path.isfile(candidate):
             return candidate, None
 
-        # 2. Check vault project playbooks
+        # 2. Check vault project playbooks (active rules)
         projects_dir = os.path.join(self._storage_root, "vault", "projects")
         if os.path.isdir(projects_dir):
             for project_id in sorted(os.listdir(projects_dir)):
@@ -179,7 +223,30 @@ class RuleManager:
                 if os.path.isfile(candidate):
                     return candidate, project_id
 
-        # 3. Fallback: legacy memory/ locations (backward compat)
+        # 3. Check vault memory guidance directories (passive rules — spec §13)
+        system_guidance = os.path.join(self._storage_root, "vault", "system", "memory", "guidance")
+        candidate = os.path.join(system_guidance, f"{rule_id}.md")
+        if os.path.isfile(candidate):
+            return candidate, None
+
+        # 3b. Check project memory guidance directories
+        if os.path.isdir(projects_dir):
+            for project_id in sorted(os.listdir(projects_dir)):
+                guidance_dir = os.path.join(projects_dir, project_id, "memory", "guidance")
+                candidate = os.path.join(guidance_dir, f"{rule_id}.md")
+                if os.path.isfile(candidate):
+                    return candidate, project_id
+
+        # 3c. Check agent-type memory guidance directories
+        agent_types_dir = os.path.join(self._storage_root, "vault", "agent-types")
+        if os.path.isdir(agent_types_dir):
+            for agent_type in sorted(os.listdir(agent_types_dir)):
+                guidance_dir = os.path.join(agent_types_dir, agent_type, "memory", "guidance")
+                candidate = os.path.join(guidance_dir, f"{rule_id}.md")
+                if os.path.isfile(candidate):
+                    return candidate, None  # agent-type scope, no project_id
+
+        # 4. Fallback: legacy memory/ locations (backward compat)
         memory_root = os.path.join(self._storage_root, "memory")
         if os.path.isdir(memory_root):
             for scope_dir in sorted(os.listdir(memory_root)):
@@ -262,6 +329,8 @@ class RuleManager:
         project_id: str | None,
         rule_type: str,
         content: str,
+        *,
+        agent_type: str | None = None,
     ) -> dict:
         """Write a rule file with YAML frontmatter.
 
@@ -270,14 +339,20 @@ class RuleManager:
         rule is created.  Auto-generates id from the first ``# Title``
         heading if omitted.
 
+        **Passive rules** (playbooks spec §13) are stored as vault memory
+        guidance files rather than playbook files.  They use tags-based
+        frontmatter and are surfaced through memory search.
+
         Args:
             id: Rule identifier, or ``None`` to auto-generate.
             project_id: Project scope, or ``None`` for global.
             rule_type: ``"active"`` or ``"passive"``.
             content: Markdown body content for the rule.
+            agent_type: Agent type for agent-type scoping (passive only).
 
         Returns:
             Dict with ``success``, ``id``, and ``hooks_generated`` keys.
+            Passive rules also include ``memory_path``.
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -295,10 +370,36 @@ class RuleManager:
             old_meta, _ = self._split_frontmatter(open(path).read())
             created = old_meta.get("created", now)
             hooks = old_meta.get("hooks", [])
-            # If project scope changed, delete old file
-            if old_pid != project_id:
+            # If project scope changed or rule type changed, delete old file
+            old_type = old_meta.get("type", "passive")
+            if old_pid != project_id or old_type != rule_type:
                 os.remove(path)
 
+        if rule_type == "passive":
+            # Passive rules → vault memory guidance files (spec §13)
+            meta = {
+                "id": id,
+                "type": "passive",
+                "tags": ["guidance", "passive-rule"],
+                "project_id": project_id,
+                "created": created,
+                "updated": now,
+            }
+            file_content = self._build_file_content(meta, content)
+            rule_path = os.path.join(self._memory_guidance_dir(project_id, agent_type), f"{id}.md")
+            os.makedirs(os.path.dirname(rule_path), exist_ok=True)
+
+            with open(rule_path, "w") as f:
+                f.write(file_content)
+
+            return {
+                "success": True,
+                "id": id,
+                "hooks_generated": [],
+                "memory_path": rule_path,
+            }
+
+        # Active rules → vault playbook files (unchanged)
         meta = {
             "id": id,
             "type": rule_type,
@@ -309,7 +410,7 @@ class RuleManager:
         }
 
         file_content = self._build_file_content(meta, content)
-        rule_path = self._rule_path(id, project_id)
+        rule_path = self._rule_path(id, project_id, rule_type)
         os.makedirs(os.path.dirname(rule_path), exist_ok=True)
 
         with open(rule_path, "w") as f:
@@ -377,6 +478,9 @@ class RuleManager:
     def browse_rules(self, project_id: str | None = None) -> list[dict]:
         """List rules for a project plus all global rules.
 
+        Scans both playbook directories (active rules) and memory guidance
+        directories (passive rules, per playbooks spec §13).
+
         Args:
             project_id: Project to list rules for.  Global rules are
                 always included regardless of this value.
@@ -388,12 +492,14 @@ class RuleManager:
         results = []
         dirs_to_scan = []
 
-        # Project-specific rules
+        # Project-specific rules (active + passive)
         if project_id:
             dirs_to_scan.append((self._rules_dir(project_id), project_id))
+            dirs_to_scan.append((self._memory_guidance_dir(project_id), project_id))
 
-        # Global rules always included
+        # Global rules always included (active + passive)
         dirs_to_scan.append((self._rules_dir(None), None))
+        dirs_to_scan.append((self._memory_guidance_dir(None), None))
 
         seen_ids: set[str] = set()
         for rules_dir, scope_pid in dirs_to_scan:
@@ -429,10 +535,15 @@ class RuleManager:
         return results
 
     def get_rules_for_prompt(self, project_id: str | None, query: str | None = None) -> str:
-        """Load rules as formatted text for PromptBuilder Layer 3.
+        """Load active rules as formatted text for PromptBuilder Layer 3.
 
-        Without memsearch: returns ALL rules for the project + globals.
-        With memsearch (future): would use semantic search against query.
+        Only returns **active** rules.  Passive rules (contextual guidance)
+        are now stored as vault memory files (playbooks spec §13) and are
+        surfaced through memory search rather than static rule injection.
+
+        Args:
+            project_id: Project scope for rule lookup.
+            query: Unused (reserved for future semantic filtering).
         """
         rules = self.browse_rules(project_id)
         if not rules:
@@ -440,11 +551,12 @@ class RuleManager:
 
         sections = []
         for rule_info in rules:
+            # Skip passive rules — they are surfaced via memory search
+            if rule_info.get("type") == "passive":
+                continue
             loaded = self.load_rule(rule_info["id"])
             if loaded:
-                rule_type = loaded["type"]
-                prefix = "[Active]" if rule_type == "active" else "[Passive]"
-                sections.append(f"### {prefix} {rule_info['name']}\n{loaded['content']}")
+                sections.append(f"### [Active] {rule_info['name']}\n{loaded['content']}")
 
         if not sections:
             return ""
@@ -479,9 +591,14 @@ class RuleManager:
         project_id: str | None,
         rule_type: str,
         content: str,
+        *,
+        agent_type: str | None = None,
     ) -> dict:
-        """Save a rule and generate hooks for active rules."""
-        result = self.save_rule(id, project_id, rule_type, content)
+        """Save a rule and generate hooks for active rules.
+
+        Passive rules are stored as vault memory guidance files (spec §13).
+        """
+        result = self.save_rule(id, project_id, rule_type, content, agent_type=agent_type)
         if not result["success"]:
             return result
 
@@ -1289,24 +1406,41 @@ class RuleManager:
         """Return all existing rule directories as (abs_path, project_id|None).
 
         Scans vault playbook directories: ``vault/system/playbooks/`` for
-        global rules and ``vault/projects/*/playbooks/`` for project rules.
-        Also includes legacy ``memory/*/rules/`` directories for backward
-        compatibility with unmigrated files.
+        global active rules and ``vault/projects/*/playbooks/`` for project
+        active rules.  Also scans memory guidance directories for passive
+        rules (playbooks spec §13).  Includes legacy ``memory/*/rules/``
+        directories for backward compatibility with unmigrated files.
         """
         result = []
 
-        # Vault system playbooks (global scope)
+        # Vault system playbooks (global active rules)
         system_dir = os.path.join(self._storage_root, "vault", "system", "playbooks")
         if os.path.isdir(system_dir):
             result.append((system_dir, None))
 
-        # Vault project playbooks
+        # Vault system memory guidance (global passive rules)
+        system_guidance = os.path.join(self._storage_root, "vault", "system", "memory", "guidance")
+        if os.path.isdir(system_guidance):
+            result.append((system_guidance, None))
+
+        # Vault project playbooks + guidance
         projects_dir = os.path.join(self._storage_root, "vault", "projects")
         if os.path.isdir(projects_dir):
             for project_id in sorted(os.listdir(projects_dir)):
                 playbooks_dir = os.path.join(projects_dir, project_id, "playbooks")
                 if os.path.isdir(playbooks_dir):
                     result.append((playbooks_dir, project_id))
+                guidance_dir = os.path.join(projects_dir, project_id, "memory", "guidance")
+                if os.path.isdir(guidance_dir):
+                    result.append((guidance_dir, project_id))
+
+        # Vault agent-type memory guidance
+        agent_types_dir = os.path.join(self._storage_root, "vault", "agent-types")
+        if os.path.isdir(agent_types_dir):
+            for agent_type in sorted(os.listdir(agent_types_dir)):
+                guidance_dir = os.path.join(agent_types_dir, agent_type, "memory", "guidance")
+                if os.path.isdir(guidance_dir):
+                    result.append((guidance_dir, None))
 
         # Legacy memory/ locations (backward compat)
         memory_root = os.path.join(self._storage_root, "memory")

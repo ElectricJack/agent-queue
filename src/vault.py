@@ -926,6 +926,140 @@ After coordinating work, consider:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2: Migrate passive rules to vault memory files (playbooks spec §13)
+# ---------------------------------------------------------------------------
+
+
+def migrate_passive_rules_to_memory(data_dir: str) -> dict:
+    """Move passive rules from playbook directories to vault memory guidance.
+
+    Phase 2 migration (playbooks spec §13): passive rules serve a different
+    purpose — contextual guidance rather than workflow automation.  In the
+    new architecture, they become memory files in the appropriate scope
+    within the vault, where they're surfaced through memory search rather
+    than a separate rule mechanism.
+
+    Moves passive rule files:
+
+    - **Global:** ``vault/system/playbooks/{id}.md`` →
+      ``vault/system/memory/guidance/{id}.md``
+    - **Project:** ``vault/projects/{pid}/playbooks/{id}.md`` →
+      ``vault/projects/{pid}/memory/guidance/{id}.md``
+
+    The operation is **idempotent**:
+
+    * Files already present at the destination are skipped.
+    * Only files with ``type: passive`` in their YAML frontmatter are moved.
+    * The frontmatter is updated: ``hooks`` is removed, ``tags`` is added.
+    * Source files are removed only after a successful write.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``moved``, ``skipped``, and ``errors`` counts plus a
+        ``details`` list of per-file log messages.
+    """
+    import yaml
+
+    stats: dict = {"moved": 0, "skipped": 0, "errors": 0, "details": []}
+
+    # Build list of (playbooks_dir, scope_label, guidance_dest_dir) to scan
+    dirs_to_scan: list[tuple[str, str, str]] = []
+
+    # System-scoped (global)
+    system_playbooks = os.path.join(data_dir, "vault", "system", "playbooks")
+    system_guidance = os.path.join(data_dir, "vault", "system", "memory", "guidance")
+    if os.path.isdir(system_playbooks):
+        dirs_to_scan.append((system_playbooks, "system", system_guidance))
+
+    # Project-scoped
+    projects_dir = os.path.join(data_dir, "vault", "projects")
+    if os.path.isdir(projects_dir):
+        for project_id in sorted(os.listdir(projects_dir)):
+            playbooks_dir = os.path.join(projects_dir, project_id, "playbooks")
+            guidance_dir = os.path.join(projects_dir, project_id, "memory", "guidance")
+            if os.path.isdir(playbooks_dir):
+                dirs_to_scan.append((playbooks_dir, project_id, guidance_dir))
+
+    for playbooks_dir, scope_label, guidance_dir in dirs_to_scan:
+        for filename in sorted(os.listdir(playbooks_dir)):
+            if not filename.endswith(".md"):
+                continue
+
+            src_path = os.path.join(playbooks_dir, filename)
+            try:
+                with open(src_path, encoding="utf-8") as f:
+                    raw = f.read()
+            except Exception as e:
+                stats["errors"] += 1
+                detail = f"ERROR {scope_label}/{filename}: read failed: {e}"
+                stats["details"].append(detail)
+                logger.warning("Passive rule migration: %s", detail)
+                continue
+
+            # Parse frontmatter to check rule type
+            if not raw.startswith("---"):
+                continue  # Not a rule file — skip silently
+            parts = raw.split("---", 2)
+            if len(parts) < 3:
+                continue
+            try:
+                meta = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                continue
+
+            if meta.get("type") != "passive":
+                continue  # Not a passive rule — skip
+
+            dest_path = os.path.join(guidance_dir, filename)
+
+            # Idempotent: skip if destination already exists
+            if os.path.exists(dest_path):
+                stats["skipped"] += 1
+                detail = f"SKIP {scope_label}/{filename}: already at destination"
+                stats["details"].append(detail)
+                logger.debug("Passive rule migration: %s", detail)
+                continue
+
+            # Update frontmatter: remove hooks, add tags
+            meta.pop("hooks", None)
+            if "tags" not in meta:
+                meta["tags"] = ["guidance", "passive-rule"]
+            elif "guidance" not in meta["tags"]:
+                meta["tags"].append("guidance")
+
+            # Rebuild file content with updated frontmatter
+            new_frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
+            new_content = f"---\n{new_frontmatter}\n---\n{parts[2]}"
+
+            try:
+                os.makedirs(guidance_dir, exist_ok=True)
+                with open(dest_path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                os.remove(src_path)
+                stats["moved"] += 1
+                detail = f"MOVE {scope_label}/{filename}: playbooks/ → memory/guidance/"
+                stats["details"].append(detail)
+                logger.info("Migrated passive rule %s → %s", src_path, dest_path)
+            except Exception as e:
+                stats["errors"] += 1
+                detail = f"ERROR {scope_label}/{filename}: {e}"
+                stats["details"].append(detail)
+                logger.warning("Failed to migrate passive rule %s: %s", src_path, e)
+
+    if stats["moved"] or stats["errors"]:
+        logger.info(
+            "Passive rule migration complete: %d moved, %d skipped, %d errors",
+            stats["moved"],
+            stats["skipped"],
+            stats["errors"],
+        )
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Static vault subdirectories (always created at startup)
 # ---------------------------------------------------------------------------
 
@@ -935,6 +1069,7 @@ _STATIC_DIRS: list[str] = [
     # System-scoped playbooks and memory
     "vault/system/playbooks",
     "vault/system/memory",
+    "vault/system/memory/guidance",
     # Orchestrator profile, playbooks, and memory
     "vault/orchestrator/playbooks",
     "vault/orchestrator/memory",
@@ -1163,6 +1298,7 @@ def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
     base = os.path.join(data_dir, "vault", "agent-types", profile_id)
     os.makedirs(os.path.join(base, "playbooks"), exist_ok=True)
     os.makedirs(os.path.join(base, "memory"), exist_ok=True)
+    os.makedirs(os.path.join(base, "memory", "guidance"), exist_ok=True)
 
 
 def copy_starter_knowledge(data_dir: str, profile_id: str) -> dict:
@@ -1368,6 +1504,7 @@ def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
     for subdir in (
         "memory/knowledge",
         "memory/insights",
+        "memory/guidance",
         "playbooks",
         "notes",
         "references",
@@ -1662,14 +1799,74 @@ def _scan_rule_migration(data_dir: str) -> dict:
     return result
 
 
+def _scan_passive_rule_migration(data_dir: str) -> dict:
+    """Preview what ``migrate_passive_rules_to_memory`` would do.
+
+    Returns a dict with ``would_move`` / ``would_skip`` counts and
+    ``details`` list for dry-run reporting.
+    """
+    import yaml
+
+    result: dict = {"would_move": 0, "would_skip": 0, "details": []}
+
+    dirs_to_scan: list[tuple[str, str, str]] = []
+
+    system_playbooks = os.path.join(data_dir, "vault", "system", "playbooks")
+    system_guidance = os.path.join(data_dir, "vault", "system", "memory", "guidance")
+    if os.path.isdir(system_playbooks):
+        dirs_to_scan.append((system_playbooks, "system", system_guidance))
+
+    projects_dir = os.path.join(data_dir, "vault", "projects")
+    if os.path.isdir(projects_dir):
+        for project_id in sorted(os.listdir(projects_dir)):
+            playbooks_dir = os.path.join(projects_dir, project_id, "playbooks")
+            guidance_dir = os.path.join(projects_dir, project_id, "memory", "guidance")
+            if os.path.isdir(playbooks_dir):
+                dirs_to_scan.append((playbooks_dir, project_id, guidance_dir))
+
+    for playbooks_dir, scope_label, guidance_dir in dirs_to_scan:
+        for filename in sorted(os.listdir(playbooks_dir)):
+            if not filename.endswith(".md"):
+                continue
+            src_path = os.path.join(playbooks_dir, filename)
+            try:
+                with open(src_path, encoding="utf-8") as f:
+                    raw = f.read()
+            except Exception:
+                continue
+            if not raw.startswith("---"):
+                continue
+            parts = raw.split("---", 2)
+            if len(parts) < 3:
+                continue
+            try:
+                meta = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                continue
+            if meta.get("type") != "passive":
+                continue
+
+            dest_path = os.path.join(guidance_dir, filename)
+            if os.path.exists(dest_path):
+                result["would_skip"] += 1
+                result["details"].append(f"SKIP {scope_label}/{filename}: already at destination")
+            else:
+                result["would_move"] += 1
+                result["details"].append(
+                    f"MOVE {scope_label}/{filename}: playbooks/ → memory/guidance/"
+                )
+
+    return result
+
+
 def run_vault_migration(
     data_dir: str,
     project_ids: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Run all vault migrations in the correct order (spec §6, Phase 1).
+    """Run all vault migrations in the correct order (spec §6, Phase 1+2).
 
-    Consolidates the four individual migration operations into a single
+    Consolidates the individual migration operations into a single
     idempotent entry point that can be called from the CLI
     (``aq vault migrate``) or programmatically.
 
@@ -1682,6 +1879,8 @@ def run_vault_migration(
     4. ``migrate_notes_to_vault`` — per-project notes migration
     5. ``copy_project_memory_to_vault`` — per-project memory file copy
     6. ``migrate_rule_files`` — global and per-project rule migration
+    7. ``migrate_passive_rules_to_memory`` — passive rules to vault memory
+       guidance (playbooks spec §13, Phase 2)
 
     The function is **idempotent** — safe to run multiple times.  It never
     duplicates or overwrites data that is already at the destination.
@@ -1869,6 +2068,39 @@ def run_vault_migration(
             f"{rule_result['errors']} errors"
         )
         for d in rule_result.get("details", []):
+            report["details"].append(f"    {d}")
+
+    # ------------------------------------------------------------------
+    # Step 6: Passive rule migration (playbooks spec §13)
+    # ------------------------------------------------------------------
+    report["details"].append("  --- Passive rule → memory guidance migration ---")
+    if dry_run:
+        # Dry-run: scan for passive rules in playbook dirs
+        passive_scan = _scan_passive_rule_migration(data_dir)
+        report["passive_rules"] = passive_scan
+        report["summary"]["total_moved"] += passive_scan.get("would_move", 0)
+        report["summary"]["total_skipped"] += passive_scan.get("would_skip", 0)
+        if passive_scan.get("would_move") or passive_scan.get("would_skip"):
+            report["details"].append(
+                f"  passive rules: {passive_scan['would_move']} to move, "
+                f"{passive_scan['would_skip']} to skip"
+            )
+            for d in passive_scan.get("details", []):
+                report["details"].append(f"    {d}")
+        else:
+            report["details"].append("  passive rules: nothing to migrate")
+    else:
+        passive_result = migrate_passive_rules_to_memory(data_dir)
+        report["passive_rules"] = passive_result
+        report["summary"]["total_moved"] += passive_result["moved"]
+        report["summary"]["total_skipped"] += passive_result["skipped"]
+        report["summary"]["total_errors"] += passive_result["errors"]
+        report["details"].append(
+            f"  passive rules: {passive_result['moved']} moved, "
+            f"{passive_result['skipped']} skipped, "
+            f"{passive_result['errors']} errors"
+        )
+        for d in passive_result.get("details", []):
             report["details"].append(f"    {d}")
 
     # ------------------------------------------------------------------
