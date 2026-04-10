@@ -5637,6 +5637,67 @@ feature work stuck on feature branches across multiple workspaces.
             "total_hooks": len(hooks),
         }
 
+    async def _cmd_migrate_rules_to_playbooks(self, args: dict) -> dict:
+        """Phase 2 migration: convert active rules to playbook markdown.
+
+        Scans all rule directories for user-created active rules and
+        converts each to an equivalent playbook markdown file.  Passive
+        rules are migrated to memory files.
+
+        Default rules (the six bundled rules) are skipped — they have
+        hand-crafted playbook replacements.
+
+        Args:
+            dry_run: Preview without writing files.
+            include_defaults: Also migrate default rules.
+            cleanup_hooks: Remove hooks from migrated rules (default True).
+            archive_rules: Archive original rule files after migration.
+        """
+        from src.rule_migration import (
+            cleanup_migrated_rule_hooks,
+            migrate_rules_to_playbooks,
+            remove_migrated_rule_files,
+        )
+
+        dry_run = args.get("dry_run", False)
+        include_defaults = args.get("include_defaults", False)
+        cleanup_hooks = args.get("cleanup_hooks", True)
+        archive_rules = args.get("archive_rules", False)
+
+        # Run the migration
+        result = migrate_rules_to_playbooks(
+            self.config.data_dir,
+            dry_run=dry_run,
+            include_defaults=include_defaults,
+        )
+
+        if dry_run:
+            return result
+
+        # Post-migration: clean up hooks for migrated rules
+        migrated_ids = []
+        for detail in result.get("details", []):
+            if detail.startswith("MIGRATE "):
+                # Extract rule ID from "MIGRATE rule-id → playbook-id ..."
+                parts = detail.split(" → ")
+                if parts:
+                    rule_id = parts[0].replace("MIGRATE ", "").strip()
+                    migrated_ids.append(rule_id)
+
+        if migrated_ids and cleanup_hooks:
+            hook_result = await cleanup_migrated_rule_hooks(self.db, migrated_ids)
+            result["hooks_cleaned"] = hook_result.get("cleaned", 0)
+            result["hook_cleanup_errors"] = hook_result.get("errors", 0)
+
+        if migrated_ids and archive_rules:
+            archive_result = await remove_migrated_rule_files(
+                self.config.data_dir, migrated_ids
+            )
+            result["rules_archived"] = archive_result.get("archived", 0)
+            result["archive_errors"] = archive_result.get("errors", 0)
+
+        return result
+
     # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write

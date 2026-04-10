@@ -155,6 +155,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "rule_runs": "rules",
     "toggle_rule": "rules",
     "refresh_rules": "rules",
+    "migrate_rules_to_playbooks": "rules",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — migrated to aq-memory-v2 internal plugin (src/plugins/internal/memory_v2.py)
@@ -2238,6 +2239,46 @@ _ALL_TOOL_DEFINITIONS = [
             "rule files and regenerates hooks for active rules."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "migrate_rules_to_playbooks",
+        "description": (
+            "Phase 2 migration: convert user-created active rules to playbook "
+            "markdown files. Passive rules are moved to memory files. "
+            "Use dry_run=true to preview changes without writing files."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "description": (
+                        "Preview what would happen without writing files. Default: false."
+                    ),
+                },
+                "include_defaults": {
+                    "type": "boolean",
+                    "description": (
+                        "Also migrate default rules (normally handled separately). "
+                        "Default: false."
+                    ),
+                },
+                "cleanup_hooks": {
+                    "type": "boolean",
+                    "description": (
+                        "After migration, remove hooks derived from migrated rules. "
+                        "Default: true."
+                    ),
+                },
+                "archive_rules": {
+                    "type": "boolean",
+                    "description": (
+                        "After migration, archive original rule files. "
+                        "Default: false."
+                    ),
+                },
+            },
+        },
     },
     # --- Communication ---
     {
