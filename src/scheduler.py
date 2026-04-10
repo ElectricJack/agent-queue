@@ -519,6 +519,20 @@ class Scheduler:
                     continue
 
                 task = available[0]
+
+                # Log affinity reason for debugging when present.
+                if task.affinity_reason:
+                    aff_tier = top_tier
+                    logger.debug(
+                        "Affinity: task %s → agent %s "
+                        "(preferred=%s, reason=%s, tier=%d)",
+                        task.id,
+                        agent.id,
+                        task.affinity_agent_id,
+                        task.affinity_reason,
+                        aff_tier,
+                    )
+
                 actions.append(
                     AssignAction(
                         agent_id=agent.id,
