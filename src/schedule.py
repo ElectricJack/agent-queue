@@ -43,7 +43,7 @@ Supported cron features:
 - ``N,M,O`` (list)
 - ``N`` (exact value)
 
-See ``specs/hooks.md`` for the periodic hook trigger specification.
+See ``docs/specs/design/playbooks.md`` for the playbook-based automation specification.
 """
 
 from __future__ import annotations

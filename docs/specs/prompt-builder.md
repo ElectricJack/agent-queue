@@ -6,7 +6,7 @@ tags: [spec, prompts, context]
 
 ## Purpose
 
-Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[specs/adapters/claude]], chat agent, [[specs/hooks]], and agent_prompting.
+Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[specs/adapters/claude]], chat agent, and agent_prompting.
 
 ## Concepts
 

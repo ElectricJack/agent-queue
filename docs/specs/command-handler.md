@@ -2280,7 +2280,7 @@ available or the channel cannot be found.
 - `save_rule` — Create or update a rule (markdown with YAML frontmatter)
 - `delete_rule` — Delete a rule and its associated hook
 
-See [[specs/rule-system]] for full details.
+Rules have been replaced by [[design/playbooks|playbooks]]. These commands now redirect to playbook equivalents.
 
 ---
 

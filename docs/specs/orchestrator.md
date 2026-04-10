@@ -1201,4 +1201,4 @@ During `initialize()`, after hook engine setup:
 > after the Supervisor is available (the supervisor is needed for rule prompt expansion).
 
 The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
-for rule CRUD operations. See [[specs/rule-system]] for the full Rule System spec.
+for rule CRUD operations. Rules have been replaced by [[design/playbooks|playbooks]].

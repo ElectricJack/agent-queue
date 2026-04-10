@@ -5,7 +5,7 @@ tags: [design, playbooks, automation, workflows]
 # Playbooks — Agent Workflow Graphs
 
 **Status:** Active
-**Supersedes:** `rule-system.md`, `hooks.md` (migration complete)
+**Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
 **Related:** [[vault]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]

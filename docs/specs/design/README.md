@@ -131,7 +131,7 @@ fix tasks, and the experience is remembered for next time.
 
 ## Supersedes
 
-These specs have replaced:
-- `specs/rule-system.md` — rules are now [[playbooks]] or [[vault|vault memory]]
-- `specs/hooks.md` — hook engine replaced by [[playbooks|playbook executor]]
+These specs have replaced (deprecated spec files removed):
+- ~~`specs/rule-system.md`~~ — rules are now [[playbooks]] or [[vault|vault memory]]
+- ~~`specs/hooks.md`~~ — hook engine replaced by [[playbooks|playbook executor]]
 - Parts of `specs/agent-profiles.md` — profiles now stored as [[vault|vault markdown]]

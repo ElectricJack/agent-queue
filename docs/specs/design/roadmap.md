@@ -180,7 +180,7 @@ Originally: Create the vault directory layout and the unified file watcher.
 
 | # | Task | Depends On |
 |---|---|---|
-| 1.3.1 | Implement `VaultWatcher` class using existing `FileWatcher` pattern ([[specs/hooks]]) | 1.1.1 |
+| 1.3.1 | Implement `VaultWatcher` class using existing `FileWatcher` pattern | 1.1.1 |
 | 1.3.2 | Implement path-based dispatch: `*/playbooks/*.md` → playbook compilation handler | 1.3.1 |
 | 1.3.3 | Implement path-based dispatch: `*/profile.md` → profile sync handler | 1.3.1 |
 | 1.3.4 | Implement path-based dispatch: `*/memory/**/*.md` → memory re-index handler | 1.3.1 |
@@ -792,11 +792,11 @@ Remove the old system once [[playbooks]] are validated.
 | 8.1 | Migrate all user-created active rules to playbooks (generate playbook markdown from rule files) per [[playbooks#13. Migration Path]] Phase 2 | 5.6.6 |
 | 8.2 | Migrate passive rules to vault memory files (in appropriate agent-type or project scope) per [[playbooks#13. Migration Path]] Passive Rules | 3.1.1 |
 | 8.3 | Redirect hook commands to playbook equivalents (`list_hooks` → `list_playbooks`, etc.) per [[playbooks#13. Migration Path]] Phase 3 | 5.5.7 |
-| 8.4 | Remove `HookEngine` ([[specs/hooks]]), `RuleManager` ([[specs/rule-system]]), and related code | 8.1, 8.2, 8.3 |
+| 8.4 | Remove `HookEngine` (hooks), `RuleManager` (rule-system), and related code | 8.1, 8.2, 8.3 |
 | 8.5 | Remove hook/rule DB tables (Alembic migration) | 8.4 |
 | 8.6 | Remove `src/memory.py` MemoryManager and v1 memory plugin per [[memory-plugin#2. Current Architecture (Being Replaced)]] | 2.2.16 |
 | 8.7 | ~~Update all specs to remove "future evolution" callouts (they're now current)~~ ✅ | 8.4 |
-| 8.8 | Remove deprecated spec files (`proactive-inspector.md` already removed, verify no others) | 8.7 |
+| 8.8 | ~~Remove deprecated spec files (`proactive-inspector.md` already removed, verify no others)~~ ✅ | 8.7 |
 
 > **Final test checkpoint:** Full regression test. Every feature that worked with
 > hooks still works with playbooks. Memory operations all route through v2 plugin.
