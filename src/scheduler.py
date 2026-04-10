@@ -160,6 +160,28 @@ def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
     return locks.get(task.preferred_workspace_id) is None
 
 
+def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
+    """Check if a task's agent_type requirement is satisfied by the agent.
+
+    Agent type matching is a **hard constraint** — tasks with an explicit
+    ``agent_type`` are only assigned to agents whose ``agent_type`` field
+    matches exactly.  Tasks without an ``agent_type`` requirement match
+    any agent regardless of the agent's type.
+
+    This enforces the type-matching dimension of agent affinity described
+    in the agent-coordination spec §3 (Core Concepts): "a review task
+    should go to a review agent, not a coding agent."
+
+    Unlike agent-id affinity (which is advisory and uses soft ordering),
+    type matching is a filter — mismatched tasks are excluded from
+    consideration entirely, and will stay queued until a matching agent
+    becomes available.
+    """
+    if not task.agent_type:
+        return True  # no type requirement → any agent is fine
+    return task.agent_type == agent.agent_type
+
+
 def _is_scheduling_paused(project_id: str, constraints: dict[str, ProjectConstraint]) -> bool:
     """Return True if a project has an active pause_scheduling constraint."""
     c = constraints.get(project_id)
@@ -387,11 +409,14 @@ class Scheduler:
                     continue
 
                 # Pick highest priority ready task not yet assigned.
-                # Also filter out tasks whose preferred workspace is locked.
+                # Also filter out tasks whose preferred workspace is locked
+                # and tasks whose agent_type doesn't match the current agent.
                 available = [
                     t
                     for t in ready_by_project.get(project.id, [])
-                    if t.id not in assigned_tasks and _workspace_available(t, state.workspace_locks)
+                    if t.id not in assigned_tasks
+                    and _workspace_available(t, state.workspace_locks)
+                    and _task_agent_type_matches(t, agent)
                 ]
                 if not available:
                     continue

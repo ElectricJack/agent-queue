@@ -703,15 +703,36 @@ class TestSchedulerAffinityAgent:
         assert len(actions) == 1
         assert actions[0].task_id == "t-1"
 
-    def test_agent_type_stored_on_task(self):
-        """agent_type is stored on tasks (scheduler doesn't filter by it yet)."""
+    def test_agent_type_matching_filters_assignment(self):
+        """agent_type is a hard constraint: task only assigned to matching agent."""
         task = make_task(id="t-1", agent_type="code-review")
         state = make_state(
             tasks=[task],
-            agents=[make_agent(id="a-1", agent_type="claude")],
+            agents=[make_agent(id="a-1", agent_type="coding")],
         )
-        # Task should still be scheduled — agent_type is advisory metadata
-        # for coordination playbooks, not a hard scheduler constraint (yet)
+        # Task has agent_type="code-review" but agent is "coding" → no match
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+
+    def test_agent_type_matching_allows_matching_agent(self):
+        """agent_type match → task IS assigned."""
+        task = make_task(id="t-1", agent_type="coding")
+        state = make_state(
+            tasks=[task],
+            agents=[make_agent(id="a-1", agent_type="coding")],
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-1"
+        assert actions[0].agent_id == "a-1"
+
+    def test_no_agent_type_matches_any_agent(self):
+        """Tasks without agent_type are assigned to any available agent."""
+        task = make_task(id="t-1")  # agent_type=None
+        state = make_state(
+            tasks=[task],
+            agents=[make_agent(id="a-1", agent_type="code-review")],
+        )
         actions = Scheduler.schedule(state)
         assert len(actions) == 1
         assert actions[0].task_id == "t-1"
