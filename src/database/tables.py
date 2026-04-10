@@ -86,6 +86,9 @@ tasks = Table(
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
+    Column(
+        "workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True
+    ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -324,6 +327,7 @@ archived_tasks = Table(
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
+    Column("workflow_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),

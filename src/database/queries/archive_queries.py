@@ -70,6 +70,7 @@ class ArchiveQueryMixin:
                     attachments=json.dumps(task.attachments) if task.attachments else "[]",
                     auto_approve_plan=int(task.auto_approve_plan),
                     skip_verification=int(task.skip_verification),
+                    workflow_id=task.workflow_id,
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,
@@ -212,6 +213,7 @@ class ArchiveQueryMixin:
             plan_source=archived["plan_source"],
             is_plan_subtask=archived["is_plan_subtask"],
             task_type=TaskType(archived["task_type"]) if archived["task_type"] else None,
+            workflow_id=archived.get("workflow_id"),
         )
         await self.create_task(task)
         async with self._engine.begin() as conn:
@@ -265,6 +267,7 @@ class ArchiveQueryMixin:
             "plan_source": row.get("plan_source"),
             "is_plan_subtask": bool(row.get("is_plan_subtask", 0)),
             "task_type": row.get("task_type"),
+            "workflow_id": row.get("workflow_id"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

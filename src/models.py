@@ -259,6 +259,7 @@ class Task:
     )  # absolute paths to attached files (images, etc.)
     auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
     skip_verification: bool = False  # if True, skip git verification on completion
+    workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
 
 
 @dataclass

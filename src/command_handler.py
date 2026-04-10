@@ -2417,6 +2417,7 @@ class CommandHandler:
         )
         auto_approve_plan = args.get("auto_approve_plan", False)
         skip_verification = args.get("skip_verification", False)
+        workflow_id = args.get("workflow_id")
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -2431,6 +2432,7 @@ class CommandHandler:
             attachments=attachments,
             auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
+            workflow_id=workflow_id,
         )
         await self.db.create_task(task)
 
@@ -2464,6 +2466,8 @@ class CommandHandler:
             result["auto_approve_plan"] = True
         if skip_verification:
             result["skip_verification"] = True
+        if workflow_id:
+            result["workflow_id"] = workflow_id
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),
@@ -2507,6 +2511,7 @@ class CommandHandler:
             "profile_id": task.profile_id,
             "auto_approve_plan": task.auto_approve_plan,
             "skip_verification": task.skip_verification,
+            "workflow_id": task.workflow_id,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -2770,6 +2775,8 @@ class CommandHandler:
             updates["auto_approve_plan"] = bool(args["auto_approve_plan"])
         if "skip_verification" in args:
             updates["skip_verification"] = bool(args["skip_verification"])
+        if "workflow_id" in args:
+            updates["workflow_id"] = args["workflow_id"]  # None clears the workflow
 
         if updates:
             await self.db.update_task(args["task_id"], **updates)
