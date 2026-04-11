@@ -3508,6 +3508,14 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"])
             return
 
+        if result.get("already_queued") or result.get("already_synced"):
+            await _send_info(
+                interaction,
+                "Sync Workspaces — No Action Needed",
+                description=result.get("message", "Already up to date."),
+            )
+            return
+
         embed = success_embed(
             "Sync Workspaces Queued",
             fields=[
