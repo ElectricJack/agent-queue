@@ -7439,7 +7439,28 @@ feature work stuck on feature branches across multiple workspaces.
 
             p = pathlib.Path(path)
             if not p.is_file():
-                return {"error": f"File not found: {path}"}
+                # Try resolving as a playbook name from vault directories.
+                # Search system, orchestrator, and per-project playbook dirs.
+                name = path if path.endswith(".md") else f"{path}.md"
+                search_dirs = [
+                    pathlib.Path(self.config.data_dir) / "vault" / "system" / "playbooks",
+                    pathlib.Path(self.config.data_dir) / "vault" / "orchestrator" / "playbooks",
+                ]
+                # Also search per-project playbook dirs
+                projects_dir = pathlib.Path(self.config.data_dir) / "vault" / "projects"
+                if projects_dir.is_dir():
+                    for proj in projects_dir.iterdir():
+                        pb_dir = proj / "playbooks"
+                        if pb_dir.is_dir():
+                            search_dirs.append(pb_dir)
+                for d in search_dirs:
+                    candidate = d / name
+                    if candidate.is_file():
+                        p = candidate
+                        path = str(p)
+                        break
+                if not p.is_file():
+                    return {"error": f"File not found: {path}"}
             try:
                 markdown = p.read_text(encoding="utf-8")
             except Exception as exc:
@@ -7558,6 +7579,94 @@ feature work stuck on feature branches across multiple workspaces.
             "node_count": len(playbook.nodes),
             "version": playbook.version,
         }
+
+    async def _cmd_run_playbook(self, args: dict) -> dict:
+        """Manually trigger a playbook run.
+
+        Looks up the compiled playbook by ID, creates a Supervisor for
+        LLM calls, and executes the full graph from entry to terminal.
+        The run is persisted to the database and emits events like any
+        trigger-initiated run.
+
+        Args:
+            playbook_id: The compiled playbook to execute.
+            event: Optional trigger event dict (default: ``{"type": "manual"}``).
+        """
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            return {"error": "Playbook manager is not initialised"}
+
+        playbook = pm.get_playbook(playbook_id)
+        if playbook is None:
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' not found. "
+                    "Make sure it has been compiled (use compile_playbook first)."
+                ),
+            }
+
+        # Build event payload — merge user-provided event with defaults
+        event = args.get("event") or {}
+        if isinstance(event, str):
+            try:
+                event = json.loads(event)
+            except (json.JSONDecodeError, TypeError):
+                return {"error": f"Invalid event JSON: {event}"}
+        if not isinstance(event, dict):
+            return {"error": "event must be a JSON object (dict)"}
+        if "type" not in event:
+            event["type"] = "manual"
+
+        graph = playbook.to_dict()
+
+        # Create a Supervisor for LLM calls
+        from src.supervisor import Supervisor
+
+        supervisor = Supervisor(self.orchestrator, self.config)
+        if not supervisor.initialize():
+            return {"error": "Failed to initialize LLM provider for playbook execution"}
+
+        event_bus = getattr(self.orchestrator, "bus", None)
+
+        from src.playbook_runner import PlaybookRunner
+
+        runner = PlaybookRunner(
+            graph=graph,
+            event=event,
+            supervisor=supervisor,
+            db=self.db,
+            event_bus=event_bus,
+        )
+
+        try:
+            result = await runner.run()
+        except Exception as exc:
+            logger.error(
+                "Manual playbook run failed for '%s': %s",
+                playbook_id,
+                exc,
+                exc_info=True,
+            )
+            return {"error": f"Playbook execution failed: {exc}"}
+
+        resp = {
+            "run_id": result.run_id,
+            "playbook_id": playbook_id,
+            "version": playbook.version,
+            "status": result.status,
+            "tokens_used": result.tokens_used,
+            "node_count": len(result.node_trace),
+            "node_trace": result.node_trace,
+        }
+        if result.error:
+            resp["error"] = result.error
+        if result.final_response:
+            resp["final_response"] = result.final_response
+        return resp
 
     async def _cmd_dry_run_playbook(self, args: dict) -> dict:
         """Simulate playbook execution with a mock event, producing no side effects.

@@ -3928,6 +3928,43 @@ def setup_commands(bot: commands.Bot) -> None:
             followup=True,
         )
 
+    @bot.tree.command(name="playbook-run", description="Manually trigger a playbook run")
+    @app_commands.describe(
+        playbook_id="The compiled playbook ID to execute",
+    )
+    async def playbook_run_command(
+        interaction: discord.Interaction,
+        playbook_id: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute(
+            "run_playbook", {"playbook_id": playbook_id, "event": {"type": "manual"}}
+        )
+        if "error" in result and "run_id" not in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        run_id = result.get("run_id", "?")
+        status = result.get("status", "?")
+        tokens = result.get("tokens_used", 0)
+        node_count = result.get("node_count", 0)
+
+        desc_parts = [
+            f"**Run ID:** `{run_id}`",
+            f"**Status:** {status}",
+            f"**Nodes visited:** {node_count}",
+            f"**Tokens used:** {tokens}",
+        ]
+        if result.get("error"):
+            desc_parts.append(f"**Error:** {result['error']}")
+
+        await _send_info(
+            interaction,
+            f"Playbook Run — {playbook_id}",
+            description="\n".join(desc_parts),
+            followup=True,
+        )
+
     @bot.tree.command(name="playbook-runs", description="List recent playbook runs")
     @app_commands.describe(
         playbook_id="Filter to a specific playbook",

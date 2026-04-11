@@ -963,8 +963,20 @@ class Orchestrator:
         from src.playbook_handler import register_playbook_handlers
         from src.playbook_manager import PlaybookManager
 
+        # Ensure a chat provider is available for playbook compilation.
+        # self._chat_provider is only set when use_llm_parser is enabled,
+        # so create one from the config if needed.
+        playbook_provider = self._chat_provider
+        if playbook_provider is None:
+            try:
+                from src.chat_providers import create_chat_provider
+
+                playbook_provider = create_chat_provider(self.config.chat_provider)
+            except Exception:
+                logger.warning("No chat provider for playbook compilation")
+
         self.playbook_manager = PlaybookManager(
-            chat_provider=self._chat_provider,
+            chat_provider=playbook_provider,
             event_bus=self.bus,
             data_dir=self.config.data_dir,
         )

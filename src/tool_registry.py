@@ -193,6 +193,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_active_tasks_all_projects": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
+    "run_playbook": "playbook",
     "dry_run_playbook": "playbook",
     "show_playbook_graph": "playbook",
     "list_playbooks": "playbook",
@@ -2337,6 +2338,35 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": True,
                 },
             },
+        },
+    },
+    {
+        "name": "run_playbook",
+        "description": (
+            "Manually trigger a playbook run. Executes the full compiled "
+            "playbook graph from entry to terminal with real LLM calls, "
+            "database persistence, and event emission. Use this to start "
+            "a playbook on demand rather than waiting for its configured "
+            "trigger (timer, event, etc.)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The compiled playbook ID to execute",
+                },
+                "event": {
+                    "type": "object",
+                    "description": (
+                        "Trigger event data to seed the run. Defaults to "
+                        '{"type": "manual"} if not provided. '
+                        "Include fields your playbook expects "
+                        "(e.g. project_id, task_id) for context."
+                    ),
+                },
+            },
+            "required": ["playbook_id"],
         },
     },
     {
