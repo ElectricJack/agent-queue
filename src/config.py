@@ -753,9 +753,7 @@ class AppConfig:
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
-    database_path: str = field(
-        default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
-    )
+    database_path: str = ""  # Legacy SQLite path — use database.url instead
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"

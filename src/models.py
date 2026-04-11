@@ -416,6 +416,7 @@ class TaskContext:
     task_id: str = ""
     l0_role: str = ""  # L0 Identity tier (~50 tokens, always present at task start)
     l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always present at task start)
+    l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
     checkout_path: str = ""

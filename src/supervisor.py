@@ -310,12 +310,17 @@ class Supervisor:
         """True while at least one ``chat()`` call is in progress."""
         return any(not ev.is_set() for ev in self._cancel_events)
 
-    async def _build_system_prompt(self) -> str:
+    async def _build_system_prompt(self, *, l2_query: str = "") -> str:
         """Build the system prompt for the current conversation.
 
         Uses ``PromptBuilder`` to assemble identity + active project context.
         Called before every LLM call so the prompt always reflects the
         current project scope.
+
+        Args:
+            l2_query: Optional user text for L2 semantic memory search.
+                      Pass on the first round only to avoid redundant
+                      embedding calls during the tool-loop.
 
         Returns:
             Assembled system prompt string.
@@ -331,6 +336,31 @@ class Supervisor:
             # Fetch project metadata to include in context
             project_context = await self._build_active_project_context(self._active_project_id)
             builder.add_context("active_project", project_context)
+
+            # L1 Critical Facts — inject project facts so the supervisor has
+            # key context without needing explicit memory_search calls.
+            mem_svc = getattr(self.orchestrator, "_memory_v2_service", None)
+            if mem_svc:
+                try:
+                    l1_text = await mem_svc.load_l1_facts(
+                        project_id=self._active_project_id,
+                    )
+                    if l1_text:
+                        builder.set_l1_facts(l1_text)
+                except Exception:
+                    pass  # graceful degradation
+
+                # L2 Topic Context — semantic search for relevant insights.
+                if l2_query:
+                    try:
+                        l2_text = await mem_svc.load_l2_context(
+                            l2_query,
+                            project_id=self._active_project_id,
+                        )
+                        if l2_text:
+                            builder.set_l2_context(l2_text)
+                    except Exception:
+                        pass  # graceful degradation
         tool_index = self._registry.get_tool_index()
         if tool_index:
             builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
@@ -713,9 +743,12 @@ class Supervisor:
             # Apply max_tokens from llm_config (or default 1024).
             effective_max_tokens = llm_config.get("max_tokens", 1024) if llm_config else 1024
 
+            # L2 semantic search only on the first round to avoid redundant
+            # embedding calls during the tool-loop.
+            l2_q = text if round_num == 0 else ""
             resp = await active_provider.create_message(
                 messages=messages,
-                system=await self._build_system_prompt(),
+                system=await self._build_system_prompt(l2_query=l2_q),
                 tools=list(active_tools.values()),
                 max_tokens=effective_max_tokens,
             )

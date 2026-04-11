@@ -848,6 +848,10 @@ class ClaudeAdapter(AgentAdapter):
         if self._task.l1_facts:
             builder.set_l1_facts(self._task.l1_facts)
 
+        # L2 Topic Context tier — semantic search results (~500 tokens)
+        if self._task.l2_context:
+            builder.set_l2_context(self._task.l2_context)
+
         # Main description (assembled by orchestrator: system context,
         # execution rules, override, upstream work, task description)
         if self._task.description:

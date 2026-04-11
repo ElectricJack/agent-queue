@@ -636,10 +636,10 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "entry_type": {
                     "type": "string",
-                    "enum": ["document", "kv", "temporal", ""],
+                    "enum": ["document", "kv", "temporal", "all"],
                     "description": (
                         "Filter by entry type.  Defaults to 'document' (semantic "
-                        "memories/insights).  Use '' to list all entry types."
+                        "memories/insights).  Use 'all' to list all entry types."
                     ),
                     "default": "document",
                 },
@@ -1142,6 +1142,19 @@ class MemoryV2Plugin(InternalPlugin):
         that need it after plugin initialization (e.g. facts.md KV sync).
         """
         return self._service
+
+    def _resolve_project_id(self, args: dict) -> str | None:
+        """Resolve project_id from args, preferring the active project.
+
+        When an active project is set, always use it — the LLM often
+        guesses project IDs incorrectly (e.g. underscores instead of
+        hyphens).  The active project ID from the system is authoritative.
+        """
+        active = self._ctx.active_project_id
+        if active:
+            args["project_id"] = active
+            return active
+        return args.get("project_id")
 
     async def initialize(self, ctx: PluginContext) -> None:
         self._ctx = ctx
@@ -1698,9 +1711,9 @@ class MemoryV2Plugin(InternalPlugin):
         4. Write/update vault markdown file with frontmatter.
         5. Index into the scoped Milvus collection.
         """
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         content = args.get("content")
         if not content:
             return {"error": "content is required"}
@@ -2276,9 +2289,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_search(self, args: dict) -> dict:
         """Semantic vector search across a scoped collection."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         query = args.get("query")
         queries = args.get("queries")
@@ -2389,9 +2402,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_list(self, args: dict) -> dict:
         """Browse memories in a scope, returning metadata."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         if not self._service or not self._service.available:
             return self._unavailable("memory_list")
@@ -2400,6 +2413,8 @@ class MemoryV2Plugin(InternalPlugin):
         topic = args.get("topic")
         tag = args.get("tag")
         entry_type = args.get("entry_type", "document")
+        if entry_type == "all":
+            entry_type = ""
         offset = args.get("offset", 0)
         limit = args.get("limit", 50)
 
@@ -2479,9 +2494,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_kv_get(self, args: dict) -> dict:
         """Exact key-value lookup via Milvus scalar query."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         namespace = args.get("namespace")
         if not namespace:
             return {"error": "namespace is required"}
@@ -2514,9 +2529,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_kv_set(self, args: dict) -> dict:
         """Write a KV entry to the scoped collection and vault facts file."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         namespace = args.get("namespace")
         if not namespace:
             return {"error": "namespace is required"}
@@ -2553,9 +2568,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_kv_list(self, args: dict) -> dict:
         """List all KV entries in a namespace."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         namespace = args.get("namespace")
         if not namespace:
             return {"error": "namespace is required"}
@@ -2593,7 +2608,7 @@ class MemoryV2Plugin(InternalPlugin):
         if not self._service or not self._service.available:
             return self._unavailable("memory_fact_recall")
 
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         agent_type = args.get("agent_type")
         namespace = args.get("namespace")
 
@@ -2640,7 +2655,7 @@ class MemoryV2Plugin(InternalPlugin):
         if not self._service or not self._service.available:
             return self._unavailable("memory_recall")
 
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         agent_type = args.get("agent_type")
         namespace = args.get("namespace")
         topic = args.get("topic")
@@ -2708,7 +2723,7 @@ class MemoryV2Plugin(InternalPlugin):
         if not self._service or not self._service.available:
             return self._unavailable("memory_get")
 
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         agent_type = args.get("agent_type")
         topic = args.get("topic")
         top_k = args.get("top_k", 5)
@@ -2823,9 +2838,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_fact_get(self, args: dict) -> dict:
         """Get current (or as-of) value of a temporal fact."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         key = args.get("key")
         if not key:
             return {"error": "key is required"}
@@ -2856,9 +2871,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_fact_set(self, args: dict) -> dict:
         """Set a temporal fact, closing the previous validity window."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         key = args.get("key")
         if not key:
             return {"error": "key is required"}
@@ -2882,9 +2897,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_fact_history(self, args: dict) -> dict:
         """Retrieve full history of a temporal fact."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         key = args.get("key")
         if not key:
             return {"error": "key is required"}
@@ -2907,9 +2922,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_fact_list(self, args: dict) -> dict:
         """List all temporal fact entries in a namespace."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         if not self._service or not self._service.available:
             return self._unavailable("memory_fact_list")
@@ -2944,9 +2959,9 @@ class MemoryV2Plugin(InternalPlugin):
         memories after they have been merged into stronger entries.
         Deletes from both the Milvus index and the vault filesystem.
         """
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         chunk_hash = args.get("chunk_hash")
         if not chunk_hash:
             return {"error": "chunk_hash is required"}
@@ -2972,9 +2987,9 @@ class MemoryV2Plugin(InternalPlugin):
         Useful for reflection consolidation: changing confidence tags,
         correcting outdated content, or refining topic classification.
         """
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         chunk_hash = args.get("chunk_hash")
         if not chunk_hash:
             return {"error": "chunk_hash is required"}
@@ -3014,9 +3029,9 @@ class MemoryV2Plugin(InternalPlugin):
         across projects — e.g. promoting from project memory to agent-type
         memory.
         """
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         chunk_hash = args.get("chunk_hash")
         if not chunk_hash:
             return {"error": "chunk_hash is required"}
@@ -3081,9 +3096,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_reindex(self, args: dict) -> dict:
         """Reindex vault filesystem into Milvus."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         # TODO: implement vault scanning and re-indexing via MemSearch
         # This requires a per-scope MemSearch instance that scans vault
@@ -3092,9 +3107,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_stats(self, args: dict) -> dict:
         """Get collection statistics."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         if not self._service or not self._service.available:
             return self._unavailable("memory_stats")
@@ -3110,9 +3125,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_health(self, args: dict) -> dict:
         """Get memory health metrics (spec §6 — Memory Health View)."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         if not self._service or not self._service.available:
             return self._unavailable("memory_health")
@@ -3137,9 +3152,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_memory_stale(self, args: dict) -> dict:
         """Find stale memory documents — candidates for archival (spec §6, 6.5.3)."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         if not self._service or not self._service.available:
             return self._unavailable("memory_stale")
@@ -3173,16 +3188,16 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_view_profile(self, args: dict) -> dict:
         """View the project profile."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         return self._not_implemented("view_profile")
 
     async def cmd_edit_project_profile(self, args: dict) -> dict:
         """Replace the project profile content."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         content = args.get("content")
         if not content:
             return {"error": "content is required"}
@@ -3190,9 +3205,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_project_factsheet(self, args: dict) -> dict:
         """View or update the project factsheet."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         action = args.get("action", "view")
         if action not in ("view", "update"):
@@ -3201,9 +3216,9 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_project_knowledge(self, args: dict) -> dict:
         """Read or list knowledge topics."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         action = args.get("action", "read")
         if action not in ("read", "list"):
@@ -3219,16 +3234,16 @@ class MemoryV2Plugin(InternalPlugin):
 
     async def cmd_compact_memory(self, args: dict) -> dict:
         """Compact memory — summarize old entries, remove stale ones."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
         return self._not_implemented("compact_memory")
 
     async def cmd_consolidate(self, args: dict) -> dict:
         """Run knowledge consolidation."""
-        project_id = args.get("project_id")
+        project_id = self._resolve_project_id(args)
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"error": "project_id is required (no active project set)"}
 
         mode = args.get("mode", "daily")
         if mode not in ("daily", "deep", "bootstrap"):

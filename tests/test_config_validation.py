@@ -280,6 +280,7 @@ class TestAppConfigValidation:
     def test_valid_config_no_errors(self, tmp_path):
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
+            database_path=str(tmp_path / "test.db"),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         errors = cfg.validate()
@@ -369,6 +370,7 @@ class TestLoadConfigValidation:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "database_path": str(tmp_path / "test.db"),
                 }
             )
         )
@@ -421,6 +423,7 @@ class TestValidateConfigOnly:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "database_path": str(tmp_path / "test.db"),
                 }
             )
         )
@@ -496,6 +499,7 @@ class TestMcpServerConfigInjection:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
+                    "database_path": str(tmp_path / "test.db"),
                     "mcp_server": {
                         "enabled": True,
                         "port": 8082,

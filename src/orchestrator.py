@@ -344,6 +344,11 @@ class Orchestrator:
         """Set the Supervisor reference for post-task delegation."""
         self._supervisor = supervisor
 
+        # Expose plugin tools to the supervisor's tool registry so the LLM
+        # can discover and call plugin-provided tools (e.g. memory_save).
+        if hasattr(self, "plugin_registry") and self.plugin_registry:
+            supervisor._registry.set_plugin_registry(self.plugin_registry)
+
         # Wire LLM invocation callback into the plugin registry so plugins
         # can call ctx.invoke_llm() from cron jobs and command handlers.
         if hasattr(self, "plugin_registry") and self.plugin_registry:
@@ -5488,6 +5493,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             l0_role = profile.system_prompt_suffix.strip()
 
         l1_facts = ""
+        l2_context = ""
         if self._memory_v2_service:
             try:
                 l1_text = await self._memory_v2_service.load_l1_facts(
@@ -5498,6 +5504,18 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     l1_facts = l1_text
             except Exception as e:
                 logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
+
+            # L2 Topic Context — semantic search using task description.
+            if task.project_id and task.description:
+                try:
+                    l2_text = await self._memory_v2_service.load_l2_context(
+                        task.description,
+                        project_id=task.project_id,
+                    )
+                    if l2_text:
+                        l2_context = l2_text
+                except Exception as e:
+                    logger.warning("L2 context injection failed for task %s: %s", task.id, e)
 
         # Merge MCP servers: start with the daemon's own MCP server (if
         # inject_into_tasks is enabled), then layer profile-specific servers
@@ -5511,6 +5529,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
             description=full_description,
             l0_role=l0_role,
             l1_facts=l1_facts,
+            l2_context=l2_context,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],

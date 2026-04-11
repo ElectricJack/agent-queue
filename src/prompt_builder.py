@@ -41,6 +41,7 @@ _DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
 _CHARS_PER_TOKEN = 4
 _L0_TOKEN_BUDGET = 50  # ~200 chars
 _L1_TOKEN_BUDGET = 200  # ~800 chars
+_L2_TOKEN_BUDGET = 500  # ~2000 chars
 
 
 def extract_section(content: str, heading: str) -> str | None:
@@ -121,6 +122,7 @@ class PromptBuilder:
         self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
         self._override_content: str = ""  # Project-specific override (after L0 role)
         self._l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always at task start)
+        self._l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
         self._identity: str = ""
         self._project_context: str = ""
         self._context_blocks: list[tuple[str, str]] = []
@@ -323,6 +325,27 @@ class PromptBuilder:
             )
         self._l1_facts = text
 
+    def set_l2_context(self, context_text: str) -> None:
+        """L2 Topic Context tier: Set semantic search results (~500 tokens).
+
+        Loaded by searching memories against the task description or user
+        message.  Contains relevant insights, knowledge, and guidance from
+        the project and system memory scopes.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L2 tier).
+        """
+        text = context_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L2_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L2 context text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L2_TOKEN_BUDGET,
+            )
+        self._l2_context = text
+
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
         """Layer 1: Set the identity from a prompt template."""
         rendered = self.render_template(name, variables)
@@ -413,7 +436,7 @@ class PromptBuilder:
         """Assemble all layers into a system prompt and tool list.
 
         Layer order:
-            L0 role → Override → L1 facts → Identity template
+            L0 role → Override → L1 facts → L2 context → Identity template
             → Project context → Context blocks
 
         Returns:
@@ -429,6 +452,8 @@ class PromptBuilder:
             sections.append(self._override_content)
         if self._l1_facts:
             sections.append(self._l1_facts)
+        if self._l2_context:
+            sections.append(self._l2_context)
         if self._identity:
             sections.append(self._identity)
         if self._project_context:

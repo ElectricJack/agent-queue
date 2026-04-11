@@ -784,6 +784,72 @@ class MemoryV2Service:
                 lines.append(f"- {key}: {entries[key]}")
         return "\n".join(lines)
 
+    async def load_l2_context(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        top_k: int = 5,
+    ) -> str:
+        """Search memories by semantic similarity and render for prompt injection.
+
+        Performs multi-scope weighted search (project + system) using the
+        provided query text (typically the task description or user message).
+        Returns a compact markdown block of the most relevant insights.
+
+        Per spec ``docs/specs/design/memory-scoping.md`` §2, the L2 tier
+        is ~500 tokens of topic-relevant context.
+
+        Parameters
+        ----------
+        query:
+            Natural-language text to search against (task description,
+            user message, etc.).
+        project_id:
+            Project identifier for scoped search.
+        top_k:
+            Maximum number of results to include.
+
+        Returns
+        -------
+        str
+            Formatted markdown block with relevant memory excerpts,
+            or empty string if no relevant results found.
+        """
+        if not self.available or not project_id or not query.strip():
+            return ""
+
+        try:
+            results = await self.search(
+                project_id,
+                query,
+                top_k=top_k,
+                track_retrieval=False,
+            )
+        except Exception:
+            logger.debug("L2 context search failed", exc_info=True)
+            return []
+
+        if not results:
+            return ""
+
+        # Filter to reasonably relevant results (distance < 0.7 means
+        # cosine similarity > 0.3 — a lenient but useful threshold).
+        relevant = [r for r in results if r.get("distance", 1.0) < 0.7]
+        if not relevant:
+            return ""
+
+        lines: list[str] = ["## Relevant Memories"]
+        for r in relevant:
+            content = r.get("content", "").strip()
+            topic = r.get("topic", "")
+            if not content:
+                continue
+            prefix = f"[{topic}] " if topic else ""
+            lines.append(f"- {prefix}{content}")
+
+        return "\n".join(lines) if len(lines) > 1 else ""
+
     async def recall(
         self,
         query: str,

@@ -386,8 +386,10 @@ def vault_paths(scope: MemoryScope, scope_id: str | None = None) -> list[str]:
     """
     templates = VAULT_PATHS.get(scope, [])
     if scope_id is not None:
-        safe = sanitize_id(scope_id)
-        return [t.replace("{id}", safe) for t in templates]
+        # Use the raw ID for vault paths — these are filesystem directories
+        # that should match the project/agent-type ID as-is (e.g. "agent-queue",
+        # not "agent_queue").  sanitize_id is for Milvus collection names only.
+        return [t.replace("{id}", scope_id) for t in templates]
     return list(templates)
 
 
