@@ -789,11 +789,18 @@ class PlaybookRunner:
                     event=PlaybookRunEvent.BUDGET_EXCEEDED,
                 )
 
-        # Seed conversation with event context
+        # Seed conversation with event context and execution instructions.
+        # The preamble overrides the system prompt's delegation instinct —
+        # playbook nodes must be executed directly using tools, not delegated
+        # to agents via create_task (unless the node prompt says to).
         seed_message = (
             f"Event received: {json.dumps(self.event)}\n\n"
             f"You are executing playbook '{self._playbook_id}'. "
-            f"I will guide you through each step."
+            f"I will guide you through each step.\n\n"
+            f"**IMPORTANT: Execute each step yourself using the available tools. "
+            f"Do NOT delegate work by creating tasks unless the step explicitly "
+            f"instructs you to create a task. Use `load_tools(category=...)` to "
+            f"load any tool categories you need, then call the tools directly.**"
         )
         self.messages.append({"role": "user", "content": seed_message})
 
