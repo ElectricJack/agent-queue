@@ -842,8 +842,15 @@ class PlaybookRunner:
                     event=PlaybookRunEvent.GRAPH_ERROR,
                 )
 
-            # Terminal node — we're done
+            # Terminal node — execute its prompt (if any) then stop.
             if node.get("terminal"):
+                if node.get("prompt"):
+                    try:
+                        response = await self._execute_node(current_node_id, node, db_run)
+                        final_response = response
+                    except Exception as exc:
+                        logger.exception("Terminal node '%s' execution failed", current_node_id)
+                        # Don't fail the run — terminal node errors are non-fatal
                 if self.on_progress:
                     await self.on_progress("node_terminal", current_node_id)
                 break
