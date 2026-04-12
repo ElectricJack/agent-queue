@@ -7626,7 +7626,8 @@ feature work stuck on feature branches across multiple workspaces.
         # Create a Supervisor for LLM calls
         from src.supervisor import Supervisor
 
-        supervisor = Supervisor(self.orchestrator, self.config)
+        llm_logger = getattr(self.orchestrator, "llm_logger", None)
+        supervisor = Supervisor(self.orchestrator, self.config, llm_logger=llm_logger)
         if not supervisor.initialize():
             return {"error": "Failed to initialize LLM provider for playbook execution"}
 
