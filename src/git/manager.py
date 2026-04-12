@@ -1061,7 +1061,7 @@ class GitManager:
     def get_recent_commits(self, checkout_path: str, count: int = 5) -> str:
         """Return recent commit log (one-line format)."""
         try:
-            return self._run(["log", f"--oneline", f"-{count}"], cwd=checkout_path)
+            return self._run(["log", "--oneline", f"-{count}"], cwd=checkout_path)
         except GitError:
             return ""
 
@@ -1120,7 +1120,7 @@ class GitManager:
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
+            raise GitError("gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         # gh repo create prints the repo URL to stdout, but may also include
@@ -1942,7 +1942,7 @@ class GitManager:
         try:
             result = await self._arun_subprocess(cmd, timeout=60)
         except subprocess.TimeoutExpired:
-            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
+            raise GitError("gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         url = ""

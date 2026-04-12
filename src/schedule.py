@@ -49,7 +49,6 @@ See ``docs/specs/design/playbooks.md`` for the playbook-based automation specifi
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -403,7 +402,6 @@ def format_next_run(dt: datetime | None) -> str:
     """
     if dt is None:
         return "no upcoming run"
-    from datetime import timedelta
 
     now = datetime.now(timezone.utc)
     delta = dt - now

@@ -17,9 +17,7 @@ from typing import TYPE_CHECKING
 
 from src.telegram.notifications import (
     bold,
-    code,
     escape_markdown,
-    format_embed_as_text,
     split_message,
 )
 

@@ -851,7 +851,7 @@ class PlaybookRunner:
                     try:
                         response = await self._execute_node(current_node_id, node, db_run)
                         final_response = response
-                    except Exception as exc:
+                    except Exception:
                         logger.exception("Terminal node '%s' execution failed", current_node_id)
                         # Don't fail the run — terminal node errors are non-fatal
                 if self.on_progress:
