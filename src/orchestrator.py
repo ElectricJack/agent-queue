@@ -1119,26 +1119,7 @@ class Orchestrator:
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
 
-        # Automatic memory extraction from system events (background)
-        from src.memory_extractor import MemoryExtractor
-
-        self.memory_extractor: MemoryExtractor | None = None
-        mem_svc = getattr(self, "_memory_v2_service", None)
-        if (
-            self.config.memory_extractor.get("enabled")
-            and mem_svc
-            and getattr(mem_svc, "available", False)
-        ):
-            self.memory_extractor = MemoryExtractor(
-                bus=self.bus,
-                db=self.db,
-                memory_service=mem_svc,
-                config=self.config.memory_extractor,
-                chat_provider_config=self.config.chat_provider,
-            )
-            self.memory_extractor.subscribe()
-            await self.memory_extractor.start()
-            logger.info("MemoryExtractor initialized and started")
+        self.memory_extractor: MemoryExtractor | None = None  # wired after plugins
 
         # Initialize plugin registry (after DB)
         from src.plugins import PluginRegistry
@@ -1203,6 +1184,22 @@ class Orchestrator:
             )
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
+
+        # Automatic memory extraction from system events (background).
+        # Wired here AFTER plugins load so _memory_v2_service is available.
+        if self.config.memory_extractor.get("enabled") and self._memory_v2_service:
+            from src.memory_extractor import MemoryExtractor
+
+            self.memory_extractor = MemoryExtractor(
+                bus=self.bus,
+                db=self.db,
+                memory_service=self._memory_v2_service,
+                config=self.config.memory_extractor,
+                chat_provider_config=self.config.chat_provider,
+            )
+            self.memory_extractor.subscribe()
+            await self.memory_extractor.start()
+            logger.info("MemoryExtractor initialized and started")
 
         # Take the vault watcher's initial snapshot now that all subsystems
         # have had a chance to register their path handlers.  The first
