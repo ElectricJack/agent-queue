@@ -2887,11 +2887,14 @@ class ToolRegistry:
     def get_categories(self) -> list[dict]:
         """Return category metadata list for ``browse_tools`` response.
 
+        Includes both built-in categories and plugin-created categories.
+
         Returns:
             List of dicts with ``name``, ``description``, and ``tool_count``
             keys — one per registered category.
         """
         result = []
+        # Built-in categories
         for cat_name, meta in CATEGORIES.items():
             tools = self.get_category_tools(cat_name)
             result.append(
@@ -2899,6 +2902,23 @@ class ToolRegistry:
                     "name": meta.name,
                     "description": meta.description,
                     "tool_count": len(tools) if tools else 0,
+                }
+            )
+        # Plugin-created categories not in CATEGORIES
+        plugin_tools = self._get_plugin_tools()
+        plugin_cats: dict[str, list[dict]] = {}
+        for name, tool in plugin_tools.items():
+            cat = tool.get("_category")
+            if cat and cat not in CATEGORIES:
+                plugin_cats.setdefault(cat, []).append(tool)
+        for cat_name, tools in sorted(plugin_cats.items()):
+            # Build a description from tool names
+            tool_names = ", ".join(t.get("name", "?") for t in tools)
+            result.append(
+                {
+                    "name": cat_name,
+                    "description": f"Plugin tools: {tool_names}",
+                    "tool_count": len(tools),
                 }
             )
         return result
@@ -2911,23 +2931,24 @@ class ToolRegistry:
         """Return all tool definitions for a category.
 
         Includes both hardcoded ``_TOOL_CATEGORIES`` entries and
-        plugin-registered tools with matching ``_category``.
+        plugin-registered tools with matching ``_category``.  Plugins
+        can create their own categories (e.g. ``"vibecop"``) — these
+        don't need to be in the built-in ``CATEGORIES`` dict.
 
         Args:
-            category: Category name (e.g. ``"git"``, ``"rules"``).
+            category: Category name (e.g. ``"git"``, ``"vibecop"``).
             compressed: If True, return minimal schemas for small-context LLMs.
 
         Returns:
-            List of tool definition dicts, or ``None`` if the category
-            name is not recognised.
+            List of tool definition dicts, or ``None`` if no tools
+            match the category.
         """
-        if category not in CATEGORIES:
-            return None
-
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
 
         tools = [t for name, t in merged.items() if self._tool_category(name, t) == category]
+        if not tools:
+            return None
         if compressed:
             return [self.compress_tool_schema(t) for t in tools]
         return tools
@@ -2955,15 +2976,20 @@ class ToolRegistry:
         merged = {**self._all_tools, **plugin_tools}
 
         skip = exclude or set()
+        # Collect all categories (built-in + plugin-created)
+        all_cats: dict[str, list[str]] = {}
+        for name, t in merged.items():
+            cat = self._tool_category(name, t)
+            if cat and cat not in skip:
+                all_cats.setdefault(cat, []).append(name)
+
         lines: list[str] = []
-        for cat_name in CATEGORIES:
-            if cat_name in skip:
-                continue
-            names = sorted(
-                name for name, t in merged.items() if self._tool_category(name, t) == cat_name
-            )
-            if names:
-                lines.append(f"**{cat_name}**: {', '.join(names)}")
+        # Built-in categories first (in CATEGORIES order), then plugin cats
+        ordered = [c for c in CATEGORIES if c in all_cats]
+        ordered += sorted(c for c in all_cats if c not in CATEGORIES)
+        for cat_name in ordered:
+            names = sorted(all_cats[cat_name])
+            lines.append(f"**{cat_name}**: {', '.join(names)}")
         return "\n".join(lines)
 
     def get_category_tool_names(self, category: str) -> list[str] | None:
