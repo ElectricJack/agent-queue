@@ -1119,6 +1119,27 @@ class Orchestrator:
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
 
+        # Automatic memory extraction from system events (background)
+        from src.memory_extractor import MemoryExtractor
+
+        self.memory_extractor: MemoryExtractor | None = None
+        mem_svc = getattr(self, "_memory_v2_service", None)
+        if (
+            self.config.memory_extractor.get("enabled")
+            and mem_svc
+            and getattr(mem_svc, "available", False)
+        ):
+            self.memory_extractor = MemoryExtractor(
+                bus=self.bus,
+                db=self.db,
+                memory_service=mem_svc,
+                config=self.config.memory_extractor,
+                chat_provider_config=self.config.chat_provider,
+            )
+            self.memory_extractor.subscribe()
+            await self.memory_extractor.start()
+            logger.info("MemoryExtractor initialized and started")
+
         # Initialize plugin registry (after DB)
         from src.plugins import PluginRegistry
         from src.plugins.services import build_internal_services
@@ -1486,6 +1507,8 @@ class Orchestrator:
             self.playbook_resume_handler.shutdown()
         if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:
             self.workflow_stage_resume_handler.shutdown()
+        if self.memory_extractor:
+            await self.memory_extractor.stop()
         await self.db.close()
 
     async def run_one_cycle(self) -> None:

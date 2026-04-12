@@ -164,6 +164,12 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "timestamp": "2026-01-15T10:30:00Z",
         "is_bot": False,
     },
+    "supervisor.chat.completed": {
+        "project_id": "proj-1",
+        "user_text": "What is the repo URL?",
+        "response": "The repo URL is https://github.com/example/repo",
+        "tools_used": ["get_project", "reply_to_user"],
+    },
     # Git
     "git.commit": {
         "commit_hash": "abc123def456",

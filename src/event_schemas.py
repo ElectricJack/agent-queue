@@ -332,6 +332,10 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["channel_id", "project_id", "author", "content", "timestamp", "is_bot"],
         "optional": [],
     },
+    "supervisor.chat.completed": {
+        "required": ["project_id", "user_text", "response", "tools_used"],
+        "optional": [],
+    },
 }
 
 # ---------------------------------------------------------------------------

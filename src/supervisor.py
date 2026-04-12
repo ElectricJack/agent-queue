@@ -169,6 +169,8 @@ class Supervisor:
         # calls and results.  Used by PlaybookRunner to preserve inter-node
         # context.  Reset at the start of each _chat_inner() call.
         self._last_messages: list[dict] = []
+        # Tool actions from the last chat() call (for memory extraction).
+        self._last_tool_actions: list[str] = []
         # Stack of cancel events — one per concurrent chat() call.
         # Using a stack instead of a single event prevents concurrent/recursive
         # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
@@ -590,7 +592,7 @@ class Supervisor:
         self._cancel_events.append(cancel_event)
 
         try:
-            return await self._chat_inner(
+            response = await self._chat_inner(
                 text,
                 user_name,
                 history,
@@ -600,6 +602,19 @@ class Supervisor:
                 llm_config=llm_config,
                 tool_overrides=tool_overrides,
             )
+            # Emit event for memory extraction (background, non-blocking)
+            bus = getattr(self.orchestrator, "bus", None)
+            if bus and self._last_tool_actions:
+                try:
+                    await bus.emit("supervisor.chat.completed", {
+                        "project_id": self._active_project_id or "",
+                        "user_text": text[:500],
+                        "response": (response or "")[:500],
+                        "tools_used": list(self._last_tool_actions),
+                    })
+                except Exception:
+                    pass  # non-critical, don't break the chat flow
+            return response
         finally:
             self._cancel_events.remove(cancel_event)
             # Clear conversation context so it doesn't leak to future calls
@@ -738,6 +753,7 @@ class Supervisor:
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
+        self._last_tool_actions = tool_actions  # expose for memory extraction
         tool_names_used: list[str] = []  # bare tool names for reflection gating
         # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []

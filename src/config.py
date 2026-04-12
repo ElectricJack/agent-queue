@@ -779,6 +779,13 @@ class AppConfig:
     max_daily_playbook_tokens: int | None = None
     max_concurrent_playbook_runs: int = 2
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    memory_extractor: dict = field(default_factory=lambda: {
+        "enabled": False,
+        "batch_window_seconds": 120,
+        "max_buffer_size": 15,
+        "max_facts_per_batch": 10,
+        "max_input_chars": 8000,
+    })
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
