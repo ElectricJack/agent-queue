@@ -201,7 +201,7 @@ class SuggestionView(discord.ui.View):
         try:
             if interaction.message and interaction.message.embeds:
                 embed = interaction.message.embeds[0]
-                embed.title = f"\u2705 Suggestion Accepted"
+                embed.title = "\u2705 Suggestion Accepted"
                 for child in self.children:
                     child.disabled = True
                 await interaction.message.edit(embed=embed, view=self)

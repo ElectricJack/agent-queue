@@ -10,7 +10,6 @@ from typing import Any, Sequence
 
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import FuzzyWordCompleter, WordCompleter
-from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.shortcuts import radiolist_dialog, yes_no_dialog
 from prompt_toolkit.validation import Validator
 

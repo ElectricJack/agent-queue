@@ -187,7 +187,7 @@ def build_category_routers() -> list[APIRouter]:
             continue
 
         api_name = _category_to_api_path(cat_name)
-        cat_desc = CATEGORIES[cat_name].description
+        CATEGORIES[cat_name].description
         router = APIRouter(prefix=f"/api/{api_name}", tags=[cat_name])
 
         for cmd_name, defn in sorted(tools):

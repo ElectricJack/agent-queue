@@ -2057,7 +2057,7 @@ class Orchestrator:
 
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
-            embed = format_failed_blocked_report_embed(proj_failed, proj_blocked)
+            format_failed_blocked_report_embed(proj_failed, proj_blocked)
             await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:

@@ -27,7 +27,7 @@ def upgrade() -> None:
     # Drop hook_runs first (has FK to hooks)
     op.drop_table("hook_runs")
     # Then drop hooks
-    op.execute("DROP INDEX IF EXISTS idx_hooks_plugin_id")
+    _ = op.execute("DROP INDEX IF EXISTS idx_hooks_plugin_id")
     op.drop_table("hooks")
 
 

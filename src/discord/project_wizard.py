@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 import discord
 
-from src.discord.embeds import success_embed, error_embed, info_embed
+from src.discord.embeds import success_embed, error_embed
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,20 @@
+# VibeCop configuration
+# See: https://github.com/vibecop/vibecop
+
+ignore:
+  # Default ignores
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/.next/**"
+  - "**/docs/**"
+  - "**/vendor/**"
+  - "**/*.min.js"
+  - "**/*.d.ts"
+  # Auto-generated API client (openapi-python-client) — findings here
+  # cannot be fixed without modifying the code generator
+  - "packages/aq-client/**"
+  # Separate packages — scan independently with their own projects
+  - "packages/memsearch/**"
+  # One-off utility/migration scripts — not production code
+  - "scripts/**"

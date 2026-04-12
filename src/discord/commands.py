@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import os
-from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -1341,9 +1339,9 @@ class _RuleContentView(discord.ui.View):
         if "error" in result:
             await interaction.response.send_message(f"\u274c {result['error']}", ephemeral=True)
             return
-        action = result.get("action", "toggled")
-        updated = result.get("hooks_updated", 0)
-        total = result.get("total_hooks", 0)
+        result.get("action", "toggled")
+        result.get("hooks_updated", 0)
+        result.get("total_hooks", 0)
         # Update local state so rebuild reflects it
         if "execution_info" not in self._result:
             self._result["execution_info"] = {}
