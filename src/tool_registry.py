@@ -2993,22 +2993,19 @@ class ToolRegistry:
         return "\n".join(lines)
 
     def get_category_tool_names(self, category: str) -> list[str] | None:
-        """Return tool names for a category.
+        """Return tool names for a category (built-in or plugin-created).
 
         Args:
-            category: Category name (e.g. ``"git"``, ``"rules"``).
+            category: Category name (e.g. ``"git"``, ``"vibecop"``).
 
         Returns:
-            List of tool name strings, or ``None`` if the category
-            name is not recognised.
+            List of tool name strings, or ``None`` if no tools match.
         """
-        if category not in CATEGORIES:
-            return None
-
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
 
-        return [name for name, t in merged.items() if self._tool_category(name, t) == category]
+        names = [name for name, t in merged.items() if self._tool_category(name, t) == category]
+        return names or None
 
     def get_all_tools(self) -> list[dict]:
         """Return all tool definitions (core + all categories + plugins).
