@@ -13,7 +13,7 @@ Agent Queue is a single-process Python daemon that orchestrates AI coding agents
 ```mermaid
 graph TD
     Discord["Discord Interface<br/><i>Bot + Commands + Notifications</i>"]
-    MCP["MCP Server<br/><i>~100 auto-exposed tools</i>"]
+    MCP["MCP Server<br/><i>~150 auto-exposed tools</i>"]
     CLI["CLI<br/><i>aq commands</i>"]
     Supervisor["Supervisor<br/><i>Natural language → commands</i>"]
     PB["PromptBuilder<br/><i>5-layer prompt assembly</i>"]
@@ -138,7 +138,7 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 |--------|---------|
 | `src/main.py` | Entry point, signal handling, restart support |
 | `src/orchestrator.py` | Core task/agent lifecycle management ([[specs/orchestrator|spec]]) |
-| `src/command_handler.py` | Unified command execution — 100+ commands ([[specs/command-handler|spec]]) |
+| `src/command_handler.py` | Unified command execution — 150+ commands ([[specs/command-handler|spec]]) |
 | `src/models.py` | Data models (Task, Agent, Project, Workflow, etc.) |
 | `src/database/` | SQLite/PostgreSQL persistence (21+ tables) ([[specs/database|spec]]) |
 | `src/config.py` | YAML config with env var substitution |
@@ -170,6 +170,14 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/playbook_graph.py` | Graph rendering (ASCII + Mermaid visualization) |
 | `src/playbook_state_machine.py` | Formal state machine for run lifecycle |
 | `src/playbook_resume_handler.py` | Human-in-the-loop resume logic |
+
+### Workflow Coordination
+
+| Module | Purpose |
+|--------|---------|
+| `src/workflow_stage_resume_handler.py` | Auto-resume paused playbooks on `workflow.stage.completed` events |
+| `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died |
+| `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
 
 ### Memory & Knowledge
 
