@@ -69,7 +69,7 @@ The bot uses a **Supervisor** — an LLM-powered conversation interface that tra
 ### Alternative Interfaces
 
 - **CLI:** Run `aq` commands in your terminal (install with `pip install -e ".[cli]"`)
-- **MCP client:** Connect from Claude Code, Cursor, or any MCP-compatible client — the embedded MCP server auto-exposes ~100 tools
+- **MCP client:** Connect from Claude Code, Cursor, or any MCP-compatible client — the embedded MCP server auto-exposes ~150 tools
 
 ### What Happens Next
 
