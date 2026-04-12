@@ -6,16 +6,17 @@ tags: [architecture, overview]
 
 ## Overview
 
-Agent Queue is a single-process Python daemon that orchestrates AI coding agents through a Discord interface. The system is designed around the constraint of throttled AI API plans — maximizing token utilization by keeping agents busy and automatically recovering from rate limits.
+Agent Queue is a single-process Python daemon that orchestrates AI coding agents, automates workflows via playbooks, and continuously improves through a 4-tier memory system and reflection engine. The system is designed around two principles: **zero LLM overhead for orchestration** (every token goes to agent work) and **self-improvement with use** (every task leaves the system smarter).
 
 ## System Components
 
 ```mermaid
 graph TD
     Discord["Discord Interface<br/><i>Bot + Commands + Notifications</i>"]
+    MCP["MCP Server<br/><i>~100 auto-exposed tools</i>"]
     Supervisor["Supervisor<br/><i>Natural language → commands</i>"]
     PB["PromptBuilder<br/><i>5-layer prompt assembly</i>"]
-    RM["RuleManager<br/><i>Active + passive rules</i>"]
+    TR["ToolRegistry<br/><i>Tiered tool loading</i>"]
     Reflect["ReflectionEngine<br/><i>Post-action review</i>"]
     ChatObs["ChatObserver<br/><i>Passive observation</i>"]
     Orch["Orchestrator<br/><i>Task lifecycle + agent management</i>"]
@@ -23,26 +24,34 @@ graph TD
     SM[State Machine]
     EB[Event Bus]
     PP[Plan Parser]
-    Hooks["Hook Engine<br/><i>Event + periodic automation</i>"]
-    Adapter["Adapter<br/><i>(Claude)</i>"]
+    Playbooks["Playbook Engine<br/><i>DAG workflow automation</i>"]
+    Plugins["Plugin Registry<br/><i>Modular extensibility</i>"]
+    Adapter["Adapter<br/><i>(Claude Code)</i>"]
     Git["Git Manager"]
-    DB["Database<br/><i>(SQLite)</i>"]
-    Memory["Memory Manager<br/><i>Semantic search + context</i>"]
+    DB["Database<br/><i>(SQLite / PostgreSQL)</i>"]
+    Memory["Memory V2<br/><i>Milvus-backed 4-tier knowledge</i>"]
+    Extractor["Memory Extractor<br/><i>Auto-extracts from events</i>"]
 
     Discord --> Supervisor --> Orch
+    MCP --> Supervisor
     Supervisor --- PB
     Supervisor --- Reflect
     Supervisor --- ChatObs
-    PB --- RM
+    PB --- TR
+    PB --- Memory
     Orch --- Sched
     Orch --- SM
     Orch --- EB
     Orch --- PP
-    Orch --- Hooks
+    Orch --- Playbooks
     Orch --> Adapter
     Orch --> Git
     Orch --> DB
-    Orch --- Memory
+    Orch --- Plugins
+    Memory --- Extractor
+    Extractor --- EB
+    Playbooks --- EB
+    Plugins --- EB
 ```
 
 ## Key Design Decisions
@@ -51,44 +60,98 @@ graph TD
 
 ### Zero LLM Overhead for Orchestration
 
-The [[specs/scheduler-and-budget|scheduler]] and task routing use no LLM calls. Every token the system spends is a token an agent spends on actual work. Scheduling decisions are made via proportional credit-weight allocation.
+The [[specs/scheduler-and-budget|scheduler]] and task routing use no LLM calls. Every token the system spends is a token an agent spends on actual work. Scheduling decisions are deterministic via proportional credit-weight allocation.
+
+### Self-Improvement Loop
+
+Every completed task feeds the [[specs/reflection|reflection engine]], which extracts generalizable insights. The [[specs/design/memory-plugin|memory system]] preserves them across scopes. [[specs/design/playbooks|Playbooks]] automate the consolidation cycle. Future agents receive these insights via the prompt builder's 4-tier context assembly. See [[specs/design/self-improvement|Self-Improvement]] for the full loop.
+
+### Playbooks Replace Hooks and Rules
+
+The old hook/rule system provided single-shot LLM automation. [[specs/design/playbooks|Playbooks]] replace this with multi-step directed graphs: each node is a focused LLM decision point, transitions carry context forward, and human checkpoints enable oversight. Authored as markdown, compiled to JSON, executed as graph walks.
+
+### Files as Source of Truth
+
+Playbooks, profiles, facts, and knowledge live as markdown files in `~/.agent-queue/vault/`. This makes everything browsable in Obsidian, editable by hand, and diffable with git. The database and Milvus are derived indexes, not canonical stores.
 
 ### Spec-Driven Development
 
-Each module has a corresponding specification in the `specs/` directory. These specs serve as the source of truth for behavior and are written in plain English describing *what* the module should do, not *how*.
+Each module has a corresponding specification in the `specs/` directory. These specs serve as the source of truth for behavior. Flow: specs → implementation → tests → docs.
 
 ### Async-First
 
-All I/O operations use `asyncio`. The main event loop runs the Discord bot, the scheduling cycle, and agent monitoring concurrently.
+All I/O operations use `asyncio`. The main event loop runs the Discord bot, MCP server, scheduling cycle, playbook engine, and agent monitoring concurrently.
 
 ### SQLite Persistence
 
-All state is persisted to SQLite via `aiosqlite`. The system survives restarts and picks up exactly where it left off.
+All state is persisted to SQLite via `aiosqlite`. The system survives restarts and picks up exactly where it left off. PostgreSQL supported for production deployments via SQLAlchemy Core dialect portability.
 
 ## Module Reference
+
+### Core
 
 | Module | Purpose |
 |--------|---------|
 | `src/main.py` | Entry point, signal handling, restart support |
 | `src/orchestrator.py` | Core task/agent lifecycle management ([[specs/orchestrator|spec]]) |
-| `src/models.py` | Data models (Task, Agent, Project, Hook, etc.) |
-| `src/database.py` | SQLite persistence layer (19 tables) ([[specs/database|spec]]) |
-| `src/config.py` | YAML config loading with environment variable substitution |
+| `src/command_handler.py` | Unified command execution — 100+ commands ([[specs/command-handler|spec]]) |
+| `src/models.py` | Data models (Task, Agent, Project, Workflow, etc.) |
+| `src/database/` | SQLite/PostgreSQL persistence (21+ tables) ([[specs/database|spec]]) |
+| `src/config.py` | YAML config with env var substitution |
 | `src/scheduler.py` | Proportional credit-weight scheduling ([[specs/scheduler-and-budget|spec]]) |
 | `src/state_machine.py` | Task state transitions and DAG validation |
 | `src/event_bus.py` | Async pub/sub with wildcard support ([[specs/event-bus|spec]]) |
-| `src/plan_parser.py` | Plan file parsing (regex + LLM) |
-| `src/hooks.py` | Hook engine for automation ([[specs/hooks|spec]]) |
-| `src/supervisor.py` | LLM-powered conversation interface ([[specs/supervisor|Supervisor]]) |
-| `src/prompt_builder.py` | 5-layer prompt assembly pipeline |
-| `src/rule_manager.py` | Active/passive rule system with hook generation ([[specs/rule-system|spec]]) |
-| `src/reflection.py` | Post-action reflection engine |
-| `src/chat_observer.py` | Passive observation (ignore/memory/suggest) |
-| `src/memory.py` | Semantic search and context retrieval |
-| `src/adapters/` | Agent adapter interface and implementations |
-| `src/chat_providers/` | LLM provider abstraction (Anthropic, Ollama) |
-| `src/discord/` | Discord bot, commands, and notifications |
-| `src/git/` | Git operations (branch management, worktrees, sync-merge) |
-| `src/tokens/` | Token budget tracking |
 
-For detailed module documentation, see the [[specs/design/README|specifications]].
+### Supervisor & Intelligence
+
+| Module | Purpose |
+|--------|---------|
+| `src/supervisor.py` | LLM conversation interface ([[specs/supervisor|spec]]) |
+| `src/prompt_builder.py` | 5-layer prompt assembly pipeline ([[specs/prompt-builder|spec]]) |
+| `src/tool_registry.py` | Tiered tool loading — core + on-demand ([[specs/tiered-tools|spec]]) |
+| `src/reflection.py` | Post-action reflection engine ([[specs/reflection|spec]]) |
+| `src/chat_observer.py` | Passive observation ([[specs/chat-observer|spec]]) |
+| `src/llm_logger.py` | LLM call logging and analytics ([[specs/llm-logging|spec]]) |
+
+### Playbooks
+
+| Module | Purpose |
+|--------|---------|
+| `src/playbook_compiler.py` | Markdown → JSON graph compilation |
+| `src/playbook_runner.py` | Graph walker with conversation history |
+| `src/playbook_manager.py` | Lifecycle, triggers, cooldown, concurrency |
+| `src/playbook_models.py` | Data models for compiled playbooks and runs |
+| `src/playbook_store.py` | Scope-mirrored disk storage |
+| `src/playbook_health.py` | Run metrics and analysis |
+
+### Memory & Knowledge
+
+| Module | Purpose |
+|--------|---------|
+| `src/memory_v2_service.py` | Milvus-backed 4-tier memory |
+| `src/memory_extractor.py` | Auto-extracts knowledge from events |
+| `src/facts_parser.py` | Deterministic `facts.md` parser |
+| `src/profile_parser.py` | Hybrid markdown profile parser |
+| `src/plan_parser.py` | Plan file parsing (regex + LLM) |
+
+### Plugins & Extensions
+
+| Module | Purpose |
+|--------|---------|
+| `src/plugins/` | Plugin system ([[specs/plugin-system|spec]]) |
+| `src/plugins/internal/` | Shipped plugins: files, git, memory, notes, vibecop |
+| `packages/mcp_server/` | MCP server ([[specs/mcp-server|spec]]) |
+| `src/embedded_mcp.py` | Embedded MCP server in daemon |
+
+### Infrastructure
+
+| Module | Purpose |
+|--------|---------|
+| `src/adapters/` | Agent adapter interface + Claude Code implementation |
+| `src/chat_providers/` | LLM provider abstraction (Anthropic, Gemini, Ollama) |
+| `src/discord/` | Discord bot, commands, notifications |
+| `src/git/` | Git operations (branches, worktrees, sync-merge) |
+| `src/tokens/` | Token budget tracking and rate limit management |
+| `src/messaging/` | Cross-platform messaging abstraction |
+
+For detailed module documentation, see the [[specs/design/README|design specifications]].
