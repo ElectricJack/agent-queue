@@ -1997,6 +1997,11 @@ class PlaybookRunner:
         # Build fresh per-node context (NOT the accumulated transcript)
         context = self._build_node_context()
 
+        # Pre-load ALL tools for playbook nodes so the LLM doesn't need
+        # to waste turns calling load_tools.  This gives each node access
+        # to every registered tool (core + all categories + plugins).
+        all_tool_names = [t["name"] for t in self.supervisor._registry.get_all_tools()]
+
         timeout = node.get("timeout_seconds")
         try:
             coro = self.supervisor.chat(
@@ -2005,6 +2010,7 @@ class PlaybookRunner:
                 history=context,
                 on_progress=supervisor_progress,
                 llm_config=node_llm_config,
+                tool_overrides=all_tool_names,
             )
             if timeout:
                 response = await asyncio.wait_for(coro, timeout=timeout)
