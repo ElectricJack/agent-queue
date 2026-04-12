@@ -32,6 +32,7 @@ graph TD
     DB["Database<br/><i>(SQLite / PostgreSQL)</i>"]
     Memory["Memory V2<br/><i>Milvus-backed 4-tier knowledge</i>"]
     Extractor["Memory Extractor<br/><i>Auto-extracts from events</i>"]
+    Workflows["Workflow Coordination<br/><i>Multi-agent pipelines</i>"]
 
     Discord --> Supervisor --> Orch
     MCP --> Supervisor
@@ -46,10 +47,13 @@ graph TD
     Orch --- EB
     Orch --- PP
     Orch --- Playbooks
+    Orch --- Workflows
     Orch --> Adapter
     Orch --> Git
     Orch --> DB
     Orch --- Plugins
+    Workflows --- Playbooks
+    Workflows --- EB
     Memory --- Extractor
     Extractor --- EB
     Playbooks --- EB
@@ -196,6 +200,8 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/plugins/` | Plugin system ([[specs/plugin-system|spec]]) |
 | `src/plugins/internal/` | Shipped plugins: files, git, memory, notes, vibecop |
 | `packages/mcp_server/` | MCP server ([[specs/mcp-server|spec]]) |
+| `packages/memsearch/` | Milvus-backed semantic memory engine (fork of zilliztech/memsearch) |
+| `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
 | `src/embedded_mcp.py` | Embedded MCP server in daemon |
 
 ### Infrastructure

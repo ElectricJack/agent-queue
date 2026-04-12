@@ -63,7 +63,7 @@ What makes it different: the system **learns from every task**. A reflection eng
 ### Extensibility
 - **Plugin system.** 5 internal plugins ship by default. Install third-party plugins from git repos. Plugins register tools, events, cron jobs, CLI commands, and Discord slash commands.
 - **Agent profiles.** Configure agent behavior, tools, and MCP servers via markdown profiles. Assign per-project or per-task.
-- **MCP server.** ~100 tools auto-exposed via Model Context Protocol. Connect from Claude Code, Cursor, or any MCP client.
+- **MCP server.** ~150 tools auto-exposed via Model Context Protocol. Connect from Claude Code, Cursor, or any MCP client.
 - **Multi-provider.** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, or Ollama.
 
 ### Operations
@@ -129,7 +129,7 @@ aq task add "Add rate limiting" -p my-app  # create a task
 aq task list                              # see all tasks
 ```
 
-Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for programmatic access to ~100 tools.
+Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for programmatic access to ~150 tools.
 
 ## Next steps
 
