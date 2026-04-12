@@ -2,7 +2,7 @@
 
 ## Overview
 
-Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and continuously improves through automated reflection. Built for Claude Code agents on throttled/subsidized plans, designed as a general-purpose AI agent orchestrator.
+Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and continuously improves through automated reflection. The core value proposition: the system gets better with use — every task feeds the reflection engine, insights accumulate in scoped memory, and future agents benefit automatically.
 
 **Core design principles:**
 1. Human-readable files as source of truth (vault, playbooks, profiles)
@@ -10,6 +10,9 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 3. Structure guides intelligence — playbooks encode process knowledge, LLMs provide judgment
 4. The system improves with use — every task leaves the system better prepared for the next one
 5. Communicate through events, not coupling — EventBus for all inter-component coordination
+6. Specificity wins — project → agent-type → system hierarchy; local knowledge overrides global
+7. Plugins own their dependencies — memory plugin brings its own Milvus backend
+8. Simple interfaces, smart routing — `memory_get()` auto-routes KV vs semantic search
 
 ## Architecture
 
@@ -23,13 +26,18 @@ asyncio event loop
 │   ├── ReflectionEngine         — post-action review with depth tiers
 │   └── ToolRegistry             — tiered tool loading (core + on-demand)
 ├── Orchestrator                 — deterministic task lifecycle
-│   ├── Scheduler                — proportional credit-weight assignment
+│   ├── Scheduler                — proportional deficit-based assignment
 │   ├── State Machine            — formal task state transitions + DAG validation
+│   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
 │   ├── Plan Parser              — plan discovery → subtask chain creation
 │   └── Playbook Engine          — compiled DAG workflows
 │       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
 │       ├── PlaybookRunner       — graph walker with conversation history
 │       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
+├── Workflow Coordination        — multi-agent pipeline orchestration
+│   ├── Stage Resume Handler     — auto-resume on workflow.stage.completed events
+│   ├── Orphan Recovery          — detect & recover stale/crashed workflows
+│   └── Pipeline View            — dashboard-ready visualization
 ├── Plugin Registry              — modular extensibility (tools, events, cron)
 │   ├── aq-files                 — file read/write/glob/grep
 │   ├── aq-git                   — branch, commit, push, PR, merge
@@ -40,8 +48,8 @@ asyncio event loop
 │   ├── Semantic search          — multi-scope weighted vector search
 │   ├── KV store                 — fast scalar lookups per scope
 │   ├── Temporal facts           — validity-windowed facts with history
-│   └── Memory extractor         — auto-extracts knowledge from events
-├── EventBus                     — async pub/sub with wildcards
+│   └── Memory Extractor         — auto-extracts knowledge from events
+├── EventBus                     — async pub/sub with wildcard + payload filtering
 ├── File Watcher                 — mtime-based change detection
 ├── Workspace Spec Watcher       — syncs project specs to vault
 └── Adapters                     — agent backends (Claude Code, extensible)
@@ -93,12 +101,12 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 |------|---------|
 | `src/main.py` | Entry point — CLI args, starts async loop |
 | `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
-| `src/command_handler.py` | **Unified command execution** — 100+ commands, single entry point for Discord + MCP + CLI |
+| `src/command_handler.py` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
 | `src/supervisor.py` | **Supervisor** — multi-turn LLM conversation loop, tool dispatch, streaming |
 | `src/database/` | SQLAlchemy Core persistence — `tables.py` (schema), `queries/` (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Workflow, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
-| `src/scheduler.py` | Proportional credit-weight scheduling (pure function, zero side effects) |
+| `src/scheduler.py` | Deficit-based fair-share scheduling (pure function, zero side effects) |
 | `src/state_machine.py` | Formal state transitions, DAG cycle detection |
 | `src/event_bus.py` | Async pub/sub with wildcard support |
 
@@ -128,6 +136,14 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/playbook_resume_handler.py` | Human-in-the-loop resume logic |
 | `src/playbook_health.py` | Metrics computation for run analysis |
 | `src/playbook_graph.py` | Graph rendering (ASCII + Mermaid visualization) |
+
+### Workflow Coordination
+
+| File | Purpose |
+|------|---------|
+| `src/workflow_stage_resume_handler.py` | Auto-resume paused playbooks on `workflow.stage.completed` events |
+| `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died (startup + periodic) |
+| `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
 
 ### Memory & Knowledge
 
@@ -162,8 +178,10 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/telegram/` | Telegram bot integration |
 | `src/plugins/` | Plugin system for extensibility |
 | `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
+| `packages/memsearch/` | Milvus-backed semantic memory engine (fork of zilliztech/memsearch) |
+| `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
 | `docs/specs/` | Behavioral specifications (source of truth) |
-| `docs/specs/design/` | Next-gen design specs (playbooks, memory, self-improvement, coordination) |
+| `docs/specs/design/` | Design specs (playbooks, memory, self-improvement, coordination, vault, profiles, roadmap) |
 
 ## Design Decisions
 
@@ -192,7 +210,10 @@ Users manage from their phone. Natural language via Supervisor backed by LLM too
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
 
 ### Why the self-improvement loop?
-The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. No manual intervention needed — the loop is autonomous.
+The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks automate the consolidation cycle. No manual intervention needed — the loop is autonomous.
+
+### Why workflow coordination via playbooks?
+Multi-agent workflows (code → review → QA) are just playbooks with stage gates and agent affinity. The same execution model, same event system, same human-in-the-loop checkpoints. Workflows track stage progress and task assignments; orphan recovery handles daemon restarts and stale state. No separate workflow engine needed.
 
 ### Why spec-driven development?
 Specs in `docs/specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
@@ -202,7 +223,9 @@ Specs in `docs/specs/` are the source of truth. Flow: specs → implementation �
 21+ tables defined as SQLAlchemy Core `Table` objects in `src/database/tables.py`. Migrations managed by Alembic (`migrations/`).
 
 **Core:** `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`
-**Supporting:** `task_criteria`, `task_context`, `task_tools`, `task_results`, `hooks`, `hook_runs`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`
+**Workflows:** `workflows` (multi-agent pipeline state, stages, task assignments, agent affinity)
+**Playbooks:** `playbook_runs`, `compiled_playbooks` (run state, node traces, compiled graphs)
+**Supporting:** `task_criteria`, `task_context`, `task_tools`, `task_results`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`
 
 ## Configuration
 
@@ -260,7 +283,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 
 - **Daemon:** Runs as a background process via `run.sh` (single Python asyncio process)
 - **Discord bot:** Primary human interface, requires bot token + guild ID + channel config
-- **MCP server:** Embedded in daemon, auto-exposes ~100 CommandHandler commands via streamable-http transport
+- **MCP server:** Embedded in daemon, auto-exposes ~150 CommandHandler commands via streamable-http transport
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, Ollama for LLM calls
 - **Plugin ecosystem:** Internal plugins + third-party plugins from git repos

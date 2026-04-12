@@ -102,11 +102,16 @@ asyncio event loop
 ├── Orchestrator                 — deterministic task lifecycle (zero LLM calls)
 │   ├── Scheduler                — proportional deficit-based assignment
 │   ├── State Machine            — formal task state transitions + DAG validation
+│   ├── Smart Cascade            — promotion pipeline each cycle
 │   ├── Plan Parser              — discovers plans, creates subtask chains
 │   └── Playbook Engine          — event-triggered DAG workflows
 │       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
 │       ├── PlaybookRunner       — graph walker with conversation history
 │       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
+├── Workflow Coordination        — multi-agent pipeline orchestration
+│   ├── Stage Resume Handler     — auto-resume on stage completion events
+│   ├── Orphan Recovery          — detect & recover stale/crashed workflows
+│   └── Pipeline View            — dashboard-ready visualization
 ├── Plugin Registry              — modular tool/event/cron extensibility
 ├── Memory V2 Service            — Milvus-backed 4-tier knowledge
 │   ├── Semantic search          — multi-scope weighted vector search
