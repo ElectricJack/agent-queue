@@ -806,11 +806,14 @@ class PlaybookRunner:
         seed_message = (
             f"Event received: {json.dumps(self.event)}\n\n"
             f"You are executing playbook '{self._playbook_id}'. "
-            f"I will guide you through each step.\n\n"
-            f"**IMPORTANT: Execute each step yourself using the available tools. "
-            f"Do NOT delegate work by creating tasks unless the step explicitly "
-            f"instructs you to create a task. Use `load_tools(category=...)` to "
-            f"load any tool categories you need, then call the tools directly.**"
+            f"Each step will give you a specific instruction.\n\n"
+            f"**Rules:**\n"
+            f"- Call the tools mentioned in each step directly (they are "
+            f"available in your tool list — do NOT use run_command)\n"
+            f"- Do NOT create tasks unless the step explicitly says to\n"
+            f"- Use `load_tools(category=...)` if a tool is not in your "
+            f"current tool list\n"
+            f"- After completing each step, describe what you did and the results"
         )
         self._seed_message = seed_message
         self.messages.append({"role": "user", "content": seed_message})
@@ -1997,11 +2000,6 @@ class PlaybookRunner:
         # Build fresh per-node context (NOT the accumulated transcript)
         context = self._build_node_context()
 
-        # Pre-load ALL tools for playbook nodes so the LLM doesn't need
-        # to waste turns calling load_tools.  This gives each node access
-        # to every registered tool (core + all categories + plugins).
-        all_tool_names = [t["name"] for t in self.supervisor._registry.get_all_tools()]
-
         timeout = node.get("timeout_seconds")
         try:
             coro = self.supervisor.chat(
@@ -2010,7 +2008,6 @@ class PlaybookRunner:
                 history=context,
                 on_progress=supervisor_progress,
                 llm_config=node_llm_config,
-                tool_overrides=all_tool_names,
             )
             if timeout:
                 response = await asyncio.wait_for(coro, timeout=timeout)
