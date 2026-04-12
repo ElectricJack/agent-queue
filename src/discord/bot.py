@@ -128,6 +128,10 @@ class AgentQueueBot(commands.Bot):
         # Task thread tracking — maps thread_id ↔ task_id so the bot can
         # detect when a user types into a task thread and route the message
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
+        # IDs of transient "thinking" indicator messages that should not
+        # appear in conversation history.  Populated when the thinking msg
+        # is sent, cleared when it is deleted or replaced by the final reply.
+        self._thinking_msg_ids: set[int] = set()
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
@@ -580,9 +584,11 @@ class AgentQueueBot(commands.Bot):
                 except Exception:
                     pass
 
-    @staticmethod
-    async def _delete_thinking_msg(msg: discord.Message | None) -> None:
+    async def _delete_thinking_msg(self, msg: discord.Message | None) -> None:
         """Silently delete a thinking indicator message.
+
+        Also removes the message from ``_thinking_msg_ids`` and the channel
+        buffer so it never appears in subsequent conversation history.
 
         Fail-open: if the message was already deleted or any Discord error
         occurs, we swallow the exception so the main response flow is never
@@ -590,6 +596,14 @@ class AgentQueueBot(commands.Bot):
         """
         if msg is None:
             return
+        self._thinking_msg_ids.discard(msg.id)
+        # Remove from channel buffer so it won't appear in history
+        buf = self._channel_buffers.get(msg.channel.id)
+        if buf:
+            try:
+                buf[:] = [m for m in buf if m.id != msg.id]
+            except Exception:
+                pass
         try:
             await msg.delete()
         except discord.NotFound:
@@ -1405,7 +1419,7 @@ class AgentQueueBot(commands.Bot):
                 ref_msg = self._find_cached_message(channel_id, ref_id)
                 if ref_msg:
                     ref_author = ref_msg.author_name
-                    ref_snippet = ref_msg.content[:120]
+                    ref_snippet = ref_msg.content[:80]
                 elif message.reference.resolved and isinstance(
                     message.reference.resolved, discord.Message
                 ):
@@ -1416,7 +1430,7 @@ class AgentQueueBot(commands.Bot):
                         if resolved.author == self.user
                         else resolved.author.display_name
                     )
-                    ref_snippet = resolved.content[:120] if resolved.content else None
+                    ref_snippet = resolved.content[:80] if resolved.content else None
             self._append_to_buffer(
                 channel_id,
                 CachedMessage(
@@ -1630,6 +1644,7 @@ class AgentQueueBot(commands.Bot):
                         "💭 Thinking...",
                         view=thinking_view,
                     )
+                    self._thinking_msg_ids.add(thinking_msg.id)
                     tool_names_used: list[str] = []
 
                     async def _on_progress(event: str, detail: str | None) -> None:
@@ -1774,9 +1789,12 @@ class AgentQueueBot(commands.Bot):
             return []
 
         # Warm path — read from local buffer
-        # Snapshot and filter to messages before the trigger message
+        # Snapshot and filter to messages before the trigger message.
+        # Exclude transient thinking indicator messages so they never
+        # appear in conversation history sent to the LLM.
         before_ts = before.created_at.timestamp()
-        snapshot = [m for m in buf if m.created_at < before_ts]
+        thinking_ids = self._thinking_msg_ids
+        snapshot = [m for m in buf if m.created_at < before_ts and m.id not in thinking_ids]
         # Keep only the most recent MAX_HISTORY_MESSAGES
         snapshot = snapshot[-MAX_HISTORY_MESSAGES:]
 
@@ -1823,7 +1841,7 @@ class AgentQueueBot(commands.Bot):
                     # Reference exists but content not cached — try buffer lookup
                     ref = self._find_cached_message(channel_id, msg.reference_id)
                     if ref:
-                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content[:120]}"]\n'
+                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content[:80]}"]\n'
                     else:
                         reply_prefix = "[replying to an earlier message]\n"
 

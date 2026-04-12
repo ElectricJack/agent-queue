@@ -2932,13 +2932,18 @@ class ToolRegistry:
             return [self.compress_tool_schema(t) for t in tools]
         return tools
 
-    def get_tool_index(self) -> str:
+    def get_tool_index(self, exclude: set[str] | None = None) -> str:
         """Return a compact tool name index grouped by category.
 
         Lists all tool names (no descriptions or schemas) organized by
         category, one line per category.  Intended for injection into the
         supervisor system prompt so the LLM always knows which tools exist
         without calling ``browse_tools``.
+
+        Args:
+            exclude: Optional set of category names to omit (e.g. categories
+                already fully loaded in the active tool set, or deprecated
+                categories).  When ``None``, all categories are included.
 
         Returns:
             Markdown-formatted string, e.g.::
@@ -2949,8 +2954,11 @@ class ToolRegistry:
         plugin_tools = self._get_plugin_tools()
         merged = {**self._all_tools, **plugin_tools}
 
+        skip = exclude or set()
         lines: list[str] = []
         for cat_name in CATEGORIES:
+            if cat_name in skip:
+                continue
             names = sorted(
                 name for name, t in merged.items() if self._tool_category(name, t) == cat_name
             )
@@ -3053,10 +3061,13 @@ class ToolRegistry:
                 schema_parts.append(prop_def["description"])
         return f"{name} {desc} {' '.join(schema_parts)}"
 
+    # Categories to never auto-preload (deprecated or low-value).
+    _SKIP_PRELOAD: frozenset[str] = frozenset({"rules"})
+
     def search_relevant_categories(
         self,
         query: str,
-        max_categories: int = 3,
+        max_categories: int = 2,
         min_score: float = 0.15,
     ) -> list[str]:
         """Search tool definitions and return categories relevant to a query.
@@ -3112,4 +3123,8 @@ class ToolRegistry:
             key=lambda x: (x[1], category_sum.get(x[0], 0.0)),
             reverse=True,
         )
-        return [cat for cat, score in ranked[:max_categories] if score >= min_score]
+        return [
+            cat
+            for cat, score in ranked
+            if score >= min_score and cat not in self._SKIP_PRELOAD
+        ][:max_categories]

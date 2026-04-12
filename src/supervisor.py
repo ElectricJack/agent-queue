@@ -310,7 +310,9 @@ class Supervisor:
         """True while at least one ``chat()`` call is in progress."""
         return any(not ev.is_set() for ev in self._cancel_events)
 
-    async def _build_system_prompt(self, *, l2_query: str = "") -> str:
+    async def _build_system_prompt(
+        self, *, l2_query: str = "", preloaded_categories: list[str] | None = None
+    ) -> str:
         """Build the system prompt for the current conversation.
 
         Uses ``PromptBuilder`` to assemble identity + active project context.
@@ -361,7 +363,11 @@ class Supervisor:
                             builder.set_l2_context(l2_text)
                     except Exception:
                         pass  # graceful degradation
-        tool_index = self._registry.get_tool_index()
+        # Exclude preloaded categories from the tool index — the LLM already
+        # has their full schemas, so listing names again is duplication.
+        # Also always exclude deprecated categories.
+        exclude_cats = set(preloaded_categories or []) | {"rules"}
+        tool_index = self._registry.get_tool_index(exclude=exclude_cats)
         if tool_index:
             builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
         system_prompt, _ = builder.build()
@@ -417,6 +423,7 @@ class Supervisor:
         action_results: list[dict],
         messages: list[dict],
         active_tools: dict[str, dict],
+        tool_names: list[str] | None = None,
     ) -> ReflectionVerdict | None:
         """Run a reflection pass for the given trigger.
 
@@ -428,7 +435,7 @@ class Supervisor:
         """
         if not self._provider:
             return None
-        if not self.reflection.should_reflect(trigger):
+        if not self.reflection.should_reflect(trigger, tool_names=tool_names):
             return None
 
         depth = self.reflection.determine_depth(trigger, {})
@@ -678,6 +685,7 @@ class Supervisor:
             # Build tool set from only the specified tools (empty list = no tools).
             all_tools_map = {t["name"]: t for t in registry.get_all_tools()}
             active_tools: dict[str, dict] = {}
+            preloaded_categories: list[str] = []
             for name in tool_overrides:
                 tool = all_tools_map[name]
                 if compressed:
@@ -715,11 +723,20 @@ class Supervisor:
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
+        tool_names_used: list[str] = []  # bare tool names for reflection gating
         # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []
         # Track how many times we've nudged the LLM to call reply_to_user
         nudge_count = 0
-        max_nudges = 2
+
+        # Build the system prompt once and cache it for the duration of
+        # this conversation.  L2 semantic search uses the user's text as
+        # the query; subsequent rounds reuse the cached prompt (L2 is
+        # already first-round-only, and project context / L1 facts don't
+        # change mid-conversation).
+        cached_system_prompt = await self._build_system_prompt(
+            l2_query=text, preloaded_categories=preloaded_categories
+        )
 
         round_num = 0
         while True:  # No step limit — agents run until they finish
@@ -743,12 +760,9 @@ class Supervisor:
             # Apply max_tokens from llm_config (or default 1024).
             effective_max_tokens = llm_config.get("max_tokens", 1024) if llm_config else 1024
 
-            # L2 semantic search only on the first round to avoid redundant
-            # embedding calls during the tool-loop.
-            l2_q = text if round_num == 0 else ""
             resp = await active_provider.create_message(
                 messages=messages,
-                system=await self._build_system_prompt(l2_query=l2_q),
+                system=cached_system_prompt,
                 tools=list(active_tools.values()),
                 max_tokens=effective_max_tokens,
             )
@@ -758,15 +772,63 @@ class Supervisor:
                     await on_progress("responding", None)
                 response = "\n".join(resp.text_parts).strip()
 
-                # If the LLM stopped calling tools without reply_to_user
-                # after having used tools, nudge it to call reply_to_user
-                if tool_actions and nudge_count < max_nudges:
+                # If the LLM produced text after having used tools (without
+                # calling reply_to_user), auto-deliver the text as the reply
+                # instead of nudging for another round.  This eliminates a
+                # full LLM round-trip (~3,000+ tokens) that almost always
+                # produces the same text wrapped in reply_to_user.
+                if tool_actions and response:
+                    # Run reflection on the auto-delivered response
+                    messages.append(
+                        {"role": "assistant", "content": response}
+                    )
+                    verdict = await self.reflect(
+                        trigger=_reflection_trigger,
+                        action_summary=", ".join(tool_actions),
+                        action_results=accumulated_tool_results,
+                        messages=messages,
+                        active_tools=active_tools,
+                        tool_names=tool_names_used,
+                    )
+                    if (
+                        verdict
+                        and not verdict.passed
+                        and not getattr(self, "_reflection_retry_active", False)
+                    ):
+                        self._reflection_retry_active = True
+                        try:
+                            retry_prompt = (
+                                "Your previous response was evaluated and found "
+                                "inadequate.\n\n"
+                                f"**Reflection feedback:** {verdict.reason}\n"
+                            )
+                            if verdict.suggested_followup:
+                                retry_prompt += (
+                                    f"**Suggested followup:** {verdict.suggested_followup}\n"
+                                )
+                            retry_prompt += (
+                                f"\n**Original user request:** {text}\n\n"
+                                "Please try again, addressing the feedback above. "
+                                "Remember to call reply_to_user with your response."
+                            )
+                            return await self._chat_unlocked(
+                                text=retry_prompt,
+                                user_name="system:reflection-retry",
+                                history=messages,
+                                on_progress=on_progress,
+                                _reflection_trigger=_reflection_trigger,
+                                llm_config=llm_config,
+                                tool_overrides=tool_overrides,
+                            )
+                        finally:
+                            self._reflection_retry_active = False
+                    return response
+
+                # If tools were used but LLM produced empty text, nudge once
+                if tool_actions and not response and nudge_count < 1:
                     nudge_count += 1
                     messages.append(
-                        {
-                            "role": "assistant",
-                            "content": response or "(no text)",
-                        }
+                        {"role": "assistant", "content": "(no text)"}
                     )
                     messages.append(
                         {
@@ -779,7 +841,7 @@ class Supervisor:
                             ),
                         }
                     )
-                    continue  # Re-enter the loop
+                    continue
 
                 # No tools were used at all — direct conversational response
                 if response:
@@ -816,6 +878,7 @@ class Supervisor:
                     await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
+                tool_names_used.append(tool_use.name)
                 accumulated_tool_results.append(
                     {
                         "tool": label,
@@ -876,6 +939,7 @@ class Supervisor:
                         action_results=accumulated_tool_results,
                         messages=messages,
                         active_tools=active_tools,
+                        tool_names=tool_names_used,
                     )
 
                     if (
