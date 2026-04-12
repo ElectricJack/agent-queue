@@ -1934,6 +1934,9 @@ class PlaybookRunner:
 
         # Execute via Supervisor — the Supervisor handles the internal
         # multi-turn tool-use loop and returns only the final text response.
+        # Capture message count before the call so we can extract only the
+        # new messages added during the tool loop.
+        history_len = len(self.messages)
         timeout = node.get("timeout_seconds")
         try:
             coro = self.supervisor.chat(
@@ -1952,9 +1955,22 @@ class PlaybookRunner:
             trace_entry.status = "failed"
             raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
 
-        # Append to our conversation history (node-level granularity)
-        self.messages.append({"role": "user", "content": prompt})
-        self.messages.append({"role": "assistant", "content": response})
+        # Append the full conversation from this node's supervisor call,
+        # including tool calls and results — not just the final text.
+        # This preserves inter-node context so downstream nodes can see
+        # what tools were called and what data was returned.
+        #
+        # _last_messages contains history (what we passed) + new messages
+        # (user prompt, tool calls, tool results, final response).  We
+        # only want the new messages: everything after history_len.
+        full_messages = getattr(self.supervisor, "_last_messages", None)
+        if full_messages and len(full_messages) > history_len:
+            new_messages = full_messages[history_len:]
+            self.messages.extend(new_messages)
+        else:
+            # Fallback: just append prompt + text (old behavior)
+            self.messages.append({"role": "user", "content": prompt})
+            self.messages.append({"role": "assistant", "content": response})
 
         # Track tokens
         token_estimate = _estimate_tokens(prompt, response)

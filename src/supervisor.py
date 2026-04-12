@@ -165,6 +165,10 @@ class Supervisor:
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
         self._registry = _ToolRegistry()
+        # Full message history from the last chat() call, including tool
+        # calls and results.  Used by PlaybookRunner to preserve inter-node
+        # context.  Reset at the start of each _chat_inner() call.
+        self._last_messages: list[dict] = []
         # Stack of cancel events — one per concurrent chat() call.
         # Using a stack instead of a single event prevents concurrent/recursive
         # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
@@ -642,6 +646,11 @@ class Supervisor:
         Using a stack-based list avoids races where concurrent or recursive
         ``chat()`` calls clobber each other's cancellation state.
 
+        After this method returns, ``self._last_messages`` contains the
+        full message history from the tool-use loop, including tool calls
+        and results.  The playbook runner uses this to preserve inter-node
+        context (see ``PlaybookRunner._execute_node``).
+
         ``llm_config`` — see :meth:`chat` for details.
 
         ``tool_overrides`` — see :meth:`chat` for details.
@@ -716,6 +725,12 @@ class Supervisor:
             messages[-1]["content"] += "\n" + current["content"]
         else:
             messages.append(current)
+
+        # Expose the messages list so callers (e.g. PlaybookRunner) can
+        # access the full conversation including tool calls and results
+        # after chat() returns.  Since messages is mutated in-place during
+        # the tool loop, this reference stays current automatically.
+        self._last_messages = messages
 
         # Set the conversation context on the handler so that any tasks
         # created during this chat session inherit the thread chain.
