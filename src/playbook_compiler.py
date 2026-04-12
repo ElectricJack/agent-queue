@@ -445,6 +445,21 @@ class PlaybookCompiler:
             "10. Do NOT include the `id`, `version`, `source_hash`, `triggers`, "
             "or `scope` fields in your output — those are injected from the "
             "playbook's YAML frontmatter automatically.\n"
+            "11. Use `for_each` on nodes that iterate over a list from a prior "
+            "step. The `source` is a dot-path to an array in a prior node's "
+            "output (e.g. `discover.active_projects`). The `as` names the "
+            "loop variable. Use `collect` to gather results into a named "
+            "array. The node prompt can use `{{variable}}` or "
+            "`{{variable.field}}` templates.\n"
+            "12. Use `output` on nodes whose tool results should be available "
+            "to downstream nodes as structured data. Set `extract` to the "
+            "JSON key to pull from the tool result (e.g. `projects`, "
+            "`findings`), and `as` to name the stored value.\n"
+            "13. Prefer `for_each` + `output` over asking the LLM to iterate "
+            "in a single prompt. One LLM call per item is more reliable than "
+            "asking the LLM to loop.\n"
+            "14. Terminal nodes CAN have prompts — they execute before the "
+            "playbook ends. Use this for summary/reporting steps.\n"
         )
 
     @staticmethod

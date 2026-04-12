@@ -1059,11 +1059,77 @@ def generate_json_schema() -> dict[str, Any]:
                     },
                     "summarize_before": {
                         "type": "boolean",
-                        "description": (
-                            "If true, summarize conversation history before this "
-                            "node to manage context size."
-                        ),
+                        "description": "DEPRECATED.",
                         "default": False,
+                    },
+                    "for_each": {
+                        "type": "object",
+                        "description": (
+                            "Iterate over an array from a prior node's output. "
+                            "The node's prompt executes once per item with "
+                            "{{as_variable}} available in the template. Results "
+                            "are optionally collected into a named array."
+                        ),
+                        "required": ["source", "as"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": (
+                                    "Dot-path to an array in node_outputs "
+                                    "(e.g. 'discover_projects.active_projects')."
+                                ),
+                            },
+                            "as": {
+                                "type": "string",
+                                "description": (
+                                    "Variable name for the current item, "
+                                    "available in the prompt via {{name}} or "
+                                    "{{name.field}}."
+                                ),
+                            },
+                            "collect": {
+                                "type": "string",
+                                "description": (
+                                    "Name to store all iteration results as an "
+                                    "array in node_outputs for downstream nodes."
+                                ),
+                            },
+                            "filter": {
+                                "type": "string",
+                                "description": (
+                                    "Expression to filter items. Only items where "
+                                    "the expression is truthy are included. Use "
+                                    "'item.field == value' syntax."
+                                ),
+                            },
+                        },
+                    },
+                    "output": {
+                        "type": "object",
+                        "description": (
+                            "Extract structured data from tool results and store "
+                            "in node_outputs for downstream nodes. Without this, "
+                            "the node's text response is stored."
+                        ),
+                        "additionalProperties": False,
+                        "properties": {
+                            "extract": {
+                                "type": "string",
+                                "description": (
+                                    "JSON key to extract from the last tool result "
+                                    "(e.g. 'findings', 'projects'). Dot-paths "
+                                    "supported."
+                                ),
+                            },
+                            "as": {
+                                "type": "string",
+                                "description": (
+                                    "Name to store under in node_outputs. "
+                                    "Defaults to the node ID if omitted."
+                                ),
+                            },
+                        },
                     },
                 },
                 # We can't easily express "prompt required if not terminal" in

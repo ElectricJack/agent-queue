@@ -2062,7 +2062,11 @@ class PlaybookRunner:
             )
             return f"for_each source '{source_path}' is not a list — skipped"
 
-        # TODO: Apply filter if present (Phase 3)
+        # Apply filter if present
+        filter_expr = for_each.get("filter")
+        if filter_expr and items:
+            items = [item for item in items if self._evaluate_filter(filter_expr, item, item_var)]
+            logger.info("for_each: filter '%s' reduced to %d items", filter_expr, len(items))
 
         collected: list[Any] = []
         responses: list[str] = []
@@ -2265,6 +2269,59 @@ class PlaybookRunner:
                                 return val
         logger.warning("_extract_output: key '%s' not found in any tool result", extract_path)
         return response
+
+    def _evaluate_filter(self, expr: str, item: Any, item_var: str) -> bool:
+        """Evaluate a simple filter expression against an item.
+
+        Supports:
+        - ``item.field == "value"`` / ``item.field != "value"``
+        - ``item.field in ["a", "b"]``
+        - ``item.field`` (truthy check)
+        - ``item.status == "ACTIVE"``
+
+        Falls back to truthy evaluation of the item var if the expression
+        can't be parsed.
+        """
+        extra = {item_var: item, "item": item}
+        expr = expr.strip()
+
+        # Simple truthy: "item.findings"
+        if " " not in expr:
+            val = self._resolve_output_var(expr, extra)
+            return bool(val)
+
+        # Comparison: "item.status == 'ACTIVE'"
+        import re as _re
+
+        # Match: path OP value
+        m = _re.match(
+            r"([\w.]+)\s*(==|!=|in|not\s+in)\s*(.+)$", expr
+        )
+        if not m:
+            # Can't parse — include the item (permissive)
+            logger.debug("for_each filter: can't parse '%s', including item", expr)
+            return True
+
+        var_path, op, rhs_str = m.group(1), m.group(2).strip(), m.group(3).strip()
+        val = self._resolve_output_var(var_path, extra)
+
+        # Parse RHS
+        try:
+            rhs = json.loads(rhs_str)
+        except (json.JSONDecodeError, TypeError):
+            # Try unquoted string
+            rhs = rhs_str.strip("'\"")
+
+        if op == "==":
+            return val == rhs
+        elif op == "!=":
+            return val != rhs
+        elif op == "in":
+            return val in rhs if isinstance(rhs, (list, str)) else False
+        elif op == "not in":
+            return val not in rhs if isinstance(rhs, (list, str)) else True
+
+        return True
 
     def _store_node_output(self, node_id: str, node: dict, value: Any) -> None:
         """Store a node's output in node_outputs under the appropriate key."""
