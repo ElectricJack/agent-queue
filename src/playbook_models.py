@@ -299,6 +299,8 @@ class PlaybookNode:
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
     summarize_before: bool = False
+    for_each: dict[str, Any] | None = None
+    output: dict[str, Any] | None = None
 
     # -- serialization -------------------------------------------------------
 
@@ -328,6 +330,10 @@ class PlaybookNode:
             d["transition_llm_config"] = self.transition_llm_config.to_dict()
         if self.summarize_before:
             d["summarize_before"] = True
+        if self.for_each is not None:
+            d["for_each"] = self.for_each
+        if self.output is not None:
+            d["output"] = self.output
         return d
 
     @classmethod
@@ -352,6 +358,8 @@ class PlaybookNode:
             llm_config=llm_cfg,
             transition_llm_config=trans_cfg,
             summarize_before=data.get("summarize_before", False),
+            for_each=data.get("for_each"),
+            output=data.get("output"),
         )
 
 

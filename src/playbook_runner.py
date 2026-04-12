@@ -2040,6 +2040,12 @@ class PlaybookRunner:
 
         # Resolve the source array
         items = self._resolve_variable(source_path)
+        logger.info(
+            "for_each: source='%s' resolved to %s (%s)",
+            source_path,
+            type(items).__name__,
+            len(items) if isinstance(items, list) else repr(items)[:100],
+        )
         if not isinstance(items, list):
             logger.warning(
                 "for_each source '%s' resolved to %s (not a list) — skipping node '%s'",
@@ -2213,7 +2219,9 @@ class PlaybookRunner:
         # Get the last tool result from the supervisor's messages
         last_messages = getattr(self.supervisor, "_last_messages", None)
         if not last_messages:
+            logger.debug("_extract_output: no _last_messages available")
             return response
+        logger.info("_extract_output: searching %d messages for key '%s'", len(last_messages), extract_path)
 
         # Walk backwards to find the last tool_result
         for msg in reversed(last_messages):
@@ -2236,7 +2244,16 @@ class PlaybookRunner:
                                     val = None
                                     break
                             if val is not None:
+                                logger.info(
+                                    "_extract_output: extracted '%s' → %s (%d items)"
+                                    if isinstance(val, list)
+                                    else "_extract_output: extracted '%s' → %s",
+                                    extract_path,
+                                    type(val).__name__,
+                                    len(val) if isinstance(val, list) else 0,
+                                )
                                 return val
+        logger.warning("_extract_output: key '%s' not found in any tool result", extract_path)
         return response
 
     def _store_node_output(self, node_id: str, node: dict, value: Any) -> None:
