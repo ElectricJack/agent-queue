@@ -1,33 +1,10 @@
-"""Convert Anthropic tool definitions to OpenAI function-calling format.
+"""Backward-compatible re-export from the adapters package.
 
-This exists solely to bridge the format gap for the Ollama provider, which
-speaks OpenAI's API.  The rest of the codebase defines tools in Anthropic
-format (``name``, ``description``, ``input_schema``); this module maps them
-to OpenAI format (``type: "function"``, ``function.parameters``).
+The conversion logic now lives in ``adapters.openai_adapter``.
+This module re-exports ``anthropic_tools_to_openai`` so existing
+imports continue to work.
 """
 
-from __future__ import annotations
+from .adapters.openai_adapter import convert_tools as anthropic_tools_to_openai
 
-
-def anthropic_tools_to_openai(tools: list[dict]) -> list[dict]:
-    """Convert Anthropic-format tool definitions to OpenAI function-calling format.
-
-    Anthropic format:
-        {"name": ..., "description": ..., "input_schema": {...}}
-
-    OpenAI format:
-        {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
-    """
-    result = []
-    for tool in tools:
-        result.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-                },
-            }
-        )
-    return result
+__all__ = ["anthropic_tools_to_openai"]

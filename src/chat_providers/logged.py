@@ -24,7 +24,7 @@ import time
 from src.llm_logger import LLMLogger
 
 from .base import ChatProvider
-from .types import ChatResponse
+from .types import ChatResponse, serialize_canonical
 
 
 class LoggedChatProvider(ChatProvider):
@@ -78,7 +78,7 @@ class LoggedChatProvider(ChatProvider):
                 caller=self._caller,
                 model=self._inner.model_name,
                 provider=provider_name,
-                messages=messages,
+                messages=serialize_canonical(messages),
                 system=system,
                 tools=tools,
                 max_tokens=max_tokens,
