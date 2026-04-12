@@ -2039,7 +2039,7 @@ class PlaybookRunner:
         collect_name = for_each.get("collect")
 
         # Resolve the source array
-        items = self._resolve_variable(source_path)
+        items = self._resolve_output_var(source_path)
         logger.info(
             "for_each: source='%s' resolved to %s (%s)",
             source_path,
@@ -2092,8 +2092,11 @@ class PlaybookRunner:
     # Data flow: variable resolution, templates, context building
     # ------------------------------------------------------------------
 
-    def _resolve_variable(self, path: str, extra_vars: dict | None = None) -> Any:
+    def _resolve_output_var(self, path: str, extra_vars: dict | None = None) -> Any:
         """Resolve a dot-path variable against node_outputs and extra_vars.
+
+        Used by template rendering and for_each source resolution.  Distinct
+        from ``_resolve_variable`` which handles structured transition conditions.
 
         Examples:
             "discover_projects.active_projects"  → node_outputs["discover_projects"]["active_projects"]
@@ -2128,7 +2131,7 @@ class PlaybookRunner:
         """Substitute {{variable}} references in a template string.
 
         Supports:
-        - {{name}} — resolved via _resolve_variable
+        - {{name}} — resolved via _resolve_output_var
         - {{name | length}} — len() of the resolved value
         - {{name | json}} — JSON-serialized value
         - Plain {{name}} with dict/list values are JSON-serialized automatically
@@ -2142,7 +2145,7 @@ class PlaybookRunner:
                 var_part, filter_part = expr.rsplit("|", 1)
                 var_part = var_part.strip()
                 filter_part = filter_part.strip()
-                val = self._resolve_variable(var_part, extra_vars)
+                val = self._resolve_output_var(var_part, extra_vars)
                 if filter_part == "length":
                     return str(len(val)) if val is not None else "0"
                 elif filter_part == "json":
@@ -2150,7 +2153,7 @@ class PlaybookRunner:
                 # Unknown filter — just serialize
                 return str(val)
 
-            val = self._resolve_variable(expr, extra_vars)
+            val = self._resolve_output_var(expr, extra_vars)
             if val is None:
                 return f"{{{{UNRESOLVED:{expr}}}}}"
             if isinstance(val, (dict, list)):
