@@ -1591,6 +1591,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "rate_limits" in raw:
         config.rate_limits = raw["rate_limits"]
 
+    if "memory_extractor" in raw:
+        # Merge with defaults so missing keys get defaults
+        config.memory_extractor = {**config.memory_extractor, **raw["memory_extractor"]}
+
     # Fail fast on misconfiguration — surface all errors at once.
     # validate() returns ConfigError list; convert fatal errors to exception
     # for backward compatibility.
