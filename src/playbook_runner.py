@@ -349,11 +349,21 @@ class PlaybookRunner:
         self._daily_token_cap = daily_token_cap
         self.event_bus = event_bus
 
-        # Conversation history — node prompts and final responses only.
+        # Conversation history — kept for DB persistence and backward compat.
+        # NOT used as LLM context between nodes (per-node context is built fresh).
         self.messages: list[dict] = []
         self.run_id: str = str(uuid.uuid4())[:12]
         self.tokens_used: int = 0
         self.node_trace: list[NodeTraceEntry] = []
+
+        # Structured data flow between nodes.  Each node stores its output
+        # here (keyed by node_id or by output.as name).  Downstream nodes
+        # reference these via dot-path in templates and for_each sources.
+        self.node_outputs: dict[str, Any] = {}
+
+        # Seed message — stored separately so per-node context can always
+        # include it without scanning self.messages.
+        self._seed_message: str = ""
 
         # Current run status — tracked via the state machine
         # (see src/playbook_state_machine.py).
@@ -802,6 +812,7 @@ class PlaybookRunner:
             f"instructs you to create a task. Use `load_tools(category=...)` to "
             f"load any tool categories you need, then call the tools directly.**"
         )
+        self._seed_message = seed_message
         self.messages.append({"role": "user", "content": seed_message})
 
         # Find entry node
@@ -1877,18 +1888,14 @@ class PlaybookRunner:
     ) -> str:
         """Execute a single node and return the Supervisor's response.
 
-        Implements the core "build prompt + context → invoke Supervisor →
-        accumulate history" loop from spec §6:
+        Each node gets a fresh LLM context built from the seed message
+        and compact prior node outputs — NOT the accumulated transcript.
 
-        1. Optionally summarize history (if ``summarize_before`` is set).
-        2. Build the node prompt via :meth:`_build_node_prompt`.
-        3. Resolve per-node LLM config via :meth:`_resolve_node_llm_config`.
-        4. Invoke ``supervisor.chat()`` with accumulated history, forwarding
-           ``on_progress`` for tool-call visibility.
-        5. Enforce ``timeout_seconds`` if set on the node.
-        6. Append prompt/response to ``self.messages``.
-        7. Track tokens and update node trace.
-        8. Persist run state to DB.
+        If the node has a ``for_each`` directive, the prompt executes once
+        per item in the source array, collecting results.
+
+        If the node has an ``output`` directive, structured data is extracted
+        from tool results and stored in ``node_outputs`` for downstream nodes.
         """
         trace_entry = NodeTraceEntry(node_id=node_id, started_at=time.time())
         self.node_trace.append(trace_entry)
@@ -1903,6 +1910,7 @@ class PlaybookRunner:
 
             self.messages.append({"role": "user", "content": prompt})
             self.messages.append({"role": "assistant", "content": response})
+            self._store_node_output(node_id, node, response)
 
             trace_entry.completed_at = time.time()
             trace_entry.status = "completed"
@@ -1912,82 +1920,18 @@ class PlaybookRunner:
 
             return response
 
-        # Context size management: summarize history before this node
-        if node.get("summarize_before") and len(self.messages) > 2:
-            await self._summarize_history()
-
-        # Build prompt + context
-        prompt = self._build_node_prompt(node_id, node)
-
-        # Resolve per-node LLM config (node overrides playbook-level)
-        node_llm_config = self._resolve_node_llm_config(node)
-        if node_llm_config:
-            logger.debug(
-                "Node '%s': using LLM config override %s",
-                node_id,
-                node_llm_config,
-            )
-
-        # Build a progress bridge so the caller can observe tool usage
-        # inside this node's supervisor call
-        supervisor_progress = self._make_supervisor_progress(node_id)
-
-        # Execute via Supervisor — the Supervisor handles the internal
-        # multi-turn tool-use loop and returns only the final text response.
-        # Capture message count before the call so we can extract only the
-        # new messages added during the tool loop.
-        history_len = len(self.messages)
-        timeout = node.get("timeout_seconds")
-        try:
-            coro = self.supervisor.chat(
-                text=prompt,
-                user_name=f"playbook-runner:{node_id}",
-                history=list(self.messages),  # Copy so Supervisor doesn't mutate ours
-                on_progress=supervisor_progress,
-                llm_config=node_llm_config,
-            )
-            if timeout:
-                response = await asyncio.wait_for(coro, timeout=timeout)
-            else:
-                response = await coro
-        except asyncio.TimeoutError:
-            trace_entry.completed_at = time.time()
-            trace_entry.status = "failed"
-            raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
-
-        # Append the full conversation from this node's supervisor call,
-        # including tool calls and results — not just the final text.
-        # This preserves inter-node context so downstream nodes can see
-        # what tools were called and what data was returned.
-        #
-        # _last_messages contains history (what we passed) + new messages
-        # (user prompt, tool calls, tool results, final response).  We
-        # only want the new messages: everything after history_len.
-        full_messages = getattr(self.supervisor, "_last_messages", None)
-        if full_messages and len(full_messages) > history_len:
-            from src.chat_providers.types import serialize_canonical
-
-            new_messages = serialize_canonical(full_messages[history_len:])
-            self.messages.extend(new_messages)
+        # Check for for_each iteration
+        for_each = node.get("for_each")
+        if for_each:
+            response = await self._execute_for_each(node_id, node, db_run, trace_entry)
         else:
-            # Fallback: just append prompt + text (old behavior)
-            self.messages.append({"role": "user", "content": prompt})
-            self.messages.append({"role": "assistant", "content": response})
+            response = await self._execute_single_node(node_id, node, trace_entry)
 
-        # Track tokens
-        token_estimate = _estimate_tokens(prompt, response)
-        self.tokens_used += token_estimate
-
-        # Record per-node token usage (roadmap 5.7.1)
-        trace_entry.tokens_used = token_estimate
-
-        # Record tokens in the daily tracker (global cap enforcement)
+        # Track tokens in daily tracker
         if self._daily_token_tracker is not None:
-            self._daily_token_tracker.add_tokens(token_estimate)
+            self._daily_token_tracker.add_tokens(trace_entry.tokens_used)
 
-        # Budget warning: log when approaching budget (within 10%) but not
-        # yet exceeded.  This lets operators spot runs that are close to
-        # their limit without failing them prematurely.
+        # Budget warning
         if self._max_tokens is not None and self._max_tokens > 0:
             usage_pct = self.tokens_used / self._max_tokens
             if usage_pct >= 0.9 and self.tokens_used < self._max_tokens:
@@ -2020,15 +1964,298 @@ class PlaybookRunner:
 
         return response
 
+    async def _execute_single_node(
+        self,
+        node_id: str,
+        node: dict,
+        trace_entry: NodeTraceEntry,
+        extra_vars: dict | None = None,
+    ) -> str:
+        """Execute a single node prompt with fresh per-node context.
+
+        This is the core execution unit. Called once for simple nodes,
+        or once per item for for_each nodes.
+        """
+        prompt = self._build_node_prompt(node_id, node, extra_vars)
+
+        # Resolve per-node LLM config, defaulting to higher max_tokens for playbooks
+        node_llm_config = self._resolve_node_llm_config(node)
+        if node_llm_config is None:
+            node_llm_config = {"max_tokens": 4096}
+        elif "max_tokens" not in node_llm_config:
+            node_llm_config = {**node_llm_config, "max_tokens": 4096}
+
+        supervisor_progress = self._make_supervisor_progress(node_id)
+
+        # Build fresh per-node context (NOT the accumulated transcript)
+        context = self._build_node_context()
+
+        timeout = node.get("timeout_seconds")
+        try:
+            coro = self.supervisor.chat(
+                text=prompt,
+                user_name=f"playbook-runner:{node_id}",
+                history=context,
+                on_progress=supervisor_progress,
+                llm_config=node_llm_config,
+            )
+            if timeout:
+                response = await asyncio.wait_for(coro, timeout=timeout)
+            else:
+                response = await coro
+        except asyncio.TimeoutError:
+            trace_entry.status = "failed"
+            raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
+
+        # Extract structured output from tool results
+        output = self._extract_output(node, response)
+        self._store_node_output(node_id, node, output)
+
+        # Track in messages for DB persistence (compact: prompt + response only)
+        self.messages.append({"role": "user", "content": prompt})
+        self.messages.append({"role": "assistant", "content": response})
+
+        # Track tokens
+        token_estimate = _estimate_tokens(prompt, response)
+        self.tokens_used += token_estimate
+        trace_entry.tokens_used += token_estimate
+
+        return response
+
+    async def _execute_for_each(
+        self,
+        node_id: str,
+        node: dict,
+        db_run: PlaybookRun,
+        trace_entry: NodeTraceEntry,
+    ) -> str:
+        """Execute a node once per item in a for_each source array.
+
+        Results are optionally collected into a named array in node_outputs.
+        """
+        for_each = node["for_each"]
+        source_path = for_each["source"]
+        item_var = for_each["as"]
+        collect_name = for_each.get("collect")
+
+        # Resolve the source array
+        items = self._resolve_variable(source_path)
+        if not isinstance(items, list):
+            logger.warning(
+                "for_each source '%s' resolved to %s (not a list) — skipping node '%s'",
+                source_path,
+                type(items).__name__ if items is not None else "None",
+                node_id,
+            )
+            return f"for_each source '{source_path}' is not a list — skipped"
+
+        # TODO: Apply filter if present (Phase 3)
+
+        collected: list[Any] = []
+        responses: list[str] = []
+
+        for i, item in enumerate(items):
+            if self.on_progress:
+                item_label = item.get("id", item.get("name", str(i))) if isinstance(item, dict) else str(i)
+                await self.on_progress("for_each_item", f"{node_id}[{item_label}]")
+
+            extra_vars = {item_var: item, "_index": i, "_total": len(items)}
+            response = await self._execute_single_node(
+                node_id=f"{node_id}[{i}]",
+                node=node,
+                trace_entry=trace_entry,
+                extra_vars=extra_vars,
+            )
+            responses.append(response)
+
+            # Collect the output (extracted or raw response)
+            output_spec = node.get("output")
+            if output_spec and output_spec.get("as"):
+                # Use the per-iteration extracted output
+                collected.append(self.node_outputs.get(output_spec["as"], response))
+            else:
+                collected.append(response)
+
+        # Store collected results
+        if collect_name:
+            self.node_outputs[collect_name] = collected
+
+        return f"Completed {len(items)} iterations of {node_id}"
+
     # ------------------------------------------------------------------
-    # Internal: prompt + context building
+    # Data flow: variable resolution, templates, context building
     # ------------------------------------------------------------------
 
-    def _build_node_prompt(self, node_id: str, node: dict) -> str:
+    def _resolve_variable(self, path: str, extra_vars: dict | None = None) -> Any:
+        """Resolve a dot-path variable against node_outputs and extra_vars.
+
+        Examples:
+            "discover_projects.active_projects"  → node_outputs["discover_projects"]["active_projects"]
+            "project.workspace"                  → extra_vars["project"]["workspace"]
+            "scan_results"                       → node_outputs["scan_results"]
+        """
+        parts = path.split(".")
+        root = parts[0]
+
+        # Check extra vars first (e.g. for_each item)
+        if extra_vars and root in extra_vars:
+            val = extra_vars[root]
+        elif root in self.node_outputs:
+            val = self.node_outputs[root]
+        else:
+            return None
+
+        # Walk remaining path
+        for part in parts[1:]:
+            if isinstance(val, dict):
+                val = val.get(part)
+            elif isinstance(val, list) and part.isdigit():
+                idx = int(part)
+                val = val[idx] if idx < len(val) else None
+            else:
+                return None
+            if val is None:
+                return None
+        return val
+
+    def _render_template(self, template: str, extra_vars: dict | None = None) -> str:
+        """Substitute {{variable}} references in a template string.
+
+        Supports:
+        - {{name}} — resolved via _resolve_variable
+        - {{name | length}} — len() of the resolved value
+        - {{name | json}} — JSON-serialized value
+        - Plain {{name}} with dict/list values are JSON-serialized automatically
+        """
+        import re as _re
+
+        def _replace(match: _re.Match) -> str:
+            expr = match.group(1).strip()
+            # Check for pipe filters
+            if "|" in expr:
+                var_part, filter_part = expr.rsplit("|", 1)
+                var_part = var_part.strip()
+                filter_part = filter_part.strip()
+                val = self._resolve_variable(var_part, extra_vars)
+                if filter_part == "length":
+                    return str(len(val)) if val is not None else "0"
+                elif filter_part == "json":
+                    return json.dumps(val, indent=2) if val is not None else "null"
+                # Unknown filter — just serialize
+                return str(val)
+
+            val = self._resolve_variable(expr, extra_vars)
+            if val is None:
+                return f"{{{{UNRESOLVED:{expr}}}}}"
+            if isinstance(val, (dict, list)):
+                return json.dumps(val)
+            return str(val)
+
+        return _re.sub(r"\{\{(.+?)\}\}", _replace, template)
+
+    def _build_node_context(self) -> list[dict]:
+        """Build fresh per-node context from seed + prior node outputs.
+
+        Each node gets a clean slate instead of the accumulated transcript.
+        Prior node outputs are rendered as a compact structured summary.
+        """
+        context: list[dict] = []
+
+        # 1. Seed message (event data + execution preamble)
+        if self._seed_message:
+            context.append({"role": "user", "content": self._seed_message})
+
+        # 2. Prior node outputs as structured context
+        if self.node_outputs:
+            parts = ["## Prior Step Results\n"]
+            for key, value in self.node_outputs.items():
+                if isinstance(value, (dict, list)):
+                    # Compact: show structure but truncate large values
+                    serialized = json.dumps(value)
+                    if len(serialized) > 500:
+                        # For large outputs, show a summary
+                        if isinstance(value, list):
+                            parts.append(
+                                f"### {key}\n"
+                                f"Array with {len(value)} items. "
+                                f"First item: {json.dumps(value[0])[:200]}..."
+                            )
+                        else:
+                            parts.append(
+                                f"### {key}\n"
+                                f"{serialized[:500]}..."
+                            )
+                    else:
+                        parts.append(f"### {key}\n{serialized}")
+                else:
+                    parts.append(f"### {key}\n{value}")
+
+            context.append({"role": "user", "content": "\n\n".join(parts)})
+            context.append(
+                {"role": "assistant", "content": "Understood. I have the context from prior steps."}
+            )
+
+        return context
+
+    def _extract_output(self, node: dict, response: str) -> Any:
+        """Extract structured output from a node's execution.
+
+        If the node has an ``output.extract`` directive, pull that key from
+        the last tool result in supervisor._last_messages.  Otherwise return
+        the text response.
+        """
+        output_spec = node.get("output")
+        if not output_spec or "extract" not in output_spec:
+            return response
+
+        extract_path = output_spec["extract"]
+
+        # Get the last tool result from the supervisor's messages
+        last_messages = getattr(self.supervisor, "_last_messages", None)
+        if not last_messages:
+            return response
+
+        # Walk backwards to find the last tool_result
+        for msg in reversed(last_messages):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in reversed(content):
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        raw = item.get("content", "")
+                        try:
+                            parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if isinstance(parsed, dict):
+                            # Resolve dot-path extraction
+                            val = parsed
+                            for part in extract_path.split("."):
+                                if isinstance(val, dict):
+                                    val = val.get(part)
+                                else:
+                                    val = None
+                                    break
+                            if val is not None:
+                                return val
+        return response
+
+    def _store_node_output(self, node_id: str, node: dict, value: Any) -> None:
+        """Store a node's output in node_outputs under the appropriate key."""
+        output_spec = node.get("output")
+        if output_spec and output_spec.get("as"):
+            self.node_outputs[output_spec["as"]] = value
+        else:
+            self.node_outputs[node_id] = value
+
+    # ------------------------------------------------------------------
+    # Internal: prompt building (legacy, now with template support)
+    # ------------------------------------------------------------------
+
+    def _build_node_prompt(self, node_id: str, node: dict, extra_vars: dict | None = None) -> str:
         """Build the prompt text for a single node.
 
-        Currently returns the node's ``prompt`` field directly — context flows
-        through conversation history per spec §6, not through prompt templating.
+        Resolves {{variable}} references in the node's prompt using
+        node_outputs and any extra_vars (e.g. for_each current item).
 
         This method exists as a clean extension point for future enrichment
         (e.g., injecting tool-availability hints, step-position metadata, or
@@ -2046,7 +2273,10 @@ class PlaybookRunner:
         str
             The fully constructed prompt to send to the Supervisor.
         """
-        return node.get("prompt", "")
+        raw = node.get("prompt", "")
+        if "{{" in raw:
+            return self._render_template(raw, extra_vars)
+        return raw
 
     def _resolve_node_llm_config(self, node: dict) -> dict | None:
         """Resolve the effective LLM config for a node.

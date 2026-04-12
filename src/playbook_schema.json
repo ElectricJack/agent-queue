@@ -172,8 +172,47 @@
         },
         "summarize_before": {
           "type": "boolean",
-          "description": "If true, summarize conversation history before this node to manage context size.",
+          "description": "DEPRECATED — context is now managed per-node automatically.",
           "default": false
+        },
+        "for_each": {
+          "type": "object",
+          "description": "Iterate over an array from a prior node's output. The node's prompt executes once per item. Results are optionally collected into a named array.",
+          "required": ["source", "as"],
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "string",
+              "description": "Dot-path to an array in node_outputs (e.g. 'discover_projects.active_projects')."
+            },
+            "as": {
+              "type": "string",
+              "description": "Variable name for the current item, available in the prompt via {{name}}."
+            },
+            "collect": {
+              "type": "string",
+              "description": "Name to collect all iteration results into an array in node_outputs."
+            },
+            "filter": {
+              "type": "string",
+              "description": "Expression to filter items before iteration. Items where the expression is falsy are skipped."
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "description": "Extract structured data from this node's tool results and store it in node_outputs for downstream nodes.",
+          "additionalProperties": false,
+          "properties": {
+            "extract": {
+              "type": "string",
+              "description": "JSON key to extract from the last tool result (e.g. 'findings', 'projects'). Dot-paths supported."
+            },
+            "as": {
+              "type": "string",
+              "description": "Name to store the extracted value under in node_outputs. If omitted, uses the node ID."
+            }
+          }
         }
       },
       "if": {
