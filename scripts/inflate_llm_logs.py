@@ -9,12 +9,16 @@ Usage:
 
 Output structure:
     ~/.agent-queue/logs/llm/2026-04-11/inflated/
-      001_tell-me-about-this-project/
-        001_turn.md
-        002_turn.md
-      002_sync-workspaces/
-        001_turn.md
-        002_turn.md
+      agent-queue/
+        001_tell-me-about-this-project/
+          001_turn.md
+          002_turn.md
+      moss-and-spade/
+        001_sync-workspaces/
+          001_turn.md
+      _system/
+        001_reflection-task-completed/
+          001_turn.md
 """
 
 import json
@@ -26,6 +30,41 @@ from datetime import date
 from pathlib import Path
 
 DATA_DIR = os.path.expanduser("~/.agent-queue/logs/llm")
+
+# Regex to extract project ID from context prefix or ACTIVE PROJECT line
+_PROJECT_RE = re.compile(
+    r"(?:"
+    r"ACTIVE PROJECT:\s*`([^`]+)`"  # system prompt: ACTIVE PROJECT: `foo`
+    r"|channel for project\s*`([^`]+)`"  # message prefix: channel for project `foo`
+    r"|NOTES MODE for project\s*'([^']+)'"  # notes: NOTES MODE for project 'foo'
+    r"|project_id='([^']+)'"  # context hint: project_id='foo'
+    r")"
+)
+
+
+def extract_project_id(entries: list[dict]) -> str:
+    """Extract the project ID from a conversation's entries.
+
+    Searches the system prompt and first user message for project context.
+    Returns the project ID or '_system' if none found.
+    """
+    for entry in entries[:2]:  # check first 2 entries at most
+        # Check system prompt
+        system = entry.get("input", {}).get("system", "")
+        if system:
+            m = _PROJECT_RE.search(system)
+            if m:
+                return next(g for g in m.groups() if g)
+
+        # Check messages
+        for msg in entry.get("input", {}).get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                m = _PROJECT_RE.search(content)
+                if m:
+                    return next(g for g in m.groups() if g)
+
+    return "_system"
 
 
 def slugify(text: str, max_len: int = 50) -> str:
@@ -175,20 +214,25 @@ def format_turn(entry: dict, turn_num: int, total_messages: int,
     messages = inp.get("messages", [])
 
     if turn_num == 1:
-        # First turn: show system prompt summary + user message
+        # First turn: show full system prompt, tools, and user message
+        # — exactly as the LLM sees them.
         system = inp.get("system", "")
         if system:
-            preview = system[:300].replace("\n", " ")
-            if len(system) > 300:
-                preview += f"... ({len(system)} chars total)"
-            lines.append(f"## System Prompt\n\n{preview}")
+            lines.append(f"## System Prompt\n\n{system}")
             lines.append("")
 
-        tool_names = inp.get("tool_names", [])
-        if tool_names:
-            lines.append(f"## Tools Loaded ({len(tool_names)})\n")
-            lines.append(", ".join(f"`{t}`" for t in tool_names))
+        # Full tool definitions if available, otherwise just names
+        tools = inp.get("tools", [])
+        if tools:
+            lines.append(f"## Tools ({len(tools)})\n")
+            lines.append(f"```json\n{json.dumps(tools, indent=2)}\n```")
             lines.append("")
+        else:
+            tool_names = inp.get("tool_names", [])
+            if tool_names:
+                lines.append(f"## Tools ({len(tool_names)}) — names only, schemas not logged\n")
+                lines.append(", ".join(f"`{t}`" for t in tool_names))
+                lines.append("")
 
         # Show the initial user message
         initial = extract_initial_request(messages)
@@ -331,26 +375,41 @@ def inflate_date(date_dir: Path) -> None:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for conv_idx, conv_entries in enumerate(conversations, 1):
-        # Name the folder from the initial user message
-        first_messages = conv_entries[0].get("input", {}).get("messages", [])
-        initial_msg = extract_initial_request(first_messages)
-        slug = slugify(initial_msg)
-        folder_name = f"{conv_idx:03d}_{slug}"
-        conv_dir = out_dir / folder_name
-        conv_dir.mkdir(parents=True, exist_ok=True)
+    # Group conversations by project
+    project_convs: dict[str, list[list[dict]]] = {}
+    for conv_entries in conversations:
+        project = extract_project_id(conv_entries)
+        project_convs.setdefault(project, []).append(conv_entries)
 
-        prev_msg_count = 0
-        for turn_idx, entry in enumerate(conv_entries, 1):
-            msg_count = len(entry.get("input", {}).get("messages", []))
-            content = format_turn(entry, turn_idx, msg_count, prev_msg_count)
-            file_path = conv_dir / f"{turn_idx:03d}_turn.md"
-            file_path.write_text(content, encoding="utf-8")
-            prev_msg_count = msg_count
+    total_convs = 0
+    for project in sorted(project_convs):
+        convs = project_convs[project]
+        project_dir = out_dir / project
+        project_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"  {folder_name}/ ({len(conv_entries)} turns)")
+        for conv_idx, conv_entries in enumerate(convs, 1):
+            first_messages = conv_entries[0].get("input", {}).get("messages", [])
+            initial_msg = extract_initial_request(first_messages)
+            slug = slugify(initial_msg)
+            folder_name = f"{conv_idx:03d}_{slug}"
+            conv_dir = project_dir / folder_name
+            conv_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"  -> {out_dir} ({len(conversations)} conversations, {len(entries)} total turns)")
+            prev_msg_count = 0
+            for turn_idx, entry in enumerate(conv_entries, 1):
+                msg_count = len(entry.get("input", {}).get("messages", []))
+                content = format_turn(entry, turn_idx, msg_count, prev_msg_count)
+                file_path = conv_dir / f"{turn_idx:03d}_turn.md"
+                file_path.write_text(content, encoding="utf-8")
+                prev_msg_count = msg_count
+
+            print(f"  {project}/{folder_name}/ ({len(conv_entries)} turns)")
+            total_convs += 1
+
+    print(
+        f"  -> {out_dir} ({total_convs} conversations across "
+        f"{len(project_convs)} projects, {len(entries)} total turns)"
+    )
 
 
 def main() -> None:

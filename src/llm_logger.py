@@ -145,7 +145,6 @@ class LLMLogger:
         if not self._enabled:
             return
 
-        # Extract tool names only (schemas are large and static)
         tool_names = [t.get("name", "") for t in tools] if tools else []
 
         # Build response summary
@@ -188,6 +187,7 @@ class LLMLogger:
             "input": {
                 "system": system,
                 "messages": messages,
+                "tools": tools or [],
                 "tool_names": tool_names,
                 "max_tokens": max_tokens,
                 "input_tokens_est": input_tokens_est,
