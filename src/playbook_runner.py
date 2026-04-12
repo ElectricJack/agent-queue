@@ -1965,7 +1965,9 @@ class PlaybookRunner:
         # only want the new messages: everything after history_len.
         full_messages = getattr(self.supervisor, "_last_messages", None)
         if full_messages and len(full_messages) > history_len:
-            new_messages = full_messages[history_len:]
+            from src.chat_providers.types import serialize_canonical
+
+            new_messages = serialize_canonical(full_messages[history_len:])
             self.messages.extend(new_messages)
         else:
             # Fallback: just append prompt + text (old behavior)
