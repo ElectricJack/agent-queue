@@ -1,20 +1,23 @@
 # CLAUDE.md
 
-Agent Queue — self-improving orchestration platform for AI coding agents. Manages task queues, coordinates multi-agent workflows via playbooks, accumulates knowledge through a 4-tier memory system, and continuously improves through automated reflection. Discord + MCP + CLI controlled, SQLAlchemy-backed (SQLite default, PostgreSQL supported), fully async Python.
+Agent Queue — self-improving orchestration platform for AI coding agents. Manages task queues, coordinates multi-agent workflows via playbooks, accumulates knowledge through a 4-tier memory system, and continuously improves through automated reflection. The core value proposition: the system gets better with use — every task feeds the reflection engine, insights accumulate in scoped memory, and future agents benefit automatically. Discord + MCP + CLI controlled, SQLAlchemy-backed (SQLite default, PostgreSQL supported), fully async Python.
 
 ## Quick Reference
 
 - **Entry point:** `src/main.py` → orchestrator + Discord bot + embedded MCP server
 - **Core files:** `orchestrator.py`, `command_handler.py`, `supervisor.py`, `database/`, `models.py`
-- **Playbooks:** `playbook_compiler.py`, `playbook_runner.py`, `playbook_manager.py`, `playbook_models.py`
-- **Memory:** `memory_v2_service.py`, `memory_extractor.py`, `facts_parser.py`
-- **Intelligence:** `prompt_builder.py`, `tool_registry.py`, `reflection.py`, `llm_logger.py`
+- **Playbooks:** `playbook_compiler.py`, `playbook_runner.py`, `playbook_manager.py`, `playbook_models.py`, `playbook_store.py`, `playbook_handler.py`, `playbook_state_machine.py`, `playbook_health.py`, `playbook_graph.py`
+- **Memory:** `memory_v2_service.py`, `memory_extractor.py`, `facts_parser.py`, `profile_parser.py`
+- **Intelligence:** `prompt_builder.py`, `tool_registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
+- **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
+- **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-memory-v2, aq-notes, aq-vibecop)
 - **Subsystems:** `src/adapters/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
 - **Specs:** `docs/specs/` (source of truth — specs first, then code)
-- **Design specs:** `docs/specs/design/` (playbooks, memory, self-improvement, coordination, principles)
+- **Design specs:** `docs/specs/design/` (principles, playbooks, memory, self-improvement, coordination, vault, profiles, roadmap)
 - **Config:** `~/.agent-queue/config.yaml`
 - **Vault:** `~/.agent-queue/vault/` (playbooks, profiles, memory, facts — all markdown)
+- **Packages:** `packages/memsearch/` (Milvus-backed semantic memory fork), `packages/aq-client/` (typed API client)
 
 ## Development
 
@@ -51,12 +54,16 @@ alembic upgrade head  # apply locally
 
 ## Key Subsystems
 
-- **Playbooks:** Markdown-authored DAG workflows compiled to JSON. Replace hooks/rules. See `docs/specs/design/playbooks.md`.
-- **Memory V2:** Milvus-backed 4-tier knowledge (L0 Identity → L1 Facts → L2 Topic → L3 Search). See `docs/specs/design/memory-plugin.md`.
-- **Reflection:** Post-task review with deep/standard/light tiers. Extracts insights for future agents. See `docs/specs/reflection.md`.
+- **Self-Improvement Loop:** Reflection engine → knowledge extraction → memory consolidation → prompt builder delivery. Autonomous — no manual intervention needed. See `docs/specs/design/self-improvement.md`.
+- **Playbooks:** Markdown-authored DAG workflows compiled to JSON. Replace hooks/rules. Scoped (system/project/agent-type), event-triggered, human-in-the-loop. See `docs/specs/design/playbooks.md`.
+- **Workflow Coordination:** Multi-agent pipelines with stage gates, agent affinity, workspace strategies, orphan recovery. See `docs/specs/design/agent-coordination.md`.
+- **Memory V2:** Milvus-backed 4-tier knowledge (L0 Identity → L1 Facts → L2 Topic → L3 Search). Semantic search + KV + temporal facts. Multi-scope weighted queries. See `docs/specs/design/memory-plugin.md`.
+- **Smart Cascade:** Deterministic promotion cascade each 5s cycle: approvals → resume paused → promote DEFINED → stuck monitoring. Zero LLM overhead.
+- **Reflection:** Post-task review with deep/standard/light tiers. Circuit breaker protection. Extracts insights for future agents. See `docs/specs/reflection.md`.
 - **Plugins:** 5 internal plugins (files, git, memory, notes, vibecop) + third-party support. See `docs/specs/plugin-system.md`.
-- **MCP Server:** Auto-exposes ~100 CommandHandler commands. See `docs/specs/mcp-server.md`.
-- **Vault:** `~/.agent-queue/vault/` — Obsidian-compatible markdown for playbooks, profiles, memory, facts.
+- **MCP Server:** Auto-exposes ~150 CommandHandler commands. See `docs/specs/mcp-server.md`.
+- **Vault:** `~/.agent-queue/vault/` — Obsidian-compatible markdown for playbooks, profiles, memory, facts, knowledge bases.
+- **Prompt Builder:** 5-layer context assembly pipeline: L0 role → override → L1 facts → L2 context → identity → tools. Budget-aware per tier.
 
 ## Detailed Context
 
