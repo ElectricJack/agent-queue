@@ -1158,7 +1158,10 @@ class Orchestrator:
         # register_facts_handlers() is idempotent (same handler IDs are
         # reused), so this is safe.
         self._memory_v2_service = None
-        mem_v2_plugin = self.plugin_registry.get_plugin_instance("memory_v2")
+        mem_v2_plugin = (
+            self.plugin_registry.get_plugin_instance("aq-memory_v2")
+            or self.plugin_registry.get_plugin_instance("memory_v2")
+        )
         if mem_v2_plugin:
             svc = getattr(mem_v2_plugin, "service", None)
             if svc and getattr(svc, "available", False):
