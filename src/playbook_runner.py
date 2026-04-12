@@ -2085,13 +2085,12 @@ class PlaybookRunner:
             )
             responses.append(response)
 
-            # Collect the output (extracted or raw response)
+            # Collect what _execute_single_node stored in node_outputs.
+            # It stores under output.as (if set) or the iteration node_id.
             output_spec = node.get("output")
-            if output_spec and output_spec.get("as"):
-                # Use the per-iteration extracted output
-                collected.append(self.node_outputs.get(output_spec["as"], response))
-            else:
-                collected.append(response)
+            iter_node_id = f"{node_id}[{i}]"
+            stored_key = (output_spec.get("as") if output_spec else None) or iter_node_id
+            collected.append(self.node_outputs.pop(stored_key, response))
 
         # Store collected results
         if collect_name:
