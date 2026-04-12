@@ -1,8 +1,14 @@
 ---
-tags: [hooks, automation, pipeline]
+tags: [hooks, automation, pipeline, deprecated]
 ---
 
 # Hook Pipeline Guide
+
+> **Deprecated:** Hooks and rules have been replaced by [[specs/design/playbooks|Playbooks]] — a more powerful system that supports multi-step directed graphs, accumulated context, conditional branching, and human-in-the-loop checkpoints. New automation should use playbooks. See the [[specs/design/playbooks|Playbook spec]] for details.
+>
+> The hook engine still works for existing hooks, but will be removed in a future release.
+
+---
 
 Hooks enable automated workflows that react to task lifecycle events or run
 on schedules. See [[specs/hooks|Hooks spec]] and [[specs/rule-system|Rule System spec]] for implementation details. Each hook follows a simple pipeline:
@@ -148,8 +154,6 @@ Generate a daily project status summary:
     "cooldown_seconds": 82800
 }
 ```
-
-> **Deprecated:** Hooks have been replaced by [[specs/design/playbooks|playbooks]]. See [[specs/design/playbooks]] for the playbook system.
 
 ### Test Gate After Completion
 

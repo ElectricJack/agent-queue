@@ -574,7 +574,26 @@ Opens a Discord modal with the file's current content pre-filled. Edit and submi
 
 ---
 
-## Automation (Hooks)
+## Automation (Playbooks)
+
+Playbooks are DAG-based workflows authored as markdown files in the vault. They compile into executable directed graphs with conditional branching, accumulated context, and human-in-the-loop checkpoints. Playbooks replace the older hook/rule system.
+
+Playbook management is primarily done through natural language chat or the MCP/CLI interface:
+
+```
+List my playbooks
+Show me the graph for the task-outcome playbook
+Run the daily-summary playbook
+What playbook runs happened today?
+```
+
+Playbooks are authored by creating markdown files in the vault (`~/.agent-queue/vault/`). The system automatically detects and compiles new playbooks. See the [[specs/design/playbooks|Playbook spec]] for authoring details.
+
+---
+
+## Automation (Hooks) — Deprecated
+
+> **Deprecated:** Hooks have been replaced by [[specs/design/playbooks|playbooks]]. Use playbooks for new automation. Existing hooks continue to work but will be removed in a future release.
 
 Hooks run automated workflows — they trigger on events or schedules, gather context, and send prompts to an LLM.
 
@@ -659,7 +678,7 @@ Auto-detects the project from the channel. Lists all notes and opens a thread wh
 
 ## Memory
 
-The memory system provides semantic search across project knowledge — task results, notes, and knowledge-base entries indexed by a vector database.
+The Memory V2 system provides a 4-tier knowledge architecture with semantic search, key-value lookups, and temporal facts — all backed by Milvus vector storage with scoped collections (system, agent-type, project).
 
 | Command | Description |
 |---------|-------------|
@@ -672,7 +691,7 @@ The memory system provides semantic search across project knowledge — task res
 |-----------|----------|-------------|
 | `project` | No | Project ID (auto-detected from channel) |
 
-Shows whether memory is enabled, the embedding provider, Milvus collection name, and auto-recall/remember settings. If memory is not enabled, shows instructions to enable it.
+Shows whether memory is enabled, the embedding provider, Milvus collection name, and entry counts per scope.
 
 #### `/memory-search`
 
@@ -682,7 +701,18 @@ Shows whether memory is enabled, the embedding provider, Milvus collection name,
 | `project` | No | Project ID (auto-detected from channel) |
 | `top_k` | No | Number of results to return (default: 5) |
 
-Returns ranked results with source file, relevance score, heading, and a content preview. Uses the project's configured embedding provider for semantic matching.
+Returns ranked results with source file, relevance score, heading, and a content preview. Searches across scopes with weighted retrieval.
+
+**Via chat** — memory is often easier to manage through natural language:
+
+```
+Search memory for "how authentication works"
+Remember that this project uses JWT tokens with 24h expiry
+What facts do we know about the deploy process?
+Set the fact "test_framework" to "pytest" for this project
+```
+
+Advanced memory operations (KV store, temporal facts, tags, promotion) are available through chat, the CLI, and MCP tools. See [[guides/agent-tools|Agent Tools]] for the full memory API.
 
 ---
 
@@ -776,3 +806,7 @@ What's the token breakdown for task bold-falcon?
 **Task archiving.** Use `/archive-tasks` to clean up completed tasks and keep your task list focused. Archived tasks are preserved in markdown notes and can be restored with `/restore-task`.
 
 **Interactive controls.** Use `/menu` for a button-based control panel, or `/browse` to navigate files with clickable dropdowns instead of typing paths.
+
+**Playbooks over hooks.** For new automation, author playbooks as markdown files in the vault instead of creating hooks. Playbooks support multi-step workflows, conditional branching, and human checkpoints — everything hooks do and more.
+
+**Vault browsing.** All knowledge, playbooks, and profiles live as markdown in `~/.agent-queue/vault/`. Open it with Obsidian for a rich editing experience, or browse with any text editor.

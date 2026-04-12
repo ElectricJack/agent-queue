@@ -66,4 +66,20 @@ Once the daemon is running and connected to Discord:
 
 The bot uses a **Supervisor** — an LLM-powered conversation interface that translates your natural language into system commands. You can also use Discord slash commands (type `/` to see them) for structured operations. Both methods call the same underlying logic.
 
+### Alternative Interfaces
+
+- **CLI:** Run `aq` commands in your terminal (install with `pip install -e ".[cli]"`)
+- **MCP client:** Connect from Claude Code, Cursor, or any MCP-compatible client — the embedded MCP server auto-exposes ~100 tools
+
+### What Happens Next
+
+As agents complete tasks, the system starts learning:
+
+- **Reflection** extracts insights from each completed task
+- **Memory** accumulates project conventions, error patterns, and successful strategies
+- **Playbooks** automate recurring workflows (task review, knowledge consolidation, etc.)
+- **Vault** (`~/.agent-queue/vault/`) stores all knowledge, playbooks, and profiles as browsable markdown — open with Obsidian for a rich editing experience
+
+The longer Agent Queue runs, the better it gets at your projects.
+
 For a complete reference of all available commands, see the [[discord-commands|Discord Commands Guide]].

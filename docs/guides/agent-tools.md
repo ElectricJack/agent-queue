@@ -20,7 +20,7 @@ To optimize context window usage, tools are split into **core** (always loaded) 
 
 Loading is a context optimization only — all tools are always executable on the backend regardless of loading state.
 
-**Categories:** `git`, `project`, `agent`, `hooks`, `memory`, `files`, `system`
+**Categories:** `git`, `project`, `agent`, `playbook`, `plugin`, `hooks` (deprecated), `memory`, `notes`, `files`, `task`, `rules`, `system`
 
 ---
 
@@ -50,7 +50,9 @@ Loading is a context optimization only — all tools are always executable on th
 |------|-------------|------------|
 | `memory_search` | Semantic search of project memory | `project_id` (required), `query` (required), `top_k` (int, default 10) |
 
-### Automation Rules
+### Automation Rules (Legacy)
+
+> Rules and hooks are deprecated in favor of [[specs/design/playbooks|playbooks]].
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
@@ -124,7 +126,46 @@ All git tools accept optional `project_id` (defaults to active project) and `wor
 
 ---
 
-## Hooks Category (8 tools)
+## Playbook Category
+
+Playbooks are DAG-based workflow automation authored as markdown and compiled to executable graphs. See [[specs/design/playbooks|Playbook spec]].
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_playbooks` | List all playbooks with scope and trigger info | `scope` (optional: system/project/agent-type), `project_id` (optional) |
+| `compile_playbook` | Compile markdown playbook to executable JSON graph | `path` (required: vault path to `.md` file) |
+| `run_playbook` | Manually trigger a playbook run | `playbook_id` (required), `context` (optional: JSON object passed to first node) |
+| `list_playbook_runs` | List recent playbook runs | `playbook_id` (optional), `status` (optional), `limit` (int, default 10) |
+| `inspect_playbook_run` | Detailed run info: nodes visited, context, tokens | `run_id` (required) |
+| `resume_playbook` | Resume a paused playbook run (human-in-the-loop) | `run_id` (required), `input` (optional: human input text) |
+| `playbook_health` | Run metrics: timing, token usage, failure rates | `playbook_id` (required) |
+| `show_playbook_graph` | Render playbook as ASCII or Mermaid graph | `playbook_id` (required), `format` (optional: ascii/mermaid) |
+| `dry_run_playbook` | Simulate playbook execution without side effects | `playbook_id` (required), `context` (optional) |
+
+---
+
+## Plugin Category
+
+Manage the plugin ecosystem. See [[specs/plugin-system|Plugin spec]].
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `plugin_list` | List installed plugins with status | *none* |
+| `plugin_info` | Detailed plugin info (version, tools, events, cron) | `name` (required) |
+| `plugin_install` | Install plugin from git repo | `url` (required: git URL) |
+| `plugin_update` | Update installed plugin | `name` (required) |
+| `plugin_remove` | Uninstall plugin | `name` (required) |
+| `plugin_enable` | Enable a disabled plugin | `name` (required) |
+| `plugin_disable` | Disable plugin (keeps installed) | `name` (required) |
+| `plugin_reload` | Reload plugin code | `name` (required) |
+| `plugin_config` | Get/set plugin configuration | `name` (required), `key` (optional), `value` (optional) |
+| `plugin_prompts` | List prompt templates from a plugin | `name` (required) |
+
+---
+
+## Hooks Category (8 tools) — Deprecated
+
+> Hooks are deprecated in favor of [[specs/design/playbooks|playbooks]]. Use playbooks for new automation.
 
 Hooks are generated from rules. Use `save_rule` (core tool) to create automation — don't create hooks directly.
 
@@ -141,26 +182,56 @@ Hooks are generated from rules. Use `save_rule` (core tool) to create automation
 
 ---
 
-## Memory Category (13 tools)
+## Memory Category (V2)
 
-All memory tools require `project_id`.
+Memory V2 uses Milvus-backed vector storage with 4-tier retrieval (L0 Identity → L1 Facts → L2 Topic → L3 Search) and scoped collections (system, agent-type, project).
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
-| `memory_search` | Semantic search (also a core tool) | `project_id` (required), `query` (required), `top_k` (int, default 10) |
-| `memory_stats` | Index stats: enabled, collection name, embedding provider | `project_id` (required) |
-| `memory_reindex` | Force full reindex from markdown files | `project_id` (required) |
-| `view_profile` | View project profile (synthesized architecture/conventions) | `project_id` (required) |
-| `edit_profile` | Replace project profile content | `project_id` (required), `content` (markdown, required) |
-| `regenerate_profile` | LLM regeneration of profile from task history | `project_id` (required) |
-| `compact_memory` | Summarize old memories into digests, delete originals | `project_id` (required) |
+| `memory_search` | Semantic search across scopes (also a core tool) | `query` (required), `scope` (optional), `project_id` (optional), `top_k` (int, default 10) |
+| `memory_save` | Save a memory entry | `content` (required), `scope` (required), `tags` (array, optional), `metadata` (object, optional) |
+| `memory_recall` | Retrieve memories by scope and filters | `scope` (required), `project_id` (optional), `tags` (array, optional), `limit` (int) |
+| `memory_update` | Update existing memory content or metadata | `memory_id` (required), `content` (optional), `tags` (optional), `metadata` (optional) |
+| `memory_delete` | Delete a memory entry | `memory_id` (required) |
+| `memory_list` | List all memories in a scope | `scope` (required), `project_id` (optional), `limit` (int) |
+| `memory_promote` | Promote memory to a broader scope | `memory_id` (required), `target_scope` (required) |
+| `memory_stale` | Find stale or outdated memories | `scope` (optional), `days` (int, default 30) |
+| `memory_health` | Memory system health metrics | *none* |
+
+### KV Store
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `memory_kv_set` | Set a key-value pair in a scope | `key` (required), `value` (required), `scope` (required), `project_id` (optional) |
+| `memory_kv_get` | Get value by key | `key` (required), `scope` (required), `project_id` (optional) |
+| `memory_kv_list` | List all KV pairs in a scope | `scope` (required), `project_id` (optional) |
+
+### Temporal Facts
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `memory_fact_set` | Set a temporal fact with optional validity window | `key` (required), `value` (required), `scope` (required), `valid_from` (optional), `valid_until` (optional) |
+| `memory_fact_get` | Get current value of a temporal fact | `key` (required), `scope` (required) |
+| `memory_fact_list` | List all active facts in a scope | `scope` (required), `project_id` (optional) |
+| `memory_fact_history` | Full history of a fact's values | `key` (required), `scope` (required) |
+| `memory_fact_recall` | Recall fact value at a specific point in time | `key` (required), `scope` (required), `at` (ISO-8601 datetime) |
+
+### Tags
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `memory_search_by_tag` | Find memories by tag across scopes | `tags` (array, required), `scope` (optional) |
+
+### Notes
+
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
 | `list_notes` | List all notes (name, title, size) | `project_id` (required) |
 | `write_note` | Create or overwrite a note | `project_id` (required), `title` (required), `content` (required) |
-| `delete_note` | Delete a note | `project_id` (required), `title` (required, use "name" from list_notes) |
+| `delete_note` | Delete a note | `project_id` (required), `title` (required) |
 | `read_note` | Read note contents | `project_id` (required), `title` (required) |
 | `append_note` | Append to existing note or create new | `project_id` (required), `title` (required), `content` (required) |
 | `promote_note` | Incorporate note into project profile via LLM | `project_id` (required), `title` (required) |
-| `compare_specs_notes` | Gap analysis: spec files vs note files | `project_id` (required), `specs_path` (optional) |
 
 ---
 
@@ -254,11 +325,13 @@ Filesystem operations within project workspaces.
 | git | 11 | Branch, commit, push, PR, merge |
 | project | 16 | Project CRUD, workspaces, channels |
 | agent | 12 | Profiles, capabilities, import/export |
-| hooks | 8 | Hook execution, scheduling, history |
-| memory | 13 | Notes, profiles, compaction, reindexing |
+| playbook | 9 | Compilation, execution, monitoring, graph visualization |
+| plugin | 10 | Install, update, enable/disable, config |
+| memory | 20+ | Semantic search, KV store, temporal facts, tags, notes |
+| hooks | 8 | Hook execution, scheduling, history (deprecated) |
 | files | 7 | Read, write, edit, glob, grep |
 | system | 28+ | Diagnostics, archives, dependencies, prompts, daemon |
-| **Total** | **~110+** | |
+| **Total** | **~130+** | |
 
 ---
 
@@ -279,14 +352,27 @@ get_task_diff(task_id="swift-dune")         # see code changes
 
 ### Working with memory
 ```
-memory_search(project_id="my-proj", query="how does auth work")
-write_note(project_id="my-proj", title="auth-design", content="...")
+memory_search(query="how does auth work", scope="project", project_id="my-proj")
+memory_save(content="Auth uses JWT tokens with 24h expiry", scope="project", tags=["auth", "architecture"])
+memory_kv_set(key="test_framework", value="pytest", scope="project", project_id="my-proj")
+memory_fact_set(key="deploy_status", value="green", scope="project", valid_until="2024-12-31")
 ```
 
-### Managing automation
+### Working with playbooks
 ```
-save_rule(type="active", content="# Auto-retry\n## Trigger\nTask fails with rate limit\n## Logic\nWait 5min then restart")
-list_rules()
+load_tools(category="playbook")
+list_playbooks()
+run_playbook(playbook_id="task-outcome", context={"task_id": "swift-dune"})
+inspect_playbook_run(run_id="run-123")
+show_playbook_graph(playbook_id="task-outcome", format="mermaid")
+```
+
+### Managing plugins
+```
+load_tools(category="plugin")
+plugin_list()
+plugin_info(name="aq-vibecop")
+plugin_install(url="https://github.com/user/my-plugin.git")
 ```
 
 ### Git workflow
