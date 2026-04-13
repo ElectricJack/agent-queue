@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -1257,6 +1258,8 @@ class MemoryV2Plugin(InternalPlugin):
 
             if self._service.available:
                 self._log.info("MemoryV2Service backend connected")
+                # Start vault file watchers for auto-indexing
+                self._start_vault_watchers(config_svc, memory_cfg)
             else:
                 self._log.warning(
                     "MemoryV2Service initialized but not available (memsearch may not be installed)"
@@ -1291,6 +1294,14 @@ class MemoryV2Plugin(InternalPlugin):
         return {}
 
     async def shutdown(self, ctx: PluginContext) -> None:
+        # Stop vault watchers
+        for watcher in getattr(self, "_vault_watchers", []):
+            try:
+                watcher.stop()
+            except Exception:
+                pass
+        self._vault_watchers = []
+
         if self._service:
             await self._service.shutdown()
             self._service = None
@@ -1298,6 +1309,110 @@ class MemoryV2Plugin(InternalPlugin):
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
+
+    def _start_vault_watchers(self, config_svc: Any, memory_cfg: dict) -> None:
+        """Start MemSearch file watchers for auto-indexing vault changes.
+
+        Creates a MemSearch instance per scope (system + each project) that
+        watches the vault directories for markdown changes and auto-indexes
+        them into the corresponding Milvus collection.
+        """
+        self._vault_watchers: list = []
+
+        try:
+            from memsearch import MemSearch
+            from memsearch.scoping import (
+                MemoryScope,
+                collection_name,
+                vault_paths,
+            )
+        except ImportError:
+            self._log.debug("memsearch not available, skipping vault watchers")
+            return
+
+        app_config = getattr(config_svc, "_config", None) if config_svc else None
+        data_dir = config_svc.data_dir if config_svc else ""
+        if not data_dir:
+            return
+
+        milvus_uri = memory_cfg.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db")
+        milvus_token = memory_cfg.get("milvus_token", "")
+        embedding_provider = memory_cfg.get("embedding_provider", "openai")
+        embedding_model = memory_cfg.get("embedding_model", "")
+        embedding_base_url = memory_cfg.get("embedding_base_url", "")
+        embedding_api_key = memory_cfg.get("embedding_api_key", "")
+
+        # Collect scopes to watch: system + all projects
+        scopes: list[tuple[str, list[str]]] = []
+
+        # System scope
+        sys_paths = vault_paths(MemoryScope.SYSTEM)
+        sys_dirs = [
+            os.path.join(data_dir, p) for p in sys_paths
+            if not p.endswith(".md")  # only directories, not individual files
+        ]
+        sys_dirs = [d for d in sys_dirs if os.path.isdir(d)]
+        if sys_dirs:
+            scopes.append((
+                collection_name(MemoryScope.SYSTEM),
+                sys_dirs,
+            ))
+
+        # Project scopes — get project IDs from the database
+        try:
+            db = self._ctx.get_service("db")
+            if db and hasattr(db, "_db"):
+                import asyncio
+                # Get project IDs synchronously (we're in sync init context)
+                projects = asyncio.get_event_loop().run_until_complete(
+                    db._db.list_projects()
+                )
+                for project in projects:
+                    pid = project.id if hasattr(project, "id") else str(project)
+                    proj_paths = vault_paths(MemoryScope.PROJECT, pid)
+                    proj_dirs = [
+                        os.path.join(data_dir, p) for p in proj_paths
+                        if not p.endswith(".md")
+                    ]
+                    proj_dirs = [d for d in proj_dirs if os.path.isdir(d)]
+                    if proj_dirs:
+                        scopes.append((
+                            collection_name(MemoryScope.PROJECT, pid),
+                            proj_dirs,
+                        ))
+        except Exception:
+            self._log.debug("Could not list projects for vault watchers", exc_info=True)
+
+        # Create a MemSearch instance per scope and start watching
+        for coll_name, paths in scopes:
+            try:
+                mem = MemSearch(
+                    paths=paths,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model or None,
+                    embedding_base_url=embedding_base_url or None,
+                    embedding_api_key=embedding_api_key or None,
+                    milvus_uri=milvus_uri,
+                    milvus_token=milvus_token or None,
+                    collection=coll_name,
+                )
+                watcher = mem.watch(debounce_ms=3000)
+                self._vault_watchers.append(watcher)
+                self._log.info(
+                    "Vault watcher started for collection %s (%d paths)",
+                    coll_name, len(paths),
+                )
+            except Exception:
+                self._log.warning(
+                    "Failed to start vault watcher for %s", coll_name,
+                    exc_info=True,
+                )
+
+        if self._vault_watchers:
+            self._log.info(
+                "Started %d vault watcher(s) for auto-indexing",
+                len(self._vault_watchers),
+            )
 
     def _not_implemented(self, command: str) -> dict:
         """Return a standard 'not yet implemented' response.
