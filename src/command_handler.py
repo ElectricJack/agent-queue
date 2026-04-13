@@ -7621,6 +7621,26 @@ feature work stuck on feature branches across multiple workspaces.
         if "type" not in event:
             event["type"] = "manual"
 
+        # Inject project_id for project-scoped playbooks so that events
+        # (pause notifications, task creation, etc.) route to the correct
+        # project channel.  The project ID comes from the playbook manager's
+        # scope_identifiers — not parse_scope(), which only returns the
+        # scope enum without the identifier for project-scoped playbooks.
+        if "project_id" not in event and pm:
+            scope_identifier = pm.get_scope_identifier(playbook_id)
+            if scope_identifier:
+                event["project_id"] = scope_identifier
+
+        # Inject notification_channel_id so the playbook LLM knows where
+        # to post summaries via send_message.
+        if "notification_channel_id" not in event:
+            bot = getattr(self.orchestrator, "_discord_bot", None)
+            if bot:
+                # Use project channel for project-scoped, global for system
+                ch = bot._get_channel(event.get("project_id"))
+                if ch:
+                    event["notification_channel_id"] = str(ch.id)
+
         graph = playbook.to_dict()
 
         # Create a Supervisor for LLM calls

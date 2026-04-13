@@ -240,6 +240,11 @@ class PlaybookManager:
         # after playbook mutations.
         self._subscribed: bool = False
 
+        # Default notification channel for system-scoped playbooks.
+        # Set by the orchestrator after Discord bot is ready so that
+        # trigger-initiated playbook runs know where to post summaries.
+        self.system_notification_channel_id: str | None = None
+
         # Compiler instance (created lazily when provider is available)
         self._compiler: PlaybookCompiler | None = None
         if chat_provider is not None:
@@ -818,6 +823,19 @@ class PlaybookManager:
                 self._max_concurrent_runs if self._max_concurrent_runs > 0 else "∞",
             )
             return
+
+        # Inject project_id for project-scoped playbooks so that events
+        # emitted during the run route to the correct project channel.
+        if "project_id" not in data:
+            scope_id = self._scope_identifiers.get(playbook_id)
+            if scope_id:
+                data = {**data, "project_id": scope_id}
+
+        # Inject system notification channel for system-scoped playbooks.
+        if "notification_channel_id" not in data and self.system_notification_channel_id:
+            scope_enum, _ = playbook.parse_scope()
+            if scope_enum == PlaybookScope.SYSTEM:
+                data = {**data, "notification_channel_id": self.system_notification_channel_id}
 
         # Dispatch to callback
         if self._on_trigger is not None:

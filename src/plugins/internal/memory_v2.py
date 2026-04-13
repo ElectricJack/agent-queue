@@ -2401,7 +2401,14 @@ class MemoryV2Plugin(InternalPlugin):
     # -----------------------------------------------------------------
 
     async def cmd_memory_search(self, args: dict) -> dict:
-        """Semantic vector search across a scoped collection."""
+        """Unified memory search — vector search + KV keyword matching.
+
+        Searches both the semantic vector index and KV entries (facts) in
+        parallel, merging results.  KV entries whose key or value contains
+        query keywords are surfaced alongside vector results so that
+        structured facts (pip-audit results, project metadata, etc.) are
+        discoverable even when vector similarity alone would miss them.
+        """
         project_id = self._resolve_project_id(args)
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
@@ -2420,7 +2427,7 @@ class MemoryV2Plugin(InternalPlugin):
 
         try:
             if queries:
-                # Batch search
+                # Batch search — KV matching not applied to batch mode
                 results = await self._service.batch_search(
                     project_id, queries, scope=scope, topic=topic, top_k=top_k
                 )
@@ -2437,16 +2444,58 @@ class MemoryV2Plugin(InternalPlugin):
                 results = await self._service.search(
                     project_id, query, scope=scope, topic=topic, top_k=top_k
                 )
+
+                # Also search KV entries (facts) for keyword matches.
+                # This catches structured data like pip-audit results that
+                # may not have strong vector similarity to the query.
+                kv_matches = await self._search_kv_keyword(project_id, query)
+
+                formatted = [self._format_search_result(r) for r in results]
+
                 return {
                     "success": True,
                     "project_id": project_id,
                     "query": query,
-                    "count": len(results),
-                    "results": [self._format_search_result(r) for r in results],
+                    "count": len(formatted),
+                    "results": formatted,
+                    **({"kv_matches": kv_matches} if kv_matches else {}),
                 }
         except Exception as e:
             self._log.error("memory_search failed: %s", e, exc_info=True)
             return {"error": f"Search failed: {e}"}
+
+    async def _search_kv_keyword(
+        self, project_id: str, query: str
+    ) -> list[dict[str, str]]:
+        """Search KV entries (facts) for keyword matches against a query.
+
+        Tokenises the query into lowercase words and matches against both
+        keys and values.  Returns entries where any query word appears in
+        the key or value.
+        """
+        assert self._service is not None
+        words = [w.lower() for w in query.split() if len(w) >= 3]
+        if not words:
+            return []
+
+        matches: list[dict[str, str]] = []
+        # Search across common namespaces
+        for ns in ("project", "playbook-runner", "system", ""):
+            try:
+                entries = await self._service.kv_list(project_id, ns)
+            except Exception:
+                continue
+            for entry in entries:
+                key = str(entry.get("key", "")).lower()
+                value = str(entry.get("value", "")).lower()
+                combined = f"{key} {value}"
+                if any(w in combined for w in words):
+                    matches.append({
+                        "namespace": ns or "(default)",
+                        "key": entry.get("key", ""),
+                        "value": str(entry.get("value", ""))[:500],
+                    })
+        return matches
 
     def _format_search_result(self, result: dict[str, Any]) -> dict[str, Any]:
         """Format a search result for API response."""

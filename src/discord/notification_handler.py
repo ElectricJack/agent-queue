@@ -564,7 +564,7 @@ class DiscordNotificationHandler:
         )
         view = PlaybookResumeView(event.run_id, handler=handler_ref)
 
-        await self.bot._send_message(
+        msg = await self.bot._send_message(
             format_playbook_paused(
                 playbook_id=event.playbook_id,
                 run_id=event.run_id,
@@ -574,6 +574,8 @@ class DiscordNotificationHandler:
             embed=embed,
             view=view,
         )
+        if msg:
+            view.set_message(msg)
 
     async def _on_playbook_run_timed_out(self, data: dict) -> None:
         event = PlaybookRunTimedOutEvent(**{k: v for k, v in data.items() if k != "_event_type"})
