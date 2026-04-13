@@ -1,37 +1,21 @@
 """Internal plugin: Memory v2 — unified memory operations via memsearch/Milvus.
 
-Replaces the v1 MemoryPlugin (``memory.py``) with a single self-contained
-plugin backed by a memsearch fork and Milvus.  See the design spec at
+Backed by a memsearch fork and Milvus.  See the design spec at
 ``docs/specs/design/memory-plugin.md`` (especially Sections 3–4) for the full
 architecture.
 
-Key differences from v1
------------------------
-* **One backend** — Milvus (via memsearch fork) replaces filesystem-only storage.
-* **Unified collection schema** — documents (vector), KV pairs (scalar), and
-  temporal facts all live in the same per-scope collection.
-* **Scope-aware** — collections named by scope (``aq_system``,
-  ``aq_project_{id}``, etc.) with cross-scope tag search.
-* **Vault as source of truth** — human-readable markdown files in the vault
-  directory are the canonical representation; Milvus is a derived index.
+Agent-facing interface
+----------------------
+Only three tools are exposed to agents:
 
-Transition (v1 + v2 coexistence)
---------------------------------
-Both v1 (``MemoryPlugin``) and v2 (``MemoryV2Plugin``) are active during the
-transition period.  v1 continues to own existing tool names (``memory_search``,
-``view_profile``, etc.) while v2 registers **only** the new tool names that
-are unique to the v2 architecture:
+* ``memory_store`` — unified write with LLM-based auto-classification
+  (routes facts to KV, insights/knowledge/guidance to semantic memory)
+* ``memory_recall`` — smart retrieval (KV exact match → semantic fallback)
+* ``memory_delete`` — explicit removal by chunk_hash
 
-* ``memory_search_by_tag`` — cross-scope tag search
-* ``memory_kv_get``, ``memory_kv_set``, ``memory_kv_list`` — KV operations
-* ``memory_fact_get``, ``memory_fact_set``, ``memory_fact_history`` — temporal facts
-
-Once the memsearch backend is wired up and v2 is fully functional, v1 will be
-deprecated and v2 will take over all tool names.
-
-Status: **connected** — v2-only commands are wired to MemoryV2Service which
-delegates to the memsearch fork (CollectionRouter + MilvusStore).  Overlapping
-commands (memory_search, view_profile, etc.) remain stubs pending v1 deprecation.
+All other handlers (search, KV ops, facts, health, compaction, etc.) are
+retained for internal use by subsystems (memory extractor, consolidation,
+reflection engine) but are NOT registered as agent-facing tools.
 """
 
 from __future__ import annotations
@@ -56,39 +40,76 @@ logger = logging.getLogger(__name__)
 
 TOOL_CATEGORY = "memory"
 
-# Tool names unique to v2 — only these are registered during the v1/v2
-# transition.  Overlapping names (memory_search, view_profile, etc.) remain
-# owned by v1's MemoryPlugin until v1 is fully deprecated.
-V2_ONLY_TOOLS: frozenset[str] = frozenset(
+# Agent-facing tools — only these are registered for LLM tool use.
+# All other handlers remain available internally for subsystems.
+AGENT_TOOLS: frozenset[str] = frozenset(
     {
-        "memory_save",
-        "memory_search",
-        "memory_search_by_tag",
-        "memory_kv_get",
-        "memory_kv_set",
-        "memory_kv_list",
-        "memory_fact_get",
-        "memory_fact_set",
-        "memory_fact_list",
-        "memory_fact_history",
-        "memory_fact_recall",
+        "memory_store",
         "memory_recall",
-        "memory_get",
-        "memory_list",
         "memory_delete",
-        "memory_update",
-        "memory_promote",
-        "memory_health",
-        "memory_stale",
-        "compact_memory",
-        "consolidate",
-        "project_factsheet",
-        "project_knowledge",
     }
 )
 
+# Backward-compat alias used by tests and other modules.
+V2_ONLY_TOOLS = AGENT_TOOLS
+
 TOOL_DEFINITIONS: list[dict] = [
-    # ---- Save (spec §8) ----
+    # ---- Unified store (agent-facing) ----
+    {
+        "name": "memory_store",
+        "description": (
+            "Store information in project memory.  Automatically classifies "
+            "content: key-value facts (e.g. 'the test framework is pytest') "
+            "are stored for fast exact lookup; insights, knowledge, and "
+            "guidance are stored as semantic memories with deduplication and "
+            "vector indexing.  Topic and tags are auto-inferred when not "
+            "provided.  Use this for ALL memory writes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The information to store.  Can be a fact "
+                        "('the test framework is pytest'), an insight, "
+                        "a pattern, guidance, or any knowledge worth "
+                        "remembering."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags.  Auto-generated if omitted.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Optional topic override (e.g. 'testing', "
+                        "'authentication').  Auto-inferred if omitted."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Optional scope override.  One of 'system', "
+                        "'orchestrator', 'agenttype_{type}', or "
+                        "'project_{id}'.  Defaults to project scope."
+                    ),
+                },
+                "source_task": {
+                    "type": "string",
+                    "description": "Task ID that produced this information.",
+                },
+                "source_playbook": {
+                    "type": "string",
+                    "description": "Playbook name that generated this memory.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    # ---- Save (spec §8) — internal, not agent-facing ----
     {
         "name": "memory_save",
         "description": (
@@ -696,7 +717,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     ),
                 },
             },
-            "required": ["project_id", "chunk_hash"],
+            "required": ["chunk_hash"],
         },
     },
     {
@@ -1170,11 +1191,13 @@ class MemoryV2Plugin(InternalPlugin):
         await self._init_service(ctx)
 
         # -- Map command names to handlers --
-        # Full command table — includes both v2-only and overlapping names.
-        # During transition only V2_ONLY_TOOLS are registered; overlapping
-        # names stay with v1 MemoryPlugin.
+        # Full command table — all handlers.  Only AGENT_TOOLS are
+        # registered for LLM tool use; the rest remain available for
+        # internal subsystem calls.
         all_commands: dict[str, object] = {
-            # Save (spec §8)
+            # Unified store (agent-facing)
+            "memory_store": self.cmd_memory_store,
+            # Save (spec §8) — internal
             "memory_save": self.cmd_memory_save,
             # Semantic search
             "memory_search": self.cmd_memory_search,
@@ -1210,23 +1233,22 @@ class MemoryV2Plugin(InternalPlugin):
             "consolidate": self.cmd_consolidate,
         }
 
-        # -- Register only v2-only commands during transition --
-        registered = 0
+        # -- Register all commands (callable via handler.execute()) --
         for name, handler in all_commands.items():
-            if name in V2_ONLY_TOOLS:
-                ctx.register_command(name, handler)
-                registered += 1
+            ctx.register_command(name, handler)
 
-        # -- Register only v2-only tool schemas during transition --
+        # -- Register only agent-facing tool schemas (visible to LLM) --
+        agent_tools_registered = 0
         for tool_def in TOOL_DEFINITIONS:
-            if tool_def["name"] in V2_ONLY_TOOLS:
+            if tool_def["name"] in AGENT_TOOLS:
                 ctx.register_tool(dict(tool_def), category=TOOL_CATEGORY)
+                agent_tools_registered += 1
 
         status = "connected" if self._service and self._service.available else "degraded"
         self._log.info(
-            "MemoryV2Plugin initialized (%s, %d/%d v2-only commands registered)",
+            "MemoryV2Plugin initialized (%s, %d agent-facing tools / %d total commands)",
             status,
-            registered,
+            agent_tools_registered,
             len(all_commands),
         )
 
@@ -1796,6 +1818,145 @@ class MemoryV2Plugin(InternalPlugin):
 
         # Return topic with highest score
         return max(topic_scores, key=topic_scores.get)  # type: ignore[arg-type]
+
+    # -----------------------------------------------------------------
+    # Command handler — Unified store (agent-facing)
+    # -----------------------------------------------------------------
+
+    _CLASSIFY_PROMPT = (
+        "Classify this content for a project memory system.\n\n"
+        "CONTENT:\n{content}\n\n"
+        "TYPES:\n"
+        "- fact: A concrete key-value pair (e.g. 'test framework is pytest' → "
+        'key="test_framework", value="pytest")\n'
+        "- insight: An observation or pattern discovered\n"
+        "- knowledge: Deeper understanding of how something works\n"
+        "- guidance: A rule or prescription for how to work\n\n"
+        "CONTROLLED TOPICS: {topics}\n\n"
+        "OUTPUT: A single JSON object.\n"
+        "For facts: {{\"type\": \"fact\", \"key\": \"snake_case_key\", "
+        "\"value\": \"the value\", \"namespace\": \"project\"}}\n"
+        "For others: {{\"type\": \"insight\", \"topic\": \"topic-from-list\"}}\n"
+        "(Use the best topic from CONTROLLED TOPICS, or a new lowercase "
+        "hyphenated topic if none fit.)\n"
+        "Output ONLY the JSON object, nothing else."
+    )
+
+    async def _classify_content(self, content: str) -> dict:
+        """Classify content for routing to the appropriate storage backend.
+
+        Uses a single Haiku call to determine both the content type and
+        topic, avoiding the double-LLM-call that would happen if we
+        classified first and then inferred topic separately.
+
+        Returns
+        -------
+        dict
+            Always has ``type`` (``"fact"``, ``"insight"``, ``"knowledge"``,
+            or ``"guidance"``).  Facts also have ``key``, ``value``, and
+            ``namespace``.  Non-facts have ``topic`` (may be ``None``).
+        """
+        topics_list = ", ".join(self.CONTROLLED_TOPICS)
+        prompt = self._CLASSIFY_PROMPT.format(
+            content=content[:2000],
+            topics=topics_list,
+        )
+        try:
+            raw = await self._ctx.invoke_llm(
+                prompt,
+                model="claude-haiku-4-20250514",
+            )
+            # Strip markdown fences if present
+            text = raw.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*", "", text)
+                text = re.sub(r"\s*```$", "", text)
+            result = json.loads(text)
+            item_type = result.get("type", "insight")
+            if item_type == "fact":
+                if not result.get("key") or not result.get("value"):
+                    return {"type": "insight", "topic": result.get("topic")}
+                return {
+                    "type": "fact",
+                    "key": result["key"],
+                    "value": result["value"],
+                    "namespace": result.get("namespace", "project"),
+                }
+            # Normalize topic the same way _infer_topic_via_llm does
+            topic = result.get("topic")
+            if topic:
+                topic = topic.strip().lower().strip("\"'")
+                topic = topic.replace(" ", "-").replace("_", "-")
+                topic = re.sub(r"[^a-z0-9-]", "", topic)
+                topic = re.sub(r"-{2,}", "-", topic).strip("-")
+                if not topic:
+                    topic = None
+            return {"type": item_type if item_type in ("knowledge", "guidance") else "insight",
+                    "topic": topic}
+        except Exception:
+            self._log.debug("Content classification failed, defaulting to insight")
+            return {"type": "insight", "topic": None}
+
+    async def cmd_memory_store(self, args: dict) -> dict:
+        """Unified memory storage with LLM-based content classification.
+
+        Classifies content as either a key-value fact or a semantic memory
+        (insight/knowledge/guidance) and routes to the appropriate backend.
+        """
+        content = args.get("content")
+        if not content:
+            return {"error": "content is required"}
+
+        project_id = self._resolve_project_id(args)
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_store")
+
+        try:
+            classification = await self._classify_content(content)
+        except Exception:
+            classification = {"type": "insight", "topic": None}
+
+        try:
+            if classification["type"] == "fact":
+                result = await self._service.kv_set(
+                    project_id=project_id,
+                    namespace=classification.get("namespace", "project"),
+                    key=classification["key"],
+                    value=classification["value"],
+                    scope=args.get("scope"),
+                )
+                return {
+                    "success": True,
+                    "stored_as": "fact",
+                    "key": classification["key"],
+                    "value": classification["value"],
+                    "namespace": classification.get("namespace", "project"),
+                    "project_id": project_id,
+                    **self._format_kv_entry(result),
+                }
+            else:
+                # insight / knowledge / guidance → semantic memory save
+                stored_type = classification["type"]
+                tags = args.get("tags") or [stored_type, "auto-generated"]
+                # Use pre-inferred topic to skip the second LLM call
+                topic = args.get("topic") or classification.get("topic")
+                result = await self._do_memory_save(
+                    project_id=project_id,
+                    content=content,
+                    tags=tags,
+                    topic=topic,
+                    source_task=args.get("source_task"),
+                    source_playbook=args.get("source_playbook"),
+                    scope=args.get("scope"),
+                )
+                result["stored_as"] = stored_type
+                return result
+        except Exception as e:
+            self._log.error("memory_store failed: %s", e, exc_info=True)
+            return {"error": f"Store failed: {e}"}
 
     # -----------------------------------------------------------------
     # Command handlers — Save (spec §8)

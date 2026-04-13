@@ -1153,9 +1153,9 @@ class TestReflectionPlaybookTemplate:
         lower = playbook_source.lower()
         assert "task record" in lower or "task description" in lower
 
-    def test_playbook_mentions_memory_save(self, playbook_source: str) -> None:
-        """The playbook template instructs saving insights via memory_save."""
-        assert "memory_save" in playbook_source
+    def test_playbook_mentions_memory_store(self, playbook_source: str) -> None:
+        """The playbook template instructs saving insights via memory_store."""
+        assert "memory_store" in playbook_source
 
     def test_playbook_mentions_insight_extraction(self, playbook_source: str) -> None:
         """The playbook template describes extracting patterns/insights."""

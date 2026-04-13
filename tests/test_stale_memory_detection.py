@@ -587,11 +587,12 @@ class TestCmdMemoryStale:
 class TestMemoryStaleToolRegistration:
     """memory_stale is properly registered as a v2 tool."""
 
-    def test_in_v2_only_tools(self):
-        """memory_stale is in the V2_ONLY_TOOLS set."""
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+    def test_tool_definition_exists(self):
+        """memory_stale has a tool definition registered."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
-        assert "memory_stale" in V2_ONLY_TOOLS
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_stale" in tool_names
 
     def test_tool_definition_exists(self):
         """memory_stale has a tool definition in TOOL_DEFINITIONS."""

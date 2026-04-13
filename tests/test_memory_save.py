@@ -2577,10 +2577,11 @@ class TestUpdateDocumentContentSourceTask:
 class TestToolDefinition:
     """Verify memory_save tool is properly registered."""
 
-    def test_memory_save_in_v2_only_tools(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+    def test_memory_save_tool_definition_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
-        assert "memory_save" in V2_ONLY_TOOLS
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_save" in tool_names
 
     def test_memory_save_tool_definition_exists(self):
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS

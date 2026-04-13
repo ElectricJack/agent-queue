@@ -112,10 +112,12 @@ class CompareSpecsNotesResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
-    "memory_search": MemorySearchResponse,
+    # Agent-facing tools use dict responses (no model needed).
+    # Internal/admin tools:
+    "memory_search": MemorySearchResponse,  # internal
     "memory_stats": MemoryStatsResponse,
     "memory_reindex": MemoryReindexResponse,
-    "compact_memory": CompactMemoryResponse,
+    "compact_memory": CompactMemoryResponse,  # internal
     "list_notes": ListNotesResponse,
     "read_note": ReadNoteResponse,
     "write_note": WriteNoteResponse,

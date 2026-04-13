@@ -207,10 +207,10 @@ class TestPlaybookStructure:
 class TestPlaybookMemoryInstructions:
     """Verify the playbook instructs the LLM to write to orchestrator memory."""
 
-    def test_mentions_memory_save(self, playbook_text: str):
-        """The playbook must reference memory_save as the tool for saving insights."""
-        assert "memory_save" in playbook_text, (
-            "Playbook must reference 'memory_save' tool for writing insights"
+    def test_mentions_memory_store(self, playbook_text: str):
+        """The playbook must reference memory_store as the tool for saving insights."""
+        assert "memory_store" in playbook_text, (
+            "Playbook must reference 'memory_store' tool for writing insights"
         )
 
     def test_write_insights_section_exists(self, playbook_text: str):

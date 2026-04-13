@@ -657,10 +657,11 @@ class TestPluginCmdMemoryHealth:
 class TestHealthToolRegistration:
     """memory_health should be in V2_ONLY_TOOLS and TOOL_DEFINITIONS."""
 
-    def test_in_v2_only_tools(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+    def test_tool_definition_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
-        assert "memory_health" in V2_ONLY_TOOLS
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_health" in tool_names
 
     def test_in_tool_definitions(self):
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS

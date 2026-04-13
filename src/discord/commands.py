@@ -3699,84 +3699,6 @@ def setup_commands(bot: commands.Bot) -> None:
             fields=fields,
         )
 
-    @bot.tree.command(name="memory-search", description="Semantic search across project memory")
-    @app_commands.describe(
-        query="Semantic search query",
-        project="Project ID (defaults to the project linked to this channel)",
-        top_k="Number of results to return (default: 5)",
-    )
-    async def memory_search_command(
-        interaction: discord.Interaction,
-        query: str,
-        project: str | None = None,
-        top_k: int = 5,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-
-        result = await handler.execute(
-            "memory_search",
-            {
-                "project_id": project_id,
-                "query": query,
-                "top_k": top_k,
-            },
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        results = result.get("results", [])
-        count = result.get("count", 0)
-
-        if count == 0:
-            await _send_info(
-                interaction,
-                "No Results",
-                description=f"No memories matched your query in `{project_id}`.\n\n**Query:** {query}",
-                followup=True,
-            )
-            return
-
-        # Build result entries for the embed description
-        desc_parts = [f"**Query:** {query}", f"**Project:** `{project_id}`", ""]
-        for r in results:
-            score = r.get("score", 0)
-            source = r.get("source", "unknown")
-            heading = r.get("heading", "")
-            content = r.get("content", "")
-
-            # Truncate content preview
-            preview = content.replace("\n", " ").strip()
-            if len(preview) > 200:
-                preview = preview[:197] + "..."
-
-            # Format source — show just the filename
-            source_short = source.rsplit("/", 1)[-1] if "/" in source else source
-
-            rank = r.get("rank", "?")
-            score_pct = f"{score * 100:.1f}%" if isinstance(score, (int, float)) else "N/A"
-            entry = f"**{rank}.** `{source_short}` — {score_pct}\n"
-            if heading:
-                entry += f"> **{heading}**\n"
-            entry += f"> {preview}"
-            desc_parts.append(entry)
-
-        description = "\n\n".join(desc_parts)
-        # Truncate to Discord limit if needed
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-
-        embed = info_embed(
-            f"Memory Search — {count} result{'s' if count != 1 else ''}",
-            description=description,
-        )
-        await interaction.followup.send(embed=embed)
-
     # ===================================================================
     # PLAYBOOK COMMANDS
     # ===================================================================
@@ -4144,17 +4066,17 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.followup.send(embed=embed)
 
     # ===================================================================
-    # MEMORY COMMANDS (NEW)
+    # MEMORY COMMANDS
     # ===================================================================
 
-    @bot.tree.command(name="memory-save", description="Save an insight to project memory")
+    @bot.tree.command(name="memory-store", description="Store information in project memory")
     @app_commands.describe(
-        content="The insight or learning to save",
+        content="The information to store (fact, insight, or knowledge)",
         project="Project ID (defaults to channel's project)",
-        topic="Topic for filtering (e.g. 'authentication', 'testing')",
-        tags="Comma-separated tags (e.g. 'insight,auth,important')",
+        topic="Optional topic override",
+        tags="Comma-separated tags",
     )
-    async def memory_save_command(
+    async def memory_store_command(
         interaction: discord.Interaction,
         content: str,
         project: str | None = None,
@@ -4166,287 +4088,26 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
 
+        await interaction.response.defer()
         args: dict = {"project_id": project_id, "content": content}
         if topic:
             args["topic"] = topic
         if tags:
             args["tags"] = [t.strip() for t in tags.split(",")]
-        result = await handler.execute("memory_save", args)
+        result = await handler.execute("memory_store", args)
         if "error" in result:
-            await _send_error(interaction, result["error"])
+            await _send_error(interaction, result["error"], followup=True)
             return
 
+        stored_as = result.get("stored_as", "memory")
         preview = content[:100] + "..." if len(content) > 100 else content
         await _send_success(
             interaction,
-            "Memory Saved",
+            f"Stored as {stored_as}",
             description=f"Saved to `{project_id}` memory:\n> {preview}",
-            result=result,
-        )
-
-    @bot.tree.command(name="memory-list", description="Browse memories in a scope")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        topic="Filter by topic",
-        tag="Filter by tag",
-        limit="Max entries (default 20)",
-    )
-    async def memory_list_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        topic: str | None = None,
-        tag: str | None = None,
-        limit: int = 20,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id, "limit": limit}
-        if topic:
-            args["topic"] = topic
-        if tag:
-            args["tag"] = tag
-        result = await handler.execute("memory_list", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        entries = result.get("entries", [])
-        if not entries:
-            await _send_info(
-                interaction, "No Memories",
-                description=f"No memories found in `{project_id}`.",
-                followup=True,
-            )
-            return
-
-        desc_parts = [f"**Project:** `{project_id}` — {len(entries)} entries\n"]
-        for e in entries:
-            heading = e.get("heading", "")
-            entry_topic = e.get("topic", "")
-            preview = e.get("content", "")[:120].replace("\n", " ")
-            topic_tag = f" `#{entry_topic}`" if entry_topic else ""
-            label = heading or preview
-            desc_parts.append(f"• **{label}**{topic_tag}")
-
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Memories — {project_id}", description=description)
-        await interaction.followup.send(embed=embed)
-
-    @bot.tree.command(name="memory-get", description="Retrieve information from memory (KV + semantic)")
-    @app_commands.describe(
-        query="What to retrieve",
-        project="Project ID (defaults to channel's project)",
-        topic="Topic filter for semantic search",
-    )
-    async def memory_get_command(
-        interaction: discord.Interaction,
-        query: str,
-        project: str | None = None,
-        topic: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        args: dict = {"query": query, "project_id": project_id}
-        if topic:
-            args["topic"] = topic
-        result = await handler.execute("memory_get", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        # memory_get returns either KV result or semantic results
-        kv_value = result.get("value")
-        if kv_value is not None:
-            await _send_success(
-                interaction,
-                f"Memory: {query}",
-                description=f"```\n{kv_value}\n```",
-                followup=True,
-            )
-            return
-
-        results = result.get("results", [])
-        if not results:
-            await _send_info(
-                interaction, "Not Found",
-                description=f"No memories matched `{query}` in `{project_id}`.",
-                followup=True,
-            )
-            return
-
-        desc_parts = [f"**Query:** {query}\n"]
-        for r in results:
-            score = r.get("score", 0)
-            content = r.get("content", "").replace("\n", " ")[:150]
-            source = r.get("source", "")
-            source_short = source.rsplit("/", 1)[-1] if "/" in source else source
-            score_pct = f"{score * 100:.1f}%" if isinstance(score, (int, float)) else ""
-            desc_parts.append(f"• `{source_short}` ({score_pct})\n> {content}")
-
-        description = "\n\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Memory Results — {len(results)} found", description=description)
-        await interaction.followup.send(embed=embed)
-
-    @bot.tree.command(name="memory-health", description="Memory health metrics for a project")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_health_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        result = await handler.execute("memory_health", {"project_id": project_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        fields = []
-        for key in ("total_entries", "collection_size", "stale_count",
-                     "growth_rate", "retrieval_hit_rate", "contradictions"):
-            val = result.get(key)
-            if val is not None:
-                label = key.replace("_", " ").title()
-                fields.append((label, str(val), True))
-
-        await _send_info(
-            interaction,
-            f"Memory Health — {project_id}",
-            fields=fields if fields else [("Status", "No data available", False)],
             followup=True,
-        )
-
-    @bot.tree.command(name="memory-fact-get", description="Get a temporal fact's current value")
-    @app_commands.describe(
-        key="Fact key (e.g. 'deploy_branch')",
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_fact_get_command(
-        interaction: discord.Interaction,
-        key: str,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute(
-            "memory_fact_get", {"project_id": project_id, "key": key}
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        value = result.get("value")
-        if value is None:
-            await _send_info(
-                interaction,
-                f"Fact: {key}",
-                description=f"No value set for `{key}` in `{project_id}`.",
-            )
-        else:
-            await _send_success(
-                interaction,
-                f"Fact: {key}",
-                description=f"```\n{value}\n```",
-                fields=[("Project", f"`{project_id}`", True)],
-            )
-
-    @bot.tree.command(name="memory-fact-set", description="Set a temporal fact")
-    @app_commands.describe(
-        key="Fact key (e.g. 'deploy_branch')",
-        value="New value for the fact",
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_fact_set_command(
-        interaction: discord.Interaction,
-        key: str,
-        value: str,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute(
-            "memory_fact_set",
-            {"project_id": project_id, "key": key, "value": value},
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        await _send_success(
-            interaction,
-            "Fact Updated",
-            description=f"`{key}` = `{value}` in `{project_id}`",
             result=result,
         )
-
-    @bot.tree.command(name="memory-fact-list", description="List temporal facts for a project")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_fact_list_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        result = await handler.execute(
-            "memory_fact_list", {"project_id": project_id}
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        facts = result.get("facts", [])
-        if not facts:
-            await _send_info(
-                interaction, "No Facts",
-                description=f"No temporal facts in `{project_id}`.",
-                followup=True,
-            )
-            return
-
-        desc_parts = []
-        for f in facts:
-            k = f.get("key", "?")
-            v = f.get("value", "?")
-            desc_parts.append(f"`{k}` = {v}")
-
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Facts — {project_id} ({len(facts)})", description=description)
-        await interaction.followup.send(embed=embed)
-
-    # ===================================================================
-    # ADDITIONAL MEMORY COMMANDS
-    # ===================================================================
 
     @bot.tree.command(name="memory-recall", description="Smart retrieval — KV exact match then semantic")
     @app_commands.describe(
@@ -4497,210 +4158,43 @@ def setup_commands(bot: commands.Bot) -> None:
         embed = info_embed(f"Recall — {len(results)} results", description=description)
         await interaction.followup.send(embed=embed)
 
-    @bot.tree.command(name="memory-kv-get", description="Exact key-value lookup")
-    @app_commands.describe(
-        namespace="KV namespace (e.g. 'project', 'conventions')",
-        key="The key to look up",
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_kv_get_command(
-        interaction: discord.Interaction,
-        namespace: str,
-        key: str,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        result = await handler.execute(
-            "memory_kv_get", {"project_id": project_id, "namespace": namespace, "key": key}
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        value = result.get("value")
-        if value is None:
-            await _send_info(interaction, "Not Found",
-                             description=f"`{namespace}/{key}` not set in `{project_id}`.")
-        else:
-            await _send_success(interaction, f"{namespace}/{key}",
-                                description=f"```\n{value}\n```")
+    # ===================================================================
+    # MEMORY ADMIN COMMANDS (human-only, not agent-facing)
+    # ===================================================================
 
-    @bot.tree.command(name="memory-kv-set", description="Store a key-value pair")
+    @bot.tree.command(name="memory-health", description="Memory health metrics for a project")
     @app_commands.describe(
-        namespace="KV namespace (e.g. 'project', 'conventions')",
-        key="The key to set",
-        value="The value to store",
         project="Project ID (defaults to channel's project)",
     )
-    async def memory_kv_set_command(
+    async def memory_health_command(
         interaction: discord.Interaction,
-        namespace: str,
-        key: str,
-        value: str,
         project: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project)
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        result = await handler.execute(
-            "memory_kv_set",
-            {"project_id": project_id, "namespace": namespace, "key": key, "value": value},
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-        await _send_success(interaction, "KV Stored",
-                            description=f"`{namespace}/{key}` = `{value}`", result=result)
 
-    @bot.tree.command(name="memory-kv-list", description="List key-value entries in a namespace")
-    @app_commands.describe(
-        namespace="KV namespace to list",
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_kv_list_command(
-        interaction: discord.Interaction,
-        namespace: str,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
         await interaction.response.defer()
-        result = await handler.execute(
-            "memory_kv_list", {"project_id": project_id, "namespace": namespace}
-        )
+        result = await handler.execute("memory_health", {"project_id": project_id})
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
             return
-        entries = result.get("entries", [])
-        if not entries:
-            await _send_info(interaction, "Empty Namespace",
-                             description=f"No entries in `{namespace}`.", followup=True)
-            return
-        desc_parts = [f"**Namespace:** `{namespace}` in `{project_id}`\n"]
-        for e in entries:
-            k = e.get("key", "?")
-            v = str(e.get("value", ""))[:80]
-            desc_parts.append(f"`{k}` = {v}")
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"KV Entries — {len(entries)}", description=description)
-        await interaction.followup.send(embed=embed)
 
-    @bot.tree.command(name="memory-fact-history", description="Full history of a temporal fact")
-    @app_commands.describe(
-        key="Temporal fact key",
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_fact_history_command(
-        interaction: discord.Interaction,
-        key: str,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        result = await handler.execute(
-            "memory_fact_history", {"project_id": project_id, "key": key}
+        fields = []
+        for key in ("total_entries", "collection_size", "stale_count",
+                     "growth_rate", "retrieval_hit_rate", "contradictions"):
+            val = result.get(key)
+            if val is not None:
+                label = key.replace("_", " ").title()
+                fields.append((label, str(val), True))
+
+        await _send_info(
+            interaction,
+            f"Memory Health — {project_id}",
+            fields=fields if fields else [("Status", "No data available", False)],
+            followup=True,
         )
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        history = result.get("history", [])
-        if not history:
-            await _send_info(interaction, f"No History: {key}",
-                             description="No history found.", followup=True)
-            return
-        desc_parts = [f"**Fact:** `{key}` in `{project_id}`\n"]
-        for h in history:
-            val = h.get("value", "?")
-            valid_from = h.get("valid_from", "?")
-            valid_to = h.get("valid_to", "current")
-            desc_parts.append(f"• `{val}` — {valid_from} → {valid_to}")
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Fact History — {key}", description=description)
-        await interaction.followup.send(embed=embed)
-
-    @bot.tree.command(name="memory-tag-search", description="Cross-scope tag search")
-    @app_commands.describe(
-        tag="Tag to search for across all scopes",
-        limit="Max results (default 10)",
-    )
-    async def memory_tag_search_command(
-        interaction: discord.Interaction,
-        tag: str,
-        limit: int = 10,
-    ):
-        await interaction.response.defer()
-        result = await handler.execute("memory_search_by_tag", {"tag": tag, "limit": limit})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        results = result.get("results", [])
-        if not results:
-            await _send_info(interaction, f"No Results for #{tag}",
-                             description="No entries found with that tag.", followup=True)
-            return
-        desc_parts = []
-        for r in results:
-            scope = r.get("scope", "?")
-            content = r.get("content", "").replace("\n", " ")[:120]
-            desc_parts.append(f"• `{scope}` — {content}")
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Tag: #{tag} — {len(results)} results", description=description)
-        await interaction.followup.send(embed=embed)
-
-    @bot.tree.command(name="memory-stale", description="Find stale memory documents")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        stale_days="Days without retrieval to consider stale (default 30)",
-        limit="Max results (default 50)",
-    )
-    async def memory_stale_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        stale_days: int = 30,
-        limit: int = 50,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        result = await handler.execute(
-            "memory_stale",
-            {"project_id": project_id, "stale_days": stale_days, "limit": limit},
-        )
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        entries = result.get("entries", [])
-        if not entries:
-            await _send_success(interaction, "No Stale Memories",
-                                description=f"All memories in `{project_id}` are fresh!",
-                                followup=True)
-            return
-        desc_parts = [f"**{len(entries)}** stale entries (>{stale_days} days)\n"]
-        for e in entries:
-            heading = e.get("heading", e.get("chunk_hash", "?")[:12])
-            days = e.get("days_stale", "?")
-            desc_parts.append(f"• **{heading}** — {days} days stale")
-        description = "\n".join(desc_parts[:30])
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = warning_embed(f"Stale Memories — {project_id}", description=description)
-        await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="memory-reindex", description="Reindex vault files into memory")
     @app_commands.describe(
@@ -4731,65 +4225,6 @@ def setup_commands(bot: commands.Bot) -> None:
             followup=True, result=result,
         )
 
-    @bot.tree.command(name="memory-compact", description="Compact and summarize older memories")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_compact_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        result = await handler.execute("compact_memory", {"project_id": project_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        await _send_success(
-            interaction, "Memory Compacted",
-            description=f"Compaction complete for `{project_id}`.",
-            followup=True, result=result,
-        )
-
-    @bot.tree.command(name="memory-consolidate", description="Run knowledge consolidation")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        mode="Consolidation mode",
-    )
-    @app_commands.choices(
-        mode=[
-            app_commands.Choice(name="daily", value="daily"),
-            app_commands.Choice(name="deep", value="deep"),
-            app_commands.Choice(name="bootstrap", value="bootstrap"),
-        ]
-    )
-    async def memory_consolidate_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        mode: app_commands.Choice[str] | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id}
-        if mode:
-            args["mode"] = mode.value
-        result = await handler.execute("consolidate", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        await _send_success(
-            interaction, "Consolidation Complete",
-            description=f"Knowledge consolidation ({mode.value if mode else 'daily'}) "
-                        f"complete for `{project_id}`.",
-            followup=True, result=result,
-        )
-
     @bot.tree.command(name="project-profile", description="View project memory profile")
     @app_commands.describe(
         project="Project ID (defaults to channel's project)",
@@ -4811,80 +4246,6 @@ def setup_commands(bot: commands.Bot) -> None:
         await _send_long_interaction(
             content, interaction.followup.send,
             filename=f"{project_id}-profile.md",
-        )
-
-    @bot.tree.command(name="project-factsheet", description="View or update project factsheet")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        action="View or update",
-    )
-    @app_commands.choices(
-        action=[
-            app_commands.Choice(name="view", value="view"),
-            app_commands.Choice(name="update", value="update"),
-        ]
-    )
-    async def project_factsheet_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        action: app_commands.Choice[str] | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id}
-        if action:
-            args["action"] = action.value
-        result = await handler.execute("project_factsheet", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        content = result.get("content", result.get("factsheet", str(result)))
-        await _send_long_interaction(
-            content, interaction.followup.send,
-            filename=f"{project_id}-factsheet.yaml",
-        )
-
-    @bot.tree.command(name="project-knowledge", description="Read organized topic knowledge")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        action="Read a topic or list available topics",
-        topic="Topic to read (e.g. 'architecture', 'testing')",
-    )
-    @app_commands.choices(
-        action=[
-            app_commands.Choice(name="read", value="read"),
-            app_commands.Choice(name="list", value="list"),
-        ]
-    )
-    async def project_knowledge_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        action: app_commands.Choice[str] | None = None,
-        topic: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id}
-        if action:
-            args["action"] = action.value
-        if topic:
-            args["topic"] = topic
-        result = await handler.execute("project_knowledge", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        content = result.get("content", result.get("knowledge", str(result)))
-        if isinstance(content, list):
-            content = "\n".join(f"• {t}" for t in content)
-        await _send_long_interaction(
-            content, interaction.followup.send,
-            filename=f"{project_id}-knowledge.md",
         )
 
     # ===================================================================

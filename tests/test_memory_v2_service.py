@@ -1323,11 +1323,12 @@ class TestToolSchemas:
         assert "topic" in props
         assert "top_k" in props
 
-    def test_new_tools_in_v2_only_set(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+    def test_new_tools_in_tool_definitions(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
-        assert "memory_fact_recall" in V2_ONLY_TOOLS
-        assert "memory_recall" in V2_ONLY_TOOLS
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_fact_recall" in tool_names
+        assert "memory_recall" in tool_names
 
     def test_build_scope_list(self):
         from src.plugins.internal.memory_v2 import MemoryV2Plugin
@@ -1472,10 +1473,11 @@ class TestMemoryGetToolSchema:
         assert "topic" in props
         assert "top_k" in props
 
-    def test_memory_get_in_v2_only_set(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+    def test_memory_get_tool_definition_exists(self):
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
-        assert "memory_get" in V2_ONLY_TOOLS
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_get" in tool_names
 
     def test_memory_get_description_mentions_auto_routing(self):
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS

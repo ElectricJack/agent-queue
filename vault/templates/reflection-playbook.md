@@ -131,8 +131,8 @@ the error signature, what was tried, and what would have helped.
 
 ## Write insights to memory
 
-For each insight worth preserving, save it to the {{AGENT_TYPE}}
-agent-type memory using `memory_save`. Each insight should be:
+For each insight worth preserving, save it to memory using
+`memory_store`. Each insight should be:
 
   - **Specific and actionable** -- not vague platitudes but concrete
     techniques, commands, configurations, or strategies that a future
@@ -141,8 +141,8 @@ agent-type memory using `memory_save`. Each insight should be:
     problem categories, confidence level (`#verified` if confirmed by
     multiple tasks, `#provisional` if first occurrence)
   - **Scoped correctly** -- project-specific knowledge goes to project
-    memory (via `memory_save` with project scope), cross-project
-    {{AGENT_TYPE}} wisdom goes to agent-type memory
+    memory (default scope), cross-project {{AGENT_TYPE}} wisdom goes
+    to agent-type memory (set `scope` to `agenttype_{{AGENT_TYPE}}`)
 
 Do not save trivial observations or one-off flukes. The bar for a
 memory is: "would a future {{AGENT_TYPE}} agent benefit from knowing
@@ -150,35 +150,21 @@ this before starting a similar task?"
 
 ## Consolidate existing memories
 
-After writing new insights, review the agent-type memory for
-consolidation opportunities. Use the consolidation tools to act on
-what you find:
+Before storing new insights, use `memory_recall` to check for related
+existing memories. This helps avoid duplicates and gives you context
+for writing better insights.
 
-  - **Merge duplicates** -- search agent-type memory for entries related
-    to the insights you just saved. If you find overlapping memories,
-    use `memory_save` (which auto-merges related content) to create a
-    unified version, then `memory_delete` to remove the weaker or
-    redundant entry by its `chunk_hash`.
-  - **Update outdated insights** -- if recent evidence confirms or
-    contradicts an existing memory, use `memory_update` to change its
-    content or tags directly. Bump `#provisional` to `#verified` if
-    confirmed by this task. Mark as `#contested` if contradicted.
-    Change the content to reflect current understanding.
-  - **Promote cross-project patterns** -- use `memory_search_by_tag` to
-    check if a project-specific insight also appears in other projects'
-    memories. If the same pattern has been discovered independently in
-    multiple projects, use `memory_promote` to copy it from project
-    scope to agent-type scope (set `target_scope` to
-    `agenttype_{{AGENT_TYPE}}` and `delete_source` to true).
-  - **Archive stale memories** -- if an insight hasn't been retrieved
-    recently and the current task provides no supporting evidence,
-    use `memory_delete` to remove clearly outdated knowledge. Don't
-    delete aggressively -- only remove entries that are demonstrably
-    wrong or superseded.
+  - **Merge duplicates** -- `memory_store` automatically merges related
+    content (similarity 0.8--0.95) and deduplicates near-identical
+    content (> 0.95). If you find an existing memory that is clearly
+    wrong or superseded, use `memory_delete` with its `chunk_hash`.
+  - **Correct outdated insights** -- if this task contradicts an existing
+    memory, store the corrected version via `memory_store` (which will
+    auto-merge), then `memory_delete` the old entry if it's clearly
+    wrong.
 
-Keep consolidation lightweight. Only touch memories that are directly
-related to the current task's domain. Do not attempt a full audit of
-all agent-type memory in every reflection run.
+Keep consolidation lightweight. Only touch memories directly related
+to the current task's domain.
 
 ## Skip conditions
 

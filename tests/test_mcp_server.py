@@ -720,23 +720,28 @@ class TestPluginToolRegistration:
         assert len(tools_none) == len(tools_empty)
 
 
-class TestMemorySearchMCPTool:
-    """Tests for memory_search exposure as an MCP tool (spec §7).
+class TestMemoryRecallMCPTool:
+    """Tests for memory_recall exposure as an MCP tool.
 
-    Verifies that memory_search is available via MCP with the v2 schema
-    (scope-aware, topic filter, weighted merge across collections).
+    Verifies that memory_recall is available via MCP with the unified smart
+    recall schema (KV exact match first, semantic search fallback).
     """
 
-    async def test_memory_search_in_v2_only_tools(self):
-        """memory_search is in the v2 plugin's V2_ONLY_TOOLS set."""
+    async def test_memory_recall_tool_definition_exists(self):
+        """memory_recall has a tool definition registered."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_recall" in tool_names
+
+    async def test_memory_recall_in_v2_only_tools(self):
+        """memory_recall is listed in V2_ONLY_TOOLS (agent-facing)."""
         from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
 
-        assert "memory_search" in V2_ONLY_TOOLS
+        assert "memory_recall" in V2_ONLY_TOOLS
 
-    # test_memory_search_not_in_v1_registration removed (roadmap 8.6 — v1 plugin deleted)
-
-    async def test_memory_search_registered_as_mcp_tool(self, populated_db):
-        """memory_search appears as an MCP tool when v2 plugin tools are passed."""
+    async def test_memory_recall_registered_as_mcp_tool(self, populated_db):
+        """memory_recall appears as an MCP tool when v2 plugin tools are passed."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -749,10 +754,10 @@ class TestMemorySearchMCPTool:
 
         tools = await server.list_tools()
         tool_names = {t.name for t in tools}
-        assert "memory_search" in tool_names
+        assert "memory_recall" in tool_names
 
-    async def test_memory_search_schema_has_topic_filter(self, populated_db):
-        """memory_search MCP tool schema includes the 'topic' parameter."""
+    async def test_memory_recall_schema_has_query_required(self, populated_db):
+        """memory_recall MCP tool schema requires 'query' parameter."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -763,12 +768,11 @@ class TestMemorySearchMCPTool:
 
         tools = await server.list_tools()
         tool_map = {t.name: t for t in tools}
-        schema = tool_map["memory_search"].inputSchema
-        assert "topic" in schema["properties"], "memory_search must expose topic filter"
-        assert "string" == schema["properties"]["topic"]["type"]
+        schema = tool_map["memory_recall"].inputSchema
+        assert "query" in schema.get("required", [])
 
-    async def test_memory_search_schema_has_scope(self, populated_db):
-        """memory_search MCP tool schema includes the 'scope' parameter."""
+    async def test_memory_recall_schema_has_expected_params(self, populated_db):
+        """memory_recall MCP tool schema exposes project_id, agent_type, namespace, topic, top_k."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -779,27 +783,15 @@ class TestMemorySearchMCPTool:
 
         tools = await server.list_tools()
         tool_map = {t.name: t for t in tools}
-        schema = tool_map["memory_search"].inputSchema
-        assert "scope" in schema["properties"], "memory_search must expose scope parameter"
+        props = tool_map["memory_recall"].inputSchema["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "namespace" in props
+        assert "topic" in props
+        assert "top_k" in props
 
-    async def test_memory_search_schema_has_batch_queries(self, populated_db):
-        """memory_search MCP tool schema supports batch queries via 'queries' array."""
-        from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
-
-        test_bus = EventBus()
-        ctx = _make_mock_context(populated_db, test_bus)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
-        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
-
-        tools = await server.list_tools()
-        tool_map = {t.name: t for t in tools}
-        schema = tool_map["memory_search"].inputSchema
-        assert "queries" in schema["properties"], "memory_search must support batch queries"
-        assert schema["properties"]["queries"]["type"] == "array"
-
-    async def test_memory_search_delegates_to_command_handler(self, populated_db):
-        """memory_search MCP tool delegates to CommandHandler.execute()."""
+    async def test_memory_recall_delegates_to_command_handler(self, populated_db):
+        """memory_recall MCP tool delegates to CommandHandler.execute()."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -807,7 +799,7 @@ class TestMemorySearchMCPTool:
         mock_handler = AsyncMock()
         mock_handler.execute.return_value = {
             "success": True,
-            "project_id": "test-project",
+            "source": "semantic",
             "query": "authentication patterns",
             "count": 2,
             "results": [
@@ -824,43 +816,48 @@ class TestMemorySearchMCPTool:
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         result = await server.call_tool(
-            "memory_search",
+            "memory_recall",
             {
-                "project_id": "test-project",
                 "query": "authentication patterns",
+                "project_id": "test-project",
                 "topic": "authentication",
-                "scope": "project_test-project",
             },
         )
         data = json.loads(result[0].text)
         mock_handler.execute.assert_called_once_with(
-            "memory_search",
+            "memory_recall",
             {
-                "project_id": "test-project",
                 "query": "authentication patterns",
+                "project_id": "test-project",
                 "topic": "authentication",
-                "scope": "project_test-project",
             },
         )
         assert data["success"] is True
         assert data["count"] == 2
 
 
-class TestMemoryGetMCPTool:
-    """Tests for memory_get exposure as an MCP tool (spec §7, roadmap 2.2.11).
+class TestMemoryStoreMCPTool:
+    """Tests for memory_store exposure as an MCP tool.
 
-    Verifies that memory_get is available via MCP with unified auto-routing
-    schema (KV first, then semantic fallback).
+    Verifies that memory_store is available via MCP with the unified write
+    schema (auto-classification, deduplication, vector indexing).
     """
 
-    async def test_memory_get_in_v2_only_tools(self):
-        """memory_get is in the v2 plugin's V2_ONLY_TOOLS set."""
+    async def test_memory_store_tool_definition_exists(self):
+        """memory_store has a tool definition registered."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_store" in tool_names
+
+    async def test_memory_store_in_v2_only_tools(self):
+        """memory_store is listed in V2_ONLY_TOOLS (agent-facing)."""
         from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
 
-        assert "memory_get" in V2_ONLY_TOOLS
+        assert "memory_store" in V2_ONLY_TOOLS
 
-    async def test_memory_get_registered_as_mcp_tool(self, populated_db):
-        """memory_get appears as an MCP tool when v2 plugin tools are passed."""
+    async def test_memory_store_registered_as_mcp_tool(self, populated_db):
+        """memory_store appears as an MCP tool when v2 plugin tools are passed."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -872,10 +869,10 @@ class TestMemoryGetMCPTool:
 
         tools = await server.list_tools()
         tool_names = {t.name for t in tools}
-        assert "memory_get" in tool_names
+        assert "memory_store" in tool_names
 
-    async def test_memory_get_schema_has_query_required(self, populated_db):
-        """memory_get MCP tool schema requires 'query' parameter."""
+    async def test_memory_store_schema_has_content_required(self, populated_db):
+        """memory_store MCP tool schema requires 'content' parameter."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -886,11 +883,11 @@ class TestMemoryGetMCPTool:
 
         tools = await server.list_tools()
         tool_map = {t.name: t for t in tools}
-        schema = tool_map["memory_get"].inputSchema
-        assert "query" in schema.get("required", [])
+        schema = tool_map["memory_store"].inputSchema
+        assert "content" in schema.get("required", [])
 
-    async def test_memory_get_schema_has_expected_params(self, populated_db):
-        """memory_get MCP tool schema exposes project_id, agent_type, topic, top_k."""
+    async def test_memory_store_schema_has_expected_params(self, populated_db):
+        """memory_store MCP tool schema exposes tags, topic, scope, source_task, source_playbook."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -901,14 +898,15 @@ class TestMemoryGetMCPTool:
 
         tools = await server.list_tools()
         tool_map = {t.name: t for t in tools}
-        props = tool_map["memory_get"].inputSchema["properties"]
-        assert "project_id" in props
-        assert "agent_type" in props
+        props = tool_map["memory_store"].inputSchema["properties"]
+        assert "tags" in props
         assert "topic" in props
-        assert "top_k" in props
+        assert "scope" in props
+        assert "source_task" in props
+        assert "source_playbook" in props
 
-    async def test_memory_get_delegates_to_command_handler(self, populated_db):
-        """memory_get MCP tool delegates to CommandHandler.execute()."""
+    async def test_memory_store_delegates_to_command_handler(self, populated_db):
+        """memory_store MCP tool delegates to CommandHandler.execute()."""
         from src.event_bus import EventBus
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
 
@@ -916,35 +914,29 @@ class TestMemoryGetMCPTool:
         mock_handler = AsyncMock()
         mock_handler.execute.return_value = {
             "success": True,
-            "source": "kv",
-            "query": "deploy_branch",
-            "count": 1,
-            "results": [
-                {
-                    "namespace": "project",
-                    "key": "deploy_branch",
-                    "value": "main",
-                },
-            ],
+            "stored": True,
+            "classification": "semantic",
+            "topic": "testing",
+            "chunk_hash": "abc123",
         }
         ctx = _make_mock_context(populated_db, test_bus, mock_handler)
         v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         result = await server.call_tool(
-            "memory_get",
+            "memory_store",
             {
-                "query": "deploy_branch",
-                "project_id": "test-project",
+                "content": "The test framework is pytest",
+                "topic": "testing",
             },
         )
         data = json.loads(result[0].text)
         mock_handler.execute.assert_called_once_with(
-            "memory_get",
+            "memory_store",
             {
-                "query": "deploy_branch",
-                "project_id": "test-project",
+                "content": "The test framework is pytest",
+                "topic": "testing",
             },
         )
         assert data["success"] is True
-        assert data["source"] == "kv"
+        assert data["stored"] is True

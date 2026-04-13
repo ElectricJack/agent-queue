@@ -107,7 +107,7 @@ unexpected:
 ## Write operational insights to memory
 
 For each significant finding, save it to orchestrator memory using
-`memory_save`. Each insight should be:
+`memory_store`. Each insight should be:
 
 - **Specific and actionable** — not "there were some errors" but
   "project X had 5 task failures in 4 hours, all with import errors

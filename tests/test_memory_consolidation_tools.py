@@ -148,18 +148,19 @@ class TestConsolidationToolDefinitions:
         assert "memory_promote" in names
 
     def test_tools_in_v2_only_set(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS, TOOL_DEFINITIONS
 
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_delete" in V2_ONLY_TOOLS
-        assert "memory_update" in V2_ONLY_TOOLS
-        assert "memory_promote" in V2_ONLY_TOOLS
+        assert "memory_update" in tool_names
+        assert "memory_promote" in tool_names
 
     def test_memory_delete_requires_chunk_hash(self):
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
 
         defn = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_delete")
         assert "chunk_hash" in defn["input_schema"]["required"]
-        assert "project_id" in defn["input_schema"]["required"]
+        # project_id is auto-resolved, not required in schema
 
     def test_memory_update_requires_chunk_hash(self):
         from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
@@ -681,7 +682,7 @@ class TestPluginMemoryPromote:
 
 
 class TestReflectionPlaybookContent:
-    """Verify the reflection playbook references the consolidation tools."""
+    """Verify the reflection playbook references the simplified memory tools."""
 
     def test_coding_playbook_references_memory_delete(self):
         playbook = Path("vault/agent-types/coding/playbooks/reflection.md")
@@ -690,26 +691,19 @@ class TestReflectionPlaybookContent:
         text = playbook.read_text()
         assert "memory_delete" in text
 
-    def test_coding_playbook_references_memory_update(self):
+    def test_coding_playbook_references_memory_store(self):
         playbook = Path("vault/agent-types/coding/playbooks/reflection.md")
         if not playbook.exists():
             pytest.skip("Playbook file not found")
         text = playbook.read_text()
-        assert "memory_update" in text
+        assert "memory_store" in text
 
-    def test_coding_playbook_references_memory_promote(self):
+    def test_coding_playbook_references_memory_recall(self):
         playbook = Path("vault/agent-types/coding/playbooks/reflection.md")
         if not playbook.exists():
             pytest.skip("Playbook file not found")
         text = playbook.read_text()
-        assert "memory_promote" in text
-
-    def test_coding_playbook_references_memory_search_by_tag(self):
-        playbook = Path("vault/agent-types/coding/playbooks/reflection.md")
-        if not playbook.exists():
-            pytest.skip("Playbook file not found")
-        text = playbook.read_text()
-        assert "memory_search_by_tag" in text
+        assert "memory_recall" in text
 
     def test_template_playbook_references_tools(self):
         playbook = Path("vault/templates/reflection-playbook.md")
@@ -717,5 +711,5 @@ class TestReflectionPlaybookContent:
             pytest.skip("Template file not found")
         text = playbook.read_text()
         assert "memory_delete" in text
-        assert "memory_update" in text
-        assert "memory_promote" in text
+        assert "memory_store" in text
+        assert "memory_recall" in text
