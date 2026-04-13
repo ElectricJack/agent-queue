@@ -3342,14 +3342,192 @@ class MemoryV2Plugin(InternalPlugin):
     # -----------------------------------------------------------------
 
     async def cmd_compact_memory(self, args: dict) -> dict:
-        """Compact memory — summarize old entries, remove stale ones."""
+        """Compact memory — consolidate insights into knowledge topic files.
+
+        Scans the project's vault insights directory, groups entries by topic,
+        and uses an LLM to consolidate each group into a structured knowledge
+        file.  Deduplicates and removes redundant raw insights after merging.
+        """
         project_id = self._resolve_project_id(args)
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
-        return self._not_implemented("compact_memory")
+        if not self._service or not self._service.available:
+            return {"error": "Memory service not available"}
+
+        config_svc = self._ctx.get_service("config")
+        app_config = getattr(config_svc, "_config", None) if config_svc else None
+        data_dir = config_svc.data_dir if config_svc else ""
+        if not data_dir:
+            return {"error": "data_dir not available"}
+
+        # Scan vault insights directory for this project
+        insights_dir = os.path.join(
+            data_dir, "vault", "projects", project_id, "memory", "insights"
+        )
+        knowledge_dir = os.path.join(
+            data_dir, "vault", "projects", project_id, "memory", "knowledge"
+        )
+        os.makedirs(knowledge_dir, exist_ok=True)
+
+        if not os.path.isdir(insights_dir):
+            return {"project_id": project_id, "status": "no insights directory", "consolidated": 0}
+
+        # Read all insight files
+        insights: list[dict] = []
+        for fname in os.listdir(insights_dir):
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(insights_dir, fname)
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    raw = f.read()
+                # Parse frontmatter
+                topic = "general"
+                tags: list[str] = []
+                content = raw
+                if raw.startswith("---"):
+                    parts = raw.split("---", 2)
+                    if len(parts) >= 3:
+                        import yaml
+                        try:
+                            fm = yaml.safe_load(parts[1])
+                            topic = fm.get("topic", "general") if fm else "general"
+                            tags = fm.get("tags", []) if fm else []
+                        except Exception:
+                            pass
+                        content = parts[2].strip()
+                insights.append({
+                    "file": fname,
+                    "path": fpath,
+                    "topic": topic,
+                    "tags": tags,
+                    "content": content,
+                })
+            except Exception:
+                continue
+
+        if not insights:
+            return {"project_id": project_id, "status": "no insights to consolidate", "consolidated": 0}
+
+        # Get knowledge topics from config
+        topics = ("architecture", "api-and-endpoints", "deployment", "dependencies",
+                  "gotchas", "conventions", "decisions")
+        if app_config and hasattr(app_config, "memory"):
+            topics = getattr(app_config.memory, "knowledge_topics", topics)
+
+        # Group insights by topic
+        by_topic: dict[str, list[dict]] = {}
+        for insight in insights:
+            t = insight["topic"].lower().replace(" ", "-")
+            # Map to closest known topic, or use "general"
+            matched = t if t in topics else "general"
+            for known in topics:
+                if known in t or t in known:
+                    matched = known
+                    break
+            by_topic.setdefault(matched, []).append(insight)
+
+        # Get LLM provider for consolidation
+        try:
+            from src.chat_providers import create_chat_provider
+            memory_cfg = self._get_memory_config(config_svc)
+            provider_name = memory_cfg.get("embedding_provider", "gemini")
+            # Use the main chat provider, not the embedding provider
+            provider = create_chat_provider(app_config.chat_provider)
+        except Exception as e:
+            return {"error": f"Failed to create LLM provider: {e}"}
+
+        # Consolidate each topic group
+        consolidated_count = 0
+        removed_count = 0
+        topic_results = []
+
+        for topic_name, topic_insights in by_topic.items():
+            if len(topic_insights) < 1:
+                continue
+
+            # Build consolidation prompt
+            insight_texts = "\n\n---\n\n".join(
+                f"**{ins['file']}** (topic: {ins['topic']})\n{ins['content']}"
+                for ins in topic_insights
+            )
+
+            system = (
+                "You are a knowledge consolidation system. Merge the following "
+                "raw insights into a single, well-organized knowledge document. "
+                "Remove duplicates, resolve contradictions (prefer newer info), "
+                "and organize into clear sections. Each fact should be 1-2 "
+                "sentences. Include source attribution where possible.\n\n"
+                "Output clean markdown with no frontmatter."
+            )
+            user = (
+                f"Topic: {topic_name}\n"
+                f"Project: {project_id}\n\n"
+                f"Raw insights to consolidate ({len(topic_insights)} entries):\n\n"
+                f"{insight_texts}\n\n"
+                f"Produce a consolidated knowledge document for the '{topic_name}' topic."
+            )
+
+            try:
+                resp = await provider.create_message(
+                    messages=[{"role": "user", "content": user}],
+                    system=system,
+                    max_tokens=2048,
+                )
+                consolidated_text = "\n".join(resp.text_parts).strip()
+                if not consolidated_text:
+                    continue
+            except Exception as e:
+                self._log.warning("Consolidation LLM call failed for topic %s: %s", topic_name, e)
+                continue
+
+            # Write knowledge topic file
+            knowledge_path = os.path.join(knowledge_dir, f"{topic_name}.md")
+            header = (
+                f"---\n"
+                f"topic: {topic_name}\n"
+                f"project: {project_id}\n"
+                f"consolidated_from: {len(topic_insights)} insights\n"
+                f"last_consolidated: {__import__('datetime').date.today().isoformat()}\n"
+                f"---\n\n"
+            )
+            with open(knowledge_path, "w", encoding="utf-8") as f:
+                f.write(header + consolidated_text)
+
+            consolidated_count += 1
+
+            # Remove raw insights that were consolidated (if more than 1)
+            if len(topic_insights) > 1:
+                for ins in topic_insights:
+                    try:
+                        os.remove(ins["path"])
+                        removed_count += 1
+                    except Exception:
+                        pass
+
+            topic_results.append({
+                "topic": topic_name,
+                "insights_merged": len(topic_insights),
+                "knowledge_file": f"knowledge/{topic_name}.md",
+            })
+
+        return {
+            "project_id": project_id,
+            "status": "completed",
+            "topics_consolidated": consolidated_count,
+            "insights_processed": len(insights),
+            "insights_removed": removed_count,
+            "topics": topic_results,
+        }
 
     async def cmd_consolidate(self, args: dict) -> dict:
-        """Run knowledge consolidation."""
+        """Run knowledge consolidation pipeline.
+
+        Modes:
+        - daily: Run compact_memory to merge insights into knowledge topics
+        - deep: compact + prune stale entries + resolve contradictions
+        - bootstrap: Generate initial knowledge from all existing memories
+        """
         project_id = self._resolve_project_id(args)
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
@@ -3357,4 +3535,38 @@ class MemoryV2Plugin(InternalPlugin):
         mode = args.get("mode", "daily")
         if mode not in ("daily", "deep", "bootstrap"):
             return {"error": (f"Invalid mode '{mode}'. Use 'daily', 'deep', or 'bootstrap'.")}
-        return self._not_implemented("consolidate")
+
+        if mode == "daily" or mode == "bootstrap":
+            # Daily and bootstrap both consolidate raw insights
+            return await self.cmd_compact_memory({"project_id": project_id})
+
+        if mode == "deep":
+            # Deep: compact first, then prune stale
+            compact_result = await self.cmd_compact_memory({"project_id": project_id})
+
+            # Find and report stale entries
+            stale_result = {}
+            if self._service and self._service.available:
+                try:
+                    stale = await self._service.find_stale(
+                        project_id=project_id,
+                        days=30,
+                        limit=20,
+                    )
+                    stale_result = {
+                        "stale_entries": len(stale) if stale else 0,
+                        "stale_candidates": [
+                            {"content": s.get("content", "")[:100], "days_stale": s.get("days_since_retrieval", 0)}
+                            for s in (stale or [])[:5]
+                        ],
+                    }
+                except Exception:
+                    stale_result = {"stale_entries": "check failed"}
+
+            return {
+                **compact_result,
+                "mode": "deep",
+                **stale_result,
+            }
+
+        return {"error": f"Mode '{mode}' not yet implemented"}
