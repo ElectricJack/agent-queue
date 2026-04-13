@@ -465,13 +465,31 @@ class MemoryExtractor:
             content = item.get("content", "")
             if not content:
                 return
+
+            # Dedup check: search for similar existing memories
+            try:
+                existing = await self._memory.search(
+                    project_id=project_id,
+                    query=content,
+                    top_k=1,
+                )
+                if existing:
+                    best = existing[0]
+                    similarity = best.get("score", 0)
+                    if similarity > 0.85:
+                        logger.info(
+                            "MemoryExtractor: skipping duplicate (%.2f similarity): %s",
+                            similarity, content[:80],
+                        )
+                        return
+            except Exception:
+                pass  # search failed, save anyway
+
             topic = item.get("topic")
             tags = ["auto-extracted", item_type]
             if topic:
                 tags.append(topic)
 
-            # Map type to subfolder via tags
-            # The memory service routes based on tags/topic
             await self._memory.save_document(
                 project_id=project_id,
                 content=content,
