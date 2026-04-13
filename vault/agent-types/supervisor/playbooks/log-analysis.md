@@ -2,7 +2,7 @@
 id: log-analysis
 triggers:
   - schedule.hourly
-scope: system
+scope: agent-type:supervisor
 cooldown: 3600
 max_tokens: 30000
 ---

@@ -4,7 +4,7 @@ triggers:
   - type: task.created
     filter:
       task_type: FEATURE
-scope: system
+scope: agent-type:supervisor
 ---
 
 # Feature Pipeline

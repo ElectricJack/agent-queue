@@ -4,7 +4,7 @@ triggers:
   - type: task.created
     filter:
       task_type: EXPLORATION
-scope: system
+scope: agent-type:supervisor
 ---
 
 # Parallel Exploration

@@ -4,7 +4,7 @@ triggers:
   - type: task.created
     filter:
       task_type: BUGFIX
-scope: system
+scope: agent-type:supervisor
 ---
 
 # Bugfix Pipeline

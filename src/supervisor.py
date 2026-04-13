@@ -26,6 +26,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -340,6 +341,12 @@ class Supervisor:
             "supervisor-system",
             {"workspace_dir": self.config.workspace_dir},
         )
+
+        # Load supervisor profile for L0 role context
+        profile_text = await self._load_supervisor_profile()
+        if profile_text:
+            builder.set_l0_role_from_markdown(profile_text)
+
         if self._active_project_id:
             # Fetch project metadata to include in context
             project_context = await self._build_active_project_context(self._active_project_id)
@@ -378,6 +385,28 @@ class Supervisor:
             builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
         system_prompt, _ = builder.build()
         return system_prompt
+
+    async def _load_supervisor_profile(self) -> str | None:
+        """Load the supervisor profile from the vault.
+
+        Returns the raw markdown content or ``None`` if unavailable.
+        """
+        profile_path = os.path.join(
+            self.config.data_dir, "vault", "agent-types", "supervisor", "profile.md"
+        )
+        try:
+            text = await asyncio.to_thread(self._read_file, profile_path)
+            return text if text else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_file(path: str) -> str | None:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
 
     async def _build_active_project_context(self, project_id: str) -> str:
         """Build a rich context block for the active project.

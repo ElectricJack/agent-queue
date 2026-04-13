@@ -2,7 +2,7 @@
 id: review-cycle
 triggers:
   - type: git.pr.created
-scope: system
+scope: agent-type:supervisor
 ---
 
 # Review Cycle
