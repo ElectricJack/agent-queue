@@ -278,9 +278,6 @@ class MemoryExtractor:
         if not project_id:
             return
         content = data.get("content", "")
-        # Reject short messages
-        if len(content) < 50:
-            return
 
         author = data.get("author", "user")
         text = f"{author}: {content[:500]}"
