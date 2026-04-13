@@ -1358,30 +1358,24 @@ class MemoryV2Plugin(InternalPlugin):
                 sys_dirs,
             ))
 
-        # Project scopes — get project IDs from the database
-        try:
-            db = self._ctx.get_service("db")
-            if db and hasattr(db, "_db"):
-                import asyncio
-                # Get project IDs synchronously (we're in sync init context)
-                projects = asyncio.get_event_loop().run_until_complete(
-                    db._db.list_projects()
-                )
-                for project in projects:
-                    pid = project.id if hasattr(project, "id") else str(project)
-                    proj_paths = vault_paths(MemoryScope.PROJECT, pid)
-                    proj_dirs = [
-                        os.path.join(data_dir, p) for p in proj_paths
-                        if not p.endswith(".md")
-                    ]
-                    proj_dirs = [d for d in proj_dirs if os.path.isdir(d)]
-                    if proj_dirs:
-                        scopes.append((
-                            collection_name(MemoryScope.PROJECT, pid),
-                            proj_dirs,
-                        ))
-        except Exception:
-            self._log.debug("Could not list projects for vault watchers", exc_info=True)
+        # Project scopes — scan vault/projects/ directory for project folders
+        projects_dir = os.path.join(data_dir, "vault", "projects")
+        if os.path.isdir(projects_dir):
+            for pid in os.listdir(projects_dir):
+                pid_path = os.path.join(projects_dir, pid)
+                if not os.path.isdir(pid_path):
+                    continue
+                proj_paths = vault_paths(MemoryScope.PROJECT, pid)
+                proj_dirs = [
+                    os.path.join(data_dir, p) for p in proj_paths
+                    if not p.endswith(".md")
+                ]
+                proj_dirs = [d for d in proj_dirs if os.path.isdir(d)]
+                if proj_dirs:
+                    scopes.append((
+                        collection_name(MemoryScope.PROJECT, pid),
+                        proj_dirs,
+                    ))
 
         # Create a MemSearch instance per scope and start watching
         for coll_name, paths in scopes:
