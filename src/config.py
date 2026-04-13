@@ -798,13 +798,13 @@ class AppConfig:
 
     @property
     def vault_system(self) -> str:
-        """System-scoped vault directory: ``{vault_root}/system/``."""
-        return os.path.join(self.vault_root, "system")
+        """System-scoped vault directory (merged into supervisor): ``{vault_root}/agent-types/supervisor/``."""
+        return os.path.join(self.vault_root, "agent-types", "supervisor")
 
     @property
-    def vault_orchestrator(self) -> str:
-        """Orchestrator vault directory: ``{vault_root}/orchestrator/``."""
-        return os.path.join(self.vault_root, "orchestrator")
+    def vault_supervisor(self) -> str:
+        """Supervisor vault directory: ``{vault_root}/agent-types/supervisor/``."""
+        return os.path.join(self.vault_root, "agent-types", "supervisor")
 
     @property
     def vault_agent_types(self) -> str:

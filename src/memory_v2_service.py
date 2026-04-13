@@ -208,7 +208,7 @@ class MemoryV2Service:
         project_id:
             Fallback project identifier.
         scope:
-            Optional scope string: ``"system"``, ``"orchestrator"``,
+            Optional scope string: ``"system"``, ``"supervisor"``,
             ``"agenttype_{type}"``, ``"project_{id}"``, or ``None``.
 
         Returns
@@ -219,8 +219,8 @@ class MemoryV2Service:
             return (MemoryScope.PROJECT, project_id)
         if scope == "system":
             return (MemoryScope.SYSTEM, None)
-        if scope == "orchestrator":
-            return (MemoryScope.ORCHESTRATOR, None)
+        if scope in ("supervisor", "orchestrator"):
+            return (MemoryScope.SUPERVISOR, None)
         if scope.startswith("agenttype_"):
             agent_type = scope.removeprefix("agenttype_")
             return (MemoryScope.AGENT_TYPE, agent_type)
@@ -440,7 +440,7 @@ class MemoryV2Service:
             The value to store.
         scope:
             Explicit scope override.  One of ``"system"``,
-            ``"orchestrator"``, ``"agenttype_{type}"``, or
+            ``"supervisor"``, ``"agenttype_{type}"``, or
             ``"project_{id}"``.  Defaults to the project scope.
         _from_vault:
             When ``True``, skip writing back to the vault ``facts.md``

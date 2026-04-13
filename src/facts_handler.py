@@ -2,16 +2,16 @@
 
 Registers glob patterns with the :class:`~src.vault_watcher.VaultWatcher` to
 detect changes to ``facts.md`` files across all vault scopes (system,
-orchestrator, agent-type, project).  When a facts file is created, modified, or
+supervisor, agent-type, project).  When a facts file is created, modified, or
 deleted, the handler parses the file and syncs the key-value entries to the
 Milvus KV backend via :class:`~src.memory_v2_service.MemoryV2Service`.
 
 Patterns registered (relative to vault root)::
 
-    system/facts.md             — system scope
-    orchestrator/facts.md       — orchestrator scope
-    agent-types/*/facts.md      — per agent-type profile
-    projects/*/facts.md         — per project
+    system/facts.md                         — system scope
+    agent-types/supervisor/facts.md         — supervisor scope
+    agent-types/*/facts.md                  — per agent-type profile
+    projects/*/facts.md                     — per project
 
 See ``docs/specs/design/memory-plugin.md`` Section 7 for the specification.
 """
@@ -32,14 +32,14 @@ logger = logging.getLogger(__name__)
 
 # Glob patterns for facts files (relative to vault root).
 #
-# Note: we use literal paths for singleton scopes (system, orchestrator)
-# rather than ``*/facts.md`` because Python's ``fnmatch.fnmatch`` matches
-# ``*`` across path separators — ``*/facts.md`` would also match
+# Note: we use literal paths for singleton scopes (system) rather than
+# ``*/facts.md`` because Python's ``fnmatch.fnmatch`` matches ``*`` across
+# path separators — ``*/facts.md`` would also match
 # ``projects/app/facts.md``, causing double dispatch.  Literal patterns
 # avoid the overlap while covering the exact same files.
+# The supervisor scope is covered by the agent-types/*/facts.md pattern.
 FACTS_PATTERNS: list[str] = [
     "system/facts.md",
-    "orchestrator/facts.md",
     "agent-types/*/facts.md",
     "projects/*/facts.md",
 ]
@@ -48,7 +48,7 @@ FACTS_PATTERNS: list[str] = [
 # MemoryV2Service.kv_set().
 _SCOPE_TO_KV_SCOPE: dict[str, str] = {
     "system": "system",
-    "orchestrator": "orchestrator",
+    "supervisor": "supervisor",
     # agent_type and project use identifier-qualified scope strings
 }
 
@@ -60,10 +60,10 @@ class FactsChangeInfo:
     Attributes:
         file_path: Absolute filesystem path to the facts file.
         change_type: One of ``"created"``, ``"modified"``, or ``"deleted"``.
-        scope: Memory scope — ``"system"``, ``"orchestrator"``,
+        scope: Memory scope — ``"system"``, ``"supervisor"``,
             ``"agent_type"``, or ``"project"``.
         identifier: Scope-specific identifier (e.g. project id or agent-type
-            name).  ``None`` for singleton scopes (system, orchestrator).
+            name).  ``None`` for singleton scopes (system, supervisor).
     """
 
     file_path: str
@@ -85,14 +85,14 @@ def derive_scope(rel_path: str) -> tuple[str, str | None]:
     -------
     tuple[str, str | None]
         A ``(scope, identifier)`` pair.  *identifier* is ``None`` for
-        singleton scopes (``system``, ``orchestrator``).
+        singleton scopes (``system``, ``supervisor``).
 
     Examples
     --------
     >>> derive_scope("system/facts.md")
     ('system', None)
-    >>> derive_scope("orchestrator/facts.md")
-    ('orchestrator', None)
+    >>> derive_scope("agent-types/supervisor/facts.md")
+    ('supervisor', None)
     >>> derive_scope("agent-types/coding/facts.md")
     ('agent_type', 'coding')
     >>> derive_scope("projects/my-app/facts.md")
@@ -105,12 +105,15 @@ def derive_scope(rel_path: str) -> tuple[str, str | None]:
         return "project", parts[1]
 
     if len(parts) >= 3 and parts[0] == "agent-types":
+        # The supervisor is a special agent-type that acts as a singleton scope
+        if parts[1] == "supervisor":
+            return "supervisor", None
         return "agent_type", parts[1]
 
-    # Singleton scopes: system/facts.md, orchestrator/facts.md
+    # Singleton scopes: system/facts.md
     if len(parts) >= 2:
         scope_name = parts[0]
-        if scope_name in ("system", "orchestrator"):
+        if scope_name == "system":
             return scope_name, None
 
     # Fallback — use the first path segment as scope name
@@ -134,8 +137,8 @@ def _scope_to_kv_scope(scope: str, identifier: str | None) -> str:
     """
     if scope == "system":
         return "system"
-    if scope == "orchestrator":
-        return "orchestrator"
+    if scope == "supervisor":
+        return "supervisor"
     if scope == "agent_type" and identifier:
         return f"agenttype_{identifier}"
     if scope == "project" and identifier:

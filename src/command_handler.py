@@ -7518,7 +7518,7 @@ feature work stuck on feature branches across multiple workspaces.
                 name = path if path.endswith(".md") else f"{path}.md"
                 search_dirs = [
                     pathlib.Path(self.config.data_dir) / "vault" / "system" / "playbooks",
-                    pathlib.Path(self.config.data_dir) / "vault" / "orchestrator" / "playbooks",
+                    pathlib.Path(self.config.data_dir) / "vault" / "agent-types" / "supervisor" / "playbooks",
                 ]
                 # Also search per-project playbook dirs
                 projects_dir = pathlib.Path(self.config.data_dir) / "vault" / "projects"

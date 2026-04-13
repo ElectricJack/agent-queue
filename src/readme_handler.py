@@ -1,14 +1,14 @@
-"""Vault watcher handler for project ``README.md`` files — orchestrator summary generation.
+"""Vault watcher handler for project ``README.md`` files — supervisor summary generation.
 
 Registers a glob pattern with the :class:`~src.vault_watcher.VaultWatcher` to
 detect changes to ``README.md`` files under ``projects/*/`` directories.  When
 a project README is created or modified, the handler reads its content and
-generates/updates a structured summary in the orchestrator's memory directory
-(``vault/orchestrator/memory/project-{id}.md``).  When a README is deleted,
+generates/updates a structured summary in the supervisor's memory directory
+(``vault/agent-types/supervisor/memory/project-{id}.md``).  When a README is deleted,
 the corresponding summary file is also removed.
 
 On startup, :func:`scan_and_generate_readme_summaries` iterates all existing
-project READMEs in the vault and ensures orchestrator summaries are current.
+project READMEs in the vault and ensures supervisor summaries are current.
 The :class:`~src.vault_watcher.VaultWatcher` only detects *changes* after its
 initial snapshot, so the startup scan fills the gap for pre-existing files.
 
@@ -16,7 +16,7 @@ Pattern registered (relative to vault root)::
 
     projects/*/README.md    — per-project README files
 
-See ``docs/specs/design/self-improvement.md`` Section 5 for the orchestrator
+See ``docs/specs/design/self-improvement.md`` Section 5 for the supervisor
 memory model, and ``docs/specs/design/playbooks.md`` Section 17 for the unified
 watcher architecture.
 """
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Glob pattern for project README files (relative to vault root).
 README_PATTERN: str = "projects/*/README.md"
 
-# Frontmatter template for orchestrator project summary files.
+# Frontmatter template for supervisor project summary files.
 _SUMMARY_FRONTMATTER = """\
 ---
 project_id: "{project_id}"
@@ -163,11 +163,11 @@ def generate_summary_content(
     *,
     timestamp: str | None = None,
 ) -> str:
-    """Generate a structured orchestrator summary from a project README.
+    """Generate a structured supervisor summary from a project README.
 
     This is a **lightweight indexer operation** — no LLM calls.  The summary
     captures metadata and key sections extracted from the README in a
-    standardised format that the orchestrator can use for cross-project
+    standardised format that the supervisor can use for cross-project
     understanding.
 
     The summary includes:
@@ -189,7 +189,7 @@ def generate_summary_content(
     -------
     str
         Formatted markdown suitable for writing to
-        ``vault/orchestrator/memory/project-{id}.md``.
+        ``vault/agent-types/supervisor/memory/project-{id}.md``.
     """
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -215,11 +215,13 @@ def generate_summary_content(
 
 
 def summary_path_for_project(vault_root: str, project_id: str) -> str:
-    """Return the absolute path for a project's orchestrator summary file.
+    """Return the absolute path for a project's supervisor summary file.
 
-    The summary lives at ``vault/orchestrator/memory/project-{id}.md``.
+    The summary lives at ``vault/agent-types/supervisor/memory/project-{id}.md``.
     """
-    return os.path.join(vault_root, "orchestrator", "memory", f"project-{project_id}.md")
+    return os.path.join(
+        vault_root, "agent-types", "supervisor", "memory", f"project-{project_id}.md"
+    )
 
 
 def _write_summary(
@@ -229,9 +231,9 @@ def _write_summary(
     *,
     timestamp: str | None = None,
 ) -> str:
-    """Generate and write a project summary to the orchestrator memory directory.
+    """Generate and write a project summary to the supervisor memory directory.
 
-    Creates the ``vault/orchestrator/memory/`` directory if needed.
+    Creates the ``vault/agent-types/supervisor/memory/`` directory if needed.
 
     Returns the absolute path to the written summary file.
     """
@@ -243,7 +245,7 @@ def _write_summary(
 
 
 def _remove_summary(vault_root: str, project_id: str) -> bool:
-    """Remove a project's orchestrator summary file if it exists.
+    """Remove a project's supervisor summary file if it exists.
 
     Returns ``True`` if the file was deleted, ``False`` if it did not exist.
     """
@@ -310,8 +312,8 @@ async def on_readme_changed(
     """Handle project README.md file changes detected by the VaultWatcher.
 
     For each ``created`` or ``modified`` change, reads the README and
-    generates/updates the orchestrator summary at
-    ``vault/orchestrator/memory/project-{id}.md``.  For ``deleted`` changes,
+    generates/updates the supervisor summary at
+    ``vault/agent-types/supervisor/memory/project-{id}.md``.  For ``deleted`` changes,
     removes the corresponding summary file.
 
     When *vault_root* is empty (e.g. when called from the VaultWatcher without
@@ -366,7 +368,7 @@ async def on_readme_changed(
                 )
             )
             logger.info(
-                "README deleted for project %s — orchestrator summary %s",
+                "README deleted for project %s — supervisor summary %s",
                 project_id,
                 action,
             )
@@ -433,7 +435,7 @@ async def on_readme_changed(
                 )
             )
             logger.info(
-                "README %s for project %s — orchestrator summary %s at %s",
+                "README %s for project %s — supervisor summary %s at %s",
                 change.operation,
                 project_id,
                 action,
@@ -536,7 +538,7 @@ def register_readme_handlers(
 
 
 # ---------------------------------------------------------------------------
-# Startup scan — sync existing READMEs to orchestrator summaries
+# Startup scan — sync existing READMEs to supervisor summaries
 # ---------------------------------------------------------------------------
 
 
@@ -563,11 +565,11 @@ def _find_project_readmes(vault_root: str) -> list[tuple[str, str]]:
 async def scan_and_generate_readme_summaries(
     vault_root: str,
 ) -> list[ReadmeScanResult]:
-    """Scan the vault for existing project READMEs and generate orchestrator summaries.
+    """Scan the vault for existing project READMEs and generate supervisor summaries.
 
     This is the **startup scan** — called once during orchestrator
     initialization to ensure all pre-existing README files have corresponding
-    summaries in ``vault/orchestrator/memory/``.  The
+    summaries in ``vault/agent-types/supervisor/memory/``.  The
     :class:`~src.vault_watcher.VaultWatcher` only detects *changes* after its
     initial snapshot; this function fills the gap.
 

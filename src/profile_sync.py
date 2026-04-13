@@ -18,8 +18,7 @@ Validation on sync (per spec Section 3):
   args are strings).
 
 Patterns watched:
-    - ``agent-types/*/profile.md`` -- per-agent-type profile definitions
-    - ``orchestrator/profile.md`` -- orchestrator-level profile
+    - ``agent-types/*/profile.md`` -- per-agent-type profile definitions (includes supervisor)
 
 See ``docs/specs/design/profiles.md`` Section 3 for the full sync model.
 """
@@ -45,7 +44,6 @@ logger = logging.getLogger(__name__)
 # Glob patterns for profile files (relative to vault root)
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
-    "orchestrator/profile.md",
 ]
 
 
@@ -94,7 +92,7 @@ def derive_profile_id(rel_path: str) -> str | None:
     field.  The ID is extracted from the directory structure:
 
     - ``agent-types/coding/profile.md`` -> ``"coding"``
-    - ``orchestrator/profile.md`` -> ``"orchestrator"``
+    - ``agent-types/supervisor/profile.md`` -> ``"supervisor"``
 
     Parameters
     ----------
@@ -112,10 +110,6 @@ def derive_profile_id(rel_path: str) -> str | None:
     # agent-types/<type>/profile.md -> <type>
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
         return parts[1]
-
-    # orchestrator/profile.md -> "orchestrator"
-    if len(parts) >= 2 and parts[0] == "orchestrator" and parts[-1] == "profile.md":
-        return "orchestrator"
 
     return None
 
@@ -393,7 +387,7 @@ async def on_profile_changed(
                 and result.action == "created"
                 and data_dir
                 and path_id
-                and path_id != "orchestrator"
+                and path_id != "supervisor"
             ):
                 from src.vault import copy_starter_knowledge
 

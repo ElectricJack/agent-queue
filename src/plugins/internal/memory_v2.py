@@ -93,7 +93,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": (
                         "Optional scope override.  One of 'system', "
-                        "'orchestrator', 'agenttype_{type}', or "
+                        "'supervisor', 'agenttype_{type}', or "
                         "'project_{id}'.  Defaults to project scope."
                     ),
                 },
@@ -166,7 +166,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "Memory scope.  One of 'system', 'supervisor', "
                         "'agenttype_{type}', or 'project_{id}'.  Defaults to "
                         "the project scope derived from project_id."
                     ),
@@ -208,7 +208,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Memory scope to search.  One of 'system', 'orchestrator', "
+                        "Memory scope to search.  One of 'system', 'supervisor', "
                         "'agenttype_{type}', or 'project_{id}'.  Defaults to the "
                         "project scope derived from project_id."
                     ),
@@ -320,7 +320,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "Memory scope.  One of 'system', 'supervisor', "
                         "'agenttype_{type}', or 'project_{id}'.  Defaults to "
                         "the project scope derived from project_id.  Use this "
                         "to write cross-project or system-wide facts."
@@ -642,7 +642,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Memory scope to browse.  One of 'system', 'orchestrator', "
+                        "Memory scope to browse.  One of 'system', 'supervisor', "
                         "'agenttype_{type}', or 'project_{id}'.  Defaults to the "
                         "project scope derived from project_id."
                     ),
@@ -712,7 +712,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": (
                         "Memory scope containing the entry.  One of 'system', "
-                        "'orchestrator', 'agenttype_{type}', or 'project_{id}'.  "
+                        "'supervisor', 'agenttype_{type}', or 'project_{id}'.  "
                         "Defaults to the project scope derived from project_id."
                     ),
                 },
@@ -771,7 +771,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Memory scope.  One of 'system', 'orchestrator', "
+                        "Memory scope.  One of 'system', 'supervisor', "
                         "'agenttype_{type}', or 'project_{id}'.  Defaults to "
                         "the project scope derived from project_id."
                     ),
@@ -849,7 +849,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "description": (
                         "Scope to reindex.  Defaults to project scope.  "
-                        "Use 'system' or 'orchestrator' for global reindex."
+                        "Use 'system' or 'supervisor' for global reindex."
                     ),
                 },
                 "full": {

@@ -846,21 +846,21 @@ project-specific QA practices.
     },
 }
 
-# Orchestrator profile (roadmap §4.2.3, self-improvement spec §5)
-# The orchestrator is its own agent type — it coordinates agents, manages
+# Supervisor profile (roadmap §4.2.3, self-improvement spec §5)
+# The supervisor is its own agent type — it coordinates agents, manages
 # tasks, and maintains high-level project understanding.  This profile is
-# written to vault/orchestrator/profile.md at startup if it doesn't exist.
-ORCHESTRATOR_PROFILE = """\
+# written to vault/agent-types/supervisor/profile.md at startup if it doesn't exist.
+SUPERVISOR_PROFILE = """\
 ---
-id: orchestrator
-name: Orchestrator
-tags: [profile, orchestrator]
+id: supervisor
+name: Supervisor
+tags: [profile, supervisor]
 ---
 
-# Orchestrator
+# Supervisor
 
 ## Role
-You are the orchestrator — the central coordinator of the agent-queue system.
+You are the supervisor — the central coordinator of the agent-queue system.
 You manage projects, tasks, and agent workflows. You delegate all code work
 to specialized agents and never edit code directly.
 
@@ -1066,13 +1066,11 @@ def migrate_passive_rules_to_memory(data_dir: str) -> dict:
 _STATIC_DIRS: list[str] = [
     # Obsidian configuration
     "vault/.obsidian",
-    # System-scoped playbooks and memory
-    "vault/system/playbooks",
-    "vault/system/memory",
-    "vault/system/memory/guidance",
-    # Orchestrator profile, playbooks, and memory
-    "vault/orchestrator/playbooks",
-    "vault/orchestrator/memory",
+    # System-scoped directory (shared with supervisor)
+    "vault/system",
+    # Supervisor profile, playbooks, and memory
+    "vault/agent-types/supervisor/playbooks",
+    "vault/agent-types/supervisor/memory",
     # Agent-types root (subdirs created per profile)
     "vault/agent-types",
     # Projects root (subdirs created per project)
@@ -1088,11 +1086,10 @@ def ensure_vault_layout(data_dir: str) -> None:
     This covers the directories that exist regardless of which profiles or
     projects are configured:
 
-    - ``vault/system/playbooks/``
-    - ``vault/system/memory/``
-    - ``vault/orchestrator/playbooks/``
-    - ``vault/orchestrator/memory/``
-    - ``vault/orchestrator/profile.md``
+    - ``vault/system/``
+    - ``vault/agent-types/supervisor/playbooks/``
+    - ``vault/agent-types/supervisor/memory/``
+    - ``vault/agent-types/supervisor/profile.md``
     - ``vault/agent-types/``
     - ``vault/projects/``
     - ``vault/templates/``
@@ -1106,9 +1103,9 @@ def ensure_vault_layout(data_dir: str) -> None:
     ``vault/system/playbooks/`` if they don't already exist.  See
     :func:`ensure_default_playbooks` for details.
 
-    The orchestrator's own ``profile.md`` (roadmap §4.2.3) is written to
-    ``vault/orchestrator/profile.md`` if it doesn't already exist.  See
-    :func:`ensure_orchestrator_profile` for details.
+    The supervisor's own ``profile.md`` (roadmap §4.2.3) is written to
+    ``vault/agent-types/supervisor/profile.md`` if it doesn't already exist.
+    See :func:`ensure_supervisor_profile` for details.
 
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
@@ -1119,7 +1116,7 @@ def ensure_vault_layout(data_dir: str) -> None:
 
     ensure_default_templates(data_dir)
     ensure_default_playbooks(data_dir)
-    ensure_orchestrator_profile(data_dir)
+    ensure_supervisor_profile(data_dir)
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
 
 
@@ -1254,11 +1251,11 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     return result
 
 
-def ensure_orchestrator_profile(data_dir: str) -> bool:
-    """Write the orchestrator profile to ``vault/orchestrator/profile.md`` if absent.
+def ensure_supervisor_profile(data_dir: str) -> bool:
+    """Write the supervisor profile to ``vault/agent-types/supervisor/profile.md`` if absent.
 
-    The orchestrator is its own agent type (roadmap §4.2.3, self-improvement
-    spec §5).  This function writes the default :data:`ORCHESTRATOR_PROFILE`
+    The supervisor is its own agent type (roadmap §4.2.3, self-improvement
+    spec §5).  This function writes the default :data:`SUPERVISOR_PROFILE`
     to the vault so that the profile sync system can pick it up and upsert
     it into the ``agent_profiles`` database table at startup.
 
@@ -1271,17 +1268,17 @@ def ensure_orchestrator_profile(data_dir: str) -> bool:
     Returns:
         ``True`` if the file was created, ``False`` if it already existed.
     """
-    profile_path = os.path.join(data_dir, "vault", "orchestrator", "profile.md")
+    profile_path = os.path.join(data_dir, "vault", "agent-types", "supervisor", "profile.md")
 
     if os.path.exists(profile_path):
-        logger.debug("Orchestrator profile already exists, skipping: %s", profile_path)
+        logger.debug("Supervisor profile already exists, skipping: %s", profile_path)
         return False
 
     os.makedirs(os.path.dirname(profile_path), exist_ok=True)
     with open(profile_path, "w", encoding="utf-8") as f:
-        f.write(ORCHESTRATOR_PROFILE)
+        f.write(SUPERVISOR_PROFILE)
 
-    logger.info("Created orchestrator profile: %s", profile_path)
+    logger.info("Created supervisor profile: %s", profile_path)
     return True
 
 
@@ -1578,8 +1575,8 @@ def vault_has_content(data_dir: str) -> bool:
     deciding whether to auto-migrate (spec §6).
 
     Specifically, checks for any ``.md`` files or other content files
-    inside ``vault/projects/``, ``vault/system/playbooks/``,
-    ``vault/orchestrator/``, or ``vault/agent-types/``.
+    inside ``vault/projects/``, ``vault/system/``,
+    or ``vault/agent-types/``.
     The ``vault/.obsidian/`` directory is excluded from the check
     because its presence alone doesn't indicate user-created content.
     """

@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Supported scopes for path helpers.  "system" and "orchestrator" are singletons;
+# Supported scopes for path helpers.  "system" and "supervisor" are singletons;
 # "agent_type" and "project" require an additional identifier.
-Scope = Literal["system", "orchestrator", "agent_type", "project"]
+Scope = Literal["system", "supervisor", "agent_type", "project"]
 
 
 class VaultManager:
@@ -77,9 +77,9 @@ class VaultManager:
         return self._config.vault_system
 
     @property
-    def orchestrator_dir(self) -> str:
-        """Orchestrator vault directory."""
-        return self._config.vault_orchestrator
+    def supervisor_dir(self) -> str:
+        """Supervisor vault directory."""
+        return self._config.vault_supervisor
 
     @property
     def agent_types_dir(self) -> str:
@@ -131,7 +131,7 @@ class VaultManager:
         Parameters
         ----------
         scope:
-            One of ``"system"``, ``"orchestrator"``, ``"agent_type"``, or
+            One of ``"system"``, ``"supervisor"``, ``"agent_type"``, or
             ``"project"``.
         identifier:
             Required for ``"agent_type"`` and ``"project"`` scopes — the
@@ -255,8 +255,8 @@ class VaultManager:
         """Resolve the base directory for a scope + optional identifier."""
         if scope == "system":
             return self.system_dir
-        if scope == "orchestrator":
-            return self.orchestrator_dir
+        if scope == "supervisor":
+            return self.supervisor_dir
         if scope == "agent_type":
             if not identifier:
                 raise ValueError("'agent_type' scope requires an identifier")

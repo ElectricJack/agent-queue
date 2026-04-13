@@ -7,7 +7,7 @@ routing.
 Collection naming convention::
 
     aq_system              -- system-wide memories
-    aq_orchestrator        -- orchestrator-level memories
+    aq_supervisor          -- supervisor-level memories
     aq_agenttype_{type}    -- per agent-type memories
     aq_project_{id}        -- per project memories
 
@@ -44,9 +44,12 @@ class MemoryScope(Enum):
     """Memory scoping levels per spec section 7."""
 
     SYSTEM = "system"
-    ORCHESTRATOR = "orchestrator"
+    SUPERVISOR = "supervisor"
     AGENT_TYPE = "agent_type"
     PROJECT = "project"
+
+    # Backward-compat alias — code may still reference ORCHESTRATOR.
+    ORCHESTRATOR = "supervisor"
 
 
 # Default specificity weights for multi-scope search.
@@ -56,7 +59,7 @@ class MemoryScope(Enum):
 SCOPE_WEIGHTS: dict[MemoryScope, float] = {
     MemoryScope.PROJECT: 1.0,
     MemoryScope.AGENT_TYPE: 0.7,
-    MemoryScope.ORCHESTRATOR: 0.5,
+    MemoryScope.SUPERVISOR: 0.5,
     MemoryScope.SYSTEM: 0.4,
 }
 
@@ -69,12 +72,12 @@ _TOPIC_FALLBACK_THRESHOLD = 3
 # Used by higher-level code to resolve indexed directories.
 VAULT_PATHS: ClassVar[dict[MemoryScope, list[str]]] = {
     MemoryScope.SYSTEM: [
-        "vault/system/memory/",
-        "vault/system/memory/facts.md",
+        "vault/agent-types/supervisor/memory/",
+        "vault/agent-types/supervisor/memory/facts.md",
     ],
-    MemoryScope.ORCHESTRATOR: [
-        "vault/orchestrator/memory/",
-        "vault/orchestrator/memory/facts.md",
+    MemoryScope.SUPERVISOR: [
+        "vault/agent-types/supervisor/memory/",
+        "vault/agent-types/supervisor/memory/facts.md",
     ],
     MemoryScope.AGENT_TYPE: [
         "vault/agent-types/{id}/memory/",
@@ -102,7 +105,7 @@ class ScopeEntry:
     scope:
         The memory scope level.
     scope_id:
-        The raw scope identifier (``None`` for SYSTEM and ORCHESTRATOR).
+        The raw scope identifier (``None`` for SYSTEM and SUPERVISOR).
     collection:
         The canonical Milvus collection name.
     weight:
@@ -121,6 +124,7 @@ def resolve_scopes(
     agent_type: str | None = None,
     project_id: str | None = None,
     weights: dict[MemoryScope, float] | None = None,
+    include_supervisor: bool = False,
     include_orchestrator: bool = False,
 ) -> list[ScopeEntry]:
     """Resolve an ordered list of collections to query with their weights.
@@ -147,10 +151,12 @@ def resolve_scopes(
     weights:
         Override the default :data:`SCOPE_WEIGHTS`.  Missing scopes
         fall back to defaults.
-    include_orchestrator:
-        When ``True``, includes the orchestrator scope between
+    include_supervisor:
+        When ``True``, includes the supervisor scope between
         agent-type and system.  Defaults to ``False`` since most
-        queries don't need orchestrator-level memories.
+        queries don't need supervisor-level memories.
+    include_orchestrator:
+        Deprecated alias for *include_supervisor*.
 
     Returns
     -------
@@ -203,14 +209,14 @@ def resolve_scopes(
             )
         )
 
-    # Optionally orchestrator
-    if include_orchestrator:
-        w = effective.get(MemoryScope.ORCHESTRATOR, SCOPE_WEIGHTS.get(MemoryScope.ORCHESTRATOR, 0.5))
+    # Optionally supervisor
+    if include_supervisor or include_orchestrator:
+        w = effective.get(MemoryScope.SUPERVISOR, SCOPE_WEIGHTS.get(MemoryScope.SUPERVISOR, 0.5))
         entries.append(
             ScopeEntry(
-                scope=MemoryScope.ORCHESTRATOR,
+                scope=MemoryScope.SUPERVISOR,
                 scope_id=None,
-                collection=collection_name(MemoryScope.ORCHESTRATOR),
+                collection=collection_name(MemoryScope.SUPERVISOR),
                 weight=w,
             )
         )
@@ -293,8 +299,8 @@ def collection_name(scope: MemoryScope, scope_id: str | None = None) -> str:
     --------
     >>> collection_name(MemoryScope.SYSTEM)
     'aq_system'
-    >>> collection_name(MemoryScope.ORCHESTRATOR)
-    'aq_orchestrator'
+    >>> collection_name(MemoryScope.SUPERVISOR)
+    'aq_supervisor'
     >>> collection_name(MemoryScope.AGENT_TYPE, "coding")
     'aq_agenttype_coding'
     >>> collection_name(MemoryScope.PROJECT, "mech-fighters")
@@ -302,8 +308,8 @@ def collection_name(scope: MemoryScope, scope_id: str | None = None) -> str:
     """
     if scope == MemoryScope.SYSTEM:
         name = f"{_PREFIX}system"
-    elif scope == MemoryScope.ORCHESTRATOR:
-        name = f"{_PREFIX}orchestrator"
+    elif scope in (MemoryScope.SUPERVISOR, MemoryScope.ORCHESTRATOR):
+        name = f"{_PREFIX}supervisor"
     elif scope == MemoryScope.AGENT_TYPE:
         if not scope_id:
             raise ValueError("scope_id is required for AGENT_TYPE scope")
@@ -337,7 +343,7 @@ def parse_collection_name(name: str) -> tuple[MemoryScope, str | None]:
     -------
     tuple[MemoryScope, str | None]
         ``(scope, scope_id)`` where ``scope_id`` is ``None`` for
-        ``SYSTEM`` and ``ORCHESTRATOR`` scopes.
+        ``SYSTEM`` and ``SUPERVISOR`` scopes.
 
     Raises
     ------
@@ -351,8 +357,8 @@ def parse_collection_name(name: str) -> tuple[MemoryScope, str | None]:
 
     if suffix == "system":
         return (MemoryScope.SYSTEM, None)
-    if suffix == "orchestrator":
-        return (MemoryScope.ORCHESTRATOR, None)
+    if suffix in ("supervisor", "orchestrator"):
+        return (MemoryScope.SUPERVISOR, None)
     if suffix.startswith("agenttype_"):
         scope_id = suffix[len("agenttype_") :]
         if not scope_id:
@@ -549,25 +555,26 @@ class CollectionRouter:
         logger.info("Ensured aq_system collection exists")
         return store
 
-    def ensure_orchestrator_collection(self) -> MilvusStore:
-        """Ensure the ``aq_orchestrator`` collection exists, creating it if needed.
+    def ensure_supervisor_collection(self) -> MilvusStore:
+        """Ensure the ``aq_supervisor`` collection exists, creating it if needed.
 
-        This is called during startup to eagerly create the orchestrator-level
+        This is called during startup to eagerly create the supervisor-level
         collection so it's available for writes and searches from the very
-        first operation.  The orchestrator collection stores operational
-        knowledge about the orchestrator itself — scheduling patterns,
-        cross-project insights, and self-improvement notes.
-
-        Per roadmap 3.1.4: "Create orchestrator collection on startup".
+        first operation.  The supervisor collection stores operational
+        knowledge — scheduling patterns, cross-project insights, and
+        self-improvement notes.
 
         Returns
         -------
         MilvusStore
-            The (possibly cached) store for the orchestrator scope.
+            The (possibly cached) store for the supervisor scope.
         """
-        store = self.get_store(MemoryScope.ORCHESTRATOR, description="orchestrator-level memories")
-        logger.info("Ensured aq_orchestrator collection exists")
+        store = self.get_store(MemoryScope.SUPERVISOR, description="supervisor-level memories")
+        logger.info("Ensured aq_supervisor collection exists")
         return store
+
+    # Backward-compat alias
+    ensure_orchestrator_collection = ensure_supervisor_collection
 
     def ensure_agent_type_collection(self, agent_type: str) -> MilvusStore:
         """Ensure the ``aq_agenttype_{type}`` collection exists, creating it if needed.

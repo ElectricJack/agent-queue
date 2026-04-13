@@ -11,7 +11,7 @@ Directory structure::
       system/
         task-outcome.compiled.json
         system-health.compiled.json
-      orchestrator/
+      agent-types/supervisor/
         task-assignment.compiled.json
       agent-types/
         coding/
@@ -87,7 +87,7 @@ class CompiledPlaybookStore:
         Maps scope names to the same directory hierarchy used in the vault::
 
             system       → compiled/system/
-            orchestrator → compiled/orchestrator/
+            supervisor   → compiled/agent-types/supervisor/
             agent_type   → compiled/agent-types/{identifier}/
             project      → compiled/projects/{identifier}/
 
@@ -99,8 +99,8 @@ class CompiledPlaybookStore:
         """
         if scope == "system":
             return os.path.join(self._compiled_root, "system")
-        if scope == "orchestrator":
-            return os.path.join(self._compiled_root, "orchestrator")
+        if scope == "supervisor":
+            return os.path.join(self._compiled_root, "agent-types", "supervisor")
         if scope == "agent_type":
             if not identifier:
                 raise ValueError("'agent_type' scope requires an identifier")
@@ -126,7 +126,7 @@ class CompiledPlaybookStore:
         playbook_id:
             The playbook identifier (e.g. ``"task-outcome"``).
         scope:
-            One of ``"system"``, ``"orchestrator"``, ``"agent_type"``, or
+            One of ``"system"``, ``"supervisor"``, ``"agent_type"``, or
             ``"project"``.
         identifier:
             Required for ``"agent_type"`` and ``"project"`` scopes.
@@ -356,7 +356,7 @@ class CompiledPlaybookStore:
         results: list[tuple[Scope, str | None, CompiledPlaybook]] = []
 
         # Singleton scopes
-        for scope in ("system", "orchestrator"):
+        for scope in ("system", "supervisor"):
             for pb in self.list_playbooks(scope):
                 results.append((scope, None, pb))
 

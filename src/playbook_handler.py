@@ -2,7 +2,7 @@
 
 Registers glob patterns with the :class:`~src.vault_watcher.VaultWatcher` to
 detect changes to playbook markdown files across all vault scopes (system,
-orchestrator, agent-types, projects).  When a playbook file is created or
+supervisor, agent-types, projects).  When a playbook file is created or
 modified, the handler triggers compilation via :class:`PlaybookManager`.
 When a playbook file is deleted, the compiled version is removed from the
 active registry.
@@ -10,7 +10,7 @@ active registry.
 Patterns registered (relative to vault root)::
 
     system/playbooks/*.md              — system-level playbooks
-    orchestrator/playbooks/*.md        — orchestrator-level playbooks
+    agent-types/supervisor/playbooks/*.md — supervisor-level playbooks
     agent-types/*/playbooks/*.md       — per agent-type playbooks
     projects/*/playbooks/*.md          — per project playbooks
 
@@ -18,7 +18,7 @@ Matches examples:
     - vault/system/playbooks/deploy.md
     - vault/projects/my-app/playbooks/code-review.md
     - vault/agent-types/coding/playbooks/quality-gate.md
-    - vault/orchestrator/playbooks/task-routing.md
+    - vault/agent-types/supervisor/playbooks/task-routing.md
 
 See ``docs/specs/design/playbooks.md`` Section 17 for the specification.
 """
@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 #
 # We use explicit scope prefixes rather than a single ``*/playbooks/*.md``
 # pattern to avoid false matches on unexpected directory structures and to
-# mirror the four vault scopes defined in the playbooks spec §17:
-#   system, orchestrator, agent-types, projects
+# mirror the vault scopes defined in the playbooks spec §17:
+#   system, agent-types (including supervisor), projects
+# The supervisor scope is covered by the agent-types/*/playbooks/*.md pattern.
 PLAYBOOK_PATTERNS: list[str] = [
     "system/playbooks/*.md",
-    "orchestrator/playbooks/*.md",
     "agent-types/*/playbooks/*.md",
     "projects/*/playbooks/*.md",
 ]
@@ -63,14 +63,14 @@ def derive_playbook_scope(rel_path: str) -> tuple[str, str | None]:
     -------
     tuple[str, str | None]
         A ``(scope, identifier)`` pair.  *identifier* is ``None`` for
-        singleton scopes (``system``, ``orchestrator``).
+        singleton scopes (``system``, ``supervisor``).
 
     Examples
     --------
     >>> derive_playbook_scope("system/playbooks/deploy.md")
     ('system', None)
-    >>> derive_playbook_scope("orchestrator/playbooks/routing.md")
-    ('orchestrator', None)
+    >>> derive_playbook_scope("agent-types/supervisor/playbooks/routing.md")
+    ('supervisor', None)
     >>> derive_playbook_scope("agent-types/coding/playbooks/quality.md")
     ('agent_type', 'coding')
     >>> derive_playbook_scope("projects/my-app/playbooks/review.md")
@@ -82,11 +82,14 @@ def derive_playbook_scope(rel_path: str) -> tuple[str, str | None]:
         return "project", parts[1]
 
     if len(parts) >= 3 and parts[0] == "agent-types":
+        # The supervisor is a special agent-type that acts as a singleton scope
+        if parts[1] == "supervisor":
+            return "supervisor", None
         return "agent_type", parts[1]
 
     if len(parts) >= 2:
         scope_name = parts[0]
-        if scope_name in ("system", "orchestrator"):
+        if scope_name == "system":
             return scope_name, None
 
     return parts[0] if parts else "unknown", None
