@@ -80,6 +80,10 @@ V2_ONLY_TOOLS: frozenset[str] = frozenset(
         "memory_promote",
         "memory_health",
         "memory_stale",
+        "compact_memory",
+        "consolidate",
+        "project_factsheet",
+        "project_knowledge",
     }
 )
 
