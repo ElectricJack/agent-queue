@@ -7650,6 +7650,11 @@ feature work stuck on feature branches across multiple workspaces.
         supervisor = Supervisor(self.orchestrator, self.config, llm_logger=llm_logger)
         if not supervisor.initialize():
             return {"error": "Failed to initialize LLM provider for playbook execution"}
+        # Set the active project so the supervisor's system prompt includes
+        # project context, and tools like create_task and memory_search
+        # default to the correct project.
+        if event.get("project_id"):
+            supervisor.set_active_project(event["project_id"])
         # Wire plugin tools so the supervisor can discover and load them
         plugin_registry = getattr(self.orchestrator, "plugin_registry", None)
         if plugin_registry:
