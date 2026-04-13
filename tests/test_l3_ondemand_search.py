@@ -33,7 +33,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.memory_v2_service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------

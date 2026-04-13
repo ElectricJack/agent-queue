@@ -42,7 +42,7 @@ from src.vault_watcher import VaultChange, VaultWatcher
 _SKIP_WINDOWS = sys.platform == "win32"
 
 try:
-    from src.memory_v2_service import MEMSEARCH_AVAILABLE, MemoryV2Service
+    from src.plugins.internal.memory_v2.service import MEMSEARCH_AVAILABLE, MemoryV2Service
 except Exception:
     MEMSEARCH_AVAILABLE = False
 

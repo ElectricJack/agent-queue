@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.memory_v2_service import MemoryV2Service
+    from src.plugins.internal.memory_v2.service import MemoryV2Service
 
 logger = logging.getLogger(__name__)
 

@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 from src.plugins.base import InternalPlugin, PluginContext
 
 if TYPE_CHECKING:
-    from src.memory_v2_service import MemoryV2Service
+    from src.plugins.internal.memory_v2.service import MemoryV2Service
 
 logger = logging.getLogger(__name__)
 
@@ -1277,7 +1277,7 @@ class MemoryV2Plugin(InternalPlugin):
             if not extractor_cfg or not extractor_cfg.get("enabled"):
                 return
 
-            from src.memory_extractor import MemoryExtractor
+            from src.plugins.internal.memory_v2.extractor import MemoryExtractor
 
             db_svc = ctx.get_service("db")
             chat_provider_cfg = getattr(config_svc, "chat_provider", {})
@@ -1305,7 +1305,7 @@ class MemoryV2Plugin(InternalPlugin):
         return graceful error responses).
         """
         try:
-            from src.memory_v2_service import MemoryV2Service
+            from src.plugins.internal.memory_v2.service import MemoryV2Service
 
             # Get config values from the config service
             config_svc = ctx.get_service("config")

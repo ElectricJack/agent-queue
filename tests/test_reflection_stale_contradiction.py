@@ -871,7 +871,7 @@ class TestMemoryHealthResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.memory_v2_service import MemoryV2Service
+        from src.plugins.internal.memory_v2.service import MemoryV2Service
 
         service = MemoryV2Service.__new__(MemoryV2Service)
 
@@ -1031,7 +1031,7 @@ class TestMemoryStaleResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.memory_v2_service import MemoryV2Service
+        from src.plugins.internal.memory_v2.service import MemoryV2Service
 
         service = MemoryV2Service.__new__(MemoryV2Service)
 
