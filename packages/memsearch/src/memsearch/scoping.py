@@ -70,22 +70,22 @@ _TOPIC_FALLBACK_THRESHOLD = 3
 VAULT_PATHS: ClassVar[dict[MemoryScope, list[str]]] = {
     MemoryScope.SYSTEM: [
         "vault/system/memory/",
-        "vault/system/facts.md",
+        "vault/system/memory/facts.md",
     ],
     MemoryScope.ORCHESTRATOR: [
         "vault/orchestrator/memory/",
-        "vault/orchestrator/facts.md",
+        "vault/orchestrator/memory/facts.md",
     ],
     MemoryScope.AGENT_TYPE: [
         "vault/agent-types/{id}/memory/",
-        "vault/agent-types/{id}/facts.md",
+        "vault/agent-types/{id}/memory/facts.md",
     ],
     MemoryScope.PROJECT: [
         "vault/projects/{id}/memory/",
         "vault/projects/{id}/notes/",
         "vault/projects/{id}/references/",
         "vault/projects/{id}/overrides/",
-        "vault/projects/{id}/facts.md",
+        "vault/projects/{id}/memory/facts.md",
     ],
 }
 

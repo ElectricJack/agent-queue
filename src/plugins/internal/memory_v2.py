@@ -1823,20 +1823,90 @@ class MemoryV2Plugin(InternalPlugin):
     # Command handler — Unified store (agent-facing)
     # -----------------------------------------------------------------
 
+    # Regex for obvious key: value or key = value lines.
+    _KV_LINE_RE = re.compile(
+        r"^\s*"
+        r"[-•*]?\s*"                       # optional bullet
+        r"(?P<key>[A-Za-z][A-Za-z0-9_ .-]*?)"  # key (starts with letter)
+        r"\s*[:=]\s*"                       # separator
+        r"(?P<value>.+?)\s*$",             # value
+    )
+
+    # Regex for headings that act as category/namespace markers.
+    _HEADING_RE = re.compile(r"^\s*#{1,3}\s+(.+?)\s*$")
+
+    def _try_parse_facts(self, content: str) -> list[dict] | None:
+        """Try to deterministically parse content as one or more key:value facts.
+
+        Returns a list of ``{"key": ..., "value": ..., "namespace": ...}``
+        dicts if the content looks like facts, or ``None`` if it doesn't.
+
+        Handles:
+        - Single line: ``resolution_x: 1080``
+        - Multiple lines: ``resolution_x: 1080\\nresolution_y: 720``
+        - Bullet lists: ``- framework: pytest\\n- db: sqlite``
+        - Equals sign: ``max_retries = 3``
+        - Headings as categories: ``## Display\\nresolution_x: 1080``
+        """
+        lines = [ln for ln in content.strip().splitlines() if ln.strip()]
+        if not lines:
+            return None
+
+        facts: list[dict] = []
+        namespace = "project"
+        for line in lines:
+            # Check for heading → sets namespace for subsequent facts
+            hm = self._HEADING_RE.match(line)
+            if hm:
+                raw_ns = hm.group(1).strip()
+                namespace = raw_ns.lower().replace(" ", "_").replace("-", "_")
+                namespace = re.sub(r"_+", "_", namespace).strip("_")
+                continue
+
+            m = self._KV_LINE_RE.match(line)
+            if not m:
+                # If any non-empty, non-heading line doesn't match,
+                # bail out — this isn't a pure fact list.
+                return None
+            raw_key = m.group("key").strip()
+            value = m.group("value").strip()
+            # Normalize key to snake_case
+            key = raw_key.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+            key = re.sub(r"_+", "_", key).strip("_")
+            if not key or not value:
+                return None
+            facts.append({"key": key, "value": value, "namespace": namespace})
+
+        return facts if facts else None
+
     _CLASSIFY_PROMPT = (
         "Classify this content for a project memory system.\n\n"
         "CONTENT:\n{content}\n\n"
         "TYPES:\n"
-        "- fact: A concrete key-value pair (e.g. 'test framework is pytest' → "
-        'key="test_framework", value="pytest")\n'
+        "- facts: One or more concrete key-value pairs.\n"
+        "  Examples of facts: 'test framework is pytest', "
+        "'resolution is 1080x720', 'max retries: 3', "
+        "'db_host: localhost port: 5432'\n"
         "- insight: An observation or pattern discovered\n"
         "- knowledge: Deeper understanding of how something works\n"
         "- guidance: A rule or prescription for how to work\n\n"
+        "IMPORTANT: If the content contains ANY concrete settings, "
+        "parameters, configuration values, or named properties with "
+        "values, classify as facts. When in doubt between fact and "
+        "insight, prefer fact.\n\n"
         "CONTROLLED TOPICS: {topics}\n\n"
         "OUTPUT: A single JSON object.\n"
-        "For facts: {{\"type\": \"fact\", \"key\": \"snake_case_key\", "
-        "\"value\": \"the value\", \"namespace\": \"project\"}}\n"
-        "For others: {{\"type\": \"insight\", \"topic\": \"topic-from-list\"}}\n"
+        "For single fact: {{\"type\": \"facts\", \"items\": "
+        "[{{\"key\": \"snake_case\", \"value\": \"the value\", "
+        "\"namespace\": \"category\"}}]}}\n"
+        "For multiple facts: {{\"type\": \"facts\", \"items\": "
+        "[{{\"key\": \"k1\", \"value\": \"v1\", \"namespace\": \"display\"}}, "
+        "{{\"key\": \"k2\", \"value\": \"v2\", \"namespace\": \"display\"}}]}}\n"
+        "(namespace defaults to 'project' — use a descriptive category "
+        "when the content implies one, e.g. 'display', 'database', "
+        "'deployment', 'conventions')\n"
+        "For non-facts: {{\"type\": \"insight\", "
+        "\"topic\": \"topic-from-list\"}}\n"
         "(Use the best topic from CONTROLLED TOPICS, or a new lowercase "
         "hyphenated topic if none fit.)\n"
         "Output ONLY the JSON object, nothing else."
@@ -1845,17 +1915,22 @@ class MemoryV2Plugin(InternalPlugin):
     async def _classify_content(self, content: str) -> dict:
         """Classify content for routing to the appropriate storage backend.
 
-        Uses a single Haiku call to determine both the content type and
-        topic, avoiding the double-LLM-call that would happen if we
-        classified first and then inferred topic separately.
+        First tries deterministic key:value parsing.  Falls back to an
+        LLM call for ambiguous content.
 
         Returns
         -------
         dict
-            Always has ``type`` (``"fact"``, ``"insight"``, ``"knowledge"``,
-            or ``"guidance"``).  Facts also have ``key``, ``value``, and
-            ``namespace``.  Non-facts have ``topic`` (may be ``None``).
+            ``{"type": "facts", "items": [{"key": ..., "value": ...}, ...]}``
+            for facts, or ``{"type": "insight"|"knowledge"|"guidance",
+            "topic": ...}`` for non-facts.
         """
+        # --- Deterministic fast path: obvious key:value lines ---
+        parsed = self._try_parse_facts(content)
+        if parsed:
+            return {"type": "facts", "items": parsed}
+
+        # --- LLM classification for ambiguous content ---
         topics_list = ", ".join(self.CONTROLLED_TOPICS)
         prompt = self._CLASSIFY_PROMPT.format(
             content=content[:2000],
@@ -1873,15 +1948,18 @@ class MemoryV2Plugin(InternalPlugin):
                 text = re.sub(r"\s*```$", "", text)
             result = json.loads(text)
             item_type = result.get("type", "insight")
-            if item_type == "fact":
-                if not result.get("key") or not result.get("value"):
-                    return {"type": "insight", "topic": result.get("topic")}
-                return {
-                    "type": "fact",
-                    "key": result["key"],
-                    "value": result["value"],
-                    "namespace": result.get("namespace", "project"),
-                }
+
+            # Handle both old "fact" and new "facts" format from LLM
+            if item_type in ("fact", "facts"):
+                items = result.get("items", [])
+                # Single-fact backward compat
+                if not items and result.get("key") and result.get("value"):
+                    items = [{"key": result["key"], "value": result["value"]}]
+                if items and all(i.get("key") and i.get("value") for i in items):
+                    return {"type": "facts", "items": items}
+                # Incomplete fact extraction — fall through to insight
+                return {"type": "insight", "topic": result.get("topic")}
+
             # Normalize topic the same way _infer_topic_via_llm does
             topic = result.get("topic")
             if topic:
@@ -1919,23 +1997,31 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception:
             classification = {"type": "insight", "topic": None}
 
+        scope = args.get("scope")
+
         try:
-            if classification["type"] == "fact":
-                result = await self._service.kv_set(
-                    project_id=project_id,
-                    namespace=classification.get("namespace", "project"),
-                    key=classification["key"],
-                    value=classification["value"],
-                    scope=args.get("scope"),
-                )
+            if classification["type"] == "facts":
+                items = classification.get("items", [])
+                stored: list[dict] = []
+                for item in items:
+                    result = await self._service.kv_set(
+                        project_id=project_id,
+                        namespace=item.get("namespace", "project"),
+                        key=item["key"],
+                        value=item["value"],
+                        scope=scope,
+                    )
+                    stored.append({
+                        "key": item["key"],
+                        "value": item["value"],
+                        "namespace": item.get("namespace", "project"),
+                    })
                 return {
                     "success": True,
                     "stored_as": "fact",
-                    "key": classification["key"],
-                    "value": classification["value"],
-                    "namespace": classification.get("namespace", "project"),
+                    "count": len(stored),
+                    "facts": stored,
                     "project_id": project_id,
-                    **self._format_kv_entry(result),
                 }
             else:
                 # insight / knowledge / guidance → semantic memory save
@@ -1950,7 +2036,7 @@ class MemoryV2Plugin(InternalPlugin):
                     topic=topic,
                     source_task=args.get("source_task"),
                     source_playbook=args.get("source_playbook"),
-                    scope=args.get("scope"),
+                    scope=scope,
                 )
                 result["stored_as"] = stored_type
                 return result
