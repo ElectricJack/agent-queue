@@ -1119,7 +1119,7 @@ class Orchestrator:
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
 
-        self.memory_extractor: MemoryExtractor | None = None  # wired after plugins
+        # MemoryExtractor is now managed by the MemoryV2Plugin internally.
 
         # Initialize plugin registry (after DB)
         from src.plugins import PluginRegistry
@@ -1188,21 +1188,7 @@ class Orchestrator:
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
 
-        # Automatic memory extraction from system events (background).
-        # Wired here AFTER plugins load so _memory_v2_service is available.
-        if self.config.memory_extractor.get("enabled") and self._memory_v2_service:
-            from src.memory_extractor import MemoryExtractor
-
-            self.memory_extractor = MemoryExtractor(
-                bus=self.bus,
-                db=self.db,
-                memory_service=self._memory_v2_service,
-                config=self.config.memory_extractor,
-                chat_provider_config=self.config.chat_provider,
-            )
-            self.memory_extractor.subscribe()
-            await self.memory_extractor.start()
-            logger.info("MemoryExtractor initialized and started")
+        # MemoryExtractor is now managed by the MemoryV2Plugin.
 
         # Take the vault watcher's initial snapshot now that all subsystems
         # have had a chance to register their path handlers.  The first
@@ -1507,8 +1493,7 @@ class Orchestrator:
             self.playbook_resume_handler.shutdown()
         if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:
             self.workflow_stage_resume_handler.shutdown()
-        if self.memory_extractor:
-            await self.memory_extractor.stop()
+        # MemoryExtractor shutdown is handled by the MemoryV2Plugin.
         await self.db.close()
 
     async def run_one_cycle(self) -> None:

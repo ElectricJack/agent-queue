@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 
 from src.vault import (
-    ORCHESTRATOR_PROFILE,
+    SUPERVISOR_PROFILE,
     PLAYBOOK_TEMPLATE,
     PROFILE_TEMPLATE,
     _STARTER_KNOWLEDGE,
@@ -15,7 +15,7 @@ from src.vault import (
     copy_starter_knowledge,
     ensure_default_playbooks,
     ensure_default_templates,
-    ensure_orchestrator_profile,
+    ensure_supervisor_profile,
     ensure_vault_layout,
     ensure_vault_profile_dirs,
     ensure_vault_project_dirs,
@@ -31,10 +31,8 @@ def test_ensure_vault_layout_creates_static_dirs(tmp_path):
 
     expected = [
         "vault/.obsidian",
-        "vault/system/playbooks",
-        "vault/system/memory",
-        "vault/orchestrator/playbooks",
-        "vault/orchestrator/memory",
+        "vault/agent-types/supervisor/playbooks",
+        "vault/agent-types/supervisor/memory",
         "vault/agent-types",
         "vault/projects",
         "vault/templates",
@@ -48,7 +46,7 @@ def test_ensure_vault_layout_idempotent(tmp_path):
     ensure_vault_layout(str(tmp_path))
     ensure_vault_layout(str(tmp_path))
 
-    assert (tmp_path / "vault" / "system" / "playbooks").is_dir()
+    assert (tmp_path / "vault" / "agent-types" / "supervisor" / "playbooks").is_dir()
 
 
 def test_ensure_vault_profile_dirs(tmp_path):
@@ -1348,58 +1346,58 @@ def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_orchestrator_profile_creates_file(tmp_path):
-    """ensure_orchestrator_profile writes profile.md to vault/orchestrator/."""
-    result = ensure_orchestrator_profile(str(tmp_path))
+def test_ensure_supervisor_profile_creates_file(tmp_path):
+    """ensure_supervisor_profile writes profile.md to vault/agent-types/supervisor/."""
+    result = ensure_supervisor_profile(str(tmp_path))
 
     assert result is True
-    profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
+    profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     assert profile_path.is_file()
-    assert profile_path.read_text() == ORCHESTRATOR_PROFILE
+    assert profile_path.read_text() == SUPERVISOR_PROFILE
 
 
-def test_ensure_orchestrator_profile_idempotent(tmp_path):
-    """Calling ensure_orchestrator_profile twice does not overwrite the file."""
-    ensure_orchestrator_profile(str(tmp_path))
+def test_ensure_supervisor_profile_idempotent(tmp_path):
+    """Calling ensure_supervisor_profile twice does not overwrite the file."""
+    ensure_supervisor_profile(str(tmp_path))
 
     # Customise the file
-    profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
+    profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     custom_content = "# My Custom Orchestrator Profile\n"
     profile_path.write_text(custom_content)
 
-    result = ensure_orchestrator_profile(str(tmp_path))
+    result = ensure_supervisor_profile(str(tmp_path))
 
     assert result is False
     assert profile_path.read_text() == custom_content
 
 
-def test_ensure_orchestrator_profile_creates_parent_dirs(tmp_path):
+def test_ensure_supervisor_profile_creates_parent_dirs(tmp_path):
     """Parent directories are created if they don't exist yet."""
-    # Do NOT pre-create vault/orchestrator/
+    # Do NOT pre-create vault/agent-types/supervisor/
     assert not (tmp_path / "vault").exists()
 
-    result = ensure_orchestrator_profile(str(tmp_path))
+    result = ensure_supervisor_profile(str(tmp_path))
 
     assert result is True
-    assert (tmp_path / "vault" / "orchestrator" / "profile.md").is_file()
+    assert (tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md").is_file()
 
 
-def test_ensure_vault_layout_creates_orchestrator_profile(tmp_path):
-    """ensure_vault_layout creates the orchestrator profile as part of startup."""
+def test_ensure_vault_layout_creates_supervisor_profile(tmp_path):
+    """ensure_vault_layout creates the supervisor profile as part of startup."""
     ensure_vault_layout(str(tmp_path))
 
-    profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
+    profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     assert profile_path.is_file()
-    assert profile_path.read_text() == ORCHESTRATOR_PROFILE
+    assert profile_path.read_text() == SUPERVISOR_PROFILE
 
 
-def test_ensure_vault_layout_preserves_custom_orchestrator_profile(tmp_path):
-    """ensure_vault_layout does not overwrite a user-customised orchestrator profile."""
+def test_ensure_vault_layout_preserves_custom_supervisor_profile(tmp_path):
+    """ensure_vault_layout does not overwrite a user-customised supervisor profile."""
     # First call creates default
     ensure_vault_layout(str(tmp_path))
 
     # User customises the profile
-    profile_path = tmp_path / "vault" / "orchestrator" / "profile.md"
+    profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     custom = "# Custom orchestrator\n"
     profile_path.write_text(custom)
 
@@ -1408,21 +1406,21 @@ def test_ensure_vault_layout_preserves_custom_orchestrator_profile(tmp_path):
     assert profile_path.read_text() == custom
 
 
-def test_orchestrator_profile_parses_without_errors():
-    """The orchestrator profile template parses without errors."""
+def test_supervisor_profile_parses_without_errors():
+    """The supervisor profile template parses without errors."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid, f"Orchestrator profile has parse errors: {result.errors}"
-    assert result.frontmatter.id == "orchestrator"
-    assert result.frontmatter.name == "Orchestrator"
+    assert result.frontmatter.id == "supervisor"
+    assert result.frontmatter.name == "Supervisor"
 
 
-def test_orchestrator_profile_has_all_sections():
-    """The orchestrator profile includes all 7 documented sections."""
+def test_supervisor_profile_has_all_sections():
+    """The supervisor profile includes all 7 documented sections."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid
 
     # Structured sections
@@ -1437,32 +1435,32 @@ def test_orchestrator_profile_has_all_sections():
     assert "reflection" in result.sections
 
 
-def test_orchestrator_profile_frontmatter():
-    """The orchestrator profile has correct frontmatter fields."""
+def test_supervisor_profile_frontmatter():
+    """The supervisor profile has correct frontmatter fields."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
-    assert result.frontmatter.id == "orchestrator"
-    assert result.frontmatter.name == "Orchestrator"
+    result = parse_profile(SUPERVISOR_PROFILE)
+    assert result.frontmatter.id == "supervisor"
+    assert result.frontmatter.name == "Supervisor"
     assert "profile" in result.frontmatter.tags
-    assert "orchestrator" in result.frontmatter.tags
+    assert "supervisor" in result.frontmatter.tags
 
 
-def test_orchestrator_profile_config():
-    """The orchestrator profile Config block has valid model and permission_mode."""
+def test_supervisor_profile_config():
+    """The supervisor profile Config block has valid model and permission_mode."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.config is not None
     assert "model" in result.config
     assert "permission_mode" in result.config
 
 
-def test_orchestrator_profile_tools_deny_code_editing():
-    """The orchestrator profile denies direct code-editing tools."""
+def test_supervisor_profile_tools_deny_code_editing():
+    """The supervisor profile denies direct code-editing tools."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.tools is not None
     denied = result.tools.get("denied", [])
     # Orchestrator should not have access to direct code editing
@@ -1471,27 +1469,27 @@ def test_orchestrator_profile_tools_deny_code_editing():
     assert "shell" in denied
 
 
-def test_orchestrator_profile_role_mentions_coordination():
+def test_supervisor_profile_role_mentions_coordination():
     """The orchestrator Role section describes coordination responsibilities."""
     from src.profile_parser import parse_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.role is not None
     role_lower = result.role.lower()
-    assert "orchestrator" in role_lower
+    assert "supervisor" in role_lower
     assert "delegate" in role_lower
 
 
-def test_orchestrator_profile_syncs_to_agent_profile():
-    """The orchestrator profile converts to a valid AgentProfile dict."""
+def test_supervisor_profile_syncs_to_agent_profile():
+    """The supervisor profile converts to a valid AgentProfile dict."""
     from src.profile_parser import parse_profile, parsed_profile_to_agent_profile
 
-    result = parse_profile(ORCHESTRATOR_PROFILE)
+    result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid
 
     profile_dict = parsed_profile_to_agent_profile(result)
-    assert profile_dict["id"] == "orchestrator"
-    assert profile_dict["name"] == "Orchestrator"
+    assert profile_dict["id"] == "supervisor"
+    assert profile_dict["name"] == "Supervisor"
     assert isinstance(profile_dict.get("system_prompt_suffix", ""), str)
     assert len(profile_dict.get("system_prompt_suffix", "")) > 0
 

@@ -1188,6 +1188,7 @@ class MemoryV2Plugin(InternalPlugin):
 
         # Initialize the MemoryV2Service backend.
         self._service: MemoryV2Service | None = None
+        self._extractor: Any = None  # MemoryExtractor, created below
         await self._init_service(ctx)
 
         # -- Map command names to handlers --
@@ -1244,13 +1245,56 @@ class MemoryV2Plugin(InternalPlugin):
                 ctx.register_tool(dict(tool_def), category=TOOL_CATEGORY)
                 agent_tools_registered += 1
 
+        # Initialize the MemoryExtractor (event-driven background extraction).
+        await self._init_extractor(ctx)
+
         status = "connected" if self._service and self._service.available else "degraded"
+        extractor_status = "active" if self._extractor else "disabled"
         self._log.info(
-            "MemoryV2Plugin initialized (%s, %d agent-facing tools / %d total commands)",
+            "MemoryV2Plugin initialized (%s, extractor=%s, %d agent-facing tools / %d total commands)",
             status,
+            extractor_status,
             agent_tools_registered,
             len(all_commands),
         )
+
+    async def _init_extractor(self, ctx: PluginContext) -> None:
+        """Initialize the MemoryExtractor for background knowledge extraction.
+
+        Creates and starts the extractor if:
+        - The memory service is available
+        - The ``memory_extractor.enabled`` config flag is set
+
+        The extractor subscribes to system events (task completion, etc.)
+        and automatically extracts facts/insights into the memory system.
+        """
+        if not self._service or not self._service.available:
+            return
+
+        try:
+            config_svc = ctx.get_service("config")
+            extractor_cfg = getattr(config_svc, "memory_extractor", None)
+            if not extractor_cfg or not extractor_cfg.get("enabled"):
+                return
+
+            from src.memory_extractor import MemoryExtractor
+
+            db_svc = ctx.get_service("db")
+            chat_provider_cfg = getattr(config_svc, "chat_provider", {})
+
+            self._extractor = MemoryExtractor(
+                bus=ctx.bus,
+                db=db_svc,
+                memory_service=self._service,
+                config=extractor_cfg,
+                chat_provider_config=chat_provider_cfg,
+            )
+            self._extractor.subscribe()
+            await self._extractor.start()
+            self._log.info("MemoryExtractor started (background extraction active)")
+        except Exception as e:
+            self._log.warning("MemoryExtractor initialization failed: %s", e)
+            self._extractor = None
 
     async def _init_service(self, ctx: PluginContext) -> None:
         """Initialize the MemoryV2Service backend from config.
@@ -1320,6 +1364,15 @@ class MemoryV2Plugin(InternalPlugin):
         return {}
 
     async def shutdown(self, ctx: PluginContext) -> None:
+        # Stop memory extractor first (it writes to the service)
+        if self._extractor:
+            try:
+                await self._extractor.stop()
+                self._log.info("MemoryExtractor stopped")
+            except Exception:
+                pass
+            self._extractor = None
+
         # Stop vault watchers
         for watcher in getattr(self, "_vault_watchers", []):
             try:
