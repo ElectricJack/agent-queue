@@ -984,6 +984,74 @@ class CommandHandler:
     def set_active_project(self, project_id: str | None) -> None:
         self._active_project_id = project_id
 
+    async def resolve_project_id(self, raw: str) -> str:
+        """Resolve a potentially malformed project ID to the correct one.
+
+        LLMs frequently guess project IDs from context (Discord channel
+        names, playbook IDs, etc.) and get them wrong.  This method
+        normalises common variations:
+
+        1. Exact match against known project IDs
+        2. Strip common prefixes (``project-``, ``project_``)
+        3. Underscore ↔ hyphen normalisation
+        4. Match against project names (case-insensitive)
+        5. Match against Discord channel names (``project-{id}``)
+
+        Returns the original string unchanged if no match is found —
+        downstream commands will produce a clear "not found" error.
+        """
+        # Fast path: already correct
+        project = await self.db.get_project(raw)
+        if project:
+            return raw
+
+        # Build lookup tables from known projects (cached per call — cheap
+        # since there are typically <20 projects)
+        all_projects = await self.db.list_projects()
+        ids = {p.id for p in all_projects}
+        name_to_id = {p.name.lower(): p.id for p in all_projects}
+
+        # Strip common prefixes the LLM adds
+        for prefix in ("project-", "project_"):
+            if raw.startswith(prefix):
+                stripped = raw[len(prefix):]
+                if stripped in ids:
+                    return stripped
+
+        # Underscore ↔ hyphen swap
+        swapped = raw.replace("_", "-")
+        if swapped in ids:
+            return swapped
+        swapped = raw.replace("-", "_")
+        if swapped in ids:
+            return swapped
+
+        # Match by project name (case-insensitive)
+        if raw.lower() in name_to_id:
+            return name_to_id[raw.lower()]
+
+        # Match against Discord channel name pattern "project-{id}"
+        for pid in ids:
+            if raw == f"project-{pid}" or raw == f"project_{pid}":
+                return pid
+
+        return raw
+
+    async def _resolve_project_id_in_args(self, args: dict) -> None:
+        """Normalise ``project_id`` in a command args dict in-place.
+
+        If the active project is set, it always takes precedence (the LLM
+        often guesses wrong).  Otherwise, attempts fuzzy resolution of the
+        LLM-provided value.
+        """
+        if self._active_project_id:
+            args["project_id"] = self._active_project_id
+            return
+
+        raw = args.get("project_id")
+        if raw and isinstance(raw, str):
+            args["project_id"] = await self.resolve_project_id(raw)
+
     async def _validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within an allowed directory.
 
@@ -1016,6 +1084,12 @@ class CommandHandler:
         """
         with CorrelationContext(command=name, component="command_handler"):
             try:
+                # Normalise project_id in args before dispatching.
+                # LLMs frequently guess wrong (channel names, underscores,
+                # prefixes).  This resolves to the correct ID centrally.
+                if "project_id" in args:
+                    await self._resolve_project_id_in_args(args)
+
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:
                     return await handler(args)
