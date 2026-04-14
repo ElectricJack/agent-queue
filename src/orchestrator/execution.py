@@ -938,20 +938,29 @@ class ExecutionMixin:
                     task_id=action.task_id,
                     agent_id=action.agent_id,
                 )
-                brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                # Post brief to thread and emit completion event for main channel
-                await _post(brief)
-                await self._emit_notify(
-                    "notify.task_completed",
-                    TaskCompletedEvent(
-                        task=build_task_detail(task),
-                        agent=build_agent_summary(agent),
-                        summary=output.summary or "",
-                        files_changed=output.files_changed or [],
-                        tokens_used=output.tokens_used or 0,
-                        project_id=action.project_id,
-                    ),
-                )
+                # Notifications after state transition are best-effort.
+                # A Discord error (e.g. session closed during restart) must
+                # NOT propagate — the outer except would revert the task to
+                # READY, undoing the COMPLETED transition.
+                try:
+                    brief = f"✅ Task completed: {task.title} (`{task.id}`)"
+                    await _post(brief)
+                    await self._emit_notify(
+                        "notify.task_completed",
+                        TaskCompletedEvent(
+                            task=build_task_detail(task),
+                            agent=build_agent_summary(agent),
+                            summary=output.summary or "",
+                            files_changed=output.files_changed or [],
+                            tokens_used=output.tokens_used or 0,
+                            project_id=action.project_id,
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Task %s: completion notification failed (state is COMPLETED)",
+                        task.id, exc_info=True,
+                    )
                 await self.bus.emit(
                     "task.completed",
                     {
