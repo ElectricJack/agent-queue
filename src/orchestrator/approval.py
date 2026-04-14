@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from src.git.manager import GitError
+from src.task_summary import write_task_summary
 from src.models import (
     PhaseResult,
     PipelineContext,
@@ -98,6 +99,12 @@ class ApprovalMixin:
                     task_id=task.id,
                     payload="auto-completed: no PR and approval not required",
                 )
+                # Write task summary to vault
+                try:
+                    result = await self.db.get_task_result(task.id)
+                    write_task_summary(self.config.vault_root, task, result)
+                except Exception as e:
+                    logger.warning("Failed to write task summary for %s: %s", task.id, e)
                 await self._emit_text_notify(
                     f"**Auto-completed:** Task `{task.id}` — {task.title} "
                     f"(no PR created, approval not required).",
@@ -181,6 +188,12 @@ class ApprovalMixin:
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
                 project_id=task.project_id,
             )
+            # Write task summary to vault
+            try:
+                result = await self.db.get_task_result(task.id)
+                write_task_summary(self.config.vault_root, task, result)
+            except Exception as e:
+                logger.warning("Failed to write task summary for %s: %s", task.id, e)
             # Check if this completion finishes a workflow stage
             await self._check_workflow_stage_completion(task)
             # Clean up the task branch (remote may already be deleted by GitHub)

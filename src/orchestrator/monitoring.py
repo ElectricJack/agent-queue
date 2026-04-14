@@ -17,6 +17,7 @@ from src.notifications.events import (
     StuckDefinedTaskEvent,
 )
 from src.models import Task, TaskStatus
+from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,12 @@ class MonitoringMixin:
                     task_id=task.id,
                     payload=f"All {len(subtasks)} subtask(s) completed",
                 )
+                # Write task summary to vault
+                try:
+                    result = await self.db.get_task_result(task.id)
+                    write_task_summary(self.config.vault_root, task, result)
+                except Exception as e:
+                    logger.warning("Failed to write task summary for %s: %s", task.id, e)
                 await self._emit_text_notify(
                     f"**Plan Completed:** `{task.id}` — {task.title} "
                     f"(all {len(subtasks)} subtask(s) finished).",

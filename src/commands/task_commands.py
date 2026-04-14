@@ -36,6 +36,7 @@ from src.commands.helpers import (
     _format_interval,
     format_dependency_list,
 )
+from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
 
@@ -2619,24 +2620,17 @@ class TaskCommandsMixin:
         result: dict | None,
         dependencies: set[str],
     ) -> str | None:
-        """Write a markdown reference note for a task to the data directory.
+        """Write a task summary note to the vault.
 
-        Notes are stored under ``~/.agent-queue/archived_tasks/<project_id>/``.
+        Notes are stored under ``{vault}/projects/{project_id}/tasks/{category}/``.
         Returns the file path if written, or ``None`` if the project could not
-        be resolved.
+        be resolved or the summary already exists.
         """
         project = await self.db.get_project(task.project_id)
         if not project:
             return None
 
-        archive_dir = os.path.join(self.config.data_dir, "archived_tasks", task.project_id)
-        os.makedirs(archive_dir, exist_ok=True)
-
-        note = _build_archive_note(task, result, dependencies)
-        archive_path = os.path.join(archive_dir, f"{task.id}.md")
-        with open(archive_path, "w") as f:
-            f.write(note)
-        return archive_path
+        return write_task_summary(self.config.vault_root, task, result, dependencies)
 
     async def _cmd_get_chain_health(self, args: dict) -> dict:
         """Check dependency chain health for a task or project."""

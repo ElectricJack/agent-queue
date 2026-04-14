@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from src.logging_config import CorrelationContext
+from src.task_summary import write_task_summary
 from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
 from src.notifications.events import (
@@ -949,6 +950,18 @@ class ExecutionMixin:
                         "agent_type": profile.id if profile else None,
                     },
                 )
+
+                # Write task summary to vault
+                try:
+                    result_dict = {
+                        "summary": output.summary or "",
+                        "files_changed": output.files_changed or [],
+                        "tokens_used": output.tokens_used or 0,
+                        "error_message": output.error_message,
+                    }
+                    write_task_summary(self.config.vault_root, task, result_dict)
+                except Exception as e:
+                    logger.warning("Failed to write task summary for %s: %s", task.id, e)
 
                 # Check if this completion finishes a workflow stage
                 await self._check_workflow_stage_completion(task)
