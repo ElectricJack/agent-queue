@@ -769,6 +769,9 @@ class TaskCommandsMixin:
 
         # Validate optional agent_type (free-form string, just ensure non-empty if given)
         agent_type = args.get("agent_type")
+        # LLMs sometimes pass the literal string "None" — treat it as null.
+        if isinstance(agent_type, str) and agent_type.strip().lower() in ("none", "null", ""):
+            agent_type = None
         if agent_type is not None and not isinstance(agent_type, str):
             return {"error": "agent_type must be a string"}
         if agent_type is not None:
@@ -1198,6 +1201,9 @@ class TaskCommandsMixin:
             updates["workflow_id"] = args["workflow_id"]  # None clears the workflow
         if "agent_type" in args:
             val = args["agent_type"]
+            # LLMs sometimes pass the literal string "None" — treat as null.
+            if isinstance(val, str) and val.strip().lower() in ("none", "null", ""):
+                val = None
             if val is not None:
                 val = str(val).strip()
                 if not val:

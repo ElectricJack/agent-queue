@@ -193,7 +193,7 @@ def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
     consideration entirely, and will stay queued until a matching agent
     becomes available.
     """
-    if not task.agent_type:
+    if not task.agent_type or task.agent_type.lower() in ("none", "null"):
         return True  # no type requirement → any agent is fine
     # Support comma-separated multiple type capabilities on agents
     agent_types = {t.strip() for t in agent.agent_type.split(",")} if agent.agent_type else set()
