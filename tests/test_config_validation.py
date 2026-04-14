@@ -465,8 +465,9 @@ class TestMcpServerConfigInjection:
         cfg = McpServerConfig(enabled=True, port=8082, inject_into_tasks=False)
         assert cfg.should_inject_into_tasks is False
 
+        # inject_into_tasks=True but server disabled → no injection possible
         cfg2 = McpServerConfig(enabled=False, inject_into_tasks=True)
-        assert cfg2.should_inject_into_tasks is True
+        assert cfg2.should_inject_into_tasks is False
 
     def test_task_mcp_entry_when_enabled(self):
         cfg = McpServerConfig(enabled=True, host="127.0.0.1", port=8082)

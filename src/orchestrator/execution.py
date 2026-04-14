@@ -959,7 +959,26 @@ class ExecutionMixin:
                         "tokens_used": output.tokens_used or 0,
                         "error_message": output.error_message,
                     }
-                    write_task_summary(self.config.vault_root, task, result_dict)
+                    # Collect recent commits from the workspace for the summary
+                    commits: list[tuple[str, str]] | None = None
+                    ws_path = pipeline_ctx.workspace_path
+                    if ws_path and await self.git.avalidate_checkout(ws_path):
+                        try:
+                            log_output = await self.git._arun(
+                                ["log", "--format=%H|%s", "-20"],
+                                cwd=ws_path,
+                            )
+                            if log_output.strip():
+                                commits = []
+                                for line in log_output.strip().splitlines():
+                                    if "|" in line:
+                                        sha, subject = line.split("|", 1)
+                                        commits.append((sha.strip(), subject.strip()))
+                        except Exception:
+                            pass  # git log failure is non-critical
+                    write_task_summary(
+                        self.config.vault_root, task, result_dict, commits=commits,
+                    )
                 except Exception as e:
                     logger.warning("Failed to write task summary for %s: %s", task.id, e)
 

@@ -291,13 +291,12 @@ class MonitoringConfig:
 class MemoryConfig:
     """Configuration for the semantic memory subsystem (memsearch).
 
-    All fields have safe defaults — the subsystem is disabled unless
-    ``enabled`` is explicitly set to ``True`` in the YAML config.
-    See notes/memsearch-integration.md for full documentation.
+    Enabled by default.  Set ``enabled: false`` in the YAML config to
+    disable.  See notes/memsearch-integration.md for full documentation.
     """
 
-    enabled: bool = False
-    embedding_provider: str = "openai"  # openai, google, voyage, ollama, local
+    enabled: bool = True
+    embedding_provider: str = "ollama"  # openai, google, voyage, ollama, local
     embedding_model: str = ""  # empty = provider default
     embedding_base_url: str = ""  # for Ollama or custom endpoints
     embedding_api_key: str = ""  # supports ${ENV_VAR} substitution
@@ -346,7 +345,7 @@ class MemoryConfig:
         "decisions",
     )
     # Knowledge Consolidation (unified: daily, deep/weekly, bootstrap)
-    consolidation_enabled: bool = False  # master switch for consolidation
+    consolidation_enabled: bool = True  # master switch for consolidation
     consolidation_schedule: str = "0 3 * * *"  # daily consolidation cron
     deep_consolidation_schedule: str = "0 4 * * 0"  # weekly deep consolidation
     consolidation_provider: str = ""  # LLM provider (defaults to revision_provider)
@@ -567,18 +566,16 @@ class McpServerConfig:
     requiring manual ``.mcp.json`` files in each workspace.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8081
     excluded_commands: list[str] = field(default_factory=list)
-    inject_into_tasks: bool | None = None  # None = auto (True when enabled)
+    inject_into_tasks: bool = True
 
     @property
     def should_inject_into_tasks(self) -> bool:
         """Whether to auto-inject the MCP server into task contexts."""
-        if self.inject_into_tasks is not None:
-            return self.inject_into_tasks
-        return self.enabled  # default: inject when enabled
+        return self.enabled and self.inject_into_tasks
 
     def task_mcp_entry(self) -> dict[str, dict]:
         """Return the MCP server config dict to merge into task contexts.
@@ -613,7 +610,7 @@ class McpServerConfig:
 class LLMLoggingConfig:
     """Configuration for logging LLM inputs/outputs to JSONL files."""
 
-    enabled: bool = False
+    enabled: bool = True
     retention_days: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -682,8 +679,8 @@ class HealthCheckConfig:
     the daemon falls back to ``http://localhost:{port}``.
     """
 
-    enabled: bool = False
-    port: int = 8080
+    enabled: bool = True
+    port: int = 8081
     base_url: str = ""
 
 
@@ -780,9 +777,9 @@ class AppConfig:
     max_concurrent_playbook_runs: int = 2
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     memory_extractor: dict = field(default_factory=lambda: {
-        "enabled": False,
-        "batch_window_seconds": 120,
-        "max_buffer_size": 15,
+        "enabled": True,
+        "batch_window_seconds": 30,
+        "max_buffer_size": 1,
         "max_facts_per_batch": 10,
         "max_input_chars": 8000,
     })

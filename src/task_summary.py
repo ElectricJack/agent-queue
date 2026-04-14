@@ -26,11 +26,17 @@ def build_task_summary(
     task,
     result: dict | None,
     dependencies: set[str] | None = None,
+    commits: list[tuple[str, str]] | None = None,
 ) -> str:
     """Build a markdown summary note for a completed task.
 
     Format mirrors the concise style used in vault task notes:
-    compact metadata header, summary, and files-changed list.
+    compact metadata header, summary, files-changed list, and commits.
+
+    Parameters
+    ----------
+    commits:
+        List of ``(full_hash, subject)`` tuples from ``git log``.
     """
     lines: list[str] = []
 
@@ -82,6 +88,13 @@ def build_task_summary(
         lines.append("No files changed.")
     lines.append("")
 
+    if commits:
+        lines.append("## Commits")
+        lines.append("")
+        for sha, subject in commits:
+            lines.append(f"- `{sha[:10]}` {subject}")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -114,6 +127,7 @@ def write_task_summary(
     task,
     result: dict | None,
     dependencies: set[str] | None = None,
+    commits: list[tuple[str, str]] | None = None,
 ) -> str | None:
     """Write a task summary to the vault. Returns path written, or None.
 
@@ -129,7 +143,7 @@ def write_task_summary(
 
     path = task_summary_path(vault_root, task)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    note = build_task_summary(task, result, dependencies)
+    note = build_task_summary(task, result, dependencies, commits)
     with open(path, "w") as f:
         f.write(note)
     return path
