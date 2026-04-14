@@ -5,7 +5,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 ## Quick Reference
 
 - **Entry point:** `src/main.py` → orchestrator + Discord bot + embedded MCP server
-- **Core files:** `orchestrator.py`, `command_handler.py`, `supervisor.py`, `database/`, `models.py`
+- **Core files:** `orchestrator.py`, `src/commands/` (handler + mixin modules), `supervisor.py`, `database/`, `models.py`
 - **Playbooks:** `src/playbooks/` (compiler, runner, manager, models, store, handler, state_machine, health, graph, graph_view, resume_handler)
 - **Memory:** `memory_v2_service.py`, `memory_extractor.py`, `facts_parser.py`, `profile_parser.py`
 - **Intelligence:** `prompt_builder.py`, `tool_registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
