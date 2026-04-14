@@ -260,8 +260,7 @@ class ContextMixin:
                     continue
                 title = dep_task.title or dep_id
                 summary = dep_result.get("summary") or "(no summary recorded)"
-                if len(summary) > 2000:
-                    summary = summary[:2000] + "... [truncated]"
+                # Full summary preserved — token budgeting is handled by prompt_builder
                 files = dep_result.get("files_changed") or []
                 section = f"### {title}\n**Summary:** {summary}"
                 if files:

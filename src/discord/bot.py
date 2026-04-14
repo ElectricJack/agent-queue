@@ -64,7 +64,7 @@ class CachedMessage:
     attachment_paths: list[str] | None = None  # local paths to downloaded attachments
     reference_id: int | None = None  # message ID this is replying to (Discord reply)
     reference_author: str | None = None  # author of the referenced message
-    reference_snippet: str | None = None  # first ~120 chars of the referenced message
+    reference_snippet: str | None = None  # full content of the referenced message
 
 
 class AgentQueueBot(commands.Bot):
@@ -1419,7 +1419,7 @@ class AgentQueueBot(commands.Bot):
                 ref_msg = self._find_cached_message(channel_id, ref_id)
                 if ref_msg:
                     ref_author = ref_msg.author_name
-                    ref_snippet = ref_msg.content[:80]
+                    ref_snippet = ref_msg.content
                 elif message.reference.resolved and isinstance(
                     message.reference.resolved, discord.Message
                 ):
@@ -1430,7 +1430,7 @@ class AgentQueueBot(commands.Bot):
                         if resolved.author == self.user
                         else resolved.author.display_name
                     )
-                    ref_snippet = resolved.content[:80] if resolved.content else None
+                    ref_snippet = resolved.content if resolved.content else None
             self._append_to_buffer(
                 channel_id,
                 CachedMessage(
@@ -1841,7 +1841,7 @@ class AgentQueueBot(commands.Bot):
                     # Reference exists but content not cached — try buffer lookup
                     ref = self._find_cached_message(channel_id, msg.reference_id)
                     if ref:
-                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content[:80]}"]\n'
+                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content}"]\n'
                     else:
                         reply_prefix = "[replying to an earlier message]\n"
 

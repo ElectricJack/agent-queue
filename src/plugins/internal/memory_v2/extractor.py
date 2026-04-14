@@ -262,9 +262,9 @@ class MemoryExtractor:
         if not tools_used:
             return
 
-        user_text = data.get("user_text", "")[:300]
-        response = data.get("response", "")[:300]
-        tools_str = ", ".join(str(t) for t in tools_used[:10])
+        user_text = data.get("user_text", "")
+        response = data.get("response", "")
+        tools_str = ", ".join(str(t) for t in tools_used)
 
         text = f"Supervisor interaction:\nUser: {user_text}\nTools: {tools_str}\nResponse: {response}"
         self._buffer_event(project_id, text, "supervisor", "supervisor.chat")
@@ -280,7 +280,7 @@ class MemoryExtractor:
         content = data.get("content", "")
 
         author = data.get("author", "user")
-        text = f"{author}: {content[:500]}"
+        text = f"{author}: {content}"
         self._buffer_event(project_id, text, f"chat:{data.get('channel_id', '')}", "chat.message")
 
     async def _on_git_commit(self, data: dict) -> None:

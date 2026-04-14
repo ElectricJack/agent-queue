@@ -522,7 +522,7 @@ Format your response as JSON with keys: title, description, priority, requires_a
         contexts = await db.get_task_contexts(task_id)
         context_text = (
             "\n".join(
-                f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}" for c in contexts
+                f"- [{c.get('type', 'unknown')}] {c.get('content', '')}" for c in contexts
             )
             if contexts
             else "No additional context."

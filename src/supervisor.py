@@ -637,8 +637,8 @@ class Supervisor:
                 try:
                     await bus.emit("supervisor.chat.completed", {
                         "project_id": self._active_project_id or "",
-                        "user_text": text[:500],
-                        "response": (response or "")[:500],
+                        "user_text": text,
+                        "response": response or "",
                         "tools_used": list(self._last_tool_actions),
                     })
                 except Exception:

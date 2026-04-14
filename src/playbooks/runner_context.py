@@ -77,23 +77,8 @@ class ContextMixin:
             parts = ["## Prior Step Results\n"]
             for key, value in self.node_outputs.items():
                 if isinstance(value, (dict, list)):
-                    # Compact: show structure but truncate large values
                     serialized = json.dumps(value)
-                    if len(serialized) > 500:
-                        # For large outputs, show a summary
-                        if isinstance(value, list):
-                            parts.append(
-                                f"### {key}\n"
-                                f"Array with {len(value)} items. "
-                                f"First item: {json.dumps(value[0])[:200]}..."
-                            )
-                        else:
-                            parts.append(
-                                f"### {key}\n"
-                                f"{serialized[:500]}..."
-                            )
-                    else:
-                        parts.append(f"### {key}\n{serialized}")
+                    parts.append(f"### {key}\n{serialized}")
                 else:
                     parts.append(f"### {key}\n{value}")
 
