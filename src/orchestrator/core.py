@@ -225,6 +225,10 @@ class Orchestrator(
         # started, keyed by task_id.  Used by _discover_and_store_plan() to
         # detect stale plan files that predate the current task's execution.
         self._task_exec_start: dict[str, float] = {}
+        # Git HEAD SHA recorded just before the agent starts, keyed by
+        # task_id.  Used by write_task_summary to show only the commits
+        # the agent actually made (git log pre_sha..HEAD).
+        self._task_pre_exec_sha: dict[str, str] = {}
         # Legacy callback fields — kept as no-ops for backward compatibility
         # with transports that haven't migrated to the event bus yet.
         # All orchestrator notifications now flow through _emit_notify().

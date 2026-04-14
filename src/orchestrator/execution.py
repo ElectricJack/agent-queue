@@ -491,6 +491,18 @@ class ExecutionMixin:
         # detect stale plan files that predate this task's agent execution.
         self._task_exec_start[action.task_id] = time.time()
 
+        # Snapshot the current HEAD so the task summary can show only the
+        # commits the agent made (git log pre_sha..HEAD).
+        if workspace and await self.git.avalidate_checkout(workspace):
+            try:
+                pre_sha = (await self.git._arun(
+                    ["rev-parse", "HEAD"], cwd=workspace,
+                )).strip()
+                if pre_sha:
+                    self._task_pre_exec_sha[action.task_id] = pre_sha
+            except Exception:
+                pass
+
         await adapter.start(ctx)
 
         # ------------------------------------------------------------------ #
@@ -959,13 +971,16 @@ class ExecutionMixin:
                         "tokens_used": output.tokens_used or 0,
                         "error_message": output.error_message,
                     }
-                    # Collect recent commits from the workspace for the summary
+                    # Collect commits the agent made during this task.
+                    # Uses the pre-execution HEAD snapshot so we only get
+                    # commits introduced by the agent, not history.
                     commits: list[tuple[str, str]] | None = None
                     ws_path = pipeline_ctx.workspace_path
-                    if ws_path and await self.git.avalidate_checkout(ws_path):
+                    pre_sha = self._task_pre_exec_sha.pop(action.task_id, None)
+                    if ws_path and pre_sha and await self.git.avalidate_checkout(ws_path):
                         try:
                             log_output = await self.git._arun(
-                                ["log", "--format=%H|%s", "-20"],
+                                ["log", "--format=%H|%s", f"{pre_sha}..HEAD"],
                                 cwd=ws_path,
                             )
                             if log_output.strip():
@@ -1304,6 +1319,7 @@ class ExecutionMixin:
         # Remove adapter reference
         self._adapters.pop(action.agent_id, None)
         self._task_exec_start.pop(action.task_id, None)
+        self._task_pre_exec_sha.pop(action.task_id, None)
 
         # Delete the task-added notification
         added_msg = self._task_added_messages.pop(action.task_id, None)
