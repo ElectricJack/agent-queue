@@ -495,7 +495,7 @@ def _validate_tools(
     known_tools:
         Optional set of recognised tool names.  When ``None``, tool-name
         validation is skipped.  Use :func:`get_registry_tool_names` to
-        obtain the set from a :class:`~src.tool_registry.ToolRegistry`.
+        obtain the set from a :class:`~src.tools.registry.ToolRegistry`.
 
     Returns
     -------
@@ -565,7 +565,7 @@ def get_registry_tool_names(registry=None) -> set[str]:
     Parameters
     ----------
     registry:
-        A :class:`~src.tool_registry.ToolRegistry` instance.  If ``None``,
+        A :class:`~src.tools.registry.ToolRegistry` instance.  If ``None``,
         a fresh default registry is instantiated (built-in tools only,
         no plugins).
 
@@ -603,7 +603,7 @@ def parse_profile(
         provided, tool names in the ``## Tools`` block that are not
         in this set produce a warning (not an error — the tool may
         not be loaded yet).  Use :func:`get_registry_tool_names` to
-        obtain the set from a :class:`~src.tool_registry.ToolRegistry`.
+        obtain the set from a :class:`~src.tools.registry.ToolRegistry`.
 
     Returns
     -------

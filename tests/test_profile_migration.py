@@ -558,7 +558,7 @@ class TestCommandHandlerMigrateProfiles:
 
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),

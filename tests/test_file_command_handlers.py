@@ -10,7 +10,7 @@ import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace

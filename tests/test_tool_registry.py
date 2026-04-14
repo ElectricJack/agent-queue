@@ -189,7 +189,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 def _get_command_handler():
     """Import CommandHandler."""
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     return CommandHandler
 

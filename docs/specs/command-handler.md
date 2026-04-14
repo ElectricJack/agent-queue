@@ -17,7 +17,7 @@ The `db` property is a convenience accessor that returns `self.orchestrator.db`.
 ---
 
 ## Source Files
-- `src/command_handler.py`
+- `src/commands/handler.py`
 
 ---
 

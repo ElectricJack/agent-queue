@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 
 
 # ---------------------------------------------------------------------------

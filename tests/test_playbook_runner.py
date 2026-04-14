@@ -6382,7 +6382,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_requires_run_id(self):
         """resume_playbook returns error when run_id is missing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6394,7 +6394,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_requires_human_input(self):
         """resume_playbook returns error when human_input is empty."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6406,7 +6406,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_run_not_found(self):
         """resume_playbook returns error when run doesn't exist."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6422,7 +6422,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_non_paused_run(self):
         """resume_playbook returns error when run is not in paused status."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6449,7 +6449,7 @@ class TestResumePlaybookCommand:
         """resume_playbook successfully resumes a paused run via PlaybookRunner.resume."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6528,7 +6528,7 @@ class TestResumePlaybookCommand:
         """resume_playbook resolves the graph from pinned_graph when available."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6590,7 +6590,7 @@ class TestResumePlaybookCommand:
         """resume_playbook falls back to playbook_manager when no pinned_graph."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6658,7 +6658,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_no_graph_available(self):
         """resume_playbook returns error when no graph can be resolved."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6695,7 +6695,7 @@ class TestResumePlaybookCommand:
         """resume_playbook returns error when Supervisor fails to initialize."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6741,7 +6741,7 @@ class TestResumePlaybookCommand:
         """resume_playbook enforces pause timeout and marks run as timed_out."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6801,7 +6801,7 @@ class TestResumePlaybookCommand:
         """resume_playbook returns error when PlaybookRunner.resume raises."""
         from unittest.mock import patch
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6850,7 +6850,7 @@ class TestResumePlaybookCommand:
 
     async def test_resume_whitespace_only_human_input_rejected(self):
         """resume_playbook rejects human_input that is only whitespace."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -6870,7 +6870,7 @@ class TestListPlaybookRunsCommand:
     @staticmethod
     def _make_handler():
         """Build a mock CommandHandler with real list/format methods bound."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_list_playbook_runs = CommandHandler._cmd_list_playbook_runs.__get__(handler)
@@ -7133,7 +7133,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_missing_run_id(self):
         """inspect_playbook_run returns error when run_id is missing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7146,7 +7146,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_nonexistent_run(self):
         """inspect_playbook_run returns error when run doesn't exist."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7161,7 +7161,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_completed_run_full_data(self):
         """inspect_playbook_run returns full trace, conversation, and tokens for a completed run."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7259,7 +7259,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_failed_run_includes_error(self):
         """inspect_playbook_run includes error field for failed runs."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7308,7 +7308,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_paused_run_includes_paused_at(self):
         """inspect_playbook_run includes paused_at for paused runs."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7358,7 +7358,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_run_with_empty_json_fields(self):
         """inspect_playbook_run handles runs with empty/default JSON fields gracefully."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7390,7 +7390,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_run_with_malformed_json(self):
         """inspect_playbook_run handles malformed JSON fields without crashing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7424,7 +7424,7 @@ class TestCmdInspectPlaybookRun:
 
     async def test_inspect_timed_out_run(self):
         """inspect_playbook_run returns correct data for a timed_out run."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_inspect_playbook_run = CommandHandler._cmd_inspect_playbook_run.__get__(
@@ -7489,7 +7489,7 @@ class TestPauseTimeout:
 
     async def test_get_paused_at_from_node_trace(self):
         """_get_paused_at extracts the completed_at from the last trace entry."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         run = PlaybookRun(
             run_id="t1",
@@ -7514,7 +7514,7 @@ class TestPauseTimeout:
 
     async def test_get_paused_at_falls_back_to_started_at(self):
         """_get_paused_at falls back to started_at when trace has no completed_at."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         run = PlaybookRun(
             run_id="t2",
@@ -7538,7 +7538,7 @@ class TestPauseTimeout:
 
     async def test_get_paused_at_with_empty_trace(self):
         """_get_paused_at falls back to started_at when trace is empty."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         run = PlaybookRun(
             run_id="t3",
@@ -7800,7 +7800,7 @@ class TestConfigurablePauseTimeout:
 
     async def test_resume_timed_out_run_rejected(self):
         """_cmd_resume_playbook rejects resume for already-timed-out runs."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
         handler._cmd_resume_playbook = CommandHandler._cmd_resume_playbook.__get__(handler)
@@ -8564,7 +8564,7 @@ class TestPauseTimeoutSpec:
 
     async def test_check_paused_playbook_timeouts_processes_expired(self):
         """Background sweep processes expired paused runs."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         graph = {
             "id": "pb",
@@ -8606,7 +8606,7 @@ class TestPauseTimeoutSpec:
 
     async def test_check_paused_playbook_timeouts_skips_unexpired(self):
         """Background sweep skips runs that haven't exceeded timeout."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         graph = {
             "id": "pb",

@@ -494,7 +494,7 @@ class TestInstallCheckIntegration:
 
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         factory = CapturingAdapterFactory()
         config = AppConfig(

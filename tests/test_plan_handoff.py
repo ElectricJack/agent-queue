@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_handler():
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     orch = MagicMock()
     orch.db = AsyncMock()

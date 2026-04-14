@@ -56,7 +56,7 @@ async def run_mcp_server(
     from starlette.routing import Mount
 
     from src.api.app import create_app
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
     from src.mcp_registration import (
         get_effective_exclusions,
         register_command_tools,

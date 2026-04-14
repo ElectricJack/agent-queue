@@ -8,7 +8,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Core files:** `orchestrator.py`, `src/commands/` (handler + mixin modules), `supervisor.py`, `database/`, `models.py`
 - **Playbooks:** `src/playbooks/` (compiler, runner, manager, models, store, handler, state_machine, health, graph, graph_view, resume_handler)
 - **Memory:** `memory_v2_service.py`, `memory_extractor.py`, `facts_parser.py`, `profile_parser.py`
-- **Intelligence:** `prompt_builder.py`, `tool_registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
+- **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
 - **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-memory-v2, aq-notes, aq-vibecop)

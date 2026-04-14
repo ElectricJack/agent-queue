@@ -9,7 +9,7 @@ Category prefixes are stripped from command names for cleaner UX:
 ``git_commit`` becomes ``aq git commit``, ``memory_search`` becomes
 ``aq memory search``.
 
-Tool definitions are imported from ``src.tool_registry._ALL_TOOL_DEFINITIONS``
+Tool definitions are imported from ``src.tools.definitions._ALL_TOOL_DEFINITIONS``
 (a pure data structure, no heavy deps) so commands appear in ``--help``
 even when the daemon is down.  Execution still goes through the REST API.
 """

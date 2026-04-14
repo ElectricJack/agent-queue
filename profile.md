@@ -101,7 +101,7 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 |------|---------|
 | `src/main.py` | Entry point — CLI args, starts async loop |
 | `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
-| `src/command_handler.py` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
+| `src/commands/` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
 | `src/supervisor.py` | **Supervisor** — multi-turn LLM conversation loop, tool dispatch, streaming |
 | `src/database/` | SQLAlchemy Core persistence — `tables.py` (schema), `queries/` (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Workflow, AgentOutput |
@@ -115,7 +115,7 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | File | Purpose |
 |------|---------|
 | `src/prompt_builder.py` | 5-layer prompt assembly: L0 role → override → L1 facts → L2 context → identity → tools |
-| `src/tool_registry.py` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
+| `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
 | `src/reflection.py` | Post-action reflection engine — deep/standard/light tiers with circuit breaker |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
 | `src/rule_manager.py` | User-defined rules injected into Supervisor prompts (deprecated, migrating to playbooks) |

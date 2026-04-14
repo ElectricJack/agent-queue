@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from src.messaging.types import ThreadSendCallback
 
 if TYPE_CHECKING:
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
     from src.supervisor import Supervisor
 
 

@@ -11,7 +11,7 @@ Covers:
 
 import pytest
 from src.config import AppConfig, DiscordConfig, PerProjectChannelsConfig
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.database import Database
 from src.orchestrator import Orchestrator
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
     from src.orchestrator import Orchestrator
 
 # Module-level state — set by the lifespan context manager in app.py.

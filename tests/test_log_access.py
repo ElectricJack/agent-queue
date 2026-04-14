@@ -125,37 +125,37 @@ def log_file(tmp_path):
 
 class TestParseRelativeTime:
     def test_seconds(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         result = _parse_relative_time("30s")
         assert abs(result - (time.time() - 30)) < 2
 
     def test_minutes(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         result = _parse_relative_time("5m")
         assert abs(result - (time.time() - 300)) < 2
 
     def test_hours(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         result = _parse_relative_time("2h")
         assert abs(result - (time.time() - 7200)) < 2
 
     def test_days(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         result = _parse_relative_time("1d")
         assert abs(result - (time.time() - 86400)) < 2
 
     def test_unknown_unit_raises(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         with pytest.raises(ValueError, match="Unknown time unit"):
             _parse_relative_time("5x")
 
     def test_invalid_number_raises(self):
-        from src.command_handler import _parse_relative_time
+        from src.commands.handler import _parse_relative_time
 
         with pytest.raises(ValueError, match="Invalid number"):
             _parse_relative_time("abcm")
@@ -166,7 +166,7 @@ class TestParseRelativeTime:
 
 class TestTailLogLines:
     def test_reads_last_n_lines(self, log_file):
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(log_file, max_scan=3)
         assert len(lines) == 3
@@ -177,13 +177,13 @@ class TestTailLogLines:
         assert parsed[2]["level"] == "info"
 
     def test_reads_all_if_fewer_than_max(self, log_file):
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(log_file, max_scan=100)
         assert len(lines) == 5
 
     def test_missing_file_returns_empty(self, tmp_path):
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(str(tmp_path / "nonexistent.log"))
         assert lines == []
@@ -259,7 +259,7 @@ class TestReadLogs:
 
     def test_level_filter(self, log_file):
         """Entries below the threshold are excluded."""
-        from src.command_handler import _tail_log_lines, _LEVEL_PRIORITY
+        from src.commands.handler import _tail_log_lines, _LEVEL_PRIORITY
 
         lines = _tail_log_lines(log_file, max_scan=100)
         threshold = _LEVEL_PRIORITY["warning"]
@@ -275,7 +275,7 @@ class TestReadLogs:
 
     def test_component_filter(self, log_file):
         """Only entries matching the component are returned."""
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(log_file, max_scan=100)
         filtered = [
@@ -288,7 +288,7 @@ class TestReadLogs:
 
     def test_pattern_filter(self, log_file):
         """Substring pattern search works case-insensitively."""
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(log_file, max_scan=100)
         pattern = "importerror"
@@ -304,7 +304,7 @@ class TestReadLogs:
 
     def test_missing_log_file(self, tmp_path):
         """Returns empty when log file doesn't exist."""
-        from src.command_handler import _tail_log_lines
+        from src.commands.handler import _tail_log_lines
 
         lines = _tail_log_lines(str(tmp_path / "missing.log"))
         assert lines == []

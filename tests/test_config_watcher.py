@@ -298,7 +298,7 @@ class TestReloadConfigCommand:
     async def test_no_watcher_returns_error(self, tmp_path):
         """When config watcher is not active, command returns error."""
         from unittest.mock import AsyncMock, MagicMock
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         orch = MagicMock()
         orch._config_watcher = None
@@ -312,7 +312,7 @@ class TestReloadConfigCommand:
     async def test_reload_returns_summary(self, tmp_path):
         """When config changes, command returns a summary."""
         from unittest.mock import AsyncMock, MagicMock
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         # Create a mock watcher that returns a result
         mock_watcher = MagicMock()
@@ -337,7 +337,7 @@ class TestReloadConfigCommand:
     async def test_reload_no_changes(self, tmp_path):
         """When no changes detected, returns appropriate message."""
         from unittest.mock import AsyncMock, MagicMock
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_watcher = MagicMock()
         mock_watcher.reload = AsyncMock(

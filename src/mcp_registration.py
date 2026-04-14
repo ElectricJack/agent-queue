@@ -154,7 +154,7 @@ def _discover_all_commands() -> dict[str, dict]:
     """
     # Lazy import to avoid circular dependency at module level.
     # CommandHandler imports tool_registry → tool_registry is imported here.
-    from src.command_handler import CommandHandler  # noqa: E402
+    from src.commands.handler import CommandHandler  # noqa: E402
 
     discovered: dict[str, dict] = {}
     for attr_name in dir(CommandHandler):

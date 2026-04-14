@@ -39,7 +39,7 @@ On shutdown it calls `await orchestrator.shutdown()`.
 ### Dynamic Tool Registration
 
 Tools are auto-registered at module load time from `_ALL_TOOL_DEFINITIONS`
-in `src/tool_registry.py`. For each non-excluded definition the server:
+in `src/tools/registry.py`. For each non-excluded definition the server:
 
 1. Creates a closure: `async handler(**kwargs) -> json.dumps(ch.execute(name, kwargs))`
 2. Constructs a `mcp.server.fastmcp.tools.Tool` with the definition's
@@ -52,7 +52,7 @@ Result: ~100 MCP tools auto-registered from ~107 definitions (minus exclusions).
 ## Exposed Tools
 
 All tools from `_ALL_TOOL_DEFINITIONS` are exposed unless excluded.
-They are grouped by category (see `src/tool_registry.py`):
+They are grouped by category (see `src/tools/registry.py`):
 
 ### Core (always-loaded in Supervisor context)
 
@@ -333,7 +333,7 @@ agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 | `packages/mcp_server/mcp_server.py` | Main server -- lifespan, tool registration, resources, prompts, CLI |
 | `packages/mcp_server/mcp_interfaces.py` | Serialization helpers, URI schemes |
 | `packages/mcp_server/test/test_mcp_server.py` | Tests -- registration, delegation, drift detection |
-| `src/tool_registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
+| `src/tools/registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
 | `src/command_handler.py` | [[specs/command-handler|CommandHandler]].execute() -- the single execution layer |
 
 MCP tools include [[design/memory-scoping|memory tools]] (memory_search, memory_recall, memory_save, memory_store, memory_get).

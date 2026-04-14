@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import text
 from unittest.mock import MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
 from src.models import (

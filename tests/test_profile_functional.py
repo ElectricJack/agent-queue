@@ -333,7 +333,7 @@ class TestCheckProfileFunctional:
 
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 

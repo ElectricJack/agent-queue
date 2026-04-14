@@ -22,7 +22,7 @@ from src.telegram.notifications import (
 )
 
 if TYPE_CHECKING:
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
 logger = logging.getLogger(__name__)
 

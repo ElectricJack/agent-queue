@@ -331,7 +331,7 @@ class TestFindMergeConflictWorkspacesCommand:
         # Use real GitManager so async git methods work with real repos
         orchestrator.git = GitManager()
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 
@@ -482,7 +482,7 @@ class TestCreateTaskWithPreferredWorkspace:
         orchestrator = MagicMock()
         orchestrator.db = db
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 

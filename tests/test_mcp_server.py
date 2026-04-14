@@ -578,7 +578,7 @@ class TestDriftDetection:
         """
         import inspect
         import re
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         source = inspect.getsource(CommandHandler)
         method_names = re.findall(r"async def (_cmd_\w+)\(self", source)

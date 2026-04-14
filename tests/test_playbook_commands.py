@@ -32,7 +32,7 @@ import json
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
 
 

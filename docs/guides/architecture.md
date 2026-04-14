@@ -142,7 +142,7 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 |--------|---------|
 | `src/main.py` | Entry point, signal handling, restart support |
 | `src/orchestrator.py` | Core task/agent lifecycle management ([[specs/orchestrator|spec]]) |
-| `src/command_handler.py` | Unified command execution — 150+ commands ([[specs/command-handler|spec]]) |
+| `src/commands/` | Unified command execution — 150+ commands ([[specs/command-handler|spec]]) |
 | `src/models.py` | Data models (Task, Agent, Project, Workflow, etc.) |
 | `src/database/` | SQLite/PostgreSQL persistence (21+ tables) ([[specs/database|spec]]) |
 | `src/config.py` | YAML config with env var substitution |
@@ -156,7 +156,7 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 |--------|---------|
 | `src/supervisor.py` | LLM conversation interface ([[specs/supervisor|spec]]) |
 | `src/prompt_builder.py` | 5-layer prompt assembly pipeline |
-| `src/tool_registry.py` | Tiered tool loading — core + on-demand ([[specs/tiered-tools|spec]]) |
+| `src/tools/` | Tiered tool loading — core + on-demand ([[specs/tiered-tools|spec]]) |
 | `src/reflection.py` | Post-action reflection engine ([[specs/reflection|spec]]) |
 | `src/chat_observer.py` | Passive observation ([[specs/chat-observer|spec]]) |
 | `src/llm_logger.py` | LLM call logging and analytics ([[specs/llm-logging|spec]]) |

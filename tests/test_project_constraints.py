@@ -369,7 +369,7 @@ async def handler(db):
     """Create a CommandHandler wired to the in-memory database."""
     from unittest.mock import MagicMock
 
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     config = MagicMock()
     orchestrator = MagicMock()

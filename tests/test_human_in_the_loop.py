@@ -823,7 +823,7 @@ class TestResumePlaybookCommand:
                     status="completed", tokens_used=100, error=None
                 )
 
-                from src.command_handler import CommandHandler
+                from src.commands.handler import CommandHandler
 
                 handler = CommandHandler(mock_orchestrator, mock_config)
 
@@ -837,7 +837,7 @@ class TestResumePlaybookCommand:
 
     async def test_command_rejects_missing_run_id(self):
         """Command returns error when run_id is missing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_orch = MagicMock()
         mock_orch.db = AsyncMock()
@@ -848,7 +848,7 @@ class TestResumePlaybookCommand:
 
     async def test_command_rejects_missing_input(self):
         """Command returns error when human_input is missing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_orch = MagicMock()
         mock_orch.db = AsyncMock()
@@ -861,7 +861,7 @@ class TestResumePlaybookCommand:
         """Command returns error when the run doesn't exist."""
         mock_db.get_playbook_run.return_value = None
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_orch = MagicMock()
         mock_orch.db = mock_db
@@ -882,7 +882,7 @@ class TestResumePlaybookCommand:
         )
         mock_db.get_playbook_run.return_value = completed_run
 
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_orch = MagicMock()
         mock_orch.db = mock_db

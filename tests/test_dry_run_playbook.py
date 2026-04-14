@@ -514,7 +514,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_success(self, mock_handler, mock_playbook):
         """Command returns dry_run=True with node trace."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(
             mock_handler,
@@ -532,7 +532,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_with_custom_event(self, mock_handler, mock_playbook):
         """Command accepts a custom mock event dict."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(
             mock_handler,
@@ -548,7 +548,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_missing_playbook_id(self, mock_handler):
         """Command returns error when playbook_id is missing."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(mock_handler, {})
         assert "error" in result
@@ -556,7 +556,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_playbook_not_found(self, mock_handler):
         """Command returns error when playbook is not in active set."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_handler.orchestrator.playbook_manager.get_playbook.return_value = None
         result = await CommandHandler._cmd_dry_run_playbook(
@@ -567,7 +567,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_no_playbook_manager(self, mock_handler):
         """Command returns error when playbook manager is not initialised."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         mock_handler.orchestrator.playbook_manager = None
         # getattr with None check
@@ -579,7 +579,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_invalid_event_json(self, mock_handler):
         """Command returns error when event is invalid JSON string."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(
             mock_handler,
@@ -590,7 +590,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_command_event_as_json_string(self, mock_handler, mock_playbook):
         """Command parses event from a JSON string."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(
             mock_handler,
@@ -604,7 +604,7 @@ class TestDryRunCommand:
 
     async def test_dry_run_no_db_interaction(self, mock_handler, mock_playbook):
         """Command does not interact with the database."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         result = await CommandHandler._cmd_dry_run_playbook(
             mock_handler, {"playbook_id": "test-pb"}

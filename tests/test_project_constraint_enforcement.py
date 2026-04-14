@@ -28,7 +28,7 @@ from src.models import (
     TaskStatus,
 )
 from src.orchestrator import Orchestrator
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 
 

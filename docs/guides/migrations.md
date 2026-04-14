@@ -36,8 +36,8 @@ Database.initialize()
 **Still referenced by:**
 - `_migrate_repos_to_projects()` — reads from `repos` to populate project columns
 - `_migrate_agent_workspaces_to_workspaces()` — reads `repos.source_type`
-- `_cmd_get_task_diff()` in command_handler.py — fallback path resolution via `task.repo_id`
-- `_resolve_repo_path()` in command_handler.py — fallback when no workspace found
+- `_cmd_get_task_diff()` in commands/handler.py — fallback path resolution via `task.repo_id`
+- `_resolve_repo_path()` in commands/handler.py — fallback when no workspace found
 - `Database.create_repo()`, `get_repo()`, `list_repos()`, `delete_repo()` — full CRUD still exists
 - `delete_project()` cascade — `DELETE FROM repos WHERE project_id = ?`
 
@@ -151,7 +151,7 @@ When you're ready to clean up, do this in order:
 
 ### Phase 2: Drop `repos` table
 - [ ] Refactor `_resolve_repo_path()` to use only `workspaces` table (no `repos` fallback)
-- [ ] Remove `task.repo_id` usage — grep for `repo_id` in command_handler.py and orchestrator.py
+- [ ] Remove `task.repo_id` usage — grep for `repo_id` in commands/handler.py and orchestrator.py
 - [ ] Remove `Database.create_repo()`, `get_repo()`, `list_repos()`, `delete_repo()`
 - [ ] Remove `_migrate_repos_to_projects()` method
 - [ ] Remove `DELETE FROM repos` in `delete_project()`

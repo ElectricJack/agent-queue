@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, ChatProviderConfig
 from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator

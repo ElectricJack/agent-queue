@@ -4478,8 +4478,8 @@ name: Custom DevOps Agent
         mock_config.data_dir = data_dir
 
         # Patch _cmd_create_profile's dependencies to test the call path
-        with patch("src.command_handler.CommandHandler.__init__", return_value=None):
-            from src.command_handler import CommandHandler
+        with patch("src.commands.handler.CommandHandler.__init__", return_value=None):
+            from src.commands.handler import CommandHandler
 
             handler = CommandHandler.__new__(CommandHandler)
             handler.orchestrator = mock_orchestrator
@@ -4767,8 +4767,8 @@ name: Code Review Agent
         mock_config = MagicMock()
         mock_config.data_dir = data_dir
 
-        with patch("src.command_handler.CommandHandler.__init__", return_value=None):
-            from src.command_handler import CommandHandler
+        with patch("src.commands.handler.CommandHandler.__init__", return_value=None):
+            from src.commands.handler import CommandHandler
 
             handler = CommandHandler.__new__(CommandHandler)
             handler.orchestrator = mock_orchestrator

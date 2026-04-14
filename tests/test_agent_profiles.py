@@ -536,7 +536,7 @@ class TestProfileSyncFromConfig:
 class TestProfileCommands:
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -976,7 +976,7 @@ class TestProfileEnforcement:
 
 class TestToolValidation:
     async def test_create_profile_with_valid_tools_no_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -999,7 +999,7 @@ class TestToolValidation:
         await orch.db.close()
 
     async def test_create_profile_with_unknown_tools_has_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1023,7 +1023,7 @@ class TestToolValidation:
         await orch.db.close()
 
     async def test_edit_profile_with_unknown_tools_has_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1054,7 +1054,7 @@ class TestToolValidation:
 
 class TestListAvailableTools:
     async def test_list_available_tools(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1081,7 +1081,7 @@ class TestListAvailableTools:
 
 class TestCheckProfile:
     async def test_check_profile_empty_manifest(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1105,7 +1105,7 @@ class TestCheckProfile:
         await orch.db.close()
 
     async def test_check_profile_missing_command(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1130,7 +1130,7 @@ class TestCheckProfile:
         await orch.db.close()
 
     async def test_check_nonexistent_profile(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1152,7 +1152,7 @@ class TestCheckProfile:
 
 class TestExportImport:
     async def test_export_profile_yaml(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1178,7 +1178,7 @@ class TestExportImport:
         await orch.db.close()
 
     async def test_import_profile_from_yaml(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1206,7 +1206,7 @@ agent_profile:
         await orch.db.close()
 
     async def test_export_import_roundtrip(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1248,7 +1248,7 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_profile_with_install_reports_readiness(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1272,7 +1272,7 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_duplicate_fails_without_overwrite(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
@@ -1294,7 +1294,7 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_with_overwrite(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),

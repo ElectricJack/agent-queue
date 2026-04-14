@@ -9,7 +9,7 @@ logic in isolation.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, GitManager

@@ -248,7 +248,7 @@ class TestCommandHandlerIntegration:
 
     async def test_create_agent_returns_deprecation_error(self, tmp_path):
         """create_agent should return a deprecation error."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 
@@ -272,7 +272,7 @@ class TestCommandHandlerIntegration:
 
     async def test_delete_agent_returns_deprecation_error(self, tmp_path):
         """delete_agent should return a deprecation error."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 
