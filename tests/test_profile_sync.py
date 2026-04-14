@@ -29,8 +29,8 @@ import pytest
 from src.database import Database
 from src.models import AgentProfile
 from src.known_tools import KNOWN_TOOL_NAMES
-from src.profile_parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
-from src.profile_sync import (
+from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
+from src.profiles.sync import (
     PROFILE_PATTERNS,
     ProfileSyncResult,
     _find_profile_files,
@@ -1491,7 +1491,7 @@ class TestRoadmap4110:
     @pytest.mark.asyncio
     async def test_b_all_valid_permission_modes_sync(self, db):
         """(b) Each valid permission_mode value syncs without error."""
-        from src.profile_parser import VALID_PERMISSION_MODES
+        from src.profiles.parser import VALID_PERMISSION_MODES
 
         for mode in sorted(VALID_PERMISSION_MODES):
             text = f"""\

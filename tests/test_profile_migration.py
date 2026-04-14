@@ -22,7 +22,7 @@ import pytest
 from src.config import AppConfig
 from src.models import AgentProfile
 from src.orchestrator import Orchestrator
-from src.profile_migration import (
+from src.profiles.migration import (
     MigrationReport,
     ProfileMigrationResult,
     _render_profile_markdown,
@@ -31,7 +31,7 @@ from src.profile_migration import (
     scan_profile_migration,
     verify_round_trip,
 )
-from src.profile_parser import parse_profile
+from src.profiles.parser import parse_profile
 
 
 # ---------------------------------------------------------------------------

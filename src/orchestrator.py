@@ -934,7 +934,7 @@ class Orchestrator:
         # from the first check() call.  Pass self.db so the handler can
         # upsert parsed profile fields into the agent_profiles table.
         # Pass self.bus so sync failures emit notify.profile_sync_failed.
-        from src.profile_sync import register_profile_handlers
+        from src.profiles.sync import register_profile_handlers
 
         register_profile_handlers(
             self.vault_watcher,
@@ -1202,7 +1202,7 @@ class Orchestrator:
         # a snapshot (no dispatch), so pre-existing profile files would
         # not be synced without this step.  This ensures profile DB rows
         # are always consistent with vault files after a daemon restart.
-        from src.profile_sync import scan_and_sync_existing_profiles
+        from src.profiles.sync import scan_and_sync_existing_profiles
 
         await scan_and_sync_existing_profiles(
             self.config.vault_root,
@@ -1393,7 +1393,7 @@ class Orchestrator:
         # migration function.  We only trigger when vault has NO profile
         # markdowns at all, to avoid interfering with user-managed content.
         if all_profiles and not vault_has_profile_markdown(data_dir):
-            from src.profile_migration import migrate_db_profiles_to_vault
+            from src.profiles.migration import migrate_db_profiles_to_vault
 
             logger.info(
                 "Profile auto-migration triggered: %d DB profile(s) found, "

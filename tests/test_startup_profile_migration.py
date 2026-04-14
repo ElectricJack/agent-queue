@@ -216,7 +216,7 @@ class TestStartupProfileAutoMigration:
             await orch.db.delete_profile(p.id)
 
         # Re-run — with no profiles, migration should not run
-        with patch("src.profile_migration.migrate_db_profiles_to_vault") as mock_migrate:
+        with patch("src.profiles.migration.migrate_db_profiles_to_vault") as mock_migrate:
             await orch._ensure_vault_structure()
             mock_migrate.assert_not_called()
 
@@ -229,7 +229,7 @@ class TestStartupProfileAutoMigration:
 
         # Patch migrate to raise an exception
         with patch(
-            "src.profile_migration.migrate_db_profiles_to_vault",
+            "src.profiles.migration.migrate_db_profiles_to_vault",
             side_effect=RuntimeError("disk full"),
         ):
             # This should NOT raise — the exception is caught and logged
@@ -241,7 +241,7 @@ class TestStartupProfileAutoMigration:
 
     async def test_migration_with_errors_logs_warning(self, orch, tmp_path):
         """If migration report has errors, a warning is logged."""
-        from src.profile_migration import MigrationReport
+        from src.profiles.migration import MigrationReport
 
         await orch.initialize()
         await orch.db.create_profile(AgentProfile(id="test", name="Test Agent"))
@@ -249,7 +249,7 @@ class TestStartupProfileAutoMigration:
         # Patch to return a report with errors
         error_report = MigrationReport(total=1, written=0, errors=1)
         with patch(
-            "src.profile_migration.migrate_db_profiles_to_vault",
+            "src.profiles.migration.migrate_db_profiles_to_vault",
             new_callable=AsyncMock,
             return_value=error_report,
         ) as mock_migrate:

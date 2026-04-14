@@ -26,7 +26,7 @@ import pytest
 from src.config import AppConfig
 from src.models import AgentProfile
 from src.orchestrator import Orchestrator
-from src.profile_parser import (
+from src.profiles.parser import (
     _split_system_prompt_suffix,
     agent_profile_to_markdown,
     parse_profile,

@@ -4,7 +4,7 @@ Implements the sync model from ``docs/specs/design/profiles.md`` Section 3:
 markdown file -> parse -> validate -> upsert DB row.
 
 The core function :func:`sync_profile_to_db` takes a :class:`ParsedProfile`
-(produced by :func:`~src.profile_parser.parse_profile`) and upserts it into
+(produced by :func:`~src.profiles.parser.parse_profile`) and upserts it into
 the ``agent_profiles`` table.  It is called by :func:`on_profile_changed`
 when the :class:`~src.vault_watcher.VaultWatcher` detects profile.md file
 changes, and can also be called directly for programmatic sync.
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.models import AgentProfile
-from src.profile_parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
+from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -124,14 +124,14 @@ async def sync_profile_to_db(
     """Sync a parsed profile into the agent_profiles database table.
 
     This is the core upsert function for the profile sync model (spec Section 3).
-    Given a :class:`ParsedProfile` from :func:`~src.profile_parser.parse_profile`,
+    Given a :class:`ParsedProfile` from :func:`~src.profiles.parser.parse_profile`,
     it validates the result, converts to an :class:`~src.models.AgentProfile`,
     and creates or updates the corresponding database row.
 
     Parameters
     ----------
     parsed:
-        The parsed profile from :func:`~src.profile_parser.parse_profile`.
+        The parsed profile from :func:`~src.profiles.parser.parse_profile`.
     db:
         A database instance implementing the ``DatabaseBackend`` protocol
         (must support ``get_profile``, ``upsert_profile``).
@@ -242,7 +242,7 @@ async def sync_profile_text_to_db(
 ) -> ProfileSyncResult:
     """Parse markdown text and sync the resulting profile to the database.
 
-    Convenience wrapper that combines :func:`~src.profile_parser.parse_profile`
+    Convenience wrapper that combines :func:`~src.profiles.parser.parse_profile`
     with :func:`sync_profile_to_db` in a single call.
 
     Parameters
@@ -522,7 +522,7 @@ async def scan_and_sync_existing_profiles(
     after its initial snapshot; this function fills the gap by reading
     and syncing all existing profile files at boot time.
 
-    Each file is read, parsed via :func:`~src.profile_parser.parse_profile`,
+    Each file is read, parsed via :func:`~src.profiles.parser.parse_profile`,
     and synced via :func:`sync_profile_to_db`.  Files that fail to parse
     or sync produce logged errors (and optional event-bus notifications)
     but do not prevent other files from being processed.

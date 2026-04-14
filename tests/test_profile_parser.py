@@ -15,7 +15,7 @@ Covers:
 
 from __future__ import annotations
 
-from src.profile_parser import (
+from src.profiles.parser import (
     CONFIG_KNOWN_KEYS,
     KNOWN_SECTIONS,
     PROMPT_SECTIONS,

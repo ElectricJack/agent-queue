@@ -834,7 +834,7 @@ def test_ensure_vault_layout_preserves_custom_templates(tmp_path):
 
 def test_profile_template_content_is_valid():
     """The default profile template parses without errors."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(PROFILE_TEMPLATE)
     assert result.is_valid, f"Profile template has parse errors: {result.errors}"
@@ -846,7 +846,7 @@ def test_profile_template_content_is_valid():
 
 def test_profile_template_has_all_sections():
     """The default profile template includes all documented sections."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(PROFILE_TEMPLATE)
     assert result.is_valid
@@ -1408,7 +1408,7 @@ def test_ensure_vault_layout_preserves_custom_supervisor_profile(tmp_path):
 
 def test_supervisor_profile_parses_without_errors():
     """The supervisor profile template parses without errors."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid, f"Orchestrator profile has parse errors: {result.errors}"
@@ -1418,7 +1418,7 @@ def test_supervisor_profile_parses_without_errors():
 
 def test_supervisor_profile_has_all_sections():
     """The supervisor profile includes all 7 documented sections."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid
@@ -1437,7 +1437,7 @@ def test_supervisor_profile_has_all_sections():
 
 def test_supervisor_profile_frontmatter():
     """The supervisor profile has correct frontmatter fields."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.frontmatter.id == "supervisor"
@@ -1448,7 +1448,7 @@ def test_supervisor_profile_frontmatter():
 
 def test_supervisor_profile_config():
     """The supervisor profile Config block has valid model and permission_mode."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.config is not None
@@ -1458,7 +1458,7 @@ def test_supervisor_profile_config():
 
 def test_supervisor_profile_tools_deny_code_editing():
     """The supervisor profile denies direct code-editing tools."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.tools is not None
@@ -1471,7 +1471,7 @@ def test_supervisor_profile_tools_deny_code_editing():
 
 def test_supervisor_profile_role_mentions_coordination():
     """The orchestrator Role section describes coordination responsibilities."""
-    from src.profile_parser import parse_profile
+    from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.role is not None
@@ -1482,7 +1482,7 @@ def test_supervisor_profile_role_mentions_coordination():
 
 def test_supervisor_profile_syncs_to_agent_profile():
     """The supervisor profile converts to a valid AgentProfile dict."""
-    from src.profile_parser import parse_profile, parsed_profile_to_agent_profile
+    from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.is_valid

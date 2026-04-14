@@ -6107,8 +6107,8 @@ feature work stuck on feature branches across multiple workspaces.
     async def _cmd_create_profile(self, args: dict) -> dict:
         from pathlib import Path
 
-        from src.profile_parser import agent_profile_to_markdown
-        from src.profile_sync import sync_profile_text_to_db
+        from src.profiles.parser import agent_profile_to_markdown
+        from src.profiles.sync import sync_profile_text_to_db
         from src.vault import copy_starter_knowledge, ensure_vault_profile_dirs
 
         profile_id = args.get("id", "").strip()
@@ -6190,12 +6190,12 @@ feature work stuck on feature branches across multiple workspaces.
     async def _cmd_edit_profile(self, args: dict) -> dict:
         from pathlib import Path
 
-        from src.profile_parser import (
+        from src.profiles.parser import (
             agent_profile_to_markdown,
             parse_profile,
             parsed_profile_to_agent_profile,
         )
-        from src.profile_sync import sync_profile_text_to_db
+        from src.profiles.sync import sync_profile_text_to_db
         from src.vault import ensure_vault_profile_dirs
 
         profile_id = args.get("profile_id", "").strip()
@@ -6604,8 +6604,8 @@ feature work stuck on feature branches across multiple workspaces.
         import yaml as _yaml
 
         from src.known_tools import InstallManifest
-        from src.profile_parser import agent_profile_to_markdown
-        from src.profile_sync import sync_profile_text_to_db
+        from src.profiles.parser import agent_profile_to_markdown
+        from src.profiles.sync import sync_profile_text_to_db
         from src.vault import ensure_vault_profile_dirs
 
         source = args.get("source", "").strip()
@@ -6717,7 +6717,7 @@ feature work stuck on feature branches across multiple workspaces.
         Returns:
             Migration report dict with written/skipped/error counts.
         """
-        from src.profile_migration import migrate_db_profiles_to_vault
+        from src.profiles.migration import migrate_db_profiles_to_vault
 
         dry_run = args.get("dry_run", False)
         verify = args.get("verify", True)

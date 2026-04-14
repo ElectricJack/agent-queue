@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.models import AgentProfile
-from src.profile_parser import (
+from src.profiles.parser import (
     agent_profile_to_markdown,
     parse_profile,
     parsed_profile_to_agent_profile,
